@@ -92,6 +92,13 @@ public static class Consts
     public const int IapRebootDelay = 2000;
 
     /// <summary>
+    /// Maximum time to block on the TfrRdy pin change event before the pin level is re-read directly (in ms).
+    /// Every wait on the pin is verified by reading the actual level, so a lost or stale pin change
+    /// notification can delay a transfer phase by at most this long instead of causing a disconnect
+    /// </summary>
+    public const int TfrRdyPollInterval = 2;
+
+    /// <summary>
     /// Delay before re-probing the USB port after the link was lost (in ms).
     /// The firmware drops off the bus and waits out a short dwell so the host can release both
     /// ttyACM minors before re-enumerating; re-opening the port during that dwell can defer the
