@@ -30,6 +30,43 @@ public static class Reader
     }
 
     /// <summary>
+    /// Read the key echoed by the firmware in an object model response
+    /// </summary>
+    /// <param name="json">Object model response as sent by the firmware</param>
+    /// <param name="key">Key the response belongs to</param>
+    /// <returns>Whether the key could be read</returns>
+    public static bool TryReadObjectModelKey(ReadOnlySpan<byte> json, out string key)
+    {
+        try
+        {
+            Utf8JsonReader reader = new(json);
+            if (reader.Read() && reader.TokenType == JsonTokenType.StartObject)
+            {
+                while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
+                {
+                    if (reader.ValueTextEquals("key"u8))
+                    {
+                        if (reader.Read() && reader.TokenType == JsonTokenType.String)
+                        {
+                            key = reader.GetString()!;
+                            return true;
+                        }
+                        break;
+                    }
+                    reader.Skip();
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // malformed response, let the consumer deal with it
+        }
+
+        key = string.Empty;
+        return false;
+    }
+
+    /// <summary>
     /// Read a code buffer update from a memory span
     /// </summary>
     /// <param name="from">Origin</param>
