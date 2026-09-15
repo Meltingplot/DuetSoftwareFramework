@@ -1,0 +1,79 @@
+name: Build unsigned DSF packages
+
+# Builds the Debian packages exactly as deploy.yml does, but without signing them and without
+# uploading anything to pkg.duet3d.com. The packages are attached to the run as an artifact so
+# they can be pulled into a local apt feed or an image build (e.g. rpi-image-gen)
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: "Target architecture"
+        required: true
+        default: "arm64"
+        type: choice
+        options:
+        - arm64
+        - armhf
+        - all
+      build-type:
+        description: "Build type (auto = Debug for prereleases, Release otherwise)"
+        required: true
+        default: "auto"
+        type: choice
+        options:
+        - auto
+        - Debug
+        - Release
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      ARCH: ${{ inputs.arch }}
+      BUILD_TYPE: ${{ inputs.build-type }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Install NodeJS environment, needed for the DuetWebControl package
+      - name: Set up NodeJS
+        uses: actions/setup-node@v7
+        with:
+          node-version: 25
+
+      # Install .NET environment
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10
+
+      # Install required tools
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y libxml2-utils
+
+      # Build DSF. Without --signing-key the build script leaves the packages unsigned
+      - name: Build DSF packages
+        working-directory: pkg
+        run: |
+          opts=(--dest-dir=./out)
+          if [ "$BUILD_TYPE" != "auto" ]; then
+            opts+=("--build-type=$BUILD_TYPE")
+          fi
+          if [ "$ARCH" = "all" ]; then
+            archs="armhf arm64"
+          else
+            archs="$ARCH"
+          fi
+          for arch in $archs; do
+            ./build.sh "${opts[@]}" "--target-arch=$arch"
+          done
+          ls -l out/*.deb
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsf-deb-${{ inputs.arch }}
+          path: pkg/out/*.deb
+          if-no-files-found: error
