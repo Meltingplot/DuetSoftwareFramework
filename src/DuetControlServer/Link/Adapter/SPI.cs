@@ -43,7 +43,7 @@ public class SPI : IDiagnostics, ILinkAdapter
     private TransferPhase _transferPhase;
 
     private DateTime _lastTransferMeasureTime = DateTime.Now, _lastCodesMeasureTime = DateTime.Now;
-    private volatile int _numMeasuredTransfers, _numMeasuredCodes, _maxRxSize, _maxTxSize, _numTfrPinGlitches;
+    private volatile int _numMeasuredTransfers, _numMeasuredCodes, _maxRxSize, _maxTxSize, _numTfrPinGlitches, _numTfrPinMissedWakeups;
     private TimeSpan _maxFullTransferDelay = TimeSpan.Zero, _maxPinWaitDurationFull = TimeSpan.Zero, _maxPinWaitDuration = TimeSpan.Zero;
 
     // Transfer headers
@@ -214,7 +214,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return;
         }
 
-        builder.AppendLine($"Configured SPI speed: {_settings.SpiFrequency}Hz, TfrRdy pin glitches: {_numTfrPinGlitches}, missed edges: {_transferReadyPin.MissedEdges}");
+        builder.AppendLine($"Configured SPI speed: {_settings.SpiFrequency}Hz, TfrRdy pin glitches: {_numTfrPinGlitches}, missed edges: {_transferReadyPin.MissedEdges}, missed wake-ups: {_numTfrPinMissedWakeups}");
         builder.AppendLine($"Full transfers per second: {GetFullTransfersPerSecond():F2}, max time between full transfers: {GetMaxFullTransferDelay():0.0}ms, max pin wait times: {GetMaxPinWaitDuration(true):0.0}ms/{GetMaxPinWaitDuration(false):0.0}ms");
         builder.AppendLine($"Codes per second: {GetCodesPerSecond():F2}");
         builder.AppendLine($"Maximum length of RX/TX data transfers: {_maxRxSize}/{_maxTxSize}");
@@ -1546,7 +1546,11 @@ public class SPI : IDiagnostics, ILinkAdapter
                 timeout = _updating ? Consts.IapTimeout : (inTransfer ? _settings.SbcTransferTimeout : _settings.SbcConnectionTimeout);
             }
 
-            // Wait for the expected pin level, ignoring glitches
+            // Wait for the expected pin level. The pin change event only serves as a wake-up hint: the
+            // decision to proceed is always made from the actual pin level. Edge events are delivered by the
+            // monitor thread and may arrive late or refer to an edge that has already been observed via
+            // Read(), so a cached edge direction must never be trusted on its own. The wait is limited to
+            // short slices so that a lost wake-up costs at most one poll interval instead of a disconnect
             Stopwatch stopwatch = Stopwatch.StartNew();
             int glitchesAtStart = _numTfrPinGlitches;
             try
@@ -1559,31 +1563,31 @@ public class SPI : IDiagnostics, ILinkAdapter
                         throw new OperationCanceledException();
                     }
 
-                    // Wait for any pin change event
-                    if (_transferReadyEvent.Wait(timeToWait))
+                    // Block until a pin change is reported or the poll interval has elapsed
+                    bool signalled = _transferReadyEvent.Wait(Math.Min(timeToWait, Consts.TfrRdyPollInterval));
+                    if (signalled)
                     {
                         _transferReadyEvent.Reset();
-                        
-                        // Use the pin value captured in the callback
-                        currentValue = _lastPinValueFromCallback;
+                    }
 
-                        // Check if this is the transition we're waiting for
-                        if (currentValue == _expectedTfrRdyPinValue)
+                    // Check the actual pin level. This is the only condition to proceed
+                    currentValue = _transferReadyPin.Read();
+                    if (currentValue == _expectedTfrRdyPinValue)
+                    {
+                        if (!signalled && !_transferReadyEvent.IsSet)
                         {
-                            // Verify by reading again to ensure it's stable
-                            bool verifyValue = _transferReadyPin.Read();
-                            if (verifyValue == _expectedTfrRdyPinValue)
-                            {
-                                break;
-                            }
-                            // Pin changed again between callback and now, count as glitch
-                            _numTfrPinGlitches++;
+                            // The pin got to the expected level but no notification arrived in time
+                            _numTfrPinMissedWakeups++;
+                            _logger.LogDebug("TfrRdy pin reached the expected level without a pin change notification (waited {WaitTime}ms)", stopwatch.ElapsedMilliseconds);
                         }
-                        else
-                        {
-                            // This was a transition in the wrong direction, ignore it
-                            // Don't count as glitch since this is expected with both edges registered
-                        }
+                        break;
+                    }
+
+                    if (signalled && _lastPinValueFromCallback == _expectedTfrRdyPinValue)
+                    {
+                        // The edge event claimed the expected level but the pin is not there (any more), count as glitch.
+                        // Wake-ups for edges in the wrong direction are expected with both edges registered and not counted
+                        _numTfrPinGlitches++;
                     }
                 } while (true);
             }

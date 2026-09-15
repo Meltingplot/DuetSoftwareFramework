@@ -208,6 +208,7 @@ public sealed class InputGpioPin : IDisposable
         PollFd pollData = new() { Fd = _reqFd, Events = (short)PollFlags.POLLIN };
         gpio_v2_line_event eventV2 = new();
         gpioevent_data eventV1 = new();
+        bool value;
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -243,7 +244,7 @@ public sealed class InputGpioPin : IDisposable
                 _lastSeqno = eventV2.line_seqno;
                 _haveSeqno = true;
 
-                Value = eventV2.id == (uint)GpioV2LineEvent.GPIO_V2_LINE_EVENT_RISING_EDGE;
+                value = eventV2.id == (uint)GpioV2LineEvent.GPIO_V2_LINE_EVENT_RISING_EDGE;
             }
             else
             {
@@ -254,10 +255,13 @@ public sealed class InputGpioPin : IDisposable
 
                 // The v1 uAPI carries no sequence number, so count the edges we observe
                 _lastSeqno++;
-                Value = eventV1.id == (uint)GpioEvent.GPIOEVENT_EVENT_RISING_EDGE;
+                value = eventV1.id == (uint)GpioEvent.GPIOEVENT_EVENT_RISING_EDGE;
             }
 
-            PinChanged?.Invoke(Value, _lastSeqno);
+            // Value is shared with Read(), which may run on another thread at the same time, so pass the
+            // level of this event on directly instead of reading the property back
+            Value = value;
+            PinChanged?.Invoke(value, _lastSeqno);
         }
     }
 
