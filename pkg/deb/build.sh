@@ -77,6 +77,10 @@ pkg_meta() {
 	echo "- Packaging meta..."
 
 	sed -i "s/TARGET_ARCH/$TARGET_ARCH/g" $DEST_DIR/duetsoftwareframework_$dsfver/DEBIAN/control
+	# The firmware bounds follow the upstream version only: a local build carrying build metadata
+	# (e.g. 3.7.0-rc.1+mp.1) still pairs with the firmware released for its base version
+	basever=$(echo ${dsfver%%+*} | sed -e 's/-/~/g')
+	sed -i "s/reprapfirmware (>= DSFVER-1), reprapfirmware (<= DSFVER-999)/reprapfirmware (>= $basever-1), reprapfirmware (<= $basever-999)/" $DEST_DIR/duetsoftwareframework_$dsfver/DEBIAN/control
 	sed -i "s/DSFVER/$(echo $dsfver | sed -e 's/-/~/g')/g" $DEST_DIR/duetsoftwareframework_$dsfver/DEBIAN/control
 	sed -i "s/SDVER/$(echo $sdver | sed -e 's/-/~/g')/g" $DEST_DIR/duetsoftwareframework_$dsfver/DEBIAN/control
 	sed -i "s/DWCVER/$(echo $dwcver | sed -e 's/-/~/g')/g" $DEST_DIR/duetsoftwareframework_$dsfver/DEBIAN/control
