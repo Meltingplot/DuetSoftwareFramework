@@ -7,7 +7,7 @@ name: Release unsigned DSF packages
 on:
   push:
     tags:
-      - "v*+mp.*"
+      - "v*\\+mp.*"
   workflow_dispatch:
     inputs:
       tag:
