@@ -69,11 +69,11 @@ jobs:
           for arch in $archs; do
             ./build.sh "${opts[@]}" "--target-arch=$arch"
           done
-          ls -l out/*.deb
+          ls -l out/binary-*/*.deb
 
       - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
           name: dsf-deb-${{ inputs.arch }}
-          path: pkg/out/*.deb
+          path: pkg/out/binary-*/*.deb
           if-no-files-found: error
