@@ -35,6 +35,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     private readonly ManualResetEventSlim _transferReadyEvent = new(false);
     private bool _expectedTfrRdyPinValue;
     private volatile bool _lastPinValueFromCallback;
+    private volatile int _numRisingEdgeEvents, _numFallingEdgeEvents;
+    private bool _missedWakeupPending, _missedWakeupPinValue;
+    private int _missedWakeupEdgeEvents, _missedWakeupOppositeEdgeEvents;
     private readonly SpiDevice _spiDevice;
     private bool _waitingForFirstTransfer = true, _connected, _hadTimeout, _resetting, _updating;
     private ushort _lastTransferNumber;
@@ -43,7 +46,7 @@ public class SPI : IDiagnostics, ILinkAdapter
     private TransferPhase _transferPhase;
 
     private DateTime _lastTransferMeasureTime = DateTime.Now, _lastCodesMeasureTime = DateTime.Now;
-    private volatile int _numMeasuredTransfers, _numMeasuredCodes, _maxRxSize, _maxTxSize, _numTfrPinGlitches, _numTfrPinMissedWakeups;
+    private volatile int _numMeasuredTransfers, _numMeasuredCodes, _maxRxSize, _maxTxSize, _numTfrPinGlitches, _numTfrPinLateWakeups, _numTfrPinLostWakeups;
     private TimeSpan _maxFullTransferDelay = TimeSpan.Zero, _maxPinWaitDurationFull = TimeSpan.Zero, _maxPinWaitDuration = TimeSpan.Zero;
 
     // Transfer headers
@@ -107,6 +110,17 @@ public class SPI : IDiagnostics, ILinkAdapter
         {
             _lastPinValueFromCallback = value;
             _transferReadyEvent.Set();
+
+            // Count edges per direction after the event has been set so that a wait which saw the event unset
+            // is guaranteed to have sampled the counter before this edge was delivered
+            if (value)
+            {
+                _numRisingEdgeEvents++;     // only written by the monitor thread
+            }
+            else
+            {
+                _numFallingEdgeEvents++;    // only written by the monitor thread
+            }
         };
         _transferReadyPin.StartMonitoring();
 
@@ -214,7 +228,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return;
         }
 
-        builder.AppendLine($"Configured SPI speed: {_settings.SpiFrequency}Hz, TfrRdy pin glitches: {_numTfrPinGlitches}, missed edges: {_transferReadyPin.MissedEdges}, missed wake-ups: {_numTfrPinMissedWakeups}");
+        builder.AppendLine($"Configured SPI speed: {_settings.SpiFrequency}Hz, TfrRdy pin glitches: {_numTfrPinGlitches}, missed edges: {_transferReadyPin.MissedEdges}, late wake-ups: {_numTfrPinLateWakeups}, lost wake-ups: {_numTfrPinLostWakeups}");
         builder.AppendLine($"Full transfers per second: {GetFullTransfersPerSecond():F2}, max time between full transfers: {GetMaxFullTransferDelay():0.0}ms, max pin wait times: {GetMaxPinWaitDuration(true):0.0}ms/{GetMaxPinWaitDuration(false):0.0}ms");
         builder.AppendLine($"Codes per second: {GetCodesPerSecond():F2}");
         builder.AppendLine($"Maximum length of RX/TX data transfers: {_maxRxSize}/{_maxTxSize}");
@@ -1524,6 +1538,11 @@ public class SPI : IDiagnostics, ILinkAdapter
             _expectedTfrRdyPinValue = true;
         }
 
+        // Classify the previous wait that completed without a pin change notification. Kernel edge events are
+        // delivered in order, so if the event for that edge has arrived by now it was merely late. If instead
+        // an event for the opposite edge arrived without it, the kernel never delivered one for that edge
+        ResolveMissedWakeup();
+
         // Flush pending events by consuming them until the event stays reset
         while (_transferReadyEvent.Wait(0))
         {
@@ -1570,15 +1589,26 @@ public class SPI : IDiagnostics, ILinkAdapter
                         _transferReadyEvent.Reset();
                     }
 
-                    // Check the actual pin level. This is the only condition to proceed
+                    // Check the actual pin level. This is the only condition to proceed. The edge counters are
+                    // sampled before the event state so they cannot include the event of this very edge
+                    int edgeEvents = _expectedTfrRdyPinValue ? _numRisingEdgeEvents : _numFallingEdgeEvents;
+                    int oppositeEdgeEvents = _expectedTfrRdyPinValue ? _numFallingEdgeEvents : _numRisingEdgeEvents;
                     currentValue = _transferReadyPin.Read();
                     if (currentValue == _expectedTfrRdyPinValue)
                     {
                         if (!signalled && !_transferReadyEvent.IsSet)
                         {
-                            // The pin got to the expected level but no notification arrived in time
-                            _numTfrPinMissedWakeups++;
-                            _logger.LogDebug("TfrRdy pin reached the expected level without a pin change notification (waited {WaitTime}ms)", stopwatch.ElapsedMilliseconds);
+                            // The pin got to the expected level but no notification has arrived (yet). Whether the
+                            // notification was late or lost is decided at the start of the next wait
+                            if (_missedWakeupPending)
+                            {
+                                // The previous one is still unresolved after a whole transfer, count it as lost
+                                _numTfrPinLostWakeups++;
+                            }
+                            _missedWakeupPending = true;
+                            _missedWakeupPinValue = _expectedTfrRdyPinValue;
+                            _missedWakeupEdgeEvents = edgeEvents;
+                            _missedWakeupOppositeEdgeEvents = oppositeEdgeEvents;
                         }
                         break;
                     }
@@ -1625,6 +1655,34 @@ public class SPI : IDiagnostics, ILinkAdapter
         // Transition complete
         _expectedTfrRdyPinValue = !_expectedTfrRdyPinValue;
         _waitingForFirstTransfer = false;
+    }
+
+    /// <summary>
+    /// Decide whether the last wait that ended without a pin change notification missed a late or a lost event
+    /// </summary>
+    private void ResolveMissedWakeup()
+    {
+        if (!_missedWakeupPending)
+        {
+            return;
+        }
+
+        int edgeEvents = _missedWakeupPinValue ? _numRisingEdgeEvents : _numFallingEdgeEvents;
+        int oppositeEdgeEvents = _missedWakeupPinValue ? _numFallingEdgeEvents : _numRisingEdgeEvents;
+        if (edgeEvents != _missedWakeupEdgeEvents)
+        {
+            // The event for the missed edge has been delivered in the meantime
+            _numTfrPinLateWakeups++;
+            _missedWakeupPending = false;
+        }
+        else if (oppositeEdgeEvents != _missedWakeupOppositeEdgeEvents)
+        {
+            // An event for a later edge arrived but none for the missed edge, so the kernel never reported it
+            _numTfrPinLostWakeups++;
+            _missedWakeupPending = false;
+            _logger.LogDebug("Kernel did not report a TfrRdy {Edge} edge", _missedWakeupPinValue ? "rising" : "falling");
+        }
+        // else: undecided, keep waiting for the next edge event
     }
 
     /// <summary>
