@@ -1,0 +1,114 @@
+name: Release unsigned DSF packages
+
+# Builds the Debian packages for a Meltingplot version tag (e.g. v3.7.0-rc.1+mp.1) and publishes
+# them on a GitHub release of that tag, one asset per .deb file. Nothing is signed and nothing is
+# uploaded to pkg.duet3d.com; an image build fetches the packages from the release page
+
+on:
+  push:
+    tags:
+      - "v*+mp.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g. v3.7.0-rc.1+mp.1)"
+        required: true
+        type: string
+      arch:
+        description: "Target architecture"
+        required: true
+        default: "arm64"
+        type: choice
+        options:
+        - arm64
+        - armhf
+        - all
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-deb-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      ARCH: ${{ inputs.arch || 'arm64' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # The tag name goes into git and gh commands below, so only accept what a version tag can contain
+      - name: Check tag name
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+~.][0-9A-Za-z.]+)*$ ]]; then
+            echo "Refusing to build from tag '$TAG'"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+
+      # The package build clones DuetWebControl from the branch of the same name as the one checked
+      # out here, and a tag checkout has no branch. Put the tag on the development branch its version
+      # belongs to (v3.7.0-rc.1+mp.1 -> v3.7-dev) so the matching DWC sources are picked up
+      - name: Name the checkout after its development branch
+        run: |
+          version=$(grep -oPm1 '(?<=<Version>)[^<]+' src/Directory.Build.props)
+          git checkout -q -B "v$(echo "$version" | cut -d. -f1,2)-dev"
+          echo "Building DSF $version on branch $(git branch --show-current)"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      # Install NodeJS environment, needed for the DuetWebControl package
+      - name: Set up NodeJS
+        uses: actions/setup-node@v7
+        with:
+          node-version: 25
+
+      # Install .NET environment
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10
+
+      # Install required tools
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y libxml2-utils
+
+      # Build DSF. Without --signing-key the build script leaves the packages unsigned
+      - name: Build DSF packages
+        working-directory: pkg
+        run: |
+          if [ "$ARCH" = "all" ]; then
+            archs="armhf arm64"
+          else
+            archs="$ARCH"
+          fi
+          for arch in $archs; do
+            ./build.sh --dest-dir=./out "--target-arch=$arch"
+          done
+          ls -l out/binary-*/*.deb
+
+      # One asset per package. Prereleases (anything with a hyphen in the version) are marked as such.
+      # If the release already exists, e.g. after a re-run, the assets are replaced
+      - name: Publish release
+        run: |
+          notes="$(git tag -l --format='%(contents)' "$TAG")"
+          {
+            echo "${notes:-DSF $VERSION}"
+            echo
+            echo "Unsigned Debian packages built from \`$(git rev-parse --short HEAD)\` by the release-deb workflow."
+          } > release-notes.md
+          prerelease=""
+          case "$VERSION" in
+            *-*) prerelease="--prerelease" ;;
+          esac
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" $prerelease --title "DSF $VERSION" --notes-file release-notes.md
+          fi
+          gh release upload "$TAG" --clobber pkg/out/binary-*/*.deb
+          gh release view "$TAG" --json assets -q '.assets[].name'
