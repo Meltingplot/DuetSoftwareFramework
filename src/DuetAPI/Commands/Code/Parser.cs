@@ -802,6 +802,7 @@ public partial class Code
     /// - does not set the corresponding flag for G53 after the first code on a line
     /// - sets the indentation level only for the first code in a line
     /// - does not support Fanuc or LaserWeb styles
+    /// - reads lines starting with a line number as a whole to verify their checksum or CRC, so such a line may hold only a single code
     /// </remarks>
     public static bool Parse(TextReader reader, Code result)
     {
@@ -813,8 +814,11 @@ public partial class Code
         byte[] pending = new byte[4];
         char[] charBuffer = new char[2];
         int pendingLength = 0, pendingPointer = 0;
+        NumberedLine? line = null;
 
-        int ReadByte()
+        int ReadByte() => (line is { HasData: true }) ? line.Read(result) : ReadByteFromReader();
+
+        int ReadByteFromReader()
         {
             if (pendingPointer >= pendingLength)
             {
@@ -843,6 +847,11 @@ public partial class Code
 
         char PeekChar()
         {
+            if (line is { HasData: true })
+            {
+                return (char)line.Content[line.Pointer];
+            }
+
             if (pendingPointer < pendingLength)
             {
                 return (char)pending[pendingPointer];
@@ -857,9 +866,33 @@ public partial class Code
             return (next < 0x80) ? (char)next : '\xFF';
         }
 
+        // A line starting with a line number may end with a checksum or CRC. Such lines are read ahead as a whole so that
+        // they can be verified before the code is returned
+        void ReadNumberedLine()
+        {
+            line ??= new();
+            line.Reset();
+            while (true)
+            {
+                int b = ReadByteFromReader();
+                if (b < 0)
+                {
+                    break;
+                }
+
+                line.Append((byte)b);
+                if (b == '\n')
+                {
+                    break;
+                }
+            }
+            line.Verify();
+        }
+
         char c;
         do
         {
+            bool fromLine = line is { HasData: true };
             int b = ReadByte();
             c = (b < 0) ? '\n' : (char)b;
             result.Length++;
@@ -874,9 +907,22 @@ public partial class Code
             if (StartsNextCode(state, result, c))
             {
                 // The character belongs to the next code, so put it back and do not count it
-                pendingPointer--;
+                if (fromLine)
+                {
+                    line!.Pointer--;
+                }
+                else
+                {
+                    pendingPointer--;
+                }
                 result.Length--;
                 break;
+            }
+
+            // Read ahead and verify the whole line if it starts with a line number
+            if (state.ReadingAtStart && c is 'N' or 'n')
+            {
+                ReadNumberedLine();
             }
 
             if (ProcessCharacter(state, result, c, PeekChar()))
@@ -886,6 +932,12 @@ public partial class Code
             }
         }
         while (c != '\n');
+
+        if (line is { HasData: true })
+        {
+            // The rest of the line has already been consumed from the reader and cannot be returned by subsequent calls
+            throw new CodeParserException("Lines with a line number may contain only a single code when parsed synchronously, use ParseAsync instead", result);
+        }
 
         FinishCode(state, result, c);
         return state.ContentRead;

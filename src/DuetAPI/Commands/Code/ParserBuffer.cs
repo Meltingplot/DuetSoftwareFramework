@@ -41,6 +41,11 @@ public sealed class CodeParserBuffer(int bufferSize, bool isFile)
     internal int Size;
 
     /// <summary>
+    /// Numbered line (N...) that has been read ahead so that its checksum or CRC could be verified. Null if none was needed yet
+    /// </summary>
+    internal Code.NumberedLine? Line;
+
+    /// <summary>
     /// Invalidate the buffer internally
     /// </summary>
     internal void InvalidateData()
@@ -48,6 +53,7 @@ public sealed class CodeParserBuffer(int bufferSize, bool isFile)
         SeenNewLine = true;
         Indent = 0;
         EnforcingAbsolutePosition = false;
+        Line?.Reset();
     }
 
     /// <summary>
@@ -86,5 +92,5 @@ public sealed class CodeParserBuffer(int bufferSize, bool isFile)
     /// </summary>
     /// <param name="stream">Stream to read from</param>
     /// <returns>Actual position in bytes</returns>
-    public long GetPosition(Stream stream) => stream.Position - Size + Pointer;
+    public long GetPosition(Stream stream) => (Line is { HasData: true }) ? Line.StartPosition + Line.Pointer : stream.Position - Size + Pointer;
 }

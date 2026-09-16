@@ -72,17 +72,64 @@ public partial class Code
         result.FilePosition = buffer.IsFile ? buffer.GetPosition(stream) : null;
         result.LineNumber = buffer.LineNumber;
 
+        // A line starting with a line number may end with a checksum or CRC. Such lines are read ahead as a whole so that
+        // they can be verified before any code of the line is returned, and the codes are then served from the line storage
+        async ValueTask ReadNumberedLineAsync()
+        {
+            Code.NumberedLine line = buffer.Line ??= new();
+            line.Reset();
+            line.StartPosition = buffer.GetPosition(stream);
+            while (true)
+            {
+                if (buffer.Pointer >= buffer.Size)
+                {
+                    await FillBufferAsync().ConfigureAwait(false);
+                    if (buffer.Size <= 0)
+                    {
+                        // End of stream
+                        break;
+                    }
+                }
+
+                byte b = buffer.Content[buffer.Pointer++];
+                line.Append(b);
+                if (b == '\n')
+                {
+                    break;
+                }
+            }
+
+            try
+            {
+                line.Verify();
+            }
+            catch
+            {
+                // The faulty line has been consumed, so the parser is at the start of the next line again
+                buffer.InvalidateData();
+                throw;
+            }
+        }
+
         char c;
         do
         {
             // Read the next character
-            if (buffer.Pointer >= buffer.Size)
+            bool fromLine = buffer.Line is { HasData: true };
+            if (fromLine)
             {
-                await FillBufferAsync().ConfigureAwait(false);
+                c = (char)buffer.Line!.Read(result);
             }
-            c = (buffer.Pointer < buffer.Size) ? (char)buffer.Content[buffer.Pointer] : '\n';
+            else
+            {
+                if (buffer.Pointer >= buffer.Size)
+                {
+                    await FillBufferAsync().ConfigureAwait(false);
+                }
+                c = (buffer.Pointer < buffer.Size) ? (char)buffer.Content[buffer.Pointer] : '\n';
+                buffer.Pointer++;
+            }
             result.Length++;
-            buffer.Pointer++;
 
             if (c == '\n' && !state.HadLineNumber && buffer.LineNumber is not null)
             {
@@ -99,20 +146,48 @@ public partial class Code
             if (StartsNextCode(state, result, c))
             {
                 // The character belongs to the next code, so put it back
-                buffer.Pointer--;
+                if (fromLine)
+                {
+                    buffer.Line!.Pointer--;
+                }
+                else
+                {
+                    buffer.Pointer--;
+                }
                 break;
             }
 
-            // Peek at the next character without consuming it
-            if (buffer.Pointer >= buffer.Size)
+            // Read ahead and verify the whole line if it starts with a line number
+            if (state.ReadingAtStart && c is 'N' or 'n')
             {
-                await FillBufferAsync().ConfigureAwait(false);
+                await ReadNumberedLineAsync().ConfigureAwait(false);
             }
-            char peek = (buffer.Pointer < buffer.Size) ? (char)buffer.Content[buffer.Pointer] : '\0';
+
+            // Peek at the next character without consuming it
+            char peek;
+            if (buffer.Line is { HasData: true })
+            {
+                peek = (char)buffer.Line.Content[buffer.Line.Pointer];
+            }
+            else
+            {
+                if (buffer.Pointer >= buffer.Size)
+                {
+                    await FillBufferAsync().ConfigureAwait(false);
+                }
+                peek = (buffer.Pointer < buffer.Size) ? (char)buffer.Content[buffer.Pointer] : '\0';
+            }
 
             if (ProcessCharacter(state, result, c, peek))
             {
-                buffer.Pointer++;
+                if (buffer.Line is { HasData: true })
+                {
+                    buffer.Line.Read(result);
+                }
+                else
+                {
+                    buffer.Pointer++;
+                }
                 result.Length++;
             }
 
