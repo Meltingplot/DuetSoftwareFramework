@@ -610,7 +610,7 @@ public sealed class LinkService(
         linkAdapter.ReadObjectModel(out ReadOnlySpan<byte> json);
         lock (linkInterface.ModelQueryRequests)
         {
-            if (linkInterface.ModelQueryRequests.TryPeek(out ModelQueryRequest? query))
+            if (linkInterface.ModelQueryRequests.TryPeek(out ModelQueryRequest? query) && query.QuerySent)
             {
                 // Responses are matched to queries by order only. A response to a query that was
                 // invalidated (e.g. after a transfer timeout) may still arrive once the link is back
