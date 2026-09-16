@@ -46,7 +46,7 @@ public class SPI : IDiagnostics, ILinkAdapter
     private TransferPhase _transferPhase;
 
     private DateTime _lastTransferMeasureTime = DateTime.Now, _lastCodesMeasureTime = DateTime.Now;
-    private volatile int _numMeasuredTransfers, _numMeasuredCodes, _maxRxSize, _maxTxSize, _numTfrPinGlitches, _numTfrPinLateWakeups, _numTfrPinLostWakeups;
+    private volatile int _numMeasuredTransfers, _numMeasuredCodes, _maxRxSize, _maxTxSize, _numTfrPinGlitches, _numTfrPinLostWakeups;
     private TimeSpan _maxFullTransferDelay = TimeSpan.Zero, _maxPinWaitDurationFull = TimeSpan.Zero, _maxPinWaitDuration = TimeSpan.Zero;
 
     // Transfer headers
@@ -228,7 +228,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return;
         }
 
-        builder.AppendLine($"Configured SPI speed: {_settings.SpiFrequency}Hz, TfrRdy pin glitches: {_numTfrPinGlitches}, missed edges: {_transferReadyPin.MissedEdges}, late wake-ups: {_numTfrPinLateWakeups}, lost wake-ups: {_numTfrPinLostWakeups}");
+        builder.AppendLine($"Configured SPI speed: {_settings.SpiFrequency}Hz, TfrRdy pin glitches: {_numTfrPinGlitches}, missed edges: {_transferReadyPin.MissedEdges}, lost wake-ups: {_numTfrPinLostWakeups}");
         builder.AppendLine($"Full transfers per second: {GetFullTransfersPerSecond():F2}, max time between full transfers: {GetMaxFullTransferDelay():0.0}ms, max pin wait times: {GetMaxPinWaitDuration(true):0.0}ms/{GetMaxPinWaitDuration(false):0.0}ms");
         builder.AppendLine($"Codes per second: {GetCodesPerSecond():F2}");
         builder.AppendLine($"Maximum length of RX/TX data transfers: {_maxRxSize}/{_maxTxSize}");
@@ -1671,8 +1671,8 @@ public class SPI : IDiagnostics, ILinkAdapter
         int oppositeEdgeEvents = _missedWakeupPinValue ? _numFallingEdgeEvents : _numRisingEdgeEvents;
         if (edgeEvents != _missedWakeupEdgeEvents)
         {
-            // The event for the missed edge has been delivered in the meantime
-            _numTfrPinLateWakeups++;
+            // The event for the missed edge has been delivered in the meantime, so the wake-up was only late.
+            // This happens regularly and is benign: the poll slice can end before the monitor thread has run
             _missedWakeupPending = false;
         }
         else if (oppositeEdgeEvents != _missedWakeupOppositeEdgeEvents)
