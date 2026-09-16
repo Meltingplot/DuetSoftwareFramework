@@ -30,7 +30,7 @@ public enum EndstopType
     MotorStallIndividual,
 
     /// <summary>
-    /// Motor stall detection with an encoder (closed-loop driver) stops the drive when triggered
+    /// Encoder position error stops all the drives when triggered
     /// </summary>
     MotorStallEncoder,
 
