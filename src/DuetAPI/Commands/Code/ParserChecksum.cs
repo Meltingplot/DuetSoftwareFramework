@@ -2,6 +2,27 @@ using System;
 
 namespace DuetAPI.Commands;
 
+/// <summary>
+/// Type of the checksum block at the end of a numbered line
+/// </summary>
+public enum LineChecksumType
+{
+    /// <summary>
+    /// No checksum block
+    /// </summary>
+    None,
+
+    /// <summary>
+    /// Legacy XOR checksum with 1 to 3 decimal digits
+    /// </summary>
+    Checksum,
+
+    /// <summary>
+    /// CRC-16/XMODEM with exactly 5 decimal digits
+    /// </summary>
+    Crc
+}
+
 public partial class Code
 {
     /// <summary>
@@ -40,6 +61,16 @@ public partial class Code
         public int StrippedBytes;
 
         /// <summary>
+        /// Type of the verified checksum block
+        /// </summary>
+        public LineChecksumType ChecksumType;
+
+        /// <summary>
+        /// Whether the line has any content between the line number and the checksum block or comment
+        /// </summary>
+        public bool HasContent;
+
+        /// <summary>
         /// Whether there are unread bytes left
         /// </summary>
         public bool HasData => Pointer < Length;
@@ -47,7 +78,12 @@ public partial class Code
         /// <summary>
         /// Clear the line
         /// </summary>
-        public void Reset() => Length = Pointer = StrippedBytes = 0;
+        public void Reset()
+        {
+            Length = Pointer = StrippedBytes = 0;
+            ChecksumType = LineChecksumType.None;
+            HasContent = false;
+        }
 
         /// <summary>
         /// Append a byte to the line
@@ -74,7 +110,7 @@ public partial class Code
             int stripped;
             try
             {
-                stripped = VerifyLineChecksum(Content, contentLength);
+                stripped = VerifyLineChecksum(Content, contentLength, out ChecksumType, out HasContent);
             }
             catch
             {
@@ -92,6 +128,12 @@ public partial class Code
                 StrippedBytes = stripped;
             }
         }
+
+        /// <summary>
+        /// Get the line number of this line
+        /// </summary>
+        /// <returns>Line number as it appears in the line</returns>
+        public string GetLineNumber() => ReadLineNumber(Content, Length);
 
         /// <summary>
         /// Read the next byte
@@ -180,10 +222,28 @@ public partial class Code
     }
 
     /// <summary>
+    /// Get the line number from the content of a numbered line
+    /// </summary>
+    /// <param name="line">Buffer holding the line content that follows the leading 'N' character</param>
+    /// <param name="length">Number of bytes of the line in the buffer</param>
+    /// <returns>Line number as it appears in the line</returns>
+    private static string ReadLineNumber(byte[] line, int length)
+    {
+        string lineNumber = string.Empty;
+        for (int i = 0; i < length && line[i] >= '0' && line[i] <= '9'; i++)
+        {
+            lineNumber += (char)line[i];
+        }
+        return lineNumber;
+    }
+
+    /// <summary>
     /// Verify the checksum or CRC block of a line that starts with a line number
     /// </summary>
     /// <param name="line">Buffer holding the line content that follows the leading 'N' character</param>
     /// <param name="length">Number of bytes of the line in the buffer, excluding the line terminator</param>
+    /// <param name="checksumType">Type of the verified checksum block. This is always none if the line has no content</param>
+    /// <param name="hasContent">Whether the line has any content between the line number and the checksum block or comment</param>
     /// <returns>Number of bytes at the end of the line that make up the checksum block (0 if there is none)</returns>
     /// <exception cref="CodeParserException">Checksum or CRC is malformed or does not match</exception>
     /// <remarks>
@@ -193,14 +253,16 @@ public partial class Code
     /// - 1 to 3 decimal digits are an XOR checksum, exactly 5 decimal digits are a CRC-16. Other lengths are invalid
     /// - Lines without any content between the line number and the '*' are not verified
     /// </remarks>
-    internal static int VerifyLineChecksum(byte[] line, int length)
+    internal static int VerifyLineChecksum(byte[] line, int length, out LineChecksumType checksumType, out bool hasContent)
     {
+        checksumType = LineChecksumType.None;
+        hasContent = false;
         byte checksum = (byte)'N';
         ushort crc = ComputeLineCrc([(byte)'N']);
 
         // Find the start of the checksum block
         int checksumStart = -1, braceDepth = 0;
-        bool inQuotes = false, inEncapsulatedComment = false, inLineNumber = true, hasContent = false;
+        bool inQuotes = false, inEncapsulatedComment = false, inLineNumber = true;
         for (int i = 0; i < length; i++)
         {
             byte b = line[i];
@@ -277,11 +339,7 @@ public partial class Code
         // Empty numbered lines are not checked by RepRapFirmware either
         if (hasContent)
         {
-            string lineNumber = string.Empty;
-            for (int i = 0; i < length && line[i] >= '0' && line[i] <= '9'; i++)
-            {
-                lineNumber += (char)line[i];
-            }
+            string lineNumber = ReadLineNumber(line, length);
 
             switch (numDigits)
             {
@@ -292,6 +350,7 @@ public partial class Code
                     {
                         throw new CodeParserException($"Checksum error on line N{lineNumber} (declared {declaredValue}, computed {checksum})");
                     }
+                    checksumType = LineChecksumType.Checksum;
                     break;
 
                 case 5:
@@ -299,6 +358,7 @@ public partial class Code
                     {
                         throw new CodeParserException($"CRC error on line N{lineNumber} (declared {declaredValue}, computed {crc})");
                     }
+                    checksumType = LineChecksumType.Crc;
                     break;
 
                 default:

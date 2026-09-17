@@ -71,7 +71,7 @@ public class CodeFile(
     /// <summary>
     /// Internal buffer used for reading from files
     /// </summary>
-    private readonly CodeParserBuffer _parserBuffer = new(settings.Value.FileBufferSize, true);
+    private readonly CodeParserBuffer _parserBuffer = new(settings.Value.FileBufferSize, true) { EnforceLineNumbers = true };
 
     /// <summary>
     /// Current line number in the file
@@ -274,6 +274,7 @@ public class CodeFile(
         Position = copyFrom.NextFilePosition;
 
         _parserBuffer.LineNumber = copyFrom._parserBuffer.LineNumber;
+        _parserBuffer.RequiredChecksumType = copyFrom._parserBuffer.RequiredChecksumType;
         _parserBuffer.LastGCode = copyFrom._parserBuffer.LastGCode;
     }
 
@@ -406,6 +407,7 @@ public class CodeFile(
                                 {
                                     Position = state.FilePosition ?? 0;
                                     _parserBuffer.LineNumber = state.LineNumber;
+                                    _parserBuffer.LineNumbersStarted = state.LineNumbersStarted;
                                     state.ProcessBlock = true;
                                     state.ContinueLoop = false;
                                     state.Iterations++;
@@ -495,7 +497,7 @@ public class CodeFile(
                         logger.LogDebug("Evaluating {Keyword} block", code.Keyword);
                         if (code.Keyword != KeywordType.While || codeBlock is null || codeBlock.FilePosition != code.FilePosition)
                         {
-                            codeBlock = new CodeBlock(code, false);
+                            codeBlock = new CodeBlock(code, false) { LineNumbersStarted = _parserBuffer.LineNumbersStarted };
                             lock (_codeBlocks)
                             {
                                 _codeBlocks.Push(codeBlock);

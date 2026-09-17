@@ -72,6 +72,16 @@ not checked and a `*` in them keeps its usual meaning. Only `ParseAsync` verifie
 every path that executes codes; the synchronous `Code.Parse(TextReader, Code)` (used by `new Code(string)`,
 the file info footer scan and `DuetHttpClient`) strips the block without verifying it.
 
+Job and macro files (`CodeFile`) additionally set `CodeParserBuffer.EnforceLineNumbers` to detect corrupted files.
+The first numbered line of a file may use any number. From then on every line (blank, comment and unnumbered
+lines included) increments the expected number, and a numbered line with a different number throws a
+`CodeParserException` such as `Expected line number N5 but got N6`. Once a numbered line of the file carries a
+checksum or CRC, every following numbered line with content must carry one of the same type (`Missing CRC on line N6`).
+Seeking to an arbitrary position (pause/resume, `M26`, forked files) clears the expected number until the next numbered
+line, while restarting a `while` loop restores the number of the loop line. The required checksum type is kept across
+seeks. `M110` cannot reset the expected number (RepRapFirmware does not implement it either) because DSF reads files
+ahead of execution. Code streams and other inputs do not check line numbers.
+
 ```mermaid
 flowchart TD
     IPC["IPC socket clients<br/>(see ipc.md)"] --> CSTREAM["CodeStream<br/>(streamed lines)"]

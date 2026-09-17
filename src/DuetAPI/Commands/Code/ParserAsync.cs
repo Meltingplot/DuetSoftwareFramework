@@ -102,6 +102,21 @@ public partial class Code
             try
             {
                 line.Verify();
+
+                if (buffer.EnforceLineNumbers && line.HasContent)
+                {
+                    if (buffer.RequiredChecksumType == LineChecksumType.None)
+                    {
+                        buffer.RequiredChecksumType = line.ChecksumType;
+                    }
+                    else if (line.ChecksumType != buffer.RequiredChecksumType)
+                    {
+                        string expected = (buffer.RequiredChecksumType == LineChecksumType.Crc) ? "CRC" : "checksum";
+                        throw new CodeParserException((line.ChecksumType == LineChecksumType.None)
+                            ? $"Missing {expected} on line N{line.GetLineNumber()}"
+                            : $"Expected {expected} on line N{line.GetLineNumber()} because the previous numbered lines use one");
+                    }
+                }
             }
             catch
             {
@@ -112,6 +127,7 @@ public partial class Code
         }
 
         char c;
+        bool lineNumberProcessed = false;
         do
         {
             // Read the next character
@@ -131,11 +147,6 @@ public partial class Code
             }
             result.Length++;
 
-            if (c == '\n' && !state.HadLineNumber && buffer.LineNumber is not null)
-            {
-                // Keep track of the line number (if possible)
-                buffer.LineNumber++;
-            }
             if (c == '\r')
             {
                 // Ignore CR
@@ -197,12 +208,26 @@ public partial class Code
             {
                 buffer.EnforcingAbsolutePosition = true;
             }
-            if (result.Flags.HasFlag(CodeFlags.HasExplicitLineNumber))
+            if (!lineNumberProcessed && result.Flags.HasFlag(CodeFlags.HasExplicitLineNumber))
             {
+                lineNumberProcessed = true;
+                if (buffer.EnforceLineNumbers && buffer.LineNumbersStarted && result.LineNumber != buffer.LineNumber)
+                {
+                    long? expected = buffer.LineNumber;
+                    buffer.InvalidateData();
+                    throw new CodeParserException($"Expected line number N{expected} but got N{result.LineNumber}");
+                }
                 buffer.LineNumber = result.LineNumber;
+                buffer.LineNumbersStarted = true;
             }
         }
         while (c != '\n');
+
+        // Keep track of the line number (if possible)
+        if (c == '\n' && buffer.LineNumber is not null)
+        {
+            buffer.LineNumber++;
+        }
 
         // Reset the buffer state once the line has been fully read
         if (c is '\n' or '\0')
