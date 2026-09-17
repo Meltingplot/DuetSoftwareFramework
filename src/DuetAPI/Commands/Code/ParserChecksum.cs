@@ -8,7 +8,7 @@ public partial class Code
     /// Storage for a line that starts with a line number (N...)
     /// </summary>
     /// <remarks>
-    /// Like RepRapFirmware, the parsers read such lines as a whole so that a trailing checksum or CRC block can be
+    /// Like RepRapFirmware, the asynchronous parser reads such lines as a whole so that a trailing checksum or CRC block can be
     /// verified before any code of the line is returned. Only the checksum block is removed from the line, so the
     /// stored bytes still map 1:1 to the original stream positions
     /// </remarks>

@@ -1228,8 +1228,6 @@ public class Code
     {
         foreach (string line in new[] { "N1 G1 X10*81", "N1 G1 X10*34670", "N1 G1 X10*1234", "N1 G1 X10*", "N1 G1 X10*123456", "N1 M117 Hello*World*80" })
         {
-            Assert.Catch<CodeParserException>(() => new DuetAPI.Commands.Code(line), line);
-
             using MemoryStream stream = new(Encoding.UTF8.GetBytes(line));
             CodeParserBuffer buffer = new(128, false);
             DuetAPI.Commands.Code result = new();
@@ -1238,6 +1236,42 @@ public class Code
 
         // Lines without a line number are not affected
         Assert.DoesNotThrow(() => new DuetAPI.Commands.Code("G1 X10 ; *81"));
+    }
+
+    [Test]
+    public void ParseLineChecksumSynchronously()
+    {
+        // The synchronous parser strips the checksum or CRC block without verifying it
+        foreach (string line in new[] { "N1 G1 X10*80", "N1 G1 X10*81", "N1 G1 X10*34670", "N1 G1 X10*1234", "N1 G1 X10*", "N1 G1 X10*80 ; comment\r\n" })
+        {
+            DuetAPI.Commands.Code code = new(line);
+            Assert.That(code.LineNumber, Is.EqualTo(1), line);
+            Assert.That(code.Type, Is.EqualTo(CodeType.GCode), line);
+            Assert.That(code.MajorNumber, Is.EqualTo(1), line);
+            Assert.That(code.Parameters.Count, Is.EqualTo(1), line);
+            Assert.That(code.GetInt('X'), Is.EqualTo(10), line);
+            Assert.That(code.Comment, Is.Null, line);
+            Assert.That(code.Flags.HasFlag(CodeFlags.IsLastCode), Is.True, line);
+        }
+
+        // Expressions, quoted strings and comments keep their asterisks
+        DuetAPI.Commands.Code expressionCode = new("N7 G1 X{2*3}*99");
+        Assert.That((string)expressionCode.Parameters[0], Is.EqualTo("{2*3}"));
+        DuetAPI.Commands.Code stringCode = new("N1 M117 \"a*b\"*99");
+        Assert.That((string)stringCode.Parameters[0], Is.EqualTo("a*b"));
+        DuetAPI.Commands.Code commentCode = new("N1 G1 X10 ;c*5");
+        Assert.That(commentCode.Comment, Is.EqualTo("c*5"));
+
+        // The whole checksum block counts towards the code length and the next line is read normally
+        using StringReader reader = new("N1 G1 X10*80\nG1 Y5\n");
+        DuetAPI.Commands.Code result = new();
+        Assert.That(DuetAPI.Commands.Code.Parse(reader, result), Is.True);
+        Assert.That(result.GetInt('X'), Is.EqualTo(10));
+        Assert.That(result.Length, Is.EqualTo(13));
+        result.Reset();
+        Assert.That(DuetAPI.Commands.Code.Parse(reader, result), Is.True);
+        Assert.That(result.LineNumber, Is.Null);
+        Assert.That(result.GetInt('Y'), Is.EqualTo(5));
     }
 
     [Test]
@@ -1287,8 +1321,9 @@ public class Code
             Assert.That(code.FilePosition, Is.EqualTo(32));
         }
 
-        // The synchronous parser cannot hand out the remaining codes of a numbered line
-        Assert.Catch<CodeParserException>(() => new DuetAPI.Commands.Code("N1 G91 G1 X10*63"));
+        // The synchronous parser returns the first code of a numbered line without reading the rest of the line
+        DuetAPI.Commands.Code firstCode = new("N1 G91 G1 X10*63");
+        Assert.That(firstCode.MajorNumber, Is.EqualTo(91));
     }
 
     [Test]

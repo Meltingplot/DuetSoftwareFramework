@@ -68,7 +68,9 @@ from `N` up to but excluding the `*`. The parser reads such a line as a whole be
 of its codes (`Code.VerifyLineChecksum` in `ParserChecksum.cs`) and throws a `CodeParserException`
 if the block is malformed or does not match. That exception aborts a running job or macro and is
 reported as an error for interactive input; no resend is requested. Lines without a line number are
-not checked and a `*` in them keeps its usual meaning.
+not checked and a `*` in them keeps its usual meaning. Only `ParseAsync` verifies the block, which covers
+every path that executes codes; the synchronous `Code.Parse(TextReader, Code)` (used by `new Code(string)`,
+the file info footer scan and `DuetHttpClient`) strips the block without verifying it.
 
 ```mermaid
 flowchart TD

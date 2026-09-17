@@ -185,11 +185,9 @@ public class FileInfoParser(CodeFactory codeFactory, Expressions expressions, Fi
 
             // See what codes to deal with
             bool gotNewInfo = false;
-            byte[] lineBytes = Encoding.UTF8.GetBytes(readData.Line);
-            await using (MemoryStream lineStream = new(lineBytes))
+            using (StringReader stringReader = new(readData.Line))
             {
-                CodeParserBuffer lineParserBuffer = new(Math.Max(lineBytes.Length, 1), false);
-                while (lineParserBuffer.GetPosition(lineStream) < lineStream.Length && await DuetAPI.Commands.Code.ParseAsync(lineStream, code, lineParserBuffer, cancellationToken))
+                while (DuetAPI.Commands.Code.Parse(stringReader, code))
                 {
                     if (code.Type == CodeType.GCode && partialFileInfo.Height == 0)
                     {
