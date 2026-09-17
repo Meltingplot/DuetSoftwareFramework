@@ -757,6 +757,12 @@
             Check if the upcoming character starts another G/M/T-code while the current one is complete
             </summary>
         </member>
+        <member name="M:DuetAPI.Commands.Code.IsChecksumStart(DuetAPI.Commands.Code.ParserState)">
+            <summary>
+            Check if a '*' character starts the checksum or CRC block of a numbered line.
+            This follows the same rules as <see cref="M:DuetAPI.Commands.Code.VerifyLineChecksum(System.Byte[],System.Int32)"/>
+            </summary>
+        </member>
         <member name="M:DuetAPI.Commands.Code.FinishCode(DuetAPI.Commands.Code.ParserState,DuetAPI.Commands.Code,System.Char)">
             <summary>
             Finalize a parsed code after the input line or stream ended
@@ -777,6 +783,7 @@
             - does not set the corresponding flag for G53 after the first code on a line
             - sets the indentation level only for the first code in a line
             - does not support Fanuc or LaserWeb styles
+            - strips the checksum or CRC block of a numbered line without verifying it, and only if the block follows the code that holds the line number
             </remarks>
         </member>
         <member name="M:DuetAPI.Commands.Code.AddParameter(DuetAPI.Commands.Code,System.Char,System.String,System.Boolean,System.Boolean)">
@@ -812,6 +819,106 @@
             <returns>Whether anything could be read</returns>
             <exception cref="T:System.ArgumentException">BOM from start of file showed that this file is neither ASCII nor UTF-8</exception>
             <exception cref="T:DuetAPI.CodeParserException">Thrown if the code contains errors like unterminated strings or unterminated comments</exception>
+        </member>
+        <member name="T:DuetAPI.Commands.Code.NumberedLine">
+            <summary>
+            Storage for a line that starts with a line number (N...)
+            </summary>
+            <remarks>
+            Like RepRapFirmware, the asynchronous parser reads such lines as a whole so that a trailing checksum or CRC block can be
+            verified before any code of the line is returned. Only the checksum block is removed from the line, so the
+            stored bytes still map 1:1 to the original stream positions
+            </remarks>
+        </member>
+        <member name="F:DuetAPI.Commands.Code.NumberedLine.Content">
+            <summary>
+            Bytes of the line following the leading 'N' character, including the trailing NL (if any)
+            </summary>
+        </member>
+        <member name="F:DuetAPI.Commands.Code.NumberedLine.Length">
+            <summary>
+            Number of valid bytes in <see cref="F:DuetAPI.Commands.Code.NumberedLine.Content"/> after the checksum block has been removed
+            </summary>
+        </member>
+        <member name="F:DuetAPI.Commands.Code.NumberedLine.Pointer">
+            <summary>
+            Index of the next byte to read
+            </summary>
+        </member>
+        <member name="F:DuetAPI.Commands.Code.NumberedLine.StartPosition">
+            <summary>
+            Stream position of the first byte in <see cref="F:DuetAPI.Commands.Code.NumberedLine.Content"/>
+            </summary>
+        </member>
+        <member name="F:DuetAPI.Commands.Code.NumberedLine.StrippedBytes">
+            <summary>
+            Number of bytes that were removed from the end of the line. This is added to the length of the last code on the line
+            </summary>
+        </member>
+        <member name="P:DuetAPI.Commands.Code.NumberedLine.HasData">
+            <summary>
+            Whether there are unread bytes left
+            </summary>
+        </member>
+        <member name="M:DuetAPI.Commands.Code.NumberedLine.Reset">
+            <summary>
+            Clear the line
+            </summary>
+        </member>
+        <member name="M:DuetAPI.Commands.Code.NumberedLine.Append(System.Byte)">
+            <summary>
+            Append a byte to the line
+            </summary>
+            <param name="b">Byte to append</param>
+        </member>
+        <member name="M:DuetAPI.Commands.Code.NumberedLine.Verify">
+            <summary>
+            Verify the checksum or CRC block of the line (if present) and remove it from the line
+            </summary>
+            <exception cref="T:DuetAPI.CodeParserException">Checksum or CRC is malformed or does not match</exception>
+        </member>
+        <member name="M:DuetAPI.Commands.Code.NumberedLine.Read(DuetAPI.Commands.Code)">
+            <summary>
+            Read the next byte
+            </summary>
+            <param name="code">Code being read. The removed checksum block is added to its length once the line is exhausted</param>
+            <returns>Next byte</returns>
+        </member>
+        <member name="F:DuetAPI.Commands.Code.Crc16Table">
+            <summary>
+            Lookup table for CRC-16/XMODEM (polynomial 0x1021, initial value 0, no reflection). This is the CRC
+            RepRapFirmware uses for CRC-protected lines of G-code
+            </summary>
+        </member>
+        <member name="M:DuetAPI.Commands.Code.ComputeLineCrc(System.ReadOnlySpan{System.Byte})">
+            <summary>
+            Compute the CRC-16/XMODEM of a byte sequence as used by RepRapFirmware for CRC-protected lines
+            </summary>
+            <param name="data">Data to compute the CRC for (typically the line from N up to but excluding the '*' character)</param>
+            <returns>CRC-16</returns>
+        </member>
+        <member name="M:DuetAPI.Commands.Code.ComputeLineChecksum(System.ReadOnlySpan{System.Byte})">
+            <summary>
+            Compute the legacy XOR checksum of a byte sequence as used by RepRapFirmware for checksum-protected lines
+            </summary>
+            <param name="data">Data to compute the checksum for (typically the line from N up to but excluding the '*' character)</param>
+            <returns>Checksum</returns>
+        </member>
+        <member name="M:DuetAPI.Commands.Code.VerifyLineChecksum(System.Byte[],System.Int32)">
+            <summary>
+            Verify the checksum or CRC block of a line that starts with a line number
+            </summary>
+            <param name="line">Buffer holding the line content that follows the leading 'N' character</param>
+            <param name="length">Number of bytes of the line in the buffer, excluding the line terminator</param>
+            <returns>Number of bytes at the end of the line that make up the checksum block (0 if there is none)</returns>
+            <exception cref="T:DuetAPI.CodeParserException">Checksum or CRC is malformed or does not match</exception>
+            <remarks>
+            This mirrors the rules of the StringParser in RepRapFirmware:
+            - The checksum covers every byte from 'N' up to but excluding the '*' character (CR is not included)
+            - A '*' outside of quoted strings, curly braces and comments starts the checksum block. Everything after it is dropped
+            - 1 to 3 decimal digits are an XOR checksum, exactly 5 decimal digits are a CRC-16. Other lengths are invalid
+            - Lines without any content between the line number and the '*' are not verified
+            </remarks>
         </member>
         <member name="M:DuetAPI.Commands.Code.UpdateFromJson(System.Text.Json.JsonElement)">
             <summary>
@@ -1275,6 +1382,11 @@
         <member name="F:DuetAPI.Commands.CodeParserBuffer.Size">
             <summary>
             How many bytes are available for reading
+            </summary>
+        </member>
+        <member name="F:DuetAPI.Commands.CodeParserBuffer.Line">
+            <summary>
+            Numbered line (N...) that has been read ahead so that its checksum or CRC could be verified. Null if none was needed yet
             </summary>
         </member>
         <member name="M:DuetAPI.Commands.CodeParserBuffer.InvalidateData">
