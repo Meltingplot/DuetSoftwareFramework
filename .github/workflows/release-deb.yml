@@ -47,9 +47,12 @@ jobs:
             exit 1
           fi
 
+      # Full history and all tags, so the previous release tag can be found for the changelog
       - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          fetch-tags: true
 
       # The package build clones DuetWebControl from the branch of the same name as the one checked
       # out here, and a tag checkout has no branch. Put the tag on the development branch its version
@@ -94,12 +97,27 @@ jobs:
           ls -l out/binary-*/*.deb
 
       # One asset per package. Prereleases (anything with a hyphen in the version) are marked as such.
-      # If the release already exists, e.g. after a re-run, the assets are replaced
+      # The notes always carry the changelog: the message of an annotated tag (a lightweight tag has
+      # none, its contents would only be the commit message) followed by the pull requests merged since
+      # the previous version tag. If the release already exists, e.g. after a re-run, the notes are
+      # rewritten and the assets are replaced
       - name: Publish release
         run: |
-          notes="$(git tag -l --format='%(contents)' "$TAG")"
+          previous="$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$TAG^" 2>/dev/null || true)"
+          changelog="$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$TAG" ${previous:+-f previous_tag_name="$previous"} --jq .body)"
+          if [ -z "$changelog" ]; then
+            echo "Could not generate the changelog for $TAG"
+            exit 1
+          fi
+          notes=""
+          if [ "$(git cat-file -t "$TAG")" = "tag" ]; then
+            notes="$(git tag -l --format='%(contents)' "$TAG")"
+          fi
           {
             echo "${notes:-DSF $VERSION}"
+            echo
+            echo "$changelog"
             echo
             echo "Unsigned Debian packages built from \`$(git rev-parse --short HEAD)\` by the release-deb workflow."
           } > release-notes.md
@@ -107,7 +125,9 @@ jobs:
           case "$VERSION" in
             *-*) prerelease="--prerelease" ;;
           esac
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file release-notes.md
+          else
             gh release create "$TAG" $prerelease --title "DSF $VERSION" --notes-file release-notes.md
           fi
           gh release upload "$TAG" --clobber pkg/out/binary-*/*.deb
