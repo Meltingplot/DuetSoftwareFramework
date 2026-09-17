@@ -1234,6 +1234,15 @@ public class Code
             Assert.CatchAsync<CodeParserException>(async () => await DuetAPI.Commands.Code.ParseAsync(stream, result, buffer), line);
         }
 
+        // Comment-only lines are not verified
+        foreach (string line in new[] { "N1 (comment)*99", "N1 (comment)*12345" })
+        {
+            using MemoryStream stream = new(Encoding.UTF8.GetBytes(line));
+            CodeParserBuffer buffer = new(128, false);
+            DuetAPI.Commands.Code result = new();
+            Assert.DoesNotThrowAsync(async () => await DuetAPI.Commands.Code.ParseAsync(stream, result, buffer), line);
+        }
+
         // Lines without a line number are not affected
         Assert.DoesNotThrow(() => new DuetAPI.Commands.Code("G1 X10 ; *81"));
     }
@@ -1324,6 +1333,146 @@ public class Code
         // The synchronous parser returns the first code of a numbered line without reading the rest of the line
         DuetAPI.Commands.Code firstCode = new("N1 G91 G1 X10*63");
         Assert.That(firstCode.MajorNumber, Is.EqualTo(91));
+    }
+
+    [Test]
+    public async Task ParseLineNumberAfterNumberedLine()
+    {
+        // Lines following a numbered line continue counting from its line number
+        byte[] codeBytes = Encoding.UTF8.GetBytes("N5 G1 X1\nG1 Y2\nN7 G91 G1 Z3\nG1 Z4\n");
+        await using MemoryStream memoryStream = new(codeBytes);
+        CodeParserBuffer buffer = new(128, false);
+        DuetAPI.Commands.Code code = new();
+        foreach (long expectedLineNumber in new long[] { 5, 6, 7, 7, 8 })
+        {
+            code.Reset();
+            Assert.That(await DuetAPI.Commands.Code.ParseAsync(memoryStream, code, buffer), Is.True);
+            Assert.That(code.LineNumber, Is.EqualTo(expectedLineNumber));
+        }
+    }
+
+    private static string WithChecksum(string line) => $"{line}*{DuetAPI.Commands.Code.ComputeLineChecksum(Encoding.ASCII.GetBytes(line))}";
+
+    private static string WithCrc(string line) => $"{line}*{DuetAPI.Commands.Code.ComputeLineCrc(Encoding.ASCII.GetBytes(line)):D5}";
+
+    private static async Task<List<DuetAPI.Commands.Code>> ParseEnforcedAsync(string content, CodeParserBuffer? buffer = null)
+    {
+        await using MemoryStream memoryStream = new(Encoding.UTF8.GetBytes(content));
+        buffer ??= new(128, true) { EnforceLineNumbers = true };
+        List<DuetAPI.Commands.Code> codes = [];
+        while (true)
+        {
+            DuetAPI.Commands.Code code = new();
+            if (!await DuetAPI.Commands.Code.ParseAsync(memoryStream, code, buffer) && buffer.GetPosition(memoryStream) >= memoryStream.Length)
+            {
+                break;
+            }
+            codes.Add(code);
+        }
+        return codes;
+    }
+
+    [Test]
+    public async Task ParseLineNumberSequence()
+    {
+        // Numbering may start at any line and with any value. Blank, comment and unnumbered lines count too
+        List<DuetAPI.Commands.Code> codes = await ParseEnforcedAsync("; header\nG28\nN10 G1 X1\n\n; comment\nG1 Y1\nN14 G91 G1 Z1\nN15 M400\n");
+        Assert.That(codes.FindAll(code => code.Type != CodeType.None).ConvertAll(code => code.LineNumber), Is.EqualTo(new long?[] { 1, 2, 10, 12, 13, 14, 14, 15 }));
+
+        // Duplicate, skipped and lower line numbers are rejected
+        foreach (string content in new[] { "N1 G1 X1\nN1 G1 X2\n", "N1 G1 X1\nN3 G1 X2\n", "N5 G1 X1\nN4 G1 X2\n", "N1 G1 X1\nG1 X2\nN2 G1 X3\n" })
+        {
+            Assert.CatchAsync<CodeParserException>(async () => await ParseEnforcedAsync(content), content);
+        }
+
+        // Example of a corrupted macro file. The added line lacks the CRC used by the other lines
+        const string macro = "N1 var bed_temp = 90.0 *21270 ; Bed temperature in °C\nN2 var tool_temp = 180.0 *02760 ; Tool temperature in °C\n\nN4 var wait_for_heatsoak = true *37938\n";
+        Assert.DoesNotThrowAsync(async () => await ParseEnforcedAsync(macro));
+        CodeParserException? e = Assert.CatchAsync<CodeParserException>(async () => await ParseEnforcedAsync(macro + "N6 var test = 0\n"));
+        Assert.That(e?.Message, Is.EqualTo("Missing CRC on line N6"));
+        e = Assert.CatchAsync<CodeParserException>(async () => await ParseEnforcedAsync(macro + WithCrc("N6 var test = 0 ") + "\n"));
+        Assert.That(e?.Message, Is.EqualTo("Expected line number N5 but got N6"));
+
+        // Without enforcement the line numbers are taken as they are
+        Assert.DoesNotThrowAsync(async () => await ParseEnforcedAsync("N1 G1 X1\nN1 G1 X2\nN7 G1 X3\n", new CodeParserBuffer(128, true)));
+    }
+
+    [Test]
+    public async Task ParseLineNumberSequenceAfterSeek()
+    {
+        const string content = "N1 G1 X1\nN2 G1 X2\nN3 G1 X3\n";
+        await using MemoryStream memoryStream = new(Encoding.UTF8.GetBytes(content));
+        CodeParserBuffer buffer = new(128, true) { EnforceLineNumbers = true };
+        DuetAPI.Commands.Code code = new();
+
+        Assert.That(await DuetAPI.Commands.Code.ParseAsync(memoryStream, code, buffer), Is.True);
+        Assert.That(buffer.LineNumbersStarted, Is.True);
+        long? loopLineNumber = code.LineNumber;
+        code.Reset();
+        Assert.That(await DuetAPI.Commands.Code.ParseAsync(memoryStream, code, buffer), Is.True);
+
+        // Seeking to an arbitrary position resynchronises on the next numbered line
+        memoryStream.Seek(content.IndexOf("N3"), SeekOrigin.Begin);
+        buffer.Invalidate();
+        Assert.That(buffer.LineNumbersStarted, Is.False);
+        code.Reset();
+        Assert.That(await DuetAPI.Commands.Code.ParseAsync(memoryStream, code, buffer), Is.True);
+        Assert.That(code.LineNumber, Is.EqualTo(3));
+
+        // Restarting a loop restores the line number and checks the next line against it
+        memoryStream.Seek(0, SeekOrigin.Begin);
+        buffer.Invalidate();
+        buffer.LineNumber = loopLineNumber;
+        buffer.LineNumbersStarted = true;
+        code.Reset();
+        Assert.That(await DuetAPI.Commands.Code.ParseAsync(memoryStream, code, buffer), Is.True);
+        Assert.That(code.LineNumber, Is.EqualTo(1));
+
+        memoryStream.Seek(0, SeekOrigin.Begin);
+        buffer.Invalidate();
+        buffer.LineNumber = 2;
+        buffer.LineNumbersStarted = true;
+        code.Reset();
+        Assert.CatchAsync<CodeParserException>(async () => await DuetAPI.Commands.Code.ParseAsync(memoryStream, code, buffer));
+    }
+
+    [Test]
+    public async Task ParseRequiredLineChecksumType()
+    {
+        // Numbered lines before the first checksum do not need one, XOR checksums and CRCs may be used on their own
+        foreach (string content in new[]
+        {
+            $"N1 G1 X1\n{WithChecksum("N2 G1 X2")}\n{WithChecksum("N3 G1 X3")}\n",
+            $"{WithCrc("N1 G1 X1")}\n{WithCrc("N2 G1 X2")}\n",
+            // Blank, comment-only, unnumbered and empty numbered lines do not need a checksum
+            $"{WithCrc("N1 G1 X1")}\n\nN3 ; comment\nG4 P1\nN5\nN6 (comment)\nN7 (one) (two) ; three\n{WithCrc("N8 G1 X2")}\n"
+        })
+        {
+            Assert.DoesNotThrowAsync(async () => await ParseEnforcedAsync(content), content);
+        }
+
+        // Once a checksum type has been used, all following numbered lines must use it
+        foreach (string content in new[]
+        {
+            $"{WithChecksum("N1 G1 X1")}\nN2 G1 X2\n",
+            $"{WithCrc("N1 G1 X1")}\nN2 G1 X2 ; comment\n",
+            $"{WithCrc("N1 G1 X1")}\nN2 (comment) G1 X2\n",
+            $"{WithCrc("N1 G1 X1")}\n{WithChecksum("N2 G1 X2")}\n",
+            $"{WithChecksum("N1 G1 X1")}\n{WithCrc("N2 G1 X2")}\n"
+        })
+        {
+            Assert.CatchAsync<CodeParserException>(async () => await ParseEnforcedAsync(content), content);
+        }
+
+        // The required checksum type is kept when the buffer is invalidated
+        CodeParserBuffer buffer = new(128, true) { EnforceLineNumbers = true };
+        await ParseEnforcedAsync($"{WithCrc("N1 G1 X1")}\n", buffer);
+        buffer.Invalidate();
+        Assert.That(buffer.RequiredChecksumType, Is.EqualTo(LineChecksumType.Crc));
+        Assert.CatchAsync<CodeParserException>(async () => await ParseEnforcedAsync("N7 G1 X1\n", buffer));
+
+        // Without enforcement checksums remain optional
+        Assert.DoesNotThrowAsync(async () => await ParseEnforcedAsync($"{WithCrc("N1 G1 X1")}\nN2 G1 X2\n{WithChecksum("N3 G1 X3")}\n", new CodeParserBuffer(128, true)));
     }
 
     [Test]

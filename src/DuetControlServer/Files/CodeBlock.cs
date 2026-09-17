@@ -33,6 +33,7 @@ public record CodeBlock
         Indent = original.Indent;
         FilePosition = original.FilePosition;
         LineNumber = original.LineNumber;
+        LineNumbersStarted = original.LineNumbersStarted;
         Keyword = original.Keyword;
         ProcessBlock = original.ProcessBlock;
         SeenCodes = original.SeenCodes;
@@ -59,6 +60,11 @@ public record CodeBlock
     /// Line number where the block started
     /// </summary>
     public long? LineNumber { get; }
+
+    /// <summary>
+    /// Whether line numbers were checked when the block started. This is restored together with the line number when a loop is restarted
+    /// </summary>
+    public bool LineNumbersStarted { get; init; }
 
     /// <summary>
     /// Keyword starting the block

@@ -67,6 +67,26 @@ public sealed class CodeParserBuffer(int bufferSize, bool isFile)
     public long? LineNumber = isFile ? (long?)1 : null;
 
     /// <summary>
+    /// Enforce consecutive line numbers and the same checksum type on all numbered lines.
+    /// This is meant to detect corrupted job and macro files
+    /// </summary>
+    /// <remarks>
+    /// The first numbered line sets the line number to expect and every following line increments it, no matter if it is numbered or not.
+    /// Once a numbered line has a checksum or CRC, all following numbered lines with content must have one of the same type
+    /// </remarks>
+    public bool EnforceLineNumbers;
+
+    /// <summary>
+    /// Whether a numbered line has been read since the last invalidation, so that the following line numbers are checked
+    /// </summary>
+    public bool LineNumbersStarted;
+
+    /// <summary>
+    /// Checksum type that all numbered lines with content must have. This is set by the first line that has one and it is not reset on invalidation
+    /// </summary>
+    public LineChecksumType RequiredChecksumType;
+
+    /// <summary>
     /// Last major G-code to repeat
     /// </summary>
     public int LastGCode = -1;
@@ -84,6 +104,7 @@ public sealed class CodeParserBuffer(int bufferSize, bool isFile)
         InvalidateData();
         Pointer = Size = 0;
         LineNumber = null;
+        LineNumbersStarted = false;
         LastGCode = -1;
     }
 
