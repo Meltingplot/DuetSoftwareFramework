@@ -1234,6 +1234,15 @@ public class Code
             Assert.CatchAsync<CodeParserException>(async () => await DuetAPI.Commands.Code.ParseAsync(stream, result, buffer), line);
         }
 
+        // Comment-only lines are not verified
+        foreach (string line in new[] { "N1 (comment)*99", "N1 (comment)*12345" })
+        {
+            using MemoryStream stream = new(Encoding.UTF8.GetBytes(line));
+            CodeParserBuffer buffer = new(128, false);
+            DuetAPI.Commands.Code result = new();
+            Assert.DoesNotThrowAsync(async () => await DuetAPI.Commands.Code.ParseAsync(stream, result, buffer), line);
+        }
+
         // Lines without a line number are not affected
         Assert.DoesNotThrow(() => new DuetAPI.Commands.Code("G1 X10 ; *81"));
     }
@@ -1436,7 +1445,7 @@ public class Code
             $"N1 G1 X1\n{WithChecksum("N2 G1 X2")}\n{WithChecksum("N3 G1 X3")}\n",
             $"{WithCrc("N1 G1 X1")}\n{WithCrc("N2 G1 X2")}\n",
             // Blank, comment-only, unnumbered and empty numbered lines do not need a checksum
-            $"{WithCrc("N1 G1 X1")}\n\nN3 ; comment\nG4 P1\nN5\n{WithCrc("N6 G1 X2")}\n"
+            $"{WithCrc("N1 G1 X1")}\n\nN3 ; comment\nG4 P1\nN5\nN6 (comment)\nN7 (one) (two) ; three\n{WithCrc("N8 G1 X2")}\n"
         })
         {
             Assert.DoesNotThrowAsync(async () => await ParseEnforcedAsync(content), content);
@@ -1447,6 +1456,7 @@ public class Code
         {
             $"{WithChecksum("N1 G1 X1")}\nN2 G1 X2\n",
             $"{WithCrc("N1 G1 X1")}\nN2 G1 X2 ; comment\n",
+            $"{WithCrc("N1 G1 X1")}\nN2 (comment) G1 X2\n",
             $"{WithCrc("N1 G1 X1")}\n{WithChecksum("N2 G1 X2")}\n",
             $"{WithChecksum("N1 G1 X1")}\n{WithCrc("N2 G1 X2")}\n"
         })

@@ -251,7 +251,8 @@ public partial class Code
     /// - The checksum covers every byte from 'N' up to but excluding the '*' character (CR is not included)
     /// - A '*' outside of quoted strings, curly braces and comments starts the checksum block. Everything after it is dropped
     /// - 1 to 3 decimal digits are an XOR checksum, exactly 5 decimal digits are a CRC-16. Other lengths are invalid
-    /// - Lines without any content between the line number and the '*' are not verified
+    /// - Lines without any content between the line number and the '*' are not verified. Unlike RepRapFirmware in FFF mode,
+    ///   encapsulated comments are not content either, so comment-only lines are never verified
     /// </remarks>
     internal static int VerifyLineChecksum(byte[] line, int length, out LineChecksumType checksumType, out bool hasContent)
     {
@@ -309,7 +310,8 @@ public partial class Code
                     break;
                 }
 
-                if (!inLineNumber && b != ' ' && b != '\t')
+                // Comments are not content, so lines holding only comments are neither verified nor required to have a checksum
+                if (!inLineNumber && !inEncapsulatedComment && b != ' ' && b != '\t')
                 {
                     hasContent = true;
                 }

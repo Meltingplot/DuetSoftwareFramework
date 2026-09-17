@@ -77,6 +77,7 @@ The first numbered line of a file may use any number. From then on every line (b
 lines included) increments the expected number, and a numbered line with a different number throws a
 `CodeParserException` such as `Expected line number N5 but got N6`. Once a numbered line of the file carries a
 checksum or CRC, every following numbered line with content must carry one of the same type (`Missing CRC on line N6`).
+Lines that hold only comments (`;` or `(...)`) are neither verified nor required to carry a checksum.
 Seeking to an arbitrary position (pause/resume, `M26`, forked files) clears the expected number until the next numbered
 line, while restarting a `while` loop restores the number of the loop line. The required checksum type is kept across
 seeks. `M110` cannot reset the expected number (RepRapFirmware does not implement it either) because DSF reads files
