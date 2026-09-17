@@ -731,6 +731,17 @@ public partial class Code
     }
 
     /// <summary>
+    /// Check if a '*' character starts the checksum or CRC block of a numbered line.
+    /// This follows the same rules as <see cref="VerifyLineChecksum"/>
+    /// </summary>
+    private static bool IsChecksumStart(ParserState state)
+    {
+        return (state.IsLineNumber || state.HadLineNumber) &&
+            !state.InFinalComment && !state.InEncapsulatedComment && !state.InDoubleQuotes &&
+            state.NumCurlyBraces == 0 && state.NumRoundBraces == 0;
+    }
+
+    /// <summary>
     /// Finalize a parsed code after the input line or stream ended
     /// </summary>
     /// <exception cref="CodeParserException">Thrown if the code is malformed</exception>
@@ -802,6 +813,7 @@ public partial class Code
     /// - does not set the corresponding flag for G53 after the first code on a line
     /// - sets the indentation level only for the first code in a line
     /// - does not support Fanuc or LaserWeb styles
+    /// - strips the checksum or CRC block of a numbered line without verifying it, and only if the block follows the code that holds the line number
     /// </remarks>
     public static bool Parse(TextReader reader, Code result)
     {
@@ -877,6 +889,18 @@ public partial class Code
                 pendingPointer--;
                 result.Length--;
                 break;
+            }
+
+            // Skip the checksum or CRC block of a numbered line without verifying it and treat it like the end of the line
+            if (c == '*' && IsChecksumStart(state))
+            {
+                do
+                {
+                    b = ReadByte();
+                    result.Length++;
+                }
+                while (b >= 0 && b != '\n');
+                c = '\n';
             }
 
             if (ProcessCharacter(state, result, c, PeekChar()))

@@ -61,6 +61,17 @@ codes by the parser in `src/DuetAPI/Commands/Code/Parser.cs` / `ParserAsync.cs`,
 `CodeParserBuffer` to retain state across reads (line number, last G-code for Fanuc-style repetition,
 indentation, `G53` absolute mode).
 
+Lines that start with a line number (`N123 ...`) may end with a checksum block, using the same rules as
+the `StringParser` in standalone RepRapFirmware: `*` followed by 1-3 decimal digits is an XOR checksum,
+`*` followed by exactly 5 decimal digits is a CRC-16/XMODEM (initial value 0). Both cover every byte
+from `N` up to but excluding the `*`. The parser reads such a line as a whole before returning any
+of its codes (`Code.VerifyLineChecksum` in `ParserChecksum.cs`) and throws a `CodeParserException`
+if the block is malformed or does not match. That exception aborts a running job or macro and is
+reported as an error for interactive input; no resend is requested. Lines without a line number are
+not checked and a `*` in them keeps its usual meaning. Only `ParseAsync` verifies the block, which covers
+every path that executes codes; the synchronous `Code.Parse(TextReader, Code)` (used by `new Code(string)`,
+the file info footer scan and `DuetHttpClient`) strips the block without verifying it.
+
 ```mermaid
 flowchart TD
     IPC["IPC socket clients<br/>(see ipc.md)"] --> CSTREAM["CodeStream<br/>(streamed lines)"]
