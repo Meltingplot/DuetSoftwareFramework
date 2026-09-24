@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -261,7 +261,7 @@ public static class Reader
                 result = header.FloatValue;
                 break;
             case DataType.FloatWithDigits:
-                result = Math.Round((decimal)header.FloatValue, numDigits, MidpointRounding.AwayFromZero);
+                result = RoundFloat(header.FloatValue, numDigits);
                 break;
             case DataType.ULong:
             case DataType.Bitmap64:
@@ -607,6 +607,25 @@ public static class Reader
         FileHandleHeader header = MemoryMarshal.Read<FileHandleHeader>(from);
         handle = header.Handle;
         return Marshal.SizeOf<FileHandleHeader>();
+    }
+
+    /// <summary>
+    /// Round a float value to a given number of decimal digits
+    /// </summary>
+    /// <param name="value">Value to round</param>
+    /// <param name="numDigits">Number of decimal digits</param>
+    /// <returns>Rounded value as decimal, or the original value if it cannot be represented as a decimal</returns>
+    private static object RoundFloat(float value, int numDigits)
+    {
+        // decimal cannot hold NaN, +/-inf, or magnitudes beyond ~7.9228e28, and RepRapFirmware may report those
+        // (see its isnan expression function), so pass such values on like a plain float
+        if (!float.IsFinite(value) || MathF.Abs(value) > 7.9e28f)
+        {
+            return value;
+        }
+
+        // Math.Round supports at most 28 decimal digits
+        return Math.Round((decimal)value, Math.Min(numDigits, 28), MidpointRounding.AwayFromZero);
     }
 
     /// <summary>
