@@ -119,7 +119,12 @@ DuetRuntime-version := $(DuetControlServer-version)
 DuetSD-version := $(shell sed -n -r -e "s/^Version:\s+([0-9.]+)$$/\1/p" pkg/deb/duetsd/DEBIAN/control)
 DuetSoftwareFramework-version := $(DuetControlServer-version)
 DuetTools-version := $(DuetControlServer-version)
-DuetWebControl-repo := https://github.com/Duet3D/DuetWebControl.git
+DuetWebControl-repo := https://github.com/Meltingplot/DuetWebControl.git
+# DWC is built from the fork branch of the same name as the DSF branch that is checked
+# out (e.g. v3.7-dev), just like the package build in pkg/common/common.functions does.
+# Branches without a counterpart in the DWC fork (feature branches, detached HEAD) fall
+# back to the development branch this version belongs to, e.g. 3.7.0-rc.2+mp.1 -> v3.7-dev
+DuetWebControl-devbranch := v$(shell xmllint --xpath "string(//Project/PropertyGroup/Version)" src/Directory.Build.props | cut -d. -f1,2)-dev
 # Exception...  This variable has to be dynamically expanded because
 # at the time the Makefile is parsed, DWC may not have been
 # downloaded or updated yet.
@@ -193,14 +198,22 @@ FORCE:
 
 $(CONFIGDIR)/all/publish/DuetWebControl/package.json: FORCE
 	$(CMD_PREFIX)mkdir -p $(dir $(OUTPUTDIR))
-	$(CMD_PREFIX)RECLONE=$$(git -C bin/Debug/all/publish/DuetWebControl remote -v 2>/dev/null | grep -q "chrishamm" && echo true || echo false) ;\
+	$(CMD_PREFIX)DWCBRANCH=$$(git branch --show-current) ;\
+	if [ -z "$${DWCBRANCH}" ] || ! git ls-remote --exit-code --heads $(DuetWebControl-repo) "$${DWCBRANCH}" >/dev/null 2>&1 ; then \
+		DWCBRANCH=$(DuetWebControl-devbranch) ;\
+	fi ;\
+	RECLONE=false ;\
+	if [ -d $(OUTPUTDIR) ] ; then \
+		git -C $(OUTPUTDIR) remote get-url origin 2>/dev/null | grep -qxF "$(DuetWebControl-repo)" || RECLONE=true ;\
+		[ "$$(git -C $(OUTPUTDIR) branch --show-current 2>/dev/null)" = "$${DWCBRANCH}" ] || RECLONE=true ;\
+	fi ;\
 	if [ ! -d $(OUTPUTDIR) ] || $${RECLONE} ; then \
 		if [ -d $(OUTPUTDIR) ] ; then \
 			$(TARGET_PRINTF) CLEAN DuetWebControl "" $(CONFIG) "$(BUILD_ARCH)" ;\
 			rm -rf $(OUTPUTDIR) || : ;\
 		fi ;\
 		$(TARGET_PRINTF) CLONE DuetWebControl "" $(CONFIG) "$(BUILD_ARCH)" ;\
-		git clone -q --single-branch --branch master $(DuetWebControl-repo) $(OUTPUTDIR) ;\
+		git clone -q --single-branch --branch $${DWCBRANCH} $(DuetWebControl-repo) $(OUTPUTDIR) ;\
 	else \
 		$(TARGET_PRINTF) UPDATE DuetWebControl "" $(CONFIG) "all" ;\
 		git -C $(OUTPUTDIR) reset -q --hard HEAD ;\
