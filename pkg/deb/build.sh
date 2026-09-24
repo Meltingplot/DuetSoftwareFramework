@@ -78,8 +78,19 @@ pkg_meta() {
 
 	sed -i "s/TARGET_ARCH/$TARGET_ARCH/g" $DEST_DIR/duetsoftwareframework_$dsfver/DEBIAN/control
 	# The firmware bounds follow the upstream version only: a local build carrying build metadata
-	# (e.g. 3.7.0-rc.1+mp.1) still pairs with the firmware released for its base version
-	basever=$(echo ${dsfver%%+*} | sed -e 's/-/~/g')
+	# (e.g. 3.7.0-rc.1+mp.1) still pairs with the firmware released for its base version.
+	# pkg/firmware-version names another base version instead, for a build whose own base version
+	# has no reprapfirmware package published yet (3.7.0-rc.1 for 3.7.0-rc.2+mp.3)
+	basever=${dsfver%%+*}
+	if [ -f $PKG_DIR/firmware-version ] ; then
+		basever=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' $PKG_DIR/firmware-version)
+		if ! [[ "$basever" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] ; then
+			echo "pkg/firmware-version holds '$basever', expected a version such as 3.7.0-rc.1"
+			exit 1
+		fi
+	fi
+	basever=$(echo $basever | sed -e 's/-/~/g')
+	echo "- Pairing with reprapfirmware $basever"
 	sed -i "s/reprapfirmware (>= DSFVER-1), reprapfirmware (<= DSFVER-999)/reprapfirmware (>= $basever-1), reprapfirmware (<= $basever-999)/" $DEST_DIR/duetsoftwareframework_$dsfver/DEBIAN/control
 	sed -i "s/DSFVER/$(echo $dsfver | sed -e 's/-/~/g')/g" $DEST_DIR/duetsoftwareframework_$dsfver/DEBIAN/control
 	sed -i "s/SDVER/$(echo $sdver | sed -e 's/-/~/g')/g" $DEST_DIR/duetsoftwareframework_$dsfver/DEBIAN/control
