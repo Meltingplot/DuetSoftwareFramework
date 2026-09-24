@@ -1,0 +1,5 @@
+# Base version of the reprapfirmware package the duetsoftwareframework meta package accepts,
+# when it is not the base version of this build. Duet3D publishes DSF and its firmware together;
+# a build of ours can run ahead of that, and then pairs with the firmware of the last published
+# version. Remove this file once reprapfirmware of the build's base version is in the archive.
+3.7.0-rc.1
