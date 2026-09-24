@@ -6,5 +6,5 @@ Suggests: duetwebserver
 Priority: optional
 Maintainer: Duet3D Packaging Authority <pkg@duet3d.com>
 Homepage: https://pkg.duet3d.com
-Vcs-Git: https://github.com/Duet3D/DuetWebControl.git
+Vcs-Git: https://github.com/Meltingplot/DuetWebControl.git
 Description: Official web interface for Duet electronics

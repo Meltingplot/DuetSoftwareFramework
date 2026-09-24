@@ -73,6 +73,7 @@ for p in $PACKAGES ; do
 done
 
 dsfver=$(xmllint --xpath "string(//Project/PropertyGroup/Version)" $SRC_DIR/Directory.Build.props)
+DWC_REPO=${DWC_REPO:-https://github.com/Meltingplot/DuetWebControl.git}
 # We always get the sd version from the deb control file even if we're building an rpm
 sdver=$(cat $PKG_DIR/deb/duetsd/DEBIAN/control | grep Version | cut -d ' ' -f 2)
 
@@ -238,8 +239,17 @@ build_dwc() {
 	echo "Building DWC..."
 
 	if [ ! -d $DEST_DIR/DuetWebControl ] ; then
-		echo "- Cloning repository..."
-		git clone -q --single-branch --branch $(git branch --show-current) https://github.com/Duet3D/DuetWebControl.git $DEST_DIR/DuetWebControl
+		# Build DWC from the fork branch of the same name as the DSF branch that is checked
+		# out. Branches without a counterpart in the DWC fork (feature branches, detached
+		# HEAD) fall back to the development branch this version belongs to,
+		# e.g. 3.7.0-rc.2+mp.1 -> v3.7-dev
+		dwcbranch=$(git branch --show-current)
+		if [ -z "$dwcbranch" ] || ! git ls-remote --exit-code --heads $DWC_REPO "$dwcbranch" > /dev/null 2>&1 ; then
+			dwcbranch=v$(echo $dsfver | cut -d. -f1,2)-dev
+		fi
+
+		echo "- Cloning repository ($dwcbranch)..."
+		git clone -q --single-branch --branch $dwcbranch $DWC_REPO $DEST_DIR/DuetWebControl
 	else
 		echo "- Using existing repository in $DEST_DIR/DuetWebControl"
 	fi
