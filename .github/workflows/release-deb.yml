@@ -54,14 +54,12 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      # The package build clones DuetWebControl from the branch of the same name as the one checked
-      # out here, and a tag checkout has no branch. Put the tag on the development branch its version
-      # belongs to (v3.7.0-rc.1+mp.1 -> v3.7-dev) so the matching DWC sources are picked up
-      - name: Name the checkout after its development branch
+      # The packages carry the DSF version of the sources, and the release is named after it. The DWC
+      # version comes from the ref pinned in pkg/dwc-version, so the tag checkout needs nothing else
+      - name: Read the version
         run: |
           version=$(grep -oPm1 '(?<=<Version>)[^<]+' src/Directory.Build.props)
-          git checkout -q -B "v$(echo "$version" | cut -d. -f1,2)-dev"
-          echo "Building DSF $version on branch $(git branch --show-current)"
+          echo "Building DSF $version from $(git rev-parse --short HEAD) with DWC $(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' pkg/dwc-version)"
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
       # Install NodeJS environment, needed for the DuetWebControl package
@@ -98,10 +96,10 @@ jobs:
 
       # One asset per package. Prereleases (anything with a hyphen in the version) are marked as such.
       # The notes always carry the whole changelog back to the previous release: every +mp release of
-      # the same base version, newest first (see .github/scripts/release-notes.sh). If the release
-      # already exists, e.g. after a re-run, the notes are rewritten and the assets are replaced. The script
-      # is taken from the commit this workflow runs from, so a manual run for an older tag that predates
-      # the script works as well
+      # the same base version, newest first, each with the DWC changes its pin bump brings in (see
+      # .github/scripts/release-notes.sh). If the release already exists, e.g. after a re-run, the notes
+      # are rewritten and the assets are replaced. The script is taken from the commit this workflow runs
+      # from, so a manual run for an older tag that predates the script works as well
       - name: Publish release
         run: |
           {

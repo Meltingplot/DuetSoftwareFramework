@@ -120,11 +120,9 @@ DuetSD-version := $(shell sed -n -r -e "s/^Version:\s+([0-9.]+)$$/\1/p" pkg/deb/
 DuetSoftwareFramework-version := $(DuetControlServer-version)
 DuetTools-version := $(DuetControlServer-version)
 DuetWebControl-repo := https://github.com/Meltingplot/DuetWebControl.git
-# DWC is built from the fork branch of the same name as the DSF branch that is checked
-# out (e.g. v3.7-dev), just like the package build in pkg/common/common.functions does.
-# Branches without a counterpart in the DWC fork (feature branches, detached HEAD) fall
-# back to the development branch this version belongs to, e.g. 3.7.0-rc.2+mp.1 -> v3.7-dev
-DuetWebControl-devbranch := v$(shell xmllint --xpath "string(//Project/PropertyGroup/Version)" src/Directory.Build.props | cut -d. -f1,2)-dev
+# DWC is built from the ref pinned in pkg/dwc-version, the same one the package build in
+# pkg/common/common.functions uses, so both produce the same DWC version
+DuetWebControl-ref := $(shell sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$$/d' pkg/dwc-version)
 # Exception...  This variable has to be dynamically expanded because
 # at the time the Makefile is parsed, DWC may not have been
 # downloaded or updated yet.
@@ -198,14 +196,12 @@ FORCE:
 
 $(CONFIGDIR)/all/publish/DuetWebControl/package.json: FORCE
 	$(CMD_PREFIX)mkdir -p $(dir $(OUTPUTDIR))
-	$(CMD_PREFIX)DWCBRANCH=$$(git branch --show-current) ;\
-	if [ -z "$${DWCBRANCH}" ] || ! git ls-remote --exit-code --heads $(DuetWebControl-repo) "$${DWCBRANCH}" >/dev/null 2>&1 ; then \
-		DWCBRANCH=$(DuetWebControl-devbranch) ;\
-	fi ;\
-	RECLONE=false ;\
+	$(CMD_PREFIX)RECLONE=false ;\
 	if [ -d $(OUTPUTDIR) ] ; then \
 		git -C $(OUTPUTDIR) remote get-url origin 2>/dev/null | grep -qxF "$(DuetWebControl-repo)" || RECLONE=true ;\
-		[ "$$(git -C $(OUTPUTDIR) branch --show-current 2>/dev/null)" = "$${DWCBRANCH}" ] || RECLONE=true ;\
+		DWCHEAD=$$(git -C $(OUTPUTDIR) rev-parse -q --verify HEAD 2>/dev/null) ;\
+		DWCPIN=$$(git -C $(OUTPUTDIR) rev-parse -q --verify '$(DuetWebControl-ref)^{commit}' 2>/dev/null) ;\
+		{ [ -n "$${DWCPIN}" ] && [ "$${DWCHEAD}" = "$${DWCPIN}" ] ; } || RECLONE=true ;\
 	fi ;\
 	if [ ! -d $(OUTPUTDIR) ] || $${RECLONE} ; then \
 		if [ -d $(OUTPUTDIR) ] ; then \
@@ -213,11 +209,10 @@ $(CONFIGDIR)/all/publish/DuetWebControl/package.json: FORCE
 			rm -rf $(OUTPUTDIR) || : ;\
 		fi ;\
 		$(TARGET_PRINTF) CLONE DuetWebControl "" $(CONFIG) "$(BUILD_ARCH)" ;\
-		git clone -q --single-branch --branch $${DWCBRANCH} $(DuetWebControl-repo) $(OUTPUTDIR) ;\
+		git clone -q -c advice.detachedHead=false --single-branch --branch $(DuetWebControl-ref) $(DuetWebControl-repo) $(OUTPUTDIR) ;\
 	else \
 		$(TARGET_PRINTF) UPDATE DuetWebControl "" $(CONFIG) "all" ;\
 		git -C $(OUTPUTDIR) reset -q --hard HEAD ;\
-		git -C $(OUTPUTDIR) pull -q ;\
 	fi
 
 # We really don't need to wait on a build if package.json hasn't changed

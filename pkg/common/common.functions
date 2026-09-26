@@ -74,6 +74,13 @@ done
 
 dsfver=$(xmllint --xpath "string(//Project/PropertyGroup/Version)" $SRC_DIR/Directory.Build.props)
 DWC_REPO=${DWC_REPO:-https://github.com/Meltingplot/DuetWebControl.git}
+# DWC is built from the ref pinned in pkg/dwc-version, so a build always carries a known DWC version.
+# DWC_REF overrides it to build against other DWC sources without touching the pin
+DWC_REF=${DWC_REF:-$(sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' $PKG_DIR/dwc-version 2>/dev/null)}
+if ! [[ "$DWC_REF" =~ ^[0-9A-Za-z][0-9A-Za-z._/+-]*$ ]] ; then
+	echo "pkg/dwc-version holds '$DWC_REF', expected a DWC git ref such as v3.7.0-rc.2+mp.4"
+	exit 1
+fi
 # We always get the sd version from the deb control file even if we're building an rpm
 sdver=$(cat $PKG_DIR/deb/duetsd/DEBIAN/control | grep Version | cut -d ' ' -f 2)
 
@@ -122,6 +129,8 @@ print_debug() {
 	echo "DEST_DIR:         $DEST_DIR"
 	echo "dsfver:           $dsfver"
 	echo "sdver:            $sdver"
+	echo "DWC_REPO:         $DWC_REPO"
+	echo "DWC_REF:          $DWC_REF"
 	echo "SIGNING_KEY:      $SIGNING_KEY"
 	echo "PACKAGES:         $PACKAGES"
 	echo "AOT:              $AOT"
@@ -239,22 +248,21 @@ build_dwc() {
 	echo "Building DWC..."
 
 	if [ ! -d $DEST_DIR/DuetWebControl ] ; then
-		# Build DWC from the fork branch of the same name as the DSF branch that is checked
-		# out. Branches without a counterpart in the DWC fork (feature branches, detached
-		# HEAD) fall back to the development branch this version belongs to,
-		# e.g. 3.7.0-rc.2+mp.1 -> v3.7-dev
-		dwcbranch=$(git branch --show-current)
-		if [ -z "$dwcbranch" ] || ! git ls-remote --exit-code --heads $DWC_REPO "$dwcbranch" > /dev/null 2>&1 ; then
-			dwcbranch=v$(echo $dsfver | cut -d. -f1,2)-dev
-		fi
-
-		echo "- Cloning repository ($dwcbranch)..."
-		git clone -q --single-branch --branch $dwcbranch $DWC_REPO $DEST_DIR/DuetWebControl
+		echo "- Cloning repository ($DWC_REF)..."
+		git clone -q -c advice.detachedHead=false --single-branch --branch $DWC_REF $DWC_REPO $DEST_DIR/DuetWebControl
 	else
 		echo "- Using existing repository in $DEST_DIR/DuetWebControl"
 	fi
 
 	dwcver=$(jq -r ".version" $DEST_DIR/DuetWebControl/package.json)
+
+	# The package version comes from package.json, so sources that do not carry the pinned version
+	# would end up in a package whose version does not match what is inside it
+	if [[ "$DWC_REF" =~ ^v[0-9] ]] && [ "$dwcver" != "${DWC_REF#v}" ] ; then
+		echo "DWC in $DEST_DIR/DuetWebControl is version $dwcver, expected $DWC_REF"
+		exit 1
+	fi
+
 	>/dev/null pushd $DEST_DIR/DuetWebControl
 
 	echo "- Installing dependencies..."
