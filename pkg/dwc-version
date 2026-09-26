@@ -1,0 +1,6 @@
+# Git ref in the Meltingplot DuetWebControl fork the duetwebcontrol package is built from. Pinning it
+# keeps a build reproducible and lets the release notes name the DWC changes a release carries; a
+# branch name would follow whatever its HEAD happened to be at build time. Bump it together with the
+# DSF version whenever a release is meant to ship newer DWC sources. A tag of the form v<version> must
+# agree with the version in its package.json, otherwise the build stops.
+v3.7.0-rc.2+mp.4
