@@ -22,3 +22,11 @@ Every feature goes through a feature branch and a pull request. Never commit fea
 3. The feature lands on the integration branch only by merging the PR, never by a direct commit or push.
 
 If a commit was made on an integration branch by mistake and has not been pushed, move it to a feature branch first (`git branch feature/<name>` then `git reset --hard <previous commit>` on the integration branch).
+
+## Versioning rules
+
+Fork versions have the form `<Duet3D version>+mp.N`, for example `3.7.0-rc.2+mp.7`. This covers the DSF version in `src/Directory.Build.props` and the DWC tag pinned in `pkg/dwc-version`.
+
+- Never change the Duet3D version part (`3.7.0-rc.2`). It changes only when an upstream merge brings in a new Duet3D version; the next fork release of that version is `+mp.1`.
+- A new release, including a request for a "new rc", only increments `+mp.N`, counting on from the last fork tag of the current Duet3D version (`git tag -l 'v<version>+mp.*'`).
+- DSF and DWC count `+mp.N` independently, so DSF `3.7.0-rc.2+mp.7` can ship DWC `3.7.0-rc.2+mp.6`.
