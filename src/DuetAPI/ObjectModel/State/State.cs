@@ -77,6 +77,7 @@ public partial class State : ModelObject, IStaticModelObject
     /// List of general-purpose output ports
     /// </summary>
     /// <seealso cref="GpOutputPort"/>
+    [Live]
     public StaticModelCollection<GpOutputPort?> GpOut { get; } = [];
 
     /// <summary>
@@ -227,7 +228,6 @@ public partial class State : ModelObject, IStaticModelObject
     /// <summary>
     /// Shorthand for inputs[state.thisInput].active
     /// </summary>
-    [Verbose]
     public bool? ThisActive
     {
         get => _thisActive;

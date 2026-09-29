@@ -10,6 +10,7 @@ using System.Threading;
 using ApiModel = DuetAPI.ObjectModel.ObjectModel;
 using DcsFilter = DuetControlServer.Model.Filter;
 using DcsModel = DuetControlServer.Model.ObjectModel;
+using Volume = DuetAPI.ObjectModel.Volume;
 
 namespace UnitTests.Machine
 {
@@ -164,11 +165,29 @@ namespace UnitTests.Machine
             DcsModel model = CreateModel();
             DcsFilter filter = new(model);
 
-            Assert.That(filter.GetFiltered("*", QueryFlags.Parse(null)).ContainsKey("limits"), Is.False);
-            Assert.That(filter.GetFiltered("*", QueryFlags.Parse("v")).ContainsKey("limits"), Is.True);
+            Assert.That(filter.GetFiltered("*", QueryFlags.Parse(null)).ContainsKey("limits"), Is.True);
+            Dictionary<string, object?> nonVerboseLimits = filter.GetFiltered("limits/*", QueryFlags.Parse("n"));
+            Assert.That(nonVerboseLimits.ContainsKey("limits") && ((Dictionary<string, object?>)nonVerboseLimits["limits"]!).ContainsKey("axes"), Is.False);
+            Assert.That(SubDictionary(filter.GetFiltered("limits/*", QueryFlags.Parse("vn")), "limits").ContainsKey("axes"), Is.True);
 
             Assert.That(SubDictionary(filter.GetFiltered("heat/*", QueryFlags.Parse(null)), "heat").ContainsKey("bedHeaters"), Is.False);
             Assert.That(SubDictionary(filter.GetFiltered("heat/*", QueryFlags.Parse("o")), "heat").ContainsKey("bedHeaters"), Is.True);
+        }
+
+        [Test]
+        public void GetFilteredFlagsBelowNamedKey()
+        {
+            DcsModel model = CreateModel();
+            model.Volumes.Add(new Volume { Mounted = true, Path = "/" });
+            DcsFilter filter = new(model);
+
+            List<object?> volumes = (List<object?>)filter.GetFiltered("volumes/**", QueryFlags.Parse(null))["volumes"]!;
+            Dictionary<string, object?> volume = (Dictionary<string, object?>)volumes[0]!;
+            Assert.That(volume.ContainsKey("mounted"), Is.True);
+            Assert.That(volume.ContainsKey("path"), Is.False);
+
+            volumes = (List<object?>)filter.GetFiltered("volumes/**", QueryFlags.Parse("v"))["volumes"]!;
+            Assert.That(((Dictionary<string, object?>)volumes[0]!)["path"], Is.EqualTo("/"));
         }
 
         [Test]

@@ -26,6 +26,7 @@ public partial class Board : ModelObject, IStaticModelObject
     /// <summary>
     /// Drivers of this board
     /// </summary>
+    [Live]
     public StaticModelCollection<Driver>? Drivers
     {
         get => _drivers;
@@ -36,6 +37,10 @@ public partial class Board : ModelObject, IStaticModelObject
     /// <summary>
     /// Date of the firmware build
     /// </summary>
+    /// <remarks>
+    /// RRF reports this as verbose on the main board only, because expansion boards can be hot-plugged
+    /// and verbose values are only fetched on the initial connect
+    /// </remarks>
     public string FirmwareDate
     {
         get => _firmwareDate;
@@ -46,6 +51,10 @@ public partial class Board : ModelObject, IStaticModelObject
     /// <summary>
     /// Filename of the firmware binary
     /// </summary>
+    /// <remarks>
+    /// RRF reports this as verbose on the main board only, because expansion boards can be hot-plugged
+    /// and verbose values are only fetched on the initial connect
+    /// </remarks>
     public string FirmwareFileName
     {
         get => _firmwareFileName;
@@ -66,6 +75,7 @@ public partial class Board : ModelObject, IStaticModelObject
     /// <summary>
     /// Amount of free RAM on this board (in bytes or null if unknown)
     /// </summary>
+    [Live]
     public int? FreeRam
     {
         get => _freeRam;
@@ -76,6 +86,10 @@ public partial class Board : ModelObject, IStaticModelObject
     /// <summary>
     /// Maximum number of motors this board can drive
     /// </summary>
+    /// <remarks>
+    /// RRF reports this as verbose on the main board only, because expansion boards can be hot-plugged
+    /// and verbose values are only fetched on the initial connect
+    /// </remarks>
     public int MaxMotors
     {
         get => _maxMotors;
@@ -86,6 +100,7 @@ public partial class Board : ModelObject, IStaticModelObject
     /// <summary>
     /// Minimum, maximum, and current temperatures of the MCU or null if unknown
     /// </summary>
+    [Live]
     public MinMaxCurrent? McuTemp
     {
         get => _mcuTemp;
@@ -116,6 +131,12 @@ public partial class Board : ModelObject, IStaticModelObject
     /// <summary>
     /// Unique identifier of the board or null if unknown
     /// </summary>
+    /// <remarks>
+    /// RRF reports this as verbose on the main board only, because expansion boards can be hot-plugged
+    /// and verbose values are only fetched on the initial connect.
+    /// It is flagged verbose here so that non-verbose board updates do not reset it on the main board.
+    /// </remarks>
+    [Verbose]
     public string? UniqueId
     {
         get => _uniqueId;
@@ -126,6 +147,7 @@ public partial class Board : ModelObject, IStaticModelObject
     /// <summary>
     /// Minimum, maximum, and current voltages on the 12V rail or null if unknown
     /// </summary>
+    [Live]
     public MinMaxCurrent? V12
     {
         get => _v12;
@@ -136,6 +158,7 @@ public partial class Board : ModelObject, IStaticModelObject
     /// <summary>
     /// Minimum, maximum, and current voltages on the input rail or null if unknown
     /// </summary>
+    [Live]
     public MinMaxCurrent? VIn
     {
         get => _vIn;
