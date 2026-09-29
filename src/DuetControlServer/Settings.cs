@@ -346,6 +346,7 @@ public sealed class Settings
     [
         @"^\s*max_z_height\D+(?<mm>(\d+\.?\d*))",            // OrcaSlicer
         @"^\s*MAXZ\D+(?<mm>(\d+\.?\d*))",                    // Cura
+        @"^\s*print_height\D+(?<mm>(\d+\.?\d*))",            // preFlight
         @"(?-i)^\s*Height\D+(?<mm>(\d+\.?\d*))"              // Fusion 360, case-sensitive so PrusaSlicer's per-layer ;HEIGHT: is not matched
     ];
 
@@ -381,7 +382,7 @@ public sealed class Settings
     /// </summary>
     public List<string> PrintTimeFilters { get; set; } =
     [
-        @"estimated printing time .*= ((?<d>(\d+))d\s*)?((?<h>(\d+))h\s*)?((?<m>(\d+))m\s*)?((?<s>(\d+))s)?",                // Slic3r PE
+        @"estimated printing time (\(normal mode\) )?= ((?<d>(\d+))d\s*)?((?<h>(\d+))h\s*)?((?<m>(\d+))m\s*)?((?<s>(\d+))s)?",                // Slic3r PE
         @"TIME:(?<s>(\d+\.?\d*))",                                                                                           // Cura
         @"Build Time:\s+((?<h>(\d+\.?\d*)) hour(s)?\s*)?((?<m>(\d+\.?\d*)) minute(s)?\s*)?((?<s>(\d+\.?\d*)) second(s)?)?",  // Simplify3D, KISSlicer, Canvas, IceSL
         @"print time:\s+(?<s>(\d+\.?\d*))(s)?",                                                                              // Kiri:Moto, and IdeaMaker v4
