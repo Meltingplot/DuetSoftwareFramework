@@ -23,6 +23,16 @@ public partial class Observer
             // Prevent memory leaks in case variable model objects are replaced
             UnsubscribeFromModelObject(modelMember);
         }
+        else if (currentValue is IModelCollection modelCollection)
+        {
+            // Same for variable model collections, e.g. boards[].drivers
+            UnsubscribeFromModelCollection(modelCollection);
+        }
+        else if (currentValue is IModelDictionary modelDictionary)
+        {
+            // and variable model dictionaries
+            UnsubscribeFromModelDictionary(modelDictionary);
+        }
         else if (property?.Kind == ModelPropertyKind.ObservableCollection && currentValue is not null)
         {
             // Same for observable collections
@@ -62,9 +72,10 @@ public partial class Observer
     /// </summary>
     /// <param name="hasVariableModelObjects">Whether this instance has any variable model objects</param>
     /// <param name="hasVariableObservableCollections">Whether this instance has any variable observable collections</param>
+    /// <param name="hasVariableModelCollections">Whether this instance has any variable model collections or dictionaries</param>
     /// <param name="path">Property path</param>
     /// <returns>Property change handler</returns>
-    private PropertyChangedEventHandler PropertyChanged(bool hasVariableModelObjects, bool hasVariableObservableCollections, object[] path)
+    private PropertyChangedEventHandler PropertyChanged(bool hasVariableModelObjects, bool hasVariableObservableCollections, bool hasVariableModelCollections, object[] path)
     {
         return (sender, e) =>
         {
@@ -86,6 +97,17 @@ public partial class Observer
                 // Subscribe to variable ObservableCollection events
                 SubscribeToObservableCollection((INotifyCollectionChanged)value, property.JsonName, path);
             }
+            else if (hasVariableModelCollections && value is IModelCollection modelCollection)
+            {
+                // Subscribe to variable model collections. The generated UpdateFromJson assigns a new instance when a nullable
+                // collection comes back from null, e.g. boards[].drivers after a firmware reset, and fills it afterwards
+                SubscribeToModelCollection(modelCollection, property.JsonName, path);
+            }
+            else if (hasVariableModelCollections && value is IModelDictionary modelDictionary)
+            {
+                // Same for variable model dictionaries
+                SubscribeToModelDictionary(modelDictionary, AddToPath(path, property.JsonName));
+            }
         };
     }
 
@@ -96,7 +118,7 @@ public partial class Observer
     /// <param name="path">Collection path</param>
     private void SubscribeToModelObject(ModelObject modelObject, object[] path)
     {
-        bool hasVariableModelObjects = false, hasVariableObservableCollections = false;
+        bool hasVariableModelObjects = false, hasVariableObservableCollections = false, hasVariableModelCollections = false;
         IModelObjectAccessor accessor = (IModelObjectAccessor)modelObject;
         foreach (ModelPropertyDescriptor property in accessor.Descriptor.Properties)
         {
@@ -123,17 +145,18 @@ public partial class Observer
             {
                 hasVariableModelObjects |= property.Kind == ModelPropertyKind.ModelObject;
                 hasVariableObservableCollections |= property.Kind == ModelPropertyKind.ObservableCollection;
+                hasVariableModelCollections |= property.Kind is ModelPropertyKind.ModelCollection or ModelPropertyKind.ModelDictionary;
             }
         }
 
         if (modelObject is INotifyPropertyChanged propChangeModel)
         {
-            PropertyChangedEventHandler changeHandler = PropertyChanged(hasVariableModelObjects, hasVariableObservableCollections, path);
+            PropertyChangedEventHandler changeHandler = PropertyChanged(hasVariableModelObjects, hasVariableObservableCollections, hasVariableModelCollections, path);
             propChangeModel.PropertyChanged += changeHandler;
             _propertyChangedHandlers[modelObject] = changeHandler;
         }
 
-        if (hasVariableModelObjects || hasVariableObservableCollections)
+        if (hasVariableModelObjects || hasVariableObservableCollections || hasVariableModelCollections)
         {
             // This is barely needed so only register it where it is actually required.
             // It makes sure that events are removed again when a ModelObject instance is replaced
@@ -153,7 +176,7 @@ public partial class Observer
             _propertyChangedHandlers.Remove(modelObject);
         }
 
-        bool hasVariableModelObjects = false;
+        bool hasVariableMembers = false;
         IModelObjectAccessor accessor = (IModelObjectAccessor)modelObject;
         foreach (ModelPropertyDescriptor property in accessor.Descriptor.Properties)
         {
@@ -175,10 +198,12 @@ public partial class Observer
                 UnsubscribeFromObservableCollection((INotifyCollectionChanged)value);
             }
 
-            hasVariableModelObjects |= property.Kind == ModelPropertyKind.ModelObject && (property.Flags & ModelPropertyFlags.HasSetter) != 0;
+            // The same property kinds as SubscribeToModelObject registers VariableModelObjectChanging for
+            hasVariableMembers |= (property.Flags & ModelPropertyFlags.HasSetter) != 0 &&
+                property.Kind is ModelPropertyKind.ModelObject or ModelPropertyKind.ObservableCollection or ModelPropertyKind.ModelCollection or ModelPropertyKind.ModelDictionary;
         }
 
-        if (hasVariableModelObjects)
+        if (hasVariableMembers)
         {
             // Same here - unregister the event handler only where required
             modelObject.PropertyChanging -= VariableModelObjectChanging;
