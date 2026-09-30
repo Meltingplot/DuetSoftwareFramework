@@ -24,27 +24,27 @@ pkg_progs() {
 	sed -i "s/TARGET_ARCH/$TARGET_ARCH/g" $DEST_DIR/duetcontrolserver_$dsfver/DEBIAN/control
 	sed -i "s/DSFVER/$(echo $dsfver | sed -e 's/-/~/g')/g" $DEST_DIR/duetcontrolserver_$dsfver/DEBIAN/control
 	sed -i "s/DSFVER/$(echo $dsfver | sed -e 's/-/~/g')/g" $DEST_DIR/duetcontrolserver_$dsfver/DEBIAN/changelog
-	dpkg-deb --build -Zxz $DEST_DIR/duetcontrolserver_$dsfver $DEST_DIR
+	dpkg-deb --root-owner-group --build -Zxz $DEST_DIR/duetcontrolserver_$dsfver $DEST_DIR
 
 	sed -i "s/TARGET_ARCH/$TARGET_ARCH/g" $DEST_DIR/duetwebserver_$dsfver/DEBIAN/control
 	sed -i "s/DSFVER/$(echo $dsfver | sed -e 's/-/~/g')/g" $DEST_DIR/duetwebserver_$dsfver/DEBIAN/control
-	dpkg-deb --build -Zxz $DEST_DIR/duetwebserver_$dsfver $DEST_DIR
+	dpkg-deb --root-owner-group --build -Zxz $DEST_DIR/duetwebserver_$dsfver $DEST_DIR
 
 	sed -i "s/TARGET_ARCH/$TARGET_ARCH/g" $DEST_DIR/duetpluginservice_$dsfver/DEBIAN/control
 	sed -i "s/DSFVER/$(echo $dsfver | sed -e 's/-/~/g')/g" $DEST_DIR/duetpluginservice_$dsfver/DEBIAN/control
 	sed -i "s/DSFVER/$(echo $dsfver | sed -e 's/-/~/g')/g" $DEST_DIR/duetpluginservice_$dsfver/DEBIAN/changelog
-	dpkg-deb --build -Zxz $DEST_DIR/duetpluginservice_$dsfver $DEST_DIR
+	dpkg-deb --root-owner-group --build -Zxz $DEST_DIR/duetpluginservice_$dsfver $DEST_DIR
 
 	sed -i "s/TARGET_ARCH/$TARGET_ARCH/g" $DEST_DIR/duettools_$dsfver/DEBIAN/control
 	sed -i "s/DSFVER/$(echo $dsfver | sed -e 's/-/~/g')/g" $DEST_DIR/duettools_$dsfver/DEBIAN/control
 	sed -i "s/DSFVER/$(echo $dsfver | sed -e 's/-/~/g')/g" $DEST_DIR/duettools_$dsfver/DEBIAN/changelog
-	dpkg-deb --build -Zxz $DEST_DIR/duettools_$dsfver $DEST_DIR
+	dpkg-deb --root-owner-group --build -Zxz $DEST_DIR/duettools_$dsfver $DEST_DIR
 
 	if [ $AOT -eq 0 ] ; then
 		sed -i "s/TARGET_ARCH/$TARGET_ARCH/g" $DEST_DIR/duetruntime_$dsfver/DEBIAN/control
 		sed -i "s/DSFVER/$(echo $dsfver | sed -e 's/-/~/g')/g" $DEST_DIR/duetruntime_$dsfver/DEBIAN/control
 		sed -i "s/DSFVER/$(echo $dsfver | sed -e 's/-/~/g')/g" $DEST_DIR/duetruntime_$dsfver/DEBIAN/changelog
-		dpkg-deb --build -Zxz $DEST_DIR/duetruntime_$dsfver $DEST_DIR
+		dpkg-deb --root-owner-group --build -Zxz $DEST_DIR/duetruntime_$dsfver $DEST_DIR
 	fi
 }
 
@@ -54,7 +54,7 @@ pkg_plugins() {
 	sed -i "s/TARGET_ARCH/$TARGET_ARCH/g" $DEST_DIR/duetpimanagementplugin_$dsfver/DEBIAN/control
 	sed -i "s/DSFVER/$(echo $dsfver | sed -e 's/-/~/g')/g" $DEST_DIR/duetpimanagementplugin_$dsfver/DEBIAN/control
 	sed -i "s/DSFVER/$(echo $dsfver | sed -e 's/-/~/g')/g" $DEST_DIR/duetpimanagementplugin_$dsfver/DEBIAN/changelog
-	dpkg-deb --build -Zxz $DEST_DIR/duetpimanagementplugin_$dsfver $DEST_DIR
+	dpkg-deb --root-owner-group --build -Zxz $DEST_DIR/duetpimanagementplugin_$dsfver $DEST_DIR
 }
 
 pkg_sd() {
@@ -62,7 +62,7 @@ pkg_sd() {
 
 	sed -i "s/TARGET_ARCH/$TARGET_ARCH/g" $DEST_DIR/duetsd_$sdver/DEBIAN/control
 	sed -i "s/SDVER/$sdver/g" $DEST_DIR/duetsd_$sdver/DEBIAN/control
-	dpkg-deb --build -Zxz $DEST_DIR/duetsd_$sdver $DEST_DIR
+	dpkg-deb --root-owner-group --build -Zxz $DEST_DIR/duetsd_$sdver $DEST_DIR
 }
 
 pkg_dwc() {
@@ -70,7 +70,7 @@ pkg_dwc() {
 
 	sed -i "s/TARGET_ARCH/$TARGET_ARCH/g" $DEST_DIR/duetwebcontrol_$dwcver/DEBIAN/control
 	sed -i "s/DWCVER/$(echo $dwcver | sed -e 's/-/~/g')/g" $DEST_DIR/duetwebcontrol_$dwcver/DEBIAN/control
-	dpkg-deb --build -Zxz $DEST_DIR/duetwebcontrol_$dwcver $DEST_DIR
+	dpkg-deb --root-owner-group --build -Zxz $DEST_DIR/duetwebcontrol_$dwcver $DEST_DIR
 }
 
 pkg_meta() {
@@ -96,7 +96,7 @@ pkg_meta() {
 	sed -i "s/SDVER/$(echo $sdver | sed -e 's/-/~/g')/g" $DEST_DIR/duetsoftwareframework_$dsfver/DEBIAN/control
 	sed -i "s/DWCVER/$(echo $dwcver | sed -e 's/-/~/g')/g" $DEST_DIR/duetsoftwareframework_$dsfver/DEBIAN/control
 	sed -i "s/DSFVER/$(echo $dsfver | sed -e 's/-/~/g')/g" $DEST_DIR/duetsoftwareframework_$dsfver/DEBIAN/changelog
-	dpkg-deb --build -Zxz $DEST_DIR/duetsoftwareframework_$dsfver $DEST_DIR/
+	dpkg-deb --root-owner-group --build -Zxz $DEST_DIR/duetsoftwareframework_$dsfver $DEST_DIR/
 }
 
 [ $BUILD_PROGS -eq 1 ] && { [ $BUILD -eq 1 ] && build_progs || : ; } && [ $PKGS -eq 1 ] && pkg_progs
