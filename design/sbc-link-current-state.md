@@ -39,6 +39,7 @@ DSF paths are relative to `src/`. RRF paths refer to the Meltingplot RepRapFirmw
 | T4 | RRF waits up to 3 s for the SBC to answer a blocking file request, then treats the request as failed. | RRF `SbcMaxRequestTime` |
 | T5 | runs the DSF transfer loop on a dedicated highest-priority thread. | `LinkService.cs` `ExecuteAsync` |
 | T6 | ran at about 1,700 transfers/s on the lab CHX 350 (observed). | M122 / journal on the lab printer |
+| T7 | does not bound the time between full transfers. DSF handles RRF's file requests (open, read, write, close, directory listing, delete, secure delete with `fsync`) and waits for locks (object model, code channels, job, print state) synchronously on the transfer thread. RRF accepts M576 S values up to 4 s. The M122 value "max time between full transfers" can become very large (observed). | `LinkService.cs` `Handle*` methods; RRF `HandleM576` |
 
 ## 4. Reaction to link loss
 

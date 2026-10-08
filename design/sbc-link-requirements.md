@@ -50,6 +50,8 @@ logic off the link.
 | R10 | **Priority stop path.** A software stop (M112, or the DWC stop button) reaches RRF within 100 ms while the link is disturbed but alive. Stop requests bypass pending retries and resyncs. | Annex I/III 1.2.1 (stopping must not be prevented) |
 | R11 | **Outage display.** While the link is down but the R8 limit has not been reached, DWC keeps the last values visible, marks them as stale, and shows "link to controller interrupted, retrying" with the time left until the safety stop. | EN ISO 9241-110 |
 | R12 | **Parity on demand.** Error correction is part of release 1: after a failed check, the sender transmits parity instead of resending the whole block. Nothing extra is sent on a clean link (R4). | R2, R3 |
+| R13 | **Dead-man switch, two stages.** This is an additional layer on top of R10 and the hardwired emergency stop. Stage 1: if DSF has not answered an exchange that RRF has armed for 100 ms, RRF holds motion. It starts no further moves and keeps positions, heaters and the session, without needing the SBC (no `pause.g`). When valid exchanges return, the job resumes automatically, and DWC logs the hold. Stage 2: the R8 limit leads to a stop of category 0. Only the time RRF spends armed and waiting counts; RRF's own processing does not. Only verified exchanges from the same session reset the watchdog. The watchdog runs outside RRF's SBC task. | Annex I/III 1.2.1 (stopping must not be prevented) |
+| R14 | **DSF answers in bounded time.** DSF answers every exchange that RRF has armed within 100 ms, and normally far sooner, whatever its processing load. File I/O for RRF, lock waits, JSON processing and garbage collection must not delay the answer. While connected, RRF arms an exchange at least every 25 ms (M576 S is capped accordingly). Planned pauses (firmware update, M999 reset) are announced over the link and suspend R13. | R3 criterion A, R13 |
 
 ## Compatibility
 
@@ -61,7 +63,7 @@ logic off the link.
 
 ## Scope
 
-- **Boards:** R1–R12 apply to the SAME70 boards (MB6HC, MB6XD). Mini 5+ is best effort through C3.
+- **Boards:** R1–R14 apply to the SAME70 boards (MB6HC, MB6XD). Mini 5+ is best effort through C3.
 - **SBCs:** Raspberry Pi 4 and Raspberry Pi 5.
 - **Transport:** SPI only.
 - **Out of scope:**
@@ -95,6 +97,8 @@ logic off the link.
 | R9 | Analysis plus fault-injection estimate at the worst allowed error rate | ≤ 10⁻⁷ undetected corrupted transfers per hour |
 | R10 | M112 while faults are being injected | RRF stops within 100 ms |
 | R12 | Continuous bit errors on large transfers | Recovered by parity without a full resend; no extra bytes on a clean link |
+| R13 | Freeze DCS during a print (`kill -STOP`), resume it (`kill -CONT`) after 1 s, then repeat for longer than the R8 limit | Motion holds within 100 ms; the job resumes by itself; beyond the R8 limit, RRF stops (category 0) |
+| R14 | Print while loading the SD card (writes with `fsync`), running large object-model queries, and making RRF file requests | No hold, no motion stall; the longest DSF answer time stays under 100 ms |
 | C1 | Stock RRF with fork DSF, and fork RRF with stock DSF | Both run with today's v7 behaviour |
 
 ## Decision log
@@ -110,5 +114,7 @@ logic off the link.
 | 2026-10-08 | Priority stop path, 100 ms | Stopping must not be prevented by link recovery. |
 | 2026-10-08 | Negotiation on top of v7 instead of a fork-only v8 (reverses 2026-10-07) | Mixed versions keep working, and there is no protocol-number collision with upstream. |
 | 2026-10-08 | Parity on demand in release 1 (reverses "no ECC unless required") | It gives margin for the 20 ms criterion-A limit and costs nothing on a clean link. |
-| 2026-10-08 | R1–R12 on SAME70 boards, Pi 4 and Pi 5, SPI only | These are the hardware combinations in the products. |
+| 2026-10-08 | R1–R14 on SAME70 boards, Pi 4 and Pi 5, SPI only | These are the hardware combinations in the products. |
 | 2026-10-08 | Update-path security handled in a separate project | Machinery Regulation 1.1.9 and the CRA need work beyond the link. |
+| 2026-10-08 | Two-stage dead-man switch (hold at 100 ms, resume automatically; category 0 stop at the R8 limit) on top of R10 | A stop pressed during an outage takes effect within about 100 ms, without throwing the job away on every short gap. |
+| 2026-10-08 | The dead-man switch is driven by DSF's answer time to armed exchanges, not by the spacing of full transfers (R14) | The time between full transfers can become very long in normal operation (observed by Tim in M122). It includes RRF's pacing, RRF's processing, and DSF's synchronous file I/O and lock waits on the transfer thread. |
