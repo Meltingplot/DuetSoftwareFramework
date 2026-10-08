@@ -17,4 +17,5 @@ KillMode=control-group
 SendSIGKILL=yes
 
 [Install]
-WantedBy=multi-user.target
+# Start together with DCS too, so that DPS comes back when DCS is stopped and started again
+WantedBy=multi-user.target duetcontrolserver.service

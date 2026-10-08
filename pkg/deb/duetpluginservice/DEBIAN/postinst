@@ -11,6 +11,13 @@ rm -f /etc/apparmor.d/dsf.*
 
 # Update systemd services, but only when systemd is the running init (skips build chroots/containers)
 if [ -d /run/systemd/system ]; then
+    # Re-apply the [Install] section of enabled DPS instances so that upgrades pick up new WantedBy= entries
+    for unit in duetpluginservice duetpluginservice-root; do
+        if systemctl -q is-enabled $unit; then
+            systemctl -q --no-reload reenable $unit || true
+        fi
+    done
+
     systemctl -q --no-ask-password daemon-reload
 
     # Start DPS instances again if they are enabled via systemd

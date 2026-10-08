@@ -38,6 +38,11 @@ fi
 
 
 %post
+if [ $1 -gt 1 ] ; then
+# upgrade. Re-apply the [Install] section of enabled DPS instances so that new WantedBy= entries take effect
+	systemctl -q is-enabled %{name}.service && systemctl -q --no-reload reenable %{name}.service >/dev/null 2>&1 || :
+	systemctl -q is-enabled %{name}-root.service && systemctl -q --no-reload reenable %{name}-root.service >/dev/null 2>&1 || :
+fi
 systemctl daemon-reload >/dev/null 2>&1 || :
 # Drop existing per-plugin AppArmor profiles so DPS regenerates them from the current template on its next start
 rm -f /etc/apparmor.d/dsf.* >/dev/null 2>&1 || :
