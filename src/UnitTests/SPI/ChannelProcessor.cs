@@ -97,31 +97,34 @@ public class ChannelProcessor
         _processor.BufferedCodes.AddRange(bufferedCodes);
     }
 
-    private static bool CompletedByReply(Code code) => code.Result is not null;
+    /// <summary>
+    /// Check if a code has been completed, cancelled codes have no result
+    /// </summary>
+    private static bool IsCompleted(Code code) => code.Result is not null;
 
     [Test]
-    public void M99ReplyAfterAbortRequest()
+    public void M99WithoutReply()
     {
         Code startCode = MakeCode(98), m99 = MakeCode(99), readAhead = MakeCode(98);
         StartMacro(startCode, m99, readAhead);
 
-        // RRF wrote [abort][empty reply for the start code] while the M99 was running, its reply comes with the next transfer
+        // RRF does not reply to an M99 that requested a single file abort, it writes [abort][empty reply for the start code]
         _processor.FilesAborted(false);
+        Assert.That(IsCompleted(m99), Is.True);
+        Assert.That(IsCompleted(readAhead), Is.False);
         Assert.That(_processor.BufferedCodes, Is.EqualTo(new[] { startCode }));
 
-        // The caller's next code (e.g. another M98) has already been sent when the late M99 reply arrives
+        // The caller's next code (e.g. another M98) may already have been sent when the reply for the start code arrives
         Code nextCode = MakeCode(98);
         _processor.BufferedCodes.Add(nextCode);
         _processor.HandleReply(ReplyFlags, string.Empty);
-        _processor.HandleReply(ReplyFlags, string.Empty);
 
-        Assert.That(CompletedByReply(startCode), Is.True);
-        Assert.That(CompletedByReply(nextCode), Is.False);
+        Assert.That(IsCompleted(startCode), Is.True);
+        Assert.That(IsCompleted(nextCode), Is.False);
         Assert.That(_processor.BufferedCodes, Is.EqualTo(new[] { nextCode }));
 
-        // No empty reply is dropped any more
         _processor.HandleReply(ReplyFlags, string.Empty);
-        Assert.That(CompletedByReply(nextCode), Is.True);
+        Assert.That(IsCompleted(nextCode), Is.True);
     }
 
     [Test]
@@ -130,19 +133,19 @@ public class ChannelProcessor
         Code startCode = MakeCode(98), m99 = MakeCode(99), readAhead = MakeCode(98);
         StartMacro(startCode, m99, readAhead);
 
-        // RRF wrote [M99 reply][abort][empty reply for the start code]
+        // Older RRF versions write [M99 reply][abort][empty reply for the start code]
         _processor.HandleReply(ReplyFlags, string.Empty);
         _processor.FilesAborted(false);
         Code nextCode = MakeCode(98);
         _processor.BufferedCodes.Add(nextCode);
         _processor.HandleReply(ReplyFlags, string.Empty);
 
-        Assert.That(CompletedByReply(m99), Is.True);
-        Assert.That(CompletedByReply(startCode), Is.True);
-        Assert.That(CompletedByReply(nextCode), Is.False);
+        Assert.That(IsCompleted(m99), Is.True);
+        Assert.That(IsCompleted(startCode), Is.True);
+        Assert.That(IsCompleted(nextCode), Is.False);
 
         _processor.HandleReply(ReplyFlags, string.Empty);
-        Assert.That(CompletedByReply(nextCode), Is.True);
+        Assert.That(IsCompleted(nextCode), Is.True);
     }
 
     [Test]
@@ -152,11 +155,12 @@ public class ChannelProcessor
         Code startCode = MakeCode(98), m99 = MakeCode(99), secondM99 = MakeCode(99);
         StartMacro(startCode, m99, secondM99);
 
-        _processor.HandleReply(ReplyFlags, string.Empty);
         _processor.FilesAborted(false);
         _processor.HandleReply(ReplyFlags, string.Empty);
 
-        Assert.That(CompletedByReply(startCode), Is.True);
+        Assert.That(IsCompleted(m99), Is.True);
+        Assert.That(IsCompleted(secondM99), Is.False);
+        Assert.That(IsCompleted(startCode), Is.True);
         Assert.That(_processor.BufferedCodes, Is.Empty);
     }
 
@@ -168,12 +172,13 @@ public class ChannelProcessor
         StartMacro(null, m99);
 
         _processor.FilesAborted(false);
+        Assert.That(IsCompleted(m99), Is.True);
         Assert.That(_processor.BufferedCodes, Is.Empty);
 
         // The next code on this channel must still get its reply
         Code nextCode = MakeCode(4);
         _processor.BufferedCodes.Add(nextCode);
         _processor.HandleReply(ReplyFlags, string.Empty);
-        Assert.That(CompletedByReply(nextCode), Is.True);
+        Assert.That(IsCompleted(nextCode), Is.True);
     }
 }
