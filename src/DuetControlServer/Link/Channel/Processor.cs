@@ -611,21 +611,8 @@ public sealed class Processor
             // RRF sends the empty reply for the M99 that requested this abort after the abort request if the SBC task had already flushed its replies
             if (BufferedCodes.Count > 0 && BufferedCodes[0].Type == CodeType.MCode && BufferedCodes[0].MajorNumber == 99)
             {
-                if (CurrentState.StartCode is not null && !_lastRepliedCodeWasM99)
-                {
-                    // The M99 is cancelled below, so its late reply must be dropped when it arrives. Otherwise it completes the code that started
-                    // the macro, which is put back in front of the buffered codes below, and the reply of that code then completes the next code
-                    // of the calling file while RRF is still executing it (e.g. a following M98 counts as finished while its macro is running).
-                    // The late reply is only certain to come if the macro was started by a code from DSF, else RRF does not send it back to us,
-                    // and if this M99 is the one that was executed and not one that was read ahead after an M99 whose reply has arrived
-                    _pendingAbortedM99Replies++;
-                }
-                else
-                {
-                    _suppressEmptyReply = true;
-                }
+                _suppressEmptyReply = true;
             }
-            _lastRepliedCodeWasM99 = false;
         }
 
         // Clean up the stack
@@ -1041,16 +1028,6 @@ public sealed class Processor
     private bool _suppressEmptyReply;
 
     /// <summary>
-    /// Number of empty replies still to come for M99 codes that were cancelled because the file abort request overtook their reply
-    /// </summary>
-    private int _pendingAbortedM99Replies;
-
-    /// <summary>
-    /// Indicates if the last buffered code that was resolved by a reply was an M99
-    /// </summary>
-    private bool _lastRepliedCodeWasM99;
-
-    /// <summary>
     /// Handle a G-code reply
     /// </summary>
     /// <param name="flags">Message flags</param>
@@ -1061,25 +1038,14 @@ public sealed class Processor
         // Replies are not meant for comment codes, resolve them separately
         ResolveCommentCodes();
 
-        // Drop the late reply of an M99 whose file has been aborted, it belongs to no buffered code. It is the next reply on this channel,
-        // apart from the empty reply RRF may send for the code that started the macro, so it does not matter which of the two is dropped
-        if (_pendingAbortedM99Replies > 0 && string.IsNullOrEmpty(reply) && string.IsNullOrEmpty(_lastPartialMessage) && !flags.HasFlag(MessageTypeFlags.PushFlag))
-        {
-            _pendingAbortedM99Replies--;
-            return true;
-        }
-
         // Deal with codes being executed
         if (BufferedCodes.Count > 0)
         {
-            Code code = BufferedCodes[0];
-            int codeSize = code.BinarySize;
-            bool isM99 = code.Type == CodeType.MCode && code.MajorNumber == 99;
-            if (HandleCodeReply(code, flags, reply))
+            int codeSize = BufferedCodes[0].BinarySize;
+            if (HandleCodeReply(BufferedCodes[0], flags, reply))
             {
                 BytesBuffered -= codeSize;
                 BufferedCodes.RemoveAt(0);
-                _lastRepliedCodeWasM99 = isM99;
             }
             return true;
         }
@@ -1374,8 +1340,6 @@ public sealed class Processor
         BufferedCodes.Clear();
         BytesBuffered = 0;
         _suppressEmptyReply = true;
-        _lastRepliedCodeWasM99 = false;
-        // Late M99 replies are still sent by RRF, so _pendingAbortedM99Replies is not reset here
 
         foreach (StackState state in Stack)
         {
@@ -1453,8 +1417,6 @@ public sealed class Processor
         BufferedCodes.Clear();
         BytesBuffered = 0;
         _suppressEmptyReply = true;
-        _pendingAbortedM99Replies = 0;
-        _lastRepliedCodeWasM99 = false;
 
         // Clear codes that are still pending but have not been fed into the SPI interface yet
         _codeProcessor.CancelPending(Channel);
