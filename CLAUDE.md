@@ -24,6 +24,7 @@ Write fixes the way upstream (Christian Hammacher) would. Upstream usually fixes
 5. Choose the simplest invariant that removes the bug, and state any behaviour change in the commit.
 6. Commit title `Fixed <symptom> [when <condition>]`, one body line per change, forum thread if there is one.
 7. Every fix comes with unit tests in fork-only files under `src/UnitTests`, so an upstream fix for the same bug can be checked against them.
+8. When upstream fixes the same bug, switch to upstream's fix. If a case is still broken, fix that case at its source; do not keep the old fork fix on top as a safety net.
 
 ## Git workflow
 
