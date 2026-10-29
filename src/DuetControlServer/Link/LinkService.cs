@@ -612,15 +612,6 @@ public sealed class LinkService(
         {
             if (linkInterface.ModelQueryRequests.TryPeek(out ModelQueryRequest? query) && query.QuerySent)
             {
-                // Responses are matched to queries by order only. A response to a query that was
-                // invalidated (e.g. after a transfer timeout) may still arrive once the link is back
-                // and would then be applied to the wrong key, shifting every following response by one
-                if (Protocol.Reader.TryReadObjectModelKey(json, out string responseKey) && responseKey != query.Key)
-                {
-                    logger.LogWarning("Discarding object model response for key '{ResponseKey}' because key '{RequestedKey}' was requested", responseKey, query.Key);
-                    return;
-                }
-
                 linkInterface.ModelQueryRequests.Dequeue();
                 if (json.IsEmpty)
                 {

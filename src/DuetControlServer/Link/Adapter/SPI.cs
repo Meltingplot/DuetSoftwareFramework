@@ -342,6 +342,17 @@ public class SPI : IDiagnostics, ILinkAdapter
                     _eventLogger.LogOutput(MessageType.Warning, $"Lost connection to Duet ({e.Message})");
                 }
                 _connected = false;
+
+                // Drop the data of this transfer like the USB adapter does on reconnect. Every request is invalidated once the connection is back,
+                // else the retry delivers them anyway and RRF answers requests that no longer exist or executes codes that have been cancelled
+                if (_hadTimeout)
+                {
+                    _txPointer = 0;
+                    _packetId = 0;
+                    _txHeader.NumPackets = 0;
+                    _txHeader.DataLength = 0;
+                    WriteCRC();
+                }
             }
         }
     }

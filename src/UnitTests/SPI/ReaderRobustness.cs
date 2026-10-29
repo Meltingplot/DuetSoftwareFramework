@@ -9,7 +9,7 @@ using NUnit.Framework;
 namespace UnitTests.SPI;
 
 /// <summary>
-/// Tests for firmware data that the packet reader must handle without crashing or mismatching responses
+/// Tests for firmware data that the packet reader must handle without crashing
 /// </summary>
 [TestFixture]
 public class ReaderRobustness
@@ -50,24 +50,5 @@ public class ReaderRobustness
 
         Reader.ReadEvaluationResult(blob, out _, out _, out object? result);
         return result;
-    }
-
-    [Test]
-    public void ObjectModelKey()
-    {
-        Assert.That(Reader.TryReadObjectModelKey("{\"key\":\"boards\",\"flags\":\"d99\",\"result\":[{\"key\":\"nested\"}]}"u8, out string key), Is.True);
-        Assert.That(key, Is.EqualTo("boards"));
-
-        Assert.That(Reader.TryReadObjectModelKey("{\"key\":\"\",\"flags\":\"d99f\",\"result\":{\"key\":\"nested\"}}"u8, out key), Is.True);
-        Assert.That(key, Is.EqualTo(string.Empty));
-
-        Assert.That(Reader.TryReadObjectModelKey("{\"flags\":{\"key\":\"nested\"},\"key\":\"move.axes\",\"next\":9}"u8, out key), Is.True);
-        Assert.That(key, Is.EqualTo("move.axes"));
-
-        // No key or malformed content must not be treated as a mismatch
-        Assert.That(Reader.TryReadObjectModelKey("{\"result\":null}"u8, out _), Is.False);
-        Assert.That(Reader.TryReadObjectModelKey("{\"key\":42}"u8, out _), Is.False);
-        Assert.That(Reader.TryReadObjectModelKey("{\"key\":\"limits"u8, out _), Is.False);
-        Assert.That(Reader.TryReadObjectModelKey(""u8, out _), Is.False);
     }
 }
