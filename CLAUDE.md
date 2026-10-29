@@ -13,6 +13,18 @@ Do not guess G-code semantics, parameters, or responses. Before writing, changin
 
 If the code and the docs disagree, or neither covers the case, say so explicitly instead of filling the gap with an assumption.
 
+## Bug fixes
+
+Write fixes the way upstream (Christian Hammacher) would. Upstream usually fixes the same bug soon after us, and a fix built the same way merges cleanly or can be replaced by upstream's without surprises.
+
+1. Fix the code that produces the wrong state, not the code that receives it. If the protocol is wrong, fix RRF and DSF together. A fix that has to guess which event belongs to what sits on the wrong side.
+2. Find a path that already works (USB vs SPI, v3.6, reset vs new instance, RRF behaviour) and make the broken path do the same.
+3. Keep state on the object whose lifetime it shares. Pass missing context as a parameter even if that changes a signature in several files. No side tables, no lookups.
+4. Prefer removing code (a second writer, an old workaround) over adding counters, heuristics or diagnostics.
+5. Choose the simplest invariant that removes the bug, and state any behaviour change in the commit.
+6. Commit title `Fixed <symptom> [when <condition>]`, one body line per change, forum thread if there is one.
+7. Every fix comes with unit tests in fork-only files under `src/UnitTests`, so an upstream fix for the same bug can be checked against them.
+
 ## Git workflow
 
 Every feature goes through a feature branch and a pull request. Never commit feature work directly to `v3.6-dev`, `v3.7-dev`, or any other integration branch.
