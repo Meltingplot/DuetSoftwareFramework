@@ -340,19 +340,13 @@ public class SPI : IDiagnostics, ILinkAdapter
                     _hadTimeout = true;
                     _model.ConnectionLost();
                     _eventLogger.LogOutput(MessageType.Warning, $"Lost connection to Duet ({e.Message})");
-                }
-                _connected = false;
 
-                // Drop the data of this transfer like the USB adapter does on reconnect. Every request is invalidated once the connection is back,
-                // else the retry delivers them anyway and RRF answers requests that no longer exist or executes codes that have been cancelled
-                if (_hadTimeout)
-                {
-                    _txPointer = 0;
-                    _packetId = 0;
-                    _txHeader.NumPackets = 0;
-                    _txHeader.DataLength = 0;
+                    // Every request is invalidated once the connection is back, so RRF must reset as well like it does on USB reconnects.
+                    // RRF accepts only this sequence number or the next one, depending on whether it has processed this transfer, so skip both
+                    _txHeader.SequenceNumber += 2;
                     WriteCRC();
                 }
+                _connected = false;
             }
         }
     }
