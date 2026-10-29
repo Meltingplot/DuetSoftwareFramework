@@ -144,15 +144,12 @@ public class UnbufferedCodes
     [Test]
     public void CallingLevelCodeAfterUnbufferedMacroCode()
     {
-        // The calling level continues only after the macro, so it still waits for an unbuffered code in that macro
+        // Unbuffered codes hold back codes on their own stack level only (upstream 30ea08be). A code on the calling level
+        // passes the Start stage, but if it goes to the firmware it is still sent only after the macro
         MacroFile macro = PushMacro();
-        Code m122 = StartBlockingM122(macro);
-        Task<Message?> comment = StartComment();
+        StartBlockingM122(macro);
 
-        Assert.That(comment.Wait(HoldTime), Is.False, "Code on the calling level must wait for the unbuffered macro code");
-
-        _codeProcessor.CancelCode(m122);
-        Assert.That(comment.Wait(CodeTimeout), Is.True);
+        Assert.That(StartComment().Wait(CodeTimeout), Is.True, "Code on the calling level is held back by the unbuffered macro code");
     }
 
     [Test]
