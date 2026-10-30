@@ -10,7 +10,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load] [dotnet test arguments]
 
 - Needs Tim's hardware token (plink uses gpg-agent as Pageant), PuTTY's `plink.exe` and the `mpadmin` account on the SBC (passwordless sudo).
 - The script stops `mp-ota-gate.timer`, so that no update starts, and starts it again at the end.
-- It opens a plink tunnel to the SBC's HTTP API on the Windows side of the WSL network (not reachable from the LAN) and closes it at the end.
+- `tunnel.py` forwards `127.0.0.1:18080` in WSL to the SBC's HTTP API, with one `plink -nc` per connection. A plink listener on Windows does not work reliably, because Windows may drop connections from WSL to it.
 - `--side-load` publishes DCS from this tree and bind-mounts `DuetAPI.dll`, `DuetControlServer.dll` and `DuetSharedLibrary.dll` over the image's copies for the run. It removes them again at the end. Both steps restart DCS and send M999.
 - Examples: `--filter "TestCategory!=Restart"` skips the restarts. `--filter "FullyQualifiedName~LinkSoak"` runs the 30-minute soak.
 - Without `LAB_PRINTER_URL` and `LAB_PRINTER_SHELL`, which the script sets, every test is skipped.

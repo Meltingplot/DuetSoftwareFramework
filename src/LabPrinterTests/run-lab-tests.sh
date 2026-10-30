@@ -10,8 +10,6 @@ PLINK=${PLINK:-"/mnt/c/Program Files/PuTTY/plink.exe"}
 JUMP_HOST=${JUMP_HOST:-meltingplot@192.168.172.143}
 SBC=${SBC:-10.42.0.2}
 SBC_USER=${SBC_USER:-mpadmin}
-# Windows side of the WSL network. plink runs on Windows, and this address is not reachable from the LAN
-TUNNEL_ADDRESS=${TUNNEL_ADDRESS:-$(ip route show default | awk '{ print $3; exit }')}
 TUNNEL_PORT=${TUNNEL_PORT:-18080}
 SIDE_LOAD_DIR=/var/tmp/lab-tests
 SIDE_LOAD_DLLS="DuetAPI.dll DuetControlServer.dll DuetSharedLibrary.dll"
@@ -121,14 +119,18 @@ EOF
     echo "Side-loaded $SIDE_LOAD_DLLS from $(git -C "$ROOT" rev-parse --short HEAD)$(git -C "$ROOT" diff --quiet HEAD -- src || echo ' with uncommitted changes')"
 fi
 
-"$PLINK" -ssh -agent -batch -N -L "$TUNNEL_ADDRESS:$TUNNEL_PORT:$SBC:80" "$JUMP_HOST" > /dev/null 2>&1 &
+python3 -I "$ROOT/src/LabPrinterTests/tunnel.py" "$PLINK" "$JUMP_HOST" "$SBC:80" "$TUNNEL_PORT" &
 tunnel_pid=$!
 for i in $(seq 20); do
-    curl -s -m 2 -o /dev/null "http://$TUNNEL_ADDRESS:$TUNNEL_PORT/machine/status" && break
+    curl -s -m 5 -o /dev/null "http://127.0.0.1:$TUNNEL_PORT/machine/status" && break
+    if [ "$i" = 20 ]; then
+        echo "The tunnel to the printer's HTTP API does not work" >&2
+        exit 1
+    fi
     sleep 1
 done
 
-export LAB_PRINTER_URL="http://$TUNNEL_ADDRESS:$TUNNEL_PORT"
+export LAB_PRINTER_URL="http://127.0.0.1:$TUNNEL_PORT"
 LAB_PRINTER_SHELL=$(printf '%q ' "$PLINK" -ssh -agent -A -batch "$JUMP_HOST" "ssh -A -o BatchMode=yes $SBC_USER@$SBC bash -s")
 export LAB_PRINTER_SHELL
 dotnet test "$ROOT/src/LabPrinterTests/LabPrinterTests.csproj" --logger "console;verbosity=normal" "$@"
