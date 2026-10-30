@@ -101,7 +101,7 @@ public sealed class SbcTriggerService(
 
     /// <summary>
     /// Register, update, or remove an SBC expression trigger from an M581.1 code.
-    /// Returns null if the expression contains no SBC fields (so RRF can handle M581.1 itself),
+    /// Returns null if the expression contains no SBC fields or the trigger is deleted (so RRF can handle M581.1 itself),
     /// or a <see cref="Message"/> when the request was fully handled by this service.
     /// </summary>
     /// <param name="code">M581.1 code with T, P, and optional R parameters</param>
@@ -119,14 +119,14 @@ public sealed class SbcTriggerService(
             return new Message(MessageType.Error, "P parameter (expression) is required");
         }
 
-        // P-1 (integer) means delete/clear the trigger
+        // P-1 (integer) means delete/clear the trigger. Pass it on like plain M581 P-1, so that RRF deletes a trigger it evaluates itself
         if (pParam.Type == typeof(int) && (int)pParam == -1)
         {
             lock (_triggers)
             {
                 _triggers.Remove(triggerNumber);
             }
-            return new Message();
+            return null;
         }
 
         if (pParam.Type != typeof(string))
