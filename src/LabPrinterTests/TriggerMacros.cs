@@ -112,7 +112,7 @@ public class TriggerMacros : LabTest
 
     /// <summary>
     /// The G-code dictionary says M581.1 T# P-1 deletes a trigger, but DSF answers it without passing it on to RRF, so a trigger that RRF
-    /// evaluates keeps running (upstream SbcTriggerService.ConfigureAsync, found while writing these tests, not fixed)
+    /// evaluates keeps running (upstream SbcTriggerService.ConfigureAsync, found while writing these tests, fixed in #61)
     /// </summary>
     [Test]
     public async Task DeleteFirmwareTriggerWithM581Point1()
