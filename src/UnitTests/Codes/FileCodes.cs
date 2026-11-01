@@ -239,25 +239,20 @@ public class FileCodes
     }
 
     [Test]
-    public async Task FileInfoOfMissingFileReportsError()
+    public async Task FileInfoOfMissingFile()
     {
-        // The wiki: "err" is nonzero if the file was not found. Whether the reply is valid JSON is checked by FileInfoOfMissingFile
-        string reply = await _host.ExecuteAsync("M36 \"missing.g\"");
-        Assert.That(reply, Does.StartWith("{\"err\":1,"));
-        Assert.That(reply, Does.Contain("missing.g"));
+        // The wiki: "err" is nonzero if the file was not found. RepRap.cpp:1788 (GetFileInfoResponse) replies {"err":1,"fileName":"missing.g"}
+        // with the name as given. MCodeHandler used to write "fileName: instead of "fileName": and so replied with invalid JSON
+        Assert.That(await _host.ExecuteAsync("M36 \"missing.g\""), Is.EqualTo("{\"err\":1,\"fileName\":\"missing.g\"}\n"));
         Assert.That(Received(), Is.Empty);
     }
 
-    [Test, Explicit("Reproduces M36 replying with invalid JSON (\"fileName:\"...) for a file that does not exist")]
-    public async Task FileInfoOfMissingFile()
+    [Test]
+    public async Task FileInfoOfMissingFileWithLineNumber()
     {
-        // RepRap::GetFileInfoResponse replies {"err":1,"fileName":"missing.g"} and the wiki says "err" is nonzero if the file was not found.
-        // MCodeHandler writes "{\"err\":1,\"fileName:" + name + "}", which yields {"err":1,"fileName:"missing.g"}
-        string reply = await _host.ExecuteAsync("M36 \"missing.g\"");
-        Assert.That(() => JsonDocument.Parse(reply).Dispose(), Throws.Nothing, reply);
-        using JsonDocument json = JsonDocument.Parse(reply);
-        Assert.That(json.RootElement.GetProperty("err").GetInt32(), Is.EqualTo(1));
-        Assert.That(json.RootElement.GetProperty("fileName").GetString(), Is.EqualTo("missing.g"));
+        // RepRap.cpp:1359 (StartJsonResponse) puts "line" first if the code had an explicit line number
+        Assert.That(await _host.ExecuteAsync("N5 M36 \"missing.g\""), Is.EqualTo("{\"line\":5,\"err\":1,\"fileName\":\"missing.g\"}\n"));
+        Assert.That(Received(), Is.Empty);
     }
 
     [Test]

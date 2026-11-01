@@ -462,7 +462,7 @@ public class MCodeHandler(
                         catch (Exception e) when (e is not MissingParameterException and not InvalidParameterTypeException)
                         {
                             logger.LogDebug(e, "Failed to return file information");
-                            return new Message(MessageType.Success, ((code.ExplicitLineNumber != null) ? $"{{\"line\":{code.ExplicitLineNumber},\"err\":1,\"fileName:" : "{\"err\":1,\"fileName:") + JsonSerializer.Serialize(virtualFilename, CommonContext.Default.String) + "}");
+                            return new Message(MessageType.Success, ((code.ExplicitLineNumber != null) ? $"{{\"line\":{code.ExplicitLineNumber},\"err\":1,\"fileName\":" : "{\"err\":1,\"fileName\":") + JsonSerializer.Serialize(virtualFilename, CommonContext.Default.String) + "}");
                         }
                     }
                     else
