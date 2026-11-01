@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using DuetAPI;
@@ -10,14 +9,9 @@ using DuetControlServer;
 using DuetControlServer.Codes;
 using DuetControlServer.Commands;
 using DuetControlServer.Files;
-using DuetControlServer.Link;
-using DuetControlServer.Link.Adapter;
-using DuetControlServer.Model;
-using DuetControlServer.Utility;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Hosting.Internal;
-using Microsoft.Extensions.Options;
 using NUnit.Framework;
 using Code = DuetControlServer.Commands.Code;
 
@@ -41,20 +35,7 @@ public class UnbufferedCodes
     {
         _macroFile = Path.GetTempFileName();
 
-        ServiceCollection services = new();
-        services
-            .AddLogging()
-            .AddSingleton(Options.Create(new Settings()))
-            .AddSingleton<IHostApplicationLifetime, ApplicationLifetime>()
-            .AddSingleton(DispatchProxy.Create<ILinkAdapter, SPI.ChannelProcessor.NullLinkAdapter>())
-            .AddSingleton<LinkInterface>()
-            .AddCodes()
-            .AddCommands()
-            .AddFiles()
-            .AddLink()
-            .AddModel()
-            .AddUtility();
-        _provider = services.BuildServiceProvider();
+        _provider = DcsServices.Build();
         _codeProcessor = _provider.GetRequiredService<CodeProcessor>();
     }
 
