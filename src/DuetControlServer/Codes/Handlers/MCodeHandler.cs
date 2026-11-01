@@ -158,7 +158,7 @@ public class MCodeHandler(
                     }
                     else if (compatibility == Compatibility.Marlin || compatibility == Compatibility.NanoDLP)
                     {
-                        result.AppendLine("Begin file list:");
+                        result.AppendLine("Begin file list");
                     }
 
                     bool itemFound = false;
