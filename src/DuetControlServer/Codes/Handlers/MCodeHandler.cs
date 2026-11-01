@@ -865,9 +865,7 @@ public class MCodeHandler(
                     {
                         await using (await linkInterface.LockAllMovementSystemsAndWaitForStandstill(code.Channel))
                         {
-                            string physicalDirectory = (code.MinorNumber != 1)
-                                ? await filePathResolver.ToPhysicalAsync(directory, "sys", cancellationToken)
-                                : await filePathResolver.ToPhysicalAsync(directory, "www", cancellationToken);
+                            string physicalDirectory = await filePathResolver.ToPhysicalAsync(directory, (code.MinorNumber != 1) ? FileDirectory.System : FileDirectory.Web, cancellationToken);
                             if (Directory.Exists(physicalDirectory))
                             {
                                 string virtualDirectory = await filePathResolver.ToVirtualAsync(physicalDirectory, cancellationToken);

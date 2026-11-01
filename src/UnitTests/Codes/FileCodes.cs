@@ -500,15 +500,32 @@ public class FileCodes
         Assert.That(Received(), Is.Empty);
     }
 
-    [Test, Explicit("Reproduces M505 resolving a relative path against 0:/sys instead of the current system directory")]
+    [Test]
     public async Task SetSystemDirectoryRelativeToCurrent()
     {
         System.IO.Directory.CreateDirectory(PhysicalPath("sys", "config1", "sub"));
-        await _host.ExecuteAsync("M505 P\"config1\"");
+        Assert.That(await _host.ExecuteAsync("M505 P\"config1\""), Is.EqualTo("\n"));
 
-        // The wiki: "default path is the existing sys path if a relative path is given". ConfigurableFolder::Configure combines the
-        // new path with the current folder. MCodeHandler always resolves it against "sys"
+        // The wiki (Gcodes.md:5371): "default path is the existing sys path if a relative path is given". Platform.cpp:3959 (ConfigurableFolder::Configure)
+        // combines the new path with the current folder. MCodeHandler used to resolve it against 0:/sys
         Assert.That(await _host.ExecuteAsync("M505 P\"sub\""), Is.EqualTo("\n"));
         Assert.That(await _host.ExecuteAsync("M505"), Does.StartWith("Sys file path is 0:/sys/config1/sub"));
+
+        // MassStorage.cpp:208 (CombineName) ignores the current folder if the path starts with '/' or a drive number
+        Assert.That(await _host.ExecuteAsync("M505 P\"/sys\""), Is.EqualTo("\n"));
+        Assert.That(await _host.ExecuteAsync("M505"), Does.StartWith("Sys file path is 0:/sys").And.Not.Contains("config1"));
+        Assert.That(Received(), Is.Empty);
+    }
+
+    [Test]
+    public async Task SetWebDirectoryRelativeToCurrent()
+    {
+        System.IO.Directory.CreateDirectory(PhysicalPath("www", "mcui", "sub"));
+        Assert.That(await _host.ExecuteAsync("M505.1 P\"mcui\""), Is.EqualTo("\n"));
+
+        // The wiki (Gcodes.md:5399): "default path is the existing HTTP root folder if a relative path is given". Platform.h:788 uses ConfigurableFolder::Configure as for M505
+        Assert.That(await _host.ExecuteAsync("M505.1 P\"sub\""), Is.EqualTo("\n"));
+        Assert.That(await _host.ExecuteAsync("M505.1"), Does.StartWith("HTTP file path is 0:/www/mcui/sub"));
+        Assert.That(Received(), Is.Empty);
     }
 }
