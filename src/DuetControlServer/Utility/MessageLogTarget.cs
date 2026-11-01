@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Concurrent;
+using System.Threading;
+using System.Threading.Tasks;
 using DuetAPI.ObjectModel;
 using Microsoft.Extensions.Logging;
 
@@ -117,7 +119,20 @@ public sealed class MessageLogger : ILogger
             message = $"{_categoryName}: {message}";
         }
 
-        // Add message to object model
-        _ = _model.OutputAsync(new Message(messageType, message));
+        // Add message to object model. Don't use OutputAsync here because it logs the message again, which would end up here
+        _ = AddMessageAsync(new Message(messageType, message));
+    }
+
+    /// <summary>
+    /// Add a message to the object model without logging it
+    /// </summary>
+    /// <param name="message">Message to add</param>
+    /// <returns>Asynchronous task</returns>
+    private async Task AddMessageAsync(Message message)
+    {
+        using (await _model.AccessReadWriteAsync(CancellationToken.None))
+        {
+            _model.Messages.Add(message);
+        }
     }
 } 
