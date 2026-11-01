@@ -7,13 +7,9 @@ using System.Threading.Tasks;
 using DuetAPI;
 using DuetAPI.ObjectModel;
 using DuetControlServer;
-using DuetControlServer.Codes;
 using DuetControlServer.Commands;
-using DuetControlServer.Files;
 using DuetControlServer.Link;
-using DuetControlServer.Link.Adapter;
 using DuetControlServer.Model;
-using DuetControlServer.Utility;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Hosting.Internal;
@@ -98,8 +94,7 @@ public sealed class FakeFirmwareHost : IAsyncDisposable
         FakeFirmware firmware = new(Options.Create(settings));
         configureFirmware?.Invoke(firmware);
 
-        ServiceCollection services = new();
-        services
+        ServiceProvider provider = DcsServices.Build(settings, firmware, services => services
             .AddLogging(builder =>
             {
                 if (Enum.TryParse(Environment.GetEnvironmentVariable("DSF_FAKE_FIRMWARE_LOG"), true, out LogLevel logLevel))
@@ -107,20 +102,9 @@ public sealed class FakeFirmwareHost : IAsyncDisposable
                     builder.SetMinimumLevel(logLevel).AddProvider(new TestContextLoggerProvider(Environment.GetEnvironmentVariable("DSF_FAKE_FIRMWARE_LOG_FILE")));
                 }
             })
-            .AddSingleton(Options.Create(settings))
-            .AddSingleton<IHostApplicationLifetime, ApplicationLifetime>()
-            .AddSingleton(firmware)
-            .AddSingleton<ILinkAdapter>(firmware)
-            .AddSingleton<LinkInterface>()
-            .AddCodes()
-            .AddCommands()
-            .AddFiles()
-            .AddLink()
-            .AddModel()
-            .AddUtility()
-            .AddHostedService<LinkService>();
+            .AddHostedService<LinkService>());
 
-        FakeFirmwareHost host = new(services.BuildServiceProvider(), firmware, baseDirectory);
+        FakeFirmwareHost host = new(provider, firmware, baseDirectory);
         firmware.Logger = host._provider.GetRequiredService<ILoggerFactory>().CreateLogger<FakeFirmware>();
         try
         {

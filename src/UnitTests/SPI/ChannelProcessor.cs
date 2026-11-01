@@ -1,6 +1,4 @@
-using System;
 using System.IO;
-using System.Reflection;
 using DuetAPI;
 using DuetAPI.Commands;
 using DuetAPI.ObjectModel;
@@ -8,7 +6,6 @@ using DuetControlServer;
 using DuetControlServer.Codes;
 using DuetControlServer.Commands;
 using DuetControlServer.Files;
-using DuetControlServer.Link.Adapter;
 using DuetControlServer.Link.Channel;
 using DuetControlServer.Link.Protocol.Shared;
 using Microsoft.Extensions.DependencyInjection;
@@ -28,21 +25,6 @@ public class ChannelProcessor
     private ServiceProvider _provider = null!;
     private Processor _processor = null!;
     private string _macroFile = null!;
-
-    /// <summary>
-    /// Link adapter that does nothing, the tests feed replies and abort requests to the processor directly
-    /// </summary>
-    public class NullLinkAdapter : DispatchProxy
-    {
-        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
-        {
-            if (targetMethod!.Name == $"get_{nameof(ILinkAdapter.ProtocolVersion)}")
-            {
-                return (int)Consts.ProtocolVersion;
-            }
-            return targetMethod.ReturnType.IsValueType && targetMethod.ReturnType != typeof(void) ? Activator.CreateInstance(targetMethod.ReturnType) : null;
-        }
-    }
 
     [SetUp]
     public void SetUp()
