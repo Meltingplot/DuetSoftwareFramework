@@ -563,21 +563,7 @@ public class CodeFile(
                         return code;
 
                     case KeywordType.Var:
-                        if (codeBlock is null || code.Indent > codeBlock.Indent)
-                        {
-                            codeBlock = new CodeBlock(code, true)
-                            {
-                                HasLocalVariables = true
-                            };
-                            lock (_codeBlocks)
-                            {
-                                _codeBlocks.Push(codeBlock);
-                            }
-                        }
-                        else
-                        {
-                            codeBlock.HasLocalVariables = true;
-                        }
+                        MarkLocalVariableDeclaration(code, codeBlock);
                         return code;
 
                     case KeywordType.Skip:
@@ -586,14 +572,46 @@ public class CodeFile(
 
                     case KeywordType.Echo:
                     case KeywordType.Global:
-                    case KeywordType.None:
                     case KeywordType.Set:
+                        return code;
+
+                    case KeywordType.None:
+                        // M260/M261 with V declare a local variable for the result as well
+                        if (code.Type == CodeType.MCode && code.MajorNumber is 260 or 261 && code.HasParameter('V'))
+                        {
+                            MarkLocalVariableDeclaration(code, codeBlock);
+                        }
                         return code;
 
                     default:
                         throw new CodeParserException($"Keyword {code.Keyword} is not supported", code);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Mark the current code block as having local variables when a code declaring one is read.
+    /// The end of the block then waits for the declaration to be executed, so the variable is added to this block
+    /// </summary>
+    /// <param name="code">Code declaring a local variable</param>
+    /// <param name="codeBlock">Current code block</param>
+    private void MarkLocalVariableDeclaration(Code code, CodeBlock? codeBlock)
+    {
+        if (codeBlock is null || code.Indent > codeBlock.Indent)
+        {
+            codeBlock = new CodeBlock(code, true, KeywordType.Var)
+            {
+                HasLocalVariables = true
+            };
+            lock (_codeBlocks)
+            {
+                _codeBlocks.Push(codeBlock);
+            }
+        }
+        else
+        {
+            codeBlock.HasLocalVariables = true;
         }
     }
 

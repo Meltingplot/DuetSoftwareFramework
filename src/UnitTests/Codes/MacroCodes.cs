@@ -66,18 +66,30 @@ public class MacroCodes
         Assert.That(Executed(), Is.EqualTo(new[] { "M98 P\"vars.g\"", "G4 P1" }));
     }
 
-    [Test, Explicit("Reproduces the result variable of M260/M261 in a block not being deleted when the block ends")]
+    [Test]
     public async Task ResultVariablesInBlocks()
     {
-        // GetResultVariable in Platform.cpp creates the variable of V in the current block and fails if a variable of that name exists.
-        // MCodeHandler.CodeExecutedAsync registers it with the block that is current when RRF has replied. By then the file reader has
-        // already ended the block of the code, so DCS never deletes the variable and the second code fails with "variable 'x' already exists"
+        // Platform.cpp:2516-2521 (GetResultVariable) creates the variable of V and fails if a variable of that name exists.
+        // MCodeHandler.CodeExecutedAsync registers it with the block that is current when RRF has replied. CodeFile marks the block when it
+        // reads the code, like var, so the block end waits for the reply. Before, the reader could end the block first, the variable went to
+        // another block, and the second code failed with "variable 'x' already exists"
         _host.WriteMacro("i2c.g", "if true\n  M261 A1 B2 V\"x\"\nif true\n  M260 A1 B2 V\"x\"\n");
 
         Assert.That(await _host.ExecuteAsync("M98 P\"i2c.g\""), Is.EqualTo("\n"));
         Assert.That(Executed(), Is.EqualTo(new[] { "M98 P\"i2c.g\"", "M261 A1 B2 V\"x\"", "M260 A1 B2 V\"x\"" }));
         Assert.That(ErrorReplies(), Is.Empty);
         Assert.That(_host.Firmware.GetReceivedRequests().Any(request => request.Request == SbcRequest.DeleteLocalVariable && request.Text == "x"), Is.True);
+    }
+
+    [Test]
+    public async Task ResultVariableInLoop()
+    {
+        // Each iteration declares the result variable again, so the end of every iteration must delete it
+        _host.WriteMacro("i2c.g", "var i = 0\nwhile var.i < 2\n  M261 A1 B2 V\"x\"\n  set var.i = var.i + 1\nG4 P1\n");
+
+        Assert.That(await _host.ExecuteAsync("M98 P\"i2c.g\""), Is.EqualTo("\n"));
+        Assert.That(ErrorReplies(), Is.Empty);
+        Assert.That(Executed(), Is.EqualTo(new[] { "M98 P\"i2c.g\"", "M261 A1 B2 V\"x\"", "M261 A1 B2 V\"x\"", "G4 P1" }));
     }
 
     [Test]
