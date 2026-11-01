@@ -43,9 +43,7 @@ public class PacketReaderFuzz
         ["FileHandle"] = (data => Reader.ReadFileHandle(data, out _), () => [Packet(new FileHandleHeader { Handle = 1 })])
     };
 
-    private static IEnumerable<TestCaseData> TargetNames => Targets.Keys.Select(target => (target == "EvaluationResult")
-        ? new TestCaseData(target).Explicit("Arrays are allocated with the count from the packet before it is checked, and a malformed DateTime throws a FormatException")
-        : new TestCaseData(target));
+    private static IEnumerable<string> TargetNames => Targets.Keys;
 
     [OneTimeSetUp]
     public void CheckHeapLimit()

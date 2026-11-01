@@ -269,7 +269,7 @@ public static class Reader
                 result = MemoryMarshal.Read<ulong>(from[bytesRead..]);
                 break;
             case DataType.IntArray:
-                int[] intArray = new int[header.IntValue];
+                int[] intArray = new int[GetArrayLength(from[bytesRead..], header.IntValue, sizeof(int))];
                 for (int i = 0; i < header.IntValue; i++)
                 {
                     intArray[i] = MemoryMarshal.Read<int>(from[bytesRead..]);
@@ -278,7 +278,7 @@ public static class Reader
                 result = intArray;
                 break;
             case DataType.UIntArray:
-                uint[] uintArray = new uint[header.IntValue];
+                uint[] uintArray = new uint[GetArrayLength(from[bytesRead..], header.IntValue, sizeof(uint))];
                 for (int i = 0; i < header.IntValue; i++)
                 {
                     uintArray[i] = MemoryMarshal.Read<uint>(from[bytesRead..]);
@@ -287,7 +287,7 @@ public static class Reader
                 result = uintArray;
                 break;
             case DataType.FloatArray:
-                float[] floatArray = new float[header.IntValue];
+                float[] floatArray = new float[GetArrayLength(from[bytesRead..], header.IntValue, sizeof(float))];
                 for (int i = 0; i < header.IntValue; i++)
                 {
                     floatArray[i] = MemoryMarshal.Read<float>(from[bytesRead..]);
@@ -303,7 +303,7 @@ public static class Reader
                 result = new DriverId(header.UIntValue);
                 break;
             case DataType.DriverIdArray:
-                DriverId[] driverIdArray = new DriverId[header.IntValue];
+                DriverId[] driverIdArray = new DriverId[GetArrayLength(from[bytesRead..], header.IntValue, sizeof(uint))];
                 for (int i = 0; i < header.IntValue; i++)
                 {
                     driverIdArray[i] = new DriverId(MemoryMarshal.Read<uint>(from[bytesRead..]));
@@ -315,7 +315,7 @@ public static class Reader
                 result = Convert.ToBoolean(header.IntValue);
                 break;
             case DataType.BoolArray:
-                bool[] boolArray = new bool[header.IntValue];
+                bool[] boolArray = new bool[GetArrayLength(from[bytesRead..], header.IntValue, sizeof(byte))];
                 for (int i = 0; i < header.IntValue; i++)
                 {
                     boolArray[i] = Convert.ToBoolean(MemoryMarshal.Read<byte>(from[bytesRead..]));
@@ -441,7 +441,8 @@ public static class Reader
                 }
                 break;
             case DataType.DateTime:
-                result = DateTime.Parse(Encoding.UTF8.GetString(from.Slice(bytesRead, header.IntValue)));
+                string dateTime = Encoding.UTF8.GetString(from.Slice(bytesRead, header.IntValue));
+                result = DateTime.TryParse(dateTime, out DateTime dateTimeValue) ? dateTimeValue : throw new ArgumentOutOfRangeException(nameof(from), dateTime, "Invalid date and time");
                 bytesRead += header.IntValue;
                 break;
             case DataType.Char:
@@ -626,6 +627,23 @@ public static class Reader
 
         // Math.Round supports at most 28 decimal digits
         return Math.Round((decimal)value, Math.Min(numDigits, 28), MidpointRounding.AwayFromZero);
+    }
+
+    /// <summary>
+    /// Make sure that an array announced by the firmware fits into the remaining data before it is allocated
+    /// </summary>
+    /// <param name="from">Remaining data</param>
+    /// <param name="count">Number of items</param>
+    /// <param name="itemSize">Size of each item in bytes</param>
+    /// <returns>Number of items</returns>
+    /// <exception cref="ArgumentOutOfRangeException">The remaining data does not hold that many items</exception>
+    private static int GetArrayLength(ReadOnlySpan<byte> from, int count, int itemSize)
+    {
+        if (count < 0 || count > from.Length / itemSize)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, "Array exceeds the packet");
+        }
+        return count;
     }
 
     /// <summary>
