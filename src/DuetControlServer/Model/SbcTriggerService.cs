@@ -100,47 +100,33 @@ public sealed class SbcTriggerService(
     }
 
     /// <summary>
-    /// Register, update, or remove an SBC expression trigger from an M581.1 code.
-    /// Returns null if the expression contains no SBC fields or the trigger is deleted (so RRF can handle M581.1 itself),
-    /// or a <see cref="Message"/> when the request was fully handled by this service.
+    /// Handle M581 and M581.1 like RRF's TriggerItem::Configure does for both codes, because they share the trigger numbers.
+    /// DSF evaluates a trigger only if its M581.1 expression contains SBC fields and leaves every other trigger to RRF
     /// </summary>
-    /// <param name="code">M581.1 code with T, P, and optional R parameters</param>
+    /// <param name="code">M581 or M581.1 code</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Result message, or null to pass the code on to RRF</returns>
     public async Task<Message?> ConfigureAsync(Commands.Code code, CancellationToken cancellationToken)
     {
         if (!code.TryGetInt('T', out int triggerNumber) || triggerNumber < 0 || triggerNumber >= 32)
         {
-            return new Message(MessageType.Error, "T parameter must be between 0 and 31");
+            // Let RRF report the invalid trigger number
+            return null;
         }
 
-        if (!code.TryGetParameter('P', out CodeParameter? pParam))
+        // Without P-1, inputs, axis endstops or an expression the code reports the trigger or changes its enable condition
+        if (code.Parameters.All(parameter => parameter.Letter is 'T' or 'R' or 'S'))
         {
-            // Without P, M581.1 reports the trigger or changes its enable condition
             return await ReportOrChangeConditionAsync(triggerNumber, code, cancellationToken);
         }
 
-        // P-1 (integer) means delete/clear the trigger. Pass it on like plain M581 P-1, so that RRF deletes a trigger it evaluates itself
-        if (pParam.Type == typeof(int) && (int)pParam == -1)
+        // Everything else creates or deletes a trigger that RRF evaluates, so RRF takes the slot back
+        if (code.MinorNumber != 1 || !code.TryGetParameter('P', out CodeParameter? pParam) || pParam.Type != typeof(string) || !expressions.ContainsSbcFields((string)pParam))
         {
-            lock (_triggers)
-            {
-                _triggers.Remove(triggerNumber);
-            }
+            Remove(triggerNumber);
             return null;
         }
-
-        if (pParam.Type != typeof(string))
-        {
-            return new Message(MessageType.Error, "P parameter must be a quoted expression string");
-        }
-        string triggerExpression = (string)pParam!;
-
-        if (!expressions.ContainsSbcFields(triggerExpression))
-        {
-            // No SBC fields — let RRF handle M581.1 natively
-            return null;
-        }
+        string triggerExpression = (string)pParam;
 
         int condition = code.TryGetInt('R', out int rParam) ? rParam : 0;
 
@@ -174,14 +160,13 @@ public sealed class SbcTriggerService(
     }
 
     /// <summary>
-    /// Report an SBC trigger or change its enable condition (R parameter), like RRF does for its own triggers.
-    /// Used by M581.1 without P and by plain M581 with no more than T, R and S
+    /// Report an SBC trigger or change its enable condition (R parameter), like RRF does for its own triggers
     /// </summary>
     /// <param name="triggerNumber">Trigger number (0–31)</param>
     /// <param name="code">M581 or M581.1 code</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Result message, or null to pass the code on to RRF because RRF evaluates this trigger</returns>
-    public async Task<Message?> ReportOrChangeConditionAsync(int triggerNumber, Commands.Code code, CancellationToken cancellationToken)
+    private async Task<Message?> ReportOrChangeConditionAsync(int triggerNumber, Commands.Code code, CancellationToken cancellationToken)
     {
         TriggerState? state;
         lock (_triggers)
@@ -239,16 +224,16 @@ public sealed class SbcTriggerService(
 
     /// <summary>
     /// Remove a DSF-managed trigger, if one is registered for the given slot.
-    /// Called when plain M581 (re)configures or deletes a trigger so RRF takes back ownership.
+    /// Called when M581 or M581.1 (re)configures or deletes a trigger so RRF takes back ownership.
     /// </summary>
     /// <param name="triggerNumber">Trigger number (0–31)</param>
-    public void Remove(int triggerNumber)
+    private void Remove(int triggerNumber)
     {
         lock (_triggers)
         {
             if (_triggers.Remove(triggerNumber))
             {
-                logger.LogInformation("Removed SBC trigger {Number} (superseded by M581)", triggerNumber);
+                logger.LogInformation("Removed SBC trigger {Number} (superseded by M581 or M581.1)", triggerNumber);
             }
         }
     }
