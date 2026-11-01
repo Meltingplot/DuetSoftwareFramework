@@ -390,6 +390,31 @@ public sealed class Processor
     }
 
     /// <summary>
+    /// Discard a state copied by <see cref="CopyState(Processor)"/> that was never started,
+    /// e.g. because the job ended before the firmware forked it
+    /// </summary>
+    /// <returns>Asynchronous task</returns>
+    public async Task DiscardCopiedStateAsync()
+    {
+        lock (_macrosToStart)
+        {
+            _macrosToStart.RemoveAll(macro => macro.Channel == Channel);
+        }
+
+        while (Stack.Count > 1)
+        {
+            if (CurrentState.File is MacroFile macro)
+            {
+                using (await macro.LockAsync(_lifetime.ApplicationStopping))
+                {
+                    macro.Abort();
+                }
+            }
+            await PopAsync();
+        }
+    }
+
+    /// <summary>
     /// List of buffered G/M/T-codes that are being processed by the firmware
     /// </summary>
     public List<Code> BufferedCodes { get; } = [];

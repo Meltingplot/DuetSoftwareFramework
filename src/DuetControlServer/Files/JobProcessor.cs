@@ -818,6 +818,10 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
                     }
                 }
 
+                // Discard the File2 state that M606 copied if the job ended before RRF forked, else the next job cannot fork.
+                // Do this before taking the job lock because the channel processors lock the channel before the job
+                await _linkInterface.DiscardCopiedStateAsync(CodeChannel.File2, stoppingToken);
+
                 using (await LockAsync(stoppingToken))
                 {
                     // We are no longer printing a file...
