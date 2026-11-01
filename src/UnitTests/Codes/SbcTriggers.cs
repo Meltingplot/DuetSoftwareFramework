@@ -104,6 +104,15 @@ public class SbcTriggers
         Assert.That(await ConfigureAsync(TParameter, new('P', -1)), Is.Null);
     }
 
+    [TestCase(-1)]
+    [TestCase(32)]
+    public async Task InvalidTriggerNumberIsPassedToFirmware(int triggerNumber)
+    {
+        // RRF reports the error for both codes, its trigger numbers are never more than DSF's
+        Assert.That(await ConfigureAsync(new CodeParameter('T', triggerNumber), new('P', SbcExpression)), Is.Null);
+        Assert.That(await ProcessM581Async(new CodeParameter('T', triggerNumber)), Is.Null, "plain M581");
+    }
+
     [Test]
     public async Task ReportOfFirmwareTriggerIsPassedToFirmware()
     {
@@ -151,6 +160,16 @@ public class SbcTriggers
 
         // RRF configures its own trigger for these inputs, so DSF must stop evaluating its expression
         Assert.That(await ProcessM581Async(TParameter, new('P', "io1.in"), new('S', 1)), Is.Null);
+        Assert.That(await ConfigureAsync(TParameter), Is.Null, "DSF still reports the trigger as its own");
+    }
+
+    [Test]
+    public async Task FirmwareExpressionReplacesSbcTrigger()
+    {
+        AddSbcTrigger(0);
+
+        // RRF evaluates an expression without SBC fields itself, so DSF must stop evaluating its own like for plain M581 with inputs
+        Assert.That(await ConfigureAsync(TParameter, new('P', "sensors.gpIn[0].value = 1")), Is.Null);
         Assert.That(await ConfigureAsync(TParameter), Is.Null, "DSF still reports the trigger as its own");
     }
 

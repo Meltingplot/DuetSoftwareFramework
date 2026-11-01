@@ -953,41 +953,18 @@ public class MCodeHandler(
                 }
                 throw new OperationCanceledException();
 
-            // Configure external trigger (expression-based, SBC fields only)
+            // Configure external trigger (DSF evaluates expressions with SBC fields, RRF everything else)
             case 581:
-                if (code.MinorNumber == 1)
+                if (await codeProcessor.FlushAsync(code, cancellationToken: cancellationToken))
                 {
-                    if (await codeProcessor.FlushAsync(code, cancellationToken: cancellationToken))
+                    Message? result = await sbcTriggerService.ConfigureAsync(code, cancellationToken);
+                    if (result != null)
                     {
-                        Message? result = await sbcTriggerService.ConfigureAsync(code, cancellationToken);
-                        if (result != null)
-                        {
-                            // Expression was handled by SbcTriggerService (contains SBC fields)
-                            return result;
-                        }
-                        // No SBC fields in the expression — let RRF handle M581.1 natively
-                        break;
+                        return result;
                     }
-                    throw new OperationCanceledException();
+                    break;
                 }
-                if (code.TryGetInt('T', out int m581TriggerNumber))
-                {
-                    if (code.Parameters.Any(parameter => parameter.Letter is not ('T' or 'R' or 'S')))
-                    {
-                        // Plain M581 with inputs or P-1 hands ownership back to RRF — clear any DSF-managed trigger for this slot
-                        sbcTriggerService.Remove(m581TriggerNumber);
-                    }
-                    else
-                    {
-                        // Without inputs it reports the trigger or changes its enable condition, which DSF does itself for its own triggers
-                        Message? m581Result = await sbcTriggerService.ReportOrChangeConditionAsync(m581TriggerNumber, code, cancellationToken);
-                        if (m581Result is not null)
-                        {
-                            return m581Result;
-                        }
-                    }
-                }
-                break;
+                throw new OperationCanceledException();
 
             // Configure network protocols
             case 586:
