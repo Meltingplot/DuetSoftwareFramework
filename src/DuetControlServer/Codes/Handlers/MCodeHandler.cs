@@ -409,7 +409,7 @@ public class MCodeHandler(
                 if (await codeProcessor.FlushAsync(code, cancellationToken: cancellationToken))
                 {
                     string file = code.GetUnprecedentedString();
-                    string physicalFile = await filePathResolver.ToPhysicalAsync(file, cancellationToken: cancellationToken);
+                    string physicalFile = await filePathResolver.ToPhysicalAsync(file, FileDirectory.GCodes, cancellationToken);
 
                     try
                     {

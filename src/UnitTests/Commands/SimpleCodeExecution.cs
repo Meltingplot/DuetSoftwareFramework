@@ -216,8 +216,9 @@ public class SimpleCodeExecution
     [Test]
     public async Task InvalidPath()
     {
-        // ArgumentExceptions of codes are reported like parse errors. The path would leave the base directory
-        string name = $"../dsf-test-{Guid.NewGuid():N}.g";
+        // ArgumentExceptions of codes are reported like parse errors. The path would leave the base directory.
+        // It starts with '/' so that M30 does not resolve it against the G-code directory
+        string name = $"/../dsf-test-{Guid.NewGuid():N}.g";
         Assert.That(await _host.ExecuteAsync($"M30 \"{name}\""), Is.EqualTo($"Error: Path {name} escapes the volume root directory"));
 
         await EmulateMarlinAsync(CodeChannel.HTTP);

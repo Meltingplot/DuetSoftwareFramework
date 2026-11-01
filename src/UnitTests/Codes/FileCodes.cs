@@ -202,15 +202,29 @@ public class FileCodes
         Assert.That(Received(), Is.Empty);
     }
 
-    [Test, Explicit("Reproduces M30 resolving a relative path against 0:/ instead of the G-code directory")]
+    [Test]
     public async Task DeleteFileWithRelativePath()
     {
         string file = WriteFile("G1 X1\n", "gcodes", "a.g");
+        string fileInRoot = WriteFile("G1 X1\n", "a.g");
 
-        // GCodes2.cpp: M30 calls platform.Delete(Platform::GetGCodeDir(), filename), like M28 and M36 which DCS resolves against FileDirectory.GCodes.
-        // MCodeHandler calls ToPhysicalAsync(file) without a directory, so it deletes 0:/a.g and reports success
+        // GCodes2.cpp:1393: M30 calls platform.Delete(Platform::GetGCodeDir(), filename). GetGCodeDir is "0:/gcodes/" (Configuration.h:299),
+        // which RRF reports as directories.gCodes (RepRap.cpp:286). MCodeHandler used to resolve the name against 0:/ and so deleted 0:/a.g
         Assert.That(await _host.ExecuteAsync("M30 \"a.g\""), Is.EqualTo("\n"));
         Assert.That(System.IO.File.Exists(file), Is.False);
+        Assert.That(System.IO.File.Exists(fileInRoot), Is.True);
+        Assert.That(Received(), Is.Empty);
+    }
+
+    [Test]
+    public async Task DeleteFileWithPathFromRoot()
+    {
+        string file = WriteFile("G1 X1\n", "sys", "b.g");
+
+        // MassStorage.cpp:208 (CombineName) ignores the G-code directory if the name starts with '/' or a drive number
+        Assert.That(await _host.ExecuteAsync("M30 \"/sys/b.g\""), Is.EqualTo("\n"));
+        Assert.That(System.IO.File.Exists(file), Is.False);
+        Assert.That(Received(), Is.Empty);
     }
 
     [Test]
