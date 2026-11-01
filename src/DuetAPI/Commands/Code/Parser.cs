@@ -872,6 +872,15 @@ public partial class Code
         char c;
         do
         {
+            // Stop if another G/M/T code is coming up and this one is complete. The character belongs to the next code
+            // and a reader cannot take it back, so only peek at it
+            char next = PeekChar();
+            if (StartsNextCode(state, result, next))
+            {
+                c = next;
+                break;
+            }
+
             int b = ReadByte();
             c = (b < 0) ? '\n' : (char)b;
             result.Length++;
@@ -880,15 +889,6 @@ public partial class Code
             {
                 // Ignore CR
                 continue;
-            }
-
-            // Stop if another G/M/T code is coming up and this one is complete
-            if (StartsNextCode(state, result, c))
-            {
-                // The character belongs to the next code, so put it back and do not count it
-                pendingPointer--;
-                result.Length--;
-                break;
             }
 
             // Skip the checksum or CRC block of a numbered line without verifying it and treat it like the end of the line
