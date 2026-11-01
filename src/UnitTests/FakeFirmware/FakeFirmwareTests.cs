@@ -194,7 +194,8 @@ public class FakeFirmwareTests
 
         Assert.That(reply, Does.Not.StartWith("Error"));
         Assert.That(Executed(), Is.EqualTo(new[] { "M98 P\"abort.g\"", "G4 P51" }));
-        Assert.That(_host.Firmware.GetReceivedRequests().Any(request => request.Request == DuetControlServer.Link.Protocol.SbcRequests.Request.InvalidateChannel), Is.True);
+        // The reply can arrive before DCS sends the InvalidateChannel request with the next transfer (Processor.cs:868-870)
+        Assert.That(_host.Firmware.WaitUntil(firmware => firmware.GetReceivedRequests().Any(request => request.Request == DuetControlServer.Link.Protocol.SbcRequests.Request.InvalidateChannel), FakeFirmwareHost.DefaultTimeout), Is.True);
         Assert.That(_host.Firmware.WaitUntil(firmware => firmware.GetStackDepth(CodeChannel.HTTP) == 0, FakeFirmwareHost.DefaultTimeout), Is.True);
     }
 
