@@ -1,0 +1,1093 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using DuetAPI;
+using DuetAPI.Commands;
+using DuetControlServer.Link.Protocol.Shared;
+
+namespace UnitTests.FakeFirmware;
+
+/// <summary>
+/// Emulation of RRF's main task (GCodes::Spin and friends in src/GCodes/GCodes*.cpp) for codes that DSF sends in binary form.
+/// It runs between two transfers, so it sees the codes the SBC task stored and its replies go out with the next transfer.
+/// All members must be accessed with the lock of the <see cref="FakeFirmware"/> held
+/// </summary>
+/// <param name="firmware">Fake firmware this main task belongs to</param>
+internal sealed class FakeGCodes(FakeFirmware firmware)
+{
+    /// <summary>
+    /// Code numbers of macros started by RRF itself, see GCodes.h
+    /// </summary>
+    internal const int ToolChangeMacroCode = -1, SystemHelperMacroCode = -2, AsyncSystemMacroCode = -3;
+
+    /// <summary>
+    /// Maximum number of buffered SBC codes executed per spin, see GCodes.cpp
+    /// </summary>
+    private const int MaxSbcFileCodesPerSpin = 8;
+
+    /// <summary>
+    /// Macro call that waits for DSF to answer the macro request.
+    /// In RRF the main task blocks inside GCodeBuffer::RequestMacroFile, the fake stores the rest of GCodes::DoFileMacro here
+    /// </summary>
+    internal sealed class MacroCall
+    {
+        /// <summary>
+        /// Requested macro file
+        /// </summary>
+        public required string FileName { get; init; }
+
+        /// <summary>
+        /// Whether a missing file is reported
+        /// </summary>
+        public bool ReportMissing { get; init; }
+
+        /// <summary>
+        /// Code that runs the macro, see the codeRunning parameter of GCodes::DoFileMacro
+        /// </summary>
+        public int CodeRunning { get; init; }
+
+        /// <summary>
+        /// Macro parameters
+        /// </summary>
+        public Dictionary<string, object?> Parameters { get; init; } = [];
+
+        /// <summary>
+        /// Code that called the macro and finishes when the request has been resolved (M98), or null for system macros
+        /// </summary>
+        public FakeCode? Code { get; init; }
+
+        /// <summary>
+        /// Whether the main task holds the mutex of the G-code buffer while it waits. This is the case if the macro is
+        /// requested by a code, because GCodes::SpinGCodeBuffer locks the buffer around ActOnCode
+        /// </summary>
+        public bool HoldsMutex => Code is not null;
+    }
+
+    /// <summary>
+    /// Message box opened by M291, see Platform/MessageBox.cpp
+    /// </summary>
+    /// <param name="Seq">Sequence number</param>
+    /// <param name="Mode">Mode (S parameter)</param>
+    /// <param name="ShouldAbort">Whether cancelling it aborts the calling macro</param>
+    /// <param name="Message">Message text</param>
+    /// <param name="Title">Title</param>
+    internal sealed record MessageBox(uint Seq, int Mode, bool ShouldAbort, string Message, string Title)
+    {
+        /// <summary>
+        /// Whether the message box blocks the code that opened it
+        /// </summary>
+        public bool IsBlocking => Mode >= 2;
+    }
+
+    /// <summary>
+    /// Emulated G-code buffers, one per channel
+    /// </summary>
+    public FakeGCodeBuffer[] Buffers { get; } = [.. Enum.GetValues<CodeChannel>().Where(channel => channel != CodeChannel.Unknown).Select(channel => new FakeGCodeBuffer(channel))];
+
+    /// <summary>
+    /// Get the buffer of a channel
+    /// </summary>
+    /// <param name="channel">Code channel</param>
+    /// <returns>G-code buffer</returns>
+    public FakeGCodeBuffer this[CodeChannel channel] => Buffers[(int)channel];
+
+    /// <summary>
+    /// Whether the machine has been stopped by an emergency stop (GCodes::stopped)
+    /// </summary>
+    public bool Stopped { get; private set; }
+
+    /// <summary>
+    /// Buffer that owns the movement lock, see GCodes::resourceOwners. All movement systems are treated as one resource
+    /// </summary>
+    public FakeGCodeBuffer? MovementLockOwner { get; private set; }
+
+    /// <summary>
+    /// Open message boxes
+    /// </summary>
+    public List<MessageBox> MessageBoxes { get; } = [];
+
+    /// <summary>
+    /// Last message box sequence number
+    /// </summary>
+    private uint _lastMessageBoxSeq;
+
+    /// <summary>
+    /// Emergency stop requested by the SBC task (requestsFromOtherTasks)
+    /// </summary>
+    private bool _emergencyStopRequested;
+
+    /// <summary>
+    /// System macros requested by tests, see <see cref="FakeFirmware.RequestMacro"/>
+    /// </summary>
+    private readonly Queue<(CodeChannel channel, string fileName, bool reportMissing)> _macroRequests = new();
+
+    /// <summary>
+    /// Whether the main task is blocked in GCodeBuffer::RequestMacroFile
+    /// </summary>
+    public bool IsBlocked => Buffers.Any(gb => gb.IsWaitingForMacro);
+
+    /// <summary>
+    /// Whether a channel other than daemon and trigger runs a macro, see GCodes::DoingFileMacro
+    /// </summary>
+    public bool DoingFileMacro => Buffers.Any(gb => gb.Channel is not CodeChannel.Daemon and not CodeChannel.Trigger && gb.IsDoingFileMacro());
+
+    /// <summary>
+    /// Whether a channel waits for a message box, see GCodes::WaitingForAcknowledgement
+    /// </summary>
+    public bool WaitingForAcknowledgement => Buffers.Any(gb => gb.MachineState.WaitingForAcknowledgement);
+
+    /// <summary>
+    /// Queue a system macro, which is started when its channel is idle like GCodes::CheckTriggers starts trigger macros
+    /// </summary>
+    /// <param name="channel">Channel to run the macro on</param>
+    /// <param name="fileName">Macro file</param>
+    /// <param name="reportMissing">Whether a missing file is reported</param>
+    public void QueueMacroRequest(CodeChannel channel, string fileName, bool reportMissing) => _macroRequests.Enqueue((channel, fileName, reportMissing));
+
+    /// <summary>
+    /// Called by the SBC task on an emergency stop. The main task carries it out on its next spin, see GCodes::EmergencyStop
+    /// </summary>
+    public void RequestEmergencyStop() => _emergencyStopRequested = true;
+
+    /// <summary>
+    /// Reset everything after a firmware reset
+    /// </summary>
+    public void Reset()
+    {
+        foreach (FakeGCodeBuffer gb in Buffers)
+        {
+            gb.Reset();
+        }
+        Stopped = _emergencyStopRequested = false;
+        MovementLockOwner = null;
+        MessageBoxes.Clear();
+        _macroRequests.Clear();
+    }
+
+    /// <summary>
+    /// Run the main task until no channel can make progress, see GCodes::Spin
+    /// </summary>
+    public void Spin()
+    {
+        // A code waiting in RequestMacroFile continues as soon as the SBC task has resolved the request
+        foreach (FakeGCodeBuffer gb in Buffers)
+        {
+            if (gb.PendingMacroCall is not null && !gb.IsWaitingForMacro)
+            {
+                ContinueMacroCall(gb);
+            }
+        }
+        if (IsBlocked)
+        {
+            return;
+        }
+
+        // Carry out requests from other tasks first, see GCodes::Spin and GCodes::EmergencyStop
+        if (_emergencyStopRequested)
+        {
+            _emergencyStopRequested = false;
+            foreach (FakeGCodeBuffer gb in Buffers)
+            {
+                // AbortPrint: the state machine and print handling are not emulated
+                gb.AbortFile(true);
+            }
+            Stopped = true;
+        }
+
+        // Start requested system macros when their channels are idle
+        while (_macroRequests.TryPeek(out var request))
+        {
+            FakeGCodeBuffer gb = this[request.channel];
+            if (gb.CurrentCode is not null || gb.PendingMacroCall is not null)
+            {
+                break;
+            }
+            _macroRequests.Dequeue();
+
+            DoFileMacro(gb, request.fileName, request.reportMissing, AsyncSystemMacroCode, [], null);
+            if (IsBlocked)
+            {
+                return;
+            }
+        }
+
+        // Spin the channels until none of them can make progress
+        for (int i = 0; i < 1000; i++)
+        {
+            bool progress = false;
+            foreach (FakeGCodeBuffer gb in Buffers)
+            {
+                progress |= SpinGCodeBuffer(gb);
+                if (IsBlocked)
+                {
+                    return;
+                }
+            }
+            if (!progress)
+            {
+                break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Do some work on a channel, see GCodes::SpinGCodeBuffer
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <returns>Whether the state of the channel has changed</returns>
+    private bool SpinGCodeBuffer(FakeGCodeBuffer gb)
+    {
+        if (gb.PendingMacroCall is not null)
+        {
+            return false;
+        }
+
+        if (gb.MachineState.State == FakeMachineState.MachineStateKind.Normal)
+        {
+            if (gb.MachineState.MessageAcknowledged)
+            {
+                bool shouldAbort = gb.MachineState.MessageShouldAbort;
+                gb.PopState(true);
+                if (shouldAbort)
+                {
+                    if (gb.MachineState.Previous is null)
+                    {
+                        // StopPrint is not emulated
+                        gb.AbortFile(false);
+                    }
+                    else
+                    {
+                        FileMacroCyclesReturn(gb);
+                    }
+                }
+                return true;
+            }
+            return StartNextGCode(gb);
+        }
+        return RunStateMachine(gb);
+    }
+
+    /// <summary>
+    /// Start a new code or continue the current one, see GCodes::StartNextGCode
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <returns>Whether the state of the channel has changed</returns>
+    private bool StartNextGCode(FakeGCodeBuffer gb)
+    {
+        // Pausing, autopause events and daemon.g are not emulated
+        if (gb.CurrentCode is not null)
+        {
+            return ExecuteCurrentCode(gb);
+        }
+
+        if (gb.IsDoingFile)
+        {
+            return DoFilePrint(gb);
+        }
+
+        if (firmware.FillBuffer(gb))
+        {
+            ExecuteCurrentCode(gb);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Run the current code and update the buffer state, see the ActOnCode calls in GCodes::StartNextGCode
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <returns>Whether the state of the channel has changed</returns>
+    private bool ExecuteCurrentCode(FakeGCodeBuffer gb)
+    {
+        bool firstCall = !gb.IsExecuting;
+        switch (ActOnCode(gb))
+        {
+            case ActResult.Finished:
+                gb.SetFinished(true);
+                return true;
+
+            case ActResult.Blocked:
+                gb.SetFinished(false);
+                return true;
+
+            default:
+                gb.SetFinished(false);
+                return firstCall;
+        }
+    }
+
+    /// <summary>
+    /// Continue a file or macro, see GCodes::DoFilePrint
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <returns>Whether the state of the channel has changed</returns>
+    private bool DoFilePrint(FakeGCodeBuffer gb)
+    {
+        if (gb.IsFileFinished)
+        {
+            if (gb.IsFileChannel && gb.MachineState.Previous is null)
+            {
+                // Finished printing a job file, StopPrint is not emulated
+                return false;
+            }
+
+            if (!gb.IsMacroFileClosed)
+            {
+                // Finished a macro, pop the stack and notify the SBC that we have closed the file
+                FakeCode? startCode = gb.CurrentFileMachineState.InvokingCode;
+                gb.MacroFileClosed();
+                Pop(gb, false);
+
+                // Send a final code response
+                if (gb.MachineState.State == FakeMachineState.MachineStateKind.Normal)
+                {
+                    UnlockAll(gb);
+                    if (!gb.MachineState.LastCodeFromSbc || gb.MachineState.MacroStartedByCode)
+                    {
+                        HandleReply(gb, CodeResult.Ok, string.Empty, startCode);
+                    }
+                }
+                return true;
+            }
+            return false;
+        }
+
+        // Execute the next buffered codes
+        bool didWork = false;
+        for (int codesDone = 0; codesDone < MaxSbcFileCodesPerSpin; codesDone++)
+        {
+            if (!firmware.FillBuffer(gb))
+            {
+                break;
+            }
+            didWork = true;
+
+            ActResult result = ActOnCode(gb);
+            gb.SetFinished(result == ActResult.Finished);
+            if (result != ActResult.Finished || gb.MachineState.State != FakeMachineState.MachineStateKind.Normal)
+            {
+                break;
+            }
+        }
+        return didWork;
+    }
+
+    /// <summary>
+    /// Run the state machine, see GCodes::RunStateMachine. Only the waitingForAcknowledgement state is emulated
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <returns>Whether the state of the channel has changed</returns>
+    private bool RunStateMachine(FakeGCodeBuffer gb)
+    {
+        // Wait for the G-code replies and abort requests to go before anything else is done in the state machine
+        if (gb.IsAbortRequested || gb.IsAbortAllRequested)
+        {
+            return false;
+        }
+
+        // Finished M291 and the SBC expects a response next
+        CodeResult result = gb.LastResult;
+        FakeCode? stateCode = gb.MachineState.StateCode;
+        gb.MachineState.State = FakeMachineState.MachineStateKind.Normal;
+        gb.MachineState.StateCode = null;
+
+        UnlockAll(gb);
+        HandleReply(gb, result, string.Empty, stateCode);
+        return true;
+    }
+
+    #region Code execution
+    /// <summary>
+    /// Result of <see cref="ActOnCode"/>
+    /// </summary>
+    private enum ActResult
+    {
+        /// <summary>
+        /// The code has finished
+        /// </summary>
+        Finished,
+
+        /// <summary>
+        /// The code has to be called again
+        /// </summary>
+        NotFinished,
+
+        /// <summary>
+        /// The code waits for DSF to answer a macro request
+        /// </summary>
+        Blocked
+    }
+
+    /// <summary>
+    /// Execute the current code, see GCodes::ActOnCode
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <returns>Result</returns>
+    private ActResult ActOnCode(FakeGCodeBuffer gb)
+    {
+        FakeCode code = gb.CurrentCode!;
+        if (!gb.IsExecuting)
+        {
+            firmware.LogExecutedCode(code);
+        }
+
+        try
+        {
+            switch (code.Type)
+            {
+                case CodeType.Comment:
+                    // Q0 is a whole-line comment and returns without a reply, see GCodes::HandleQcode
+                    return ActResult.Finished;
+
+                case CodeType.GCode when code.MajorNumber is not null:
+                    if (Stopped)
+                    {
+                        return HandleResult(gb, CodeResult.Stopped, string.Empty);
+                    }
+                    if (code.MajorNumber is not 1 and not 90 and not 91 && gb.MachineState.WaitingForAcknowledgement)
+                    {
+                        return HandleResult(gb, CodeResult.WaitingForAckSoIgnored, string.Empty);
+                    }
+                    return HandleCode(gb, code);
+
+                case CodeType.MCode when code.MajorNumber is not null:
+                    {
+                        int number = code.MajorNumber.Value;
+                        bool isStatusRequest = number is 105 or 109 or 114 or 115 or 122 or 409;
+                        if (Stopped && !isStatusRequest && number is not 112 and not 999)
+                        {
+                            return HandleResult(gb, CodeResult.Stopped, string.Empty);
+                        }
+                        if (gb.MachineState.WaitingForAcknowledgement && !isStatusRequest && number is not 120 and not 121 and not 292)
+                        {
+                            return HandleResult(gb, CodeResult.WaitingForAckSoIgnored, string.Empty);
+                        }
+                        return HandleCode(gb, code);
+                    }
+
+                case CodeType.TCode:
+                    if (Stopped)
+                    {
+                        return HandleResult(gb, CodeResult.Stopped, string.Empty);
+                    }
+                    if (gb.MachineState.WaitingForAcknowledgement)
+                    {
+                        return HandleResult(gb, CodeResult.WaitingForAckSoIgnored, string.Empty);
+                    }
+                    return HandleCode(gb, code);
+            }
+        }
+        catch (FakeExpressionException e)
+        {
+            UnlockAll(gb);
+            HandleReply(gb, CodeResult.Error, FormatException(gb, code, e.Message), code);
+            return ActResult.Finished;
+        }
+        catch (Exception e)
+        {
+            // A failing test handler or a parameter of an unexpected type must not stop the LinkService thread
+            firmware.LogUnemulated($"Exception while executing {code}: {e}");
+            UnlockAll(gb);
+            HandleReply(gb, CodeResult.Error, $"FakeFirmware: {e.Message}", code);
+            return ActResult.Finished;
+        }
+
+        // If we get here then we didn't see a command that was worth parsing
+        HandleReply(gb, CodeResult.Error, "Bad command: " + code.Text, code);
+        return ActResult.Finished;
+    }
+
+    /// <summary>
+    /// Run a test handler or the emulated RRF handler of a code
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <param name="code">Code to run</param>
+    /// <returns>Result</returns>
+    private ActResult HandleCode(FakeGCodeBuffer gb, FakeCode code)
+    {
+        FakeReply? reply = firmware.RunCodeHandler(code);
+        if (reply is not null)
+        {
+            return HandleResult(gb, reply.Result, reply.Text);
+        }
+
+        if (code.Type == CodeType.MCode)
+        {
+            switch (code.MajorNumber)
+            {
+                // Call Macro/Subprogram, see the M98 case in GCodes::HandleMcode
+                case 98:
+                    if (code.HasParameter('P'))
+                    {
+                        string fileName = GetString(gb, code, 'P');
+                        Dictionary<string, object?> parameters = AddParameters(gb, code, 98);
+                        bool? started = DoFileMacro(gb, fileName, false, 98, parameters, code);
+                        if (started is null)
+                        {
+                            return ActResult.Blocked;
+                        }
+                        return started.Value ? HandleResult(gb, CodeResult.Ok, string.Empty) : HandleResult(gb, CodeResult.Error, $"Macro file {fileName} not found");
+                    }
+                    if (code.HasParameter('R'))
+                    {
+                        // Restartable macros are not emulated
+                        return HandleResult(gb, CodeResult.Ok, string.Empty);
+                    }
+                    return HandleResult(gb, CodeResult.Error, "No P or R parameter");
+
+                // Return from Macro/Subprogram, see GCodes::FileMacroCyclesReturn
+                case 99:
+                    FileMacroCyclesReturn(gb);
+                    return HandleResult(gb, CodeResult.Ok, string.Empty);
+
+                // Display message, optionally wait for acknowledgement
+                case 291:
+                    return DoMessageBox(gb, code);
+
+                // Acknowledge message
+                case 292:
+                    return AcknowledgeMessage(gb, code);
+
+                // Get object model values in JSON format
+                case 409:
+                    return GetObjectModel(gb, code);
+            }
+        }
+
+        // Everything else succeeds without a reply
+        return HandleResult(gb, CodeResult.Ok, string.Empty);
+    }
+
+    /// <summary>
+    /// Run M291, see GCodes::DoMessageBox in GCodes7.cpp and RepRap::SendAlert. Only the message, title, mode, timeout and J parameters
+    /// are evaluated. Timeouts, the object model entry state.messageBox and the extra output to USB, Telnet and aux channels are not emulated
+    /// </summary>
+    private ActResult DoMessageBox(FakeGCodeBuffer gb, FakeCode code)
+    {
+        if (!code.HasParameter('P'))
+        {
+            throw new FakeExpressionException("missing parameter 'P'");
+        }
+        string message = GetString(gb, code, 'P');
+        string title = code.HasParameter('R') ? GetString(gb, code, 'R') : string.Empty;
+        int mode = code.HasParameter('S') ? (int)code.GetParameter('S')! : 1;
+        float timeout = code.HasParameter('T') ? (float)code.GetParameter('T')! : ((mode <= 1) ? 10F : 0F);     // DefaultMessageTimeout is 10s
+        bool shouldAbort = !code.HasParameter('J') || (int)code.GetParameter('J')! < 2;
+
+        if (mode == 0 && timeout <= 0F)
+        {
+            return HandleResult(gb, CodeResult.Error, "Attempt to create a message box that cannot be dismissed");
+        }
+
+        MessageBox messageBox = new(++_lastMessageBoxSeq, mode, shouldAbort, message, title);
+        MessageBoxes.Add(messageBox);
+        firmware.PlatformMessage(MessageTypeFlags.LogInfo, $"M291: - {((title.Length > 0) ? title : "[no title]")} - {message}", null);
+        if (messageBox.IsBlocking)
+        {
+            gb.MachineState.State = FakeMachineState.MachineStateKind.WaitingForAcknowledgement;
+            gb.MachineState.StateCode = code;
+            if (Push(gb, true))
+            {
+                gb.WaitForAcknowledgement(messageBox.Seq);
+            }
+        }
+        return HandleResult(gb, CodeResult.Ok, string.Empty);
+    }
+
+    /// <summary>
+    /// Run M292, see GCodes::AcknowledgeMessage and GCodes::MessageBoxClosed in GCodes7.cpp
+    /// </summary>
+    private ActResult AcknowledgeMessage(FakeGCodeBuffer gb, FakeCode code)
+    {
+        uint seq = code.HasParameter('S') ? (uint)code.GetParameter('S')! : 0;
+        bool cancelled = code.HasParameter('P') && (int)code.GetParameter('P')! == 1;
+
+        // MessageBox::Acknowledge leaves shouldAbort unset if no message box is open, the fake uses the default of MessageBoxLimits
+        bool shouldAbort = true;
+        MessageBox? messageBox = MessageBoxes.FirstOrDefault(item => seq == 0 || item.Seq == seq);
+        if (messageBox is not null)
+        {
+            MessageBoxes.Remove(messageBox);
+            shouldAbort = messageBox.ShouldAbort;
+            if (messageBox.IsBlocking)
+            {
+                firmware.PlatformMessage(MessageTypeFlags.LogInfo, $"M292: cancelled={(cancelled ? "true" : "false")} shouldAbort={(shouldAbort ? "true" : "false")}", null);
+                foreach (FakeGCodeBuffer target in Buffers)
+                {
+                    target.MessageAcknowledged(cancelled, shouldAbort, seq);
+                }
+            }
+        }
+        return HandleResult(gb, (cancelled && !shouldAbort) ? CodeResult.M291Cancelled : CodeResult.Ok, string.Empty);
+    }
+
+    /// <summary>
+    /// Run M409, see the M409 case in GCodes::HandleMcode and RepRap::GetModelResponse
+    /// </summary>
+    private ActResult GetObjectModel(FakeGCodeBuffer gb, FakeCode code)
+    {
+        string key = code.HasParameter('K') ? GetString(gb, code, 'K') : string.Empty;
+        if (code.HasParameter('I') && (int)code.GetParameter('I')! > 0)
+        {
+            // Allow DSF to increment sequence numbers of its provided OM keys via K"key" I1
+            if (key is "network" or "volumes")
+            {
+                firmware.ObjectModel.IncrementSeq(key);
+            }
+            return HandleResult(gb, CodeResult.Ok, string.Empty);
+        }
+
+        string flags = code.HasParameter('F') ? GetString(gb, code, 'F') : string.Empty;
+        string json = firmware.ObjectModel.GetModelResponse(key, flags);
+        if (code.Flags.HasFlag(CodeFlags.HasExplicitLineNumber) && code.LineNumber is not null)
+        {
+            // See RepRap::StartJsonResponse
+            json = $"{{\"line\":{code.LineNumber.Value.ToString(CultureInfo.InvariantCulture)}," + json[1..];
+        }
+
+        // The reply comes in an output buffer, see GCodes::HandleResult and GCodes::HandleReply(gb, OutputBuffer)
+        UnlockAll(gb);
+        gb.LastResult = CodeResult.Ok;
+        if (gb.MachineState.LastCodeFromSbc)
+        {
+            firmware.PlatformMessage(gb.ResponseMessageType, json, code, true);
+        }
+        else
+        {
+            firmware.LogUnemulated($"Reply to {code} from a non-SBC code");
+        }
+        return ActResult.Finished;
+    }
+    #endregion
+
+    #region Macro files
+    /// <summary>
+    /// Run a macro file, see GCodes::DoFileMacro
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <param name="fileName">Macro file</param>
+    /// <param name="reportMissing">Whether a missing file is reported</param>
+    /// <param name="codeRunning">Code that runs the macro</param>
+    /// <param name="parameters">Macro parameters</param>
+    /// <param name="code">Code that calls the macro or null for system macros</param>
+    /// <returns>True if the file was found or it wasn't and that was reported, false if it was not found, null if the request is pending</returns>
+    private bool? DoFileMacro(FakeGCodeBuffer gb, string fileName, bool reportMissing, int codeRunning, Dictionary<string, object?> parameters, FakeCode? code)
+    {
+        MacroCall call = new()
+        {
+            FileName = fileName,
+            ReportMissing = reportMissing,
+            CodeRunning = codeRunning,
+            Parameters = parameters,
+            Code = code
+        };
+
+        if (gb.RequestMacroFile(fileName, gb.MachineState.LastCodeFromSbc && codeRunning != AsyncSystemMacroCode))
+        {
+            // The main task waits in RequestMacroFile until DSF has answered
+            gb.PendingMacroCall = call;
+            return null;
+        }
+        return FinishDoFileMacro(gb, call, true);
+    }
+
+    /// <summary>
+    /// Continue a macro call after DSF has answered the macro request. The SBC task calls this as well when it needs the
+    /// mutex of a buffer whose code waited for the macro, because the main task finishes that code before it releases the mutex
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    public void ContinueMacroCall(FakeGCodeBuffer gb)
+    {
+        MacroCall call = gb.PendingMacroCall!;
+        gb.PendingMacroCall = null;
+
+        bool started = FinishDoFileMacro(gb, call, gb.FinishMacroRequest());
+        if (call.Code is not null)
+        {
+            // Rest of the M98 case in GCodes::HandleMcode
+            ActResult result = started ? HandleResult(gb, CodeResult.Ok, string.Empty) : HandleResult(gb, CodeResult.Error, $"Macro file {call.FileName} not found");
+            gb.SetFinished(result == ActResult.Finished);
+        }
+    }
+
+    /// <summary>
+    /// Rest of GCodes::DoFileMacro after GCodeBuffer::RequestMacroFile has returned
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <param name="call">Macro call</param>
+    /// <param name="success">Whether DSF could start the macro</param>
+    /// <returns>True if the file was found or it wasn't and that was reported, false if it was not found</returns>
+    private bool FinishDoFileMacro(FakeGCodeBuffer gb, MacroCall call, bool success)
+    {
+        if (!success)
+        {
+            if (call.ReportMissing)
+            {
+                MessageTypeFlags mt = (gb.MachineState.LastCodeFromSbc && call.CodeRunning != SystemHelperMacroCode)
+                    ? gb.ResponseMessageType | MessageTypeFlags.WarningMessageFlag | MessageTypeFlags.PushFlag
+                    : MessageTypeFlags.GenericMessage | MessageTypeFlags.LogWarn | MessageTypeFlags.WarningMessageFlag;
+                firmware.PlatformMessage(mt, $"Macro file {call.FileName} not found\n", call.Code);
+                return true;
+            }
+            return false;
+        }
+
+        if (!Push(gb, false))
+        {
+            gb.AbortFile(false);
+            return true;
+        }
+
+        FakeMachineState frame = gb.VariablesFrame;
+        foreach (KeyValuePair<string, object?> parameter in call.Parameters)
+        {
+            frame.Parameters[parameter.Key] = parameter.Value;
+        }
+        gb.StartNewFile(call.FileName);
+        if (gb.IsMacroEmpty)
+        {
+            gb.SetFileFinished();
+        }
+        gb.MachineState.DoingFileMacro = true;
+        gb.MachineState.State = FakeMachineState.MachineStateKind.Normal;
+        return true;
+    }
+
+    /// <summary>
+    /// Return from a macro file (M99), see GCodes::FileMacroCyclesReturn
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    private static void FileMacroCyclesReturn(FakeGCodeBuffer gb)
+    {
+        if (gb.IsDoingFileMacro())
+        {
+            gb.AbortFile(false);
+        }
+    }
+
+    /// <summary>
+    /// Push a frame, see GCodes::Push
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <param name="withinSameFile">Whether this is a local push</param>
+    /// <returns>Whether the frame could be pushed</returns>
+    private bool Push(FakeGCodeBuffer gb, bool withinSameFile)
+    {
+        if (!gb.PushState(withinSameFile))
+        {
+            firmware.PlatformMessage(MessageTypeFlags.GenericMessage | MessageTypeFlags.LogWarn | MessageTypeFlags.ErrorMessageFlag, $"Push(): stack overflow on {gb.Channel}\n", null);
+            gb.AbortFile(true);
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Pop a frame, see GCodes::Pop
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <param name="withinSameFile">Whether only a local frame is popped</param>
+    private void Pop(FakeGCodeBuffer gb, bool withinSameFile)
+    {
+        if (!gb.PopState(withinSameFile))
+        {
+            firmware.PlatformMessage(MessageTypeFlags.GenericMessage | MessageTypeFlags.LogWarn | MessageTypeFlags.ErrorMessageFlag, $"Pop(): stack underflow on {gb.Channel}\n", null);
+        }
+    }
+    #endregion
+
+    #region Movement lock
+    /// <summary>
+    /// Lock all movement systems, see GCodes::LockAllMovementSystemsAndWaitForStandstill. There are no moves to wait for
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <returns>Whether the lock could be acquired</returns>
+    public bool LockAllMovementSystemsAndWaitForStandstill(FakeGCodeBuffer gb)
+    {
+        if (MovementLockOwner == gb)
+        {
+            return true;
+        }
+        if (MovementLockOwner is null)
+        {
+            MovementLockOwner = gb;
+            gb.MachineState.LockedMovement = true;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Release the locks of a channel that are not held by the frame below, see GCodes::UnlockAll
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    public void UnlockAll(FakeGCodeBuffer gb)
+    {
+        bool keep = gb.MachineState.Previous?.LockedMovement ?? false;
+        if (MovementLockOwner == gb && !keep)
+        {
+            MovementLockOwner = null;
+            gb.MachineState.LockedMovement = false;
+        }
+    }
+    #endregion
+
+    #region Replies
+    /// <summary>
+    /// Deal with the result of a code, see GCodes::HandleResult
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <param name="result">Code result</param>
+    /// <param name="reply">Reply text</param>
+    /// <returns>Whether the code has finished</returns>
+    private ActResult HandleResult(FakeGCodeBuffer gb, CodeResult result, string reply)
+    {
+        FakeCode? code = gb.CurrentCode;
+        string command = code?.PrintCommand ?? string.Empty;
+
+        // The other results that are converted to errors or warnings below print the command themselves
+        bool addCommandPrefix = result is CodeResult.Error or CodeResult.Warning;
+        switch (result)
+        {
+            case CodeResult.NotFinished:
+                return ActResult.NotFinished;
+
+            case CodeResult.WarningNotSupported:
+                reply = command + ": Command is not supported";
+                result = CodeResult.Warning;
+                break;
+
+            case CodeResult.ErrorNotSupported:
+                reply = command + ": Command is not supported";
+                result = CodeResult.Error;
+                break;
+
+            case CodeResult.BadOrMissingParameter:
+                reply = command + ": Bad or missing parameter";
+                result = CodeResult.Error;
+                break;
+
+            case CodeResult.Stopped:
+                reply = command + ": Machine is halted";
+                result = CodeResult.Error;
+                break;
+
+            case CodeResult.WaitingForAckSoIgnored:
+                reply = command + ": Awaiting input, command ignored";
+                result = CodeResult.Warning;
+                break;
+        }
+
+        // Binary codes are never local files, so the command is always printed
+        if (addCommandPrefix)
+        {
+            reply = command + ": " + reply;
+        }
+
+        if (gb.MachineState.State == FakeMachineState.MachineStateKind.Normal)
+        {
+            UnlockAll(gb);
+            HandleReply(gb, result, reply, code);
+        }
+        return ActResult.Finished;
+    }
+
+    /// <summary>
+    /// Send a reply and update the last result, see GCodes::HandleReply
+    /// </summary>
+    private void HandleReply(FakeGCodeBuffer gb, CodeResult result, string reply, FakeCode? relatedCode)
+    {
+        gb.LastResult = result;
+        HandleReplyPreserveResult(gb, result, reply, relatedCode);
+    }
+
+    /// <summary>
+    /// Send a reply, see GCodes::HandleReplyPreserveResult
+    /// </summary>
+    private void HandleReplyPreserveResult(FakeGCodeBuffer gb, CodeResult result, string reply, FakeCode? relatedCode)
+    {
+        if (gb.MachineState.LastCodeFromSbc)
+        {
+            if (reply.Length == 0 && gb.IsAbortRequested && !gb.IsAbortAllRequested)
+            {
+                // The SBC resolves the code that requested a single file abort itself, so this reply is surplus (RRF 4d80f4663)
+                return;
+            }
+
+            MessageTypeFlags type = gb.ResponseMessageType;
+            if (result == CodeResult.NotFinished || gb.HasJustStartedMacro || (gb.MachineState.WaitingForAcknowledgement && gb.IsMessagePromptPending))
+            {
+                if (reply.Length == 0)
+                {
+                    // Don't send empty push messages
+                    return;
+                }
+                type |= MessageTypeFlags.PushFlag;
+            }
+
+            if (result == CodeResult.Warning)
+            {
+                type = AddLogWarn(type | MessageTypeFlags.WarningMessageFlag);
+            }
+            else if (result == CodeResult.Error)
+            {
+                type = AddLogWarn(type | MessageTypeFlags.ErrorMessageFlag);
+            }
+            firmware.PlatformMessage(type, reply, relatedCode);
+            return;
+        }
+
+        // Don't report empty responses if a file or macro is being processed or if the code was queued
+        if (reply.Length == 0 &&
+            (gb.Channel is CodeChannel.File or CodeChannel.Queue or CodeChannel.Trigger or CodeChannel.Autopause or CodeChannel.Daemon or CodeChannel.File2 or CodeChannel.Queue2 ||
+             gb.IsDoingFileMacro(true)))
+        {
+            return;
+        }
+
+        // Replies to codes that did not come from DSF depend on the compatibility mode of the channel and are not emulated
+        firmware.LogUnemulated($"{result} reply '{reply}' on {gb.Channel} for a non-SBC code");
+    }
+
+    /// <summary>
+    /// Replace the log level of a message type with LogWarn, see AddLogWarn in MessageType.h
+    /// </summary>
+    private static MessageTypeFlags AddLogWarn(MessageTypeFlags type) => (type & ~MessageTypeFlags.LogOff) | MessageTypeFlags.LogWarn;
+
+    /// <summary>
+    /// Format an error message, see GCodeException::GetMessage
+    /// </summary>
+    private static string FormatException(FakeGCodeBuffer gb, FakeCode code, string message)
+    {
+        string prefix = string.Empty;
+        if ((gb.IsDoingFileMacro() || gb.IsDoingFile) && gb.MachineState.FileName is not null)
+        {
+            prefix = $"in file {gb.MachineState.FileName} line {code.LineNumber ?? 0}: ";
+        }
+        if (code.Type is CodeType.GCode or CodeType.MCode or CodeType.TCode && code.MajorNumber is not null)
+        {
+            prefix += code.PrintCommand + ": ";
+        }
+        return prefix + message;
+    }
+    #endregion
+
+    #region Expressions and parameters
+    /// <summary>
+    /// Evaluate an expression in the context of a channel, see ExpressionParser
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <param name="expression">Expression</param>
+    /// <returns>Result</returns>
+    /// <exception cref="FakeExpressionException">Failed to evaluate the expression</exception>
+    public object? Evaluate(FakeGCodeBuffer gb, string expression)
+    {
+        FakeExpressionEvaluator evaluator = new(id => Resolve(gb, id), id => Exists(gb, id));
+        return evaluator.Evaluate(expression);
+    }
+
+    /// <summary>
+    /// Resolve an identifier, see the end of ExpressionParser::ParseIdentifierExpression
+    /// </summary>
+    private object? Resolve(FakeGCodeBuffer gb, string id)
+    {
+        if (id.StartsWith("param."))
+        {
+            string name = id["param.".Length..];
+            return gb.VariablesFrame.Parameters.TryGetValue(name, out object? value) ? value : throw new FakeExpressionException($"unknown parameter '{name}'");
+        }
+        if (id.StartsWith("global."))
+        {
+            string name = id["global.".Length..];
+            return firmware.ObjectModel.TryGetGlobal(name, out object? value) ? value : throw new FakeExpressionException($"unknown variable '{name}'");
+        }
+        if (id.StartsWith("var."))
+        {
+            string name = id["var.".Length..];
+            return gb.GetVariables().TryGetValue(name, out object? value) ? value : throw new FakeExpressionException($"unknown variable '{name}'");
+        }
+
+        // The error text of RRF for unknown object model values has not been checked, see RepRap::GetObjectValueUsingTableNumber
+        return firmware.ObjectModel.TryGetValue(id, out object? omValue) ? omValue : throw new FakeExpressionException($"unknown value '{id}'");
+    }
+
+    /// <summary>
+    /// Check if an identifier exists, see the handling of exists() in ExpressionParser
+    /// </summary>
+    private bool Exists(FakeGCodeBuffer gb, string id)
+    {
+        if (id is "param" or "var" or "global")
+        {
+            return true;
+        }
+
+        try
+        {
+            Resolve(gb, id);
+            return true;
+        }
+        catch (FakeExpressionException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Get a string parameter, evaluating an expression if needed
+    /// </summary>
+    private string GetString(FakeGCodeBuffer gb, FakeCode code, char letter)
+    {
+        CodeParameter parameter = code.GetParameter(letter)!;
+        if (parameter.IsExpression)
+        {
+            object? value = Evaluate(gb, (string)parameter!);
+            return value?.ToString() ?? string.Empty;
+        }
+        return (string)parameter!;
+    }
+
+    /// <summary>
+    /// Convert the parameters of a macro call to macro parameters, see BinaryParser::AddParameters.
+    /// Arrays are not emulated
+    /// </summary>
+    private Dictionary<string, object?> AddParameters(FakeGCodeBuffer gb, FakeCode code, int codeRunning)
+    {
+        Dictionary<string, object?> result = [];
+        foreach (CodeParameter parameter in code.Parameters)
+        {
+            if (parameter.Letter != 'P' || codeRunning != 98)
+            {
+                object? value = null;
+                if (parameter.IsExpression)
+                {
+                    value = Evaluate(gb, (string)parameter!);
+                }
+                else if (parameter.Type == typeof(string))
+                {
+                    value = (string)parameter!;
+                }
+                else if (parameter.Type == typeof(float))
+                {
+                    value = (float)parameter;
+                }
+                else if (parameter.Type == typeof(int))
+                {
+                    value = (int)parameter;
+                }
+                else if (parameter.Type == typeof(uint))
+                {
+                    value = (int)(uint)parameter;
+                }
+
+                if (value is not null)
+                {
+                    result[parameter.Letter.ToString()] = value;
+                }
+            }
+        }
+        return result;
+    }
+    #endregion
+}
