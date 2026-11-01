@@ -881,10 +881,11 @@
             </summary>
             <param name="b">Byte to append</param>
         </member>
-        <member name="M:DuetAPI.Commands.Code.NumberedLine.Verify">
+        <member name="M:DuetAPI.Commands.Code.NumberedLine.Verify(DuetAPI.Commands.Code)">
             <summary>
             Verify the checksum or CRC block of the line (if present) and remove it from the line
             </summary>
+            <param name="code">Code being read. The removed checksum block is added to its length right away if nothing is left to read</param>
             <exception cref="T:DuetAPI.CodeParserException">Checksum or CRC is malformed or does not match</exception>
         </member>
         <member name="M:DuetAPI.Commands.Code.NumberedLine.GetLineNumber">
