@@ -3,7 +3,7 @@
 ## References
 
 - **Duet3D wiki content**: https://github.com/Duet3D/wiki-content — source for the official Duet3D documentation (G-code dictionary, object model, RepRapFirmware and DSF behaviour). If a clone exists at `../wiki-content`, pull it and search there.
-- **RepRapFirmware source**: https://github.com/Duet3D/RepRapFirmware — what the firmware actually does on the other side of the SBC link.
+- **RepRapFirmware source**: https://github.com/Meltingplot/RepRapFirmware — our RRF fork, what the firmware actually does on the other side of the SBC link.
 
 ## No guessing
 
