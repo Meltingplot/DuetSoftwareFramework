@@ -228,6 +228,17 @@ public class FileCodes
     }
 
     [Test]
+    public async Task DeleteMissingFile()
+    {
+        // MassStorage.cpp:725-737 (InternalDelete) returns false for a missing file, and GCodes2.cpp:1397-1399 then replies "delete failed" as an error.
+        // MCodeHandler used to report success because File.Delete does not fail for a missing file
+        Message? result = await _host.ExecuteCodeAsync("M30 \"missing.g\"");
+        Assert.That(result?.Type, Is.EqualTo(MessageType.Error));
+        Assert.That(result?.Content, Does.Contain("missing.g"));
+        Assert.That(Received(), Is.Empty);
+    }
+
+    [Test]
     public async Task FileInfo()
     {
         WriteFile("G1 X1\n", "gcodes", "a.g");
@@ -413,6 +424,17 @@ public class FileCodes
 
         Assert.That(await _host.ExecuteAsync("M472 P\"/sys/foobar\" R1"), Is.EqualTo("\n"));
         Assert.That(System.IO.Directory.Exists(PhysicalPath("sys", "foobar")), Is.False);
+        Assert.That(Received(), Is.Empty);
+    }
+
+    [TestCase("M472 P\"/sys/missing.g\"")]
+    [TestCase("M472 P\"/sys/missing\" R1")]
+    public async Task DeleteMissingFileOrDirectory(string code)
+    {
+        // GCodes2.cpp:3431-3438: MassStorage::Delete fails for a missing file or directory and M472 replies "delete failed" as an error
+        Message? result = await _host.ExecuteCodeAsync(code);
+        Assert.That(result?.Type, Is.EqualTo(MessageType.Error));
+        Assert.That(result?.Content, Does.Contain("/sys/missing"));
         Assert.That(Received(), Is.Empty);
     }
 
