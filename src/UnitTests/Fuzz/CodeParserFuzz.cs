@@ -155,10 +155,7 @@ public class CodeParserFuzz
     }, Dictionary);
 
     [Test]
-    public void AsyncParser() => Fuzzer.Run(Corpus, input => CheckAsyncParser(input, false), Dictionary);
-
-    [Test, Explicit("Length is one byte too long before a following code on the same line and at the end of an input without a final NL")]
-    public void AsyncParserLength() => Fuzzer.Run(Corpus, input => CheckAsyncParser(input, true), Dictionary);
+    public void AsyncParser() => Fuzzer.Run(Corpus, CheckAsyncParser, Dictionary);
 
     [Test]
     public void SyncMatchesAsync() => Fuzzer.Run(Corpus, input => CheckSyncMatchesAsync(input, false), Dictionary);
@@ -239,14 +236,13 @@ public class CodeParserFuzz
     /// Parse an input as a file with a large and a small buffer
     /// </summary>
     /// <param name="input">Input to parse</param>
-    /// <param name="checkLength">Whether to check the length of each code</param>
-    private static void CheckAsyncParser(byte[] input, bool checkLength)
+    private static void CheckAsyncParser(byte[] input)
     {
         // A small buffer moves the buffer boundaries through the input and must not change the result.
         // Values below 4 bytes cannot hold a BOM, so they do not apply
         bool enforceLineNumbers = input.Length % 2 == 0;
-        List<string> withLargeBuffer = ParseFile(input, DefaultBufferSize, enforceLineNumbers, checkLength);
-        List<string> withSmallBuffer = ParseFile(input, 4 + input.Length % 13, enforceLineNumbers, checkLength);
+        List<string> withLargeBuffer = ParseFile(input, DefaultBufferSize, enforceLineNumbers);
+        List<string> withSmallBuffer = ParseFile(input, 4 + input.Length % 13, enforceLineNumbers);
         if (!withLargeBuffer.SequenceEqual(withSmallBuffer))
         {
             throw new FuzzFailure("buffer size", $"Results differ between buffer sizes:\n{DefaultBufferSize}: {string.Join(" | ", withLargeBuffer)}\n{4 + input.Length % 13}: {string.Join(" | ", withSmallBuffer)}");
@@ -259,9 +255,8 @@ public class CodeParserFuzz
     /// <param name="input">Content of the file</param>
     /// <param name="bufferSize">Size of the parser buffer</param>
     /// <param name="enforceLineNumbers">Whether line numbers and checksum types are enforced</param>
-    /// <param name="checkLength">Whether to check the length of each code</param>
     /// <returns>Description of each code and the parse error that ended the file (if any)</returns>
-    private static List<string> ParseFile(byte[] input, int bufferSize, bool enforceLineNumbers, bool checkLength)
+    private static List<string> ParseFile(byte[] input, int bufferSize, bool enforceLineNumbers)
     {
         List<string> result = [];
         using MemoryStream stream = new(input);
@@ -288,7 +283,7 @@ public class CodeParserFuzz
                 {
                     throw new FuzzFailure("file position", $"FilePosition is {code.FilePosition} but the code started at {before}");
                 }
-                if (checkLength && code.FilePosition + code.Length != after)
+                if (code.FilePosition + code.Length != after)
                 {
                     throw new FuzzFailure("length", $"FilePosition {code.FilePosition} + Length {code.Length} does not match the position {after} after the code");
                 }
@@ -310,7 +305,7 @@ public class CodeParserFuzz
     }
 
     /// <summary>
-    /// Describe everything the parser sets on a code, except for the length and file position
+    /// Describe everything the parser sets on a code, except for the file position
     /// </summary>
     /// <param name="code">Code to describe</param>
     /// <param name="firstOnLine">Whether this is the first code on its line. If not, leave out the line number, indentation and G53 flag,
@@ -320,7 +315,7 @@ public class CodeParserFuzz
         CodeFlags flags = firstOnLine ? code.Flags : code.Flags & ~(CodeFlags.EnforceAbsolutePosition | CodeFlags.HasExplicitLineNumber);
         StringBuilder builder = new();
         builder.Append($"type={code.Type} major={code.MajorNumber} minor={code.MinorNumber} keyword={code.Keyword} arg={code.KeywordArgument} ");
-        builder.Append($"comment={code.Comment} flags={flags}");
+        builder.Append($"comment={code.Comment} flags={flags} length={code.Length}");
         if (firstOnLine)
         {
             builder.Append($" indent={code.Indent} line={code.LineNumber}");
