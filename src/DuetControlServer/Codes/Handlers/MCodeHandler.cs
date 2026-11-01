@@ -557,7 +557,8 @@ public class MCodeHandler(
                                 Capacity = storage.Capacity,
                                 PartitionSize = storage.PartitionSize,
                                 Free = storage.FreeSpace,
-                                Speed = storage.Speed
+                                Speed = storage.Speed,
+                                ClusterSize = GetClusterSize(storage)
                             };
 
                             string sdInfo = JsonSerializer.Serialize(output, MCodeResponseContext.Default.SDInfoDetails);
@@ -571,7 +572,8 @@ public class MCodeHandler(
                             }
 
                             Volume storage = model.Volumes[index];
-                            return new Message(MessageType.Success, $"SD card in slot {index}: capacity {storage.Capacity / 1000000000.0:F2}Gb, partition size {storage.PartitionSize / 1000000000.0:F2}Gb, free space {storage.FreeSpace / 1000000000.0:F2}Gb, speed {storage.Speed / 1000000.0:F2}MBytes/sec");
+                            long clusterSize = GetClusterSize(storage);
+                            return new Message(MessageType.Success, $"SD card in slot {index}: capacity {storage.Capacity / 1000000000.0:F2}GB, partition size {storage.PartitionSize / 1000000000.0:F2}GB, free space {storage.FreeSpace / 1000000000.0:F2}GB, speed {storage.Speed / 1000000.0:F2}MBytes/sec, cluster size {((clusterSize < 1024) ? $"{clusterSize} bytes" : $"{clusterSize / 1024}kB")}");
                         }
                     }
                 }
@@ -1382,4 +1384,20 @@ public class MCodeHandler(
         }
     }
 
+    /// <summary>
+    /// Get the cluster size of a volume for M39. Like RRF, report 0 if the file system cannot be queried
+    /// </summary>
+    /// <param name="volume">Volume</param>
+    /// <returns>Cluster size in bytes</returns>
+    private static long GetClusterSize(Volume volume)
+    {
+        try
+        {
+            return (volume.Path is not null) ? FileExtensions.GetFileSystemBlockSize(volume.Path) : 0;
+        }
+        catch (IOException)
+        {
+            return 0;
+        }
+    }
 }
