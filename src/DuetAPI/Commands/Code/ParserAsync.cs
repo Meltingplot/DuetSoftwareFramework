@@ -101,7 +101,7 @@ public partial class Code
 
             try
             {
-                line.Verify();
+                line.Verify(result);
 
                 if (buffer.EnforceLineNumbers && line.HasContent)
                 {
@@ -135,6 +135,7 @@ public partial class Code
             if (fromLine)
             {
                 c = (char)buffer.Line!.Read(result);
+                result.Length++;
             }
             else
             {
@@ -142,10 +143,17 @@ public partial class Code
                 {
                     await FillBufferAsync().ConfigureAwait(false);
                 }
-                c = (buffer.Pointer < buffer.Size) ? (char)buffer.Content[buffer.Pointer] : '\n';
-                buffer.Pointer++;
+                if (buffer.Pointer < buffer.Size)
+                {
+                    c = (char)buffer.Content[buffer.Pointer++];
+                    result.Length++;
+                }
+                else
+                {
+                    // The end of the stream finishes the code like a NL but is not part of it
+                    c = '\n';
+                }
             }
-            result.Length++;
 
             if (c == '\r')
             {
@@ -156,7 +164,7 @@ public partial class Code
             // Stop if another G/M/T code is coming up and this one is complete
             if (StartsNextCode(state, result, c))
             {
-                // The character belongs to the next code, so put it back
+                // The character belongs to the next code, so put it back and do not count it
                 if (fromLine)
                 {
                     buffer.Line!.Pointer--;
@@ -165,6 +173,7 @@ public partial class Code
                 {
                     buffer.Pointer--;
                 }
+                result.Length--;
                 break;
             }
 

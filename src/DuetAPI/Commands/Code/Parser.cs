@@ -882,8 +882,16 @@ public partial class Code
             }
 
             int b = ReadByte();
-            c = (b < 0) ? '\n' : (char)b;
-            result.Length++;
+            if (b < 0)
+            {
+                // The end of the input finishes the code like a NL but is not part of it
+                c = '\n';
+            }
+            else
+            {
+                c = (char)b;
+                result.Length++;
+            }
 
             if (c == '\r')
             {
@@ -897,7 +905,10 @@ public partial class Code
                 do
                 {
                     b = ReadByte();
-                    result.Length++;
+                    if (b >= 0)
+                    {
+                        result.Length++;
+                    }
                 }
                 while (b >= 0 && b != '\n');
                 c = '\n';

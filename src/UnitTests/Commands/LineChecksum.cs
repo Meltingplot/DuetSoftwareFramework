@@ -171,7 +171,7 @@ public class LineChecksum
             Assert.That(code.LineNumber, Is.EqualTo(1));
             Assert.That(code.MajorNumber, Is.EqualTo(91));
             Assert.That(code.FilePosition, Is.EqualTo(0));
-            Assert.That(code.Length, Is.EqualTo(8));     // the parser counts the character that starts the next code
+            Assert.That(code.Length, Is.EqualTo(7));
 
             code.Reset();
             Assert.That(await DuetAPI.Commands.Code.ParseAsync(memoryStream, code, buffer), Is.True);
