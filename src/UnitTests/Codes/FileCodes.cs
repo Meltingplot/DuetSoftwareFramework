@@ -101,9 +101,9 @@ public class FileCodes
         Assert.That(Received(), Is.Empty);
     }
 
-    [TestCase(true, "\na.g\nEnd file list\nok\n")]
-    [TestCase(false, "\nNONE\nEnd file list\nok\n")]
-    public async Task ListFilesInMarlinModeAfterHeader(bool withFile, string expectedEnd)
+    [TestCase(true, "Begin file list\na.g\nEnd file list\nok\n")]
+    [TestCase(false, "Begin file list\nNONE\nEnd file list\nok\n")]
+    public async Task ListFilesInMarlinMode(bool withFile, string expected)
     {
         if (withFile)
         {
@@ -111,22 +111,10 @@ public class FileCodes
         }
         await EmulateMarlinAsync(CodeChannel.HTTP);
 
-        // GCodes2.cpp lists one name per line or NONE, GCodes::HandleReply adds "End file list\nok\n". The header is checked by ListFilesInMarlinMode
-        string reply = await _host.ExecuteAsync("M20");
-        Assert.That(reply, Does.StartWith("Begin file list"));
-        Assert.That(reply, Does.EndWith(expectedEnd));
-        Assert.That(reply.Split('\n'), Has.Length.EqualTo(5));
-    }
-
-    [Test, Explicit("Reproduces M20 in Marlin mode replying \"Begin file list:\" instead of \"Begin file list\"")]
-    public async Task ListFilesInMarlinMode()
-    {
-        WriteFile("G1 X1\n", "gcodes", "a.g");
-        await EmulateMarlinAsync(CodeChannel.HTTP);
-
-        // The wiki shows "Begin file list" without a colon, and GCodes::HandleReply sends "Begin file list\n" + list + "End file list\nok\n".
-        // MCodeHandler appends "Begin file list:" for Marlin and NanoDLP
-        Assert.That(await _host.ExecuteAsync("M20"), Is.EqualTo("Begin file list\na.g\nEnd file list\nok\n"));
+        // The wiki (Gcodes.md:1666-1674) shows "Begin file list" without a colon. GCodes2.cpp:1061-1074 lists one name per line or NONE, and
+        // GCodes.cpp:4596-4598 (HandleReply) wraps it in "Begin file list\n" and "End file list\nok\n". MCodeHandler used to write "Begin file list:"
+        Assert.That(await _host.ExecuteAsync("M20"), Is.EqualTo(expected));
+        Assert.That(Received(), Is.Empty);
     }
 
     [Test]
