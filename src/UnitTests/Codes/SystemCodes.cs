@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using DuetAPI.ObjectModel;
 using DuetControlServer;
@@ -33,6 +34,26 @@ public class SystemCodes
     private string[] Received() => [.. _host.Firmware.GetReceivedCodes().Select(code => code.Text)];
 
     private Settings Settings => _host.Services.GetRequiredService<IOptions<Settings>>().Value;
+
+    /// <summary>
+    /// Wait for generic messages that contain the given text. The message logger adds them without waiting for the object model lock
+    /// </summary>
+    private async Task<string[]> WaitForMessagesAsync(string text)
+    {
+        using CancellationTokenSource cts = new(FakeFirmwareHost.DefaultTimeout);
+        while (true)
+        {
+            using (await _host.Model.AccessReadOnlyAsync(cts.Token))
+            {
+                string[] messages = [.. _host.Model.Messages.Select(message => message.Content).Where(content => content.Contains(text))];
+                if (messages.Length > 0)
+                {
+                    return messages;
+                }
+            }
+            await Task.Delay(10, cts.Token);
+        }
+    }
 
     [Test]
     public async Task ReportLogLevel()
@@ -74,17 +95,23 @@ public class SystemCodes
         Assert.That(Received(), Is.Empty);
     }
 
-    [Test, Explicit("Reproduces M111 P-1 O1 crashing DCS with a stack overflow on the next log message (crashes the test host)")]
+    [Test]
     public async Task LogMessagesToClients()
     {
-        // The wiki: O1 outputs DCS log messages as generic messages via DWC. MessageLogger.Log calls ObjectModel.OutputAsync, which logs the
-        // message again before its first await, so every message at or above the log level recurses until the stack overflows
+        // The wiki: O1 outputs DCS log messages as generic messages via DWC. This crashed DCS with a stack overflow when
+        // MessageLogger.Log used ObjectModel.OutputAsync, which logs the message again and so called MessageLogger.Log again
         Assert.That(await _host.ExecuteAsync("M111 P-1 O1"), Is.EqualTo("\n"));
         Assert.That(await _host.ExecuteAsync("M111 P-1 S\"info\""), Is.EqualTo("\n"));
-        using (await _host.Model.AccessReadOnlyAsync())
-        {
-            Assert.That(_host.Model.Messages.Select(message => message.Content), Has.Some.Contains("Log level changed to Information"));
-        }
+        Assert.That(await WaitForMessagesAsync("Log level changed to Information"), Has.Length.EqualTo(1));
+    }
+
+    [Test]
+    public async Task OutputMessageWhileLoggingToClients()
+    {
+        // ObjectModel.OutputAsync logs the message before it adds it, and that log message goes to the message logger as well
+        Assert.That(await _host.ExecuteAsync("M111 P-1 O1"), Is.EqualTo("\n"));
+        await _host.Model.OutputAsync(new Message(MessageType.Warning, "Output while logging to clients")).WaitAsync(FakeFirmwareHost.DefaultTimeout);
+        Assert.That(await WaitForMessagesAsync("Output while logging to clients"), Is.Not.Empty);
     }
 
     [Test]
