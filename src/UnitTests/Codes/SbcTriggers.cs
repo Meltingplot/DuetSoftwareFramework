@@ -5,19 +5,11 @@ using System.Threading;
 using System.Threading.Tasks;
 using DuetAPI.Commands;
 using DuetAPI.ObjectModel;
-using DuetControlServer;
 using DuetControlServer.Codes;
 using DuetControlServer.Codes.Handlers;
 using DuetControlServer.Commands;
-using DuetControlServer.Files;
-using DuetControlServer.Link;
-using DuetControlServer.Link.Adapter;
 using DuetControlServer.Model;
-using DuetControlServer.Utility;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Hosting.Internal;
-using Microsoft.Extensions.Options;
 using NUnit.Framework;
 using Code = DuetControlServer.Commands.Code;
 
@@ -42,20 +34,7 @@ public class SbcTriggers
     [SetUp]
     public void SetUp()
     {
-        ServiceCollection services = new();
-        services
-            .AddLogging()
-            .AddSingleton(Options.Create(new Settings()))
-            .AddSingleton<IHostApplicationLifetime, ApplicationLifetime>()
-            .AddSingleton(DispatchProxy.Create<ILinkAdapter, UnitTests.SPI.ChannelProcessor.NullLinkAdapter>())
-            .AddSingleton<LinkInterface>()
-            .AddCodes()
-            .AddCommands()
-            .AddFiles()
-            .AddLink()
-            .AddModel()
-            .AddUtility();
-        _provider = services.BuildServiceProvider();
+        _provider = DcsServices.Build();
         _triggers = _provider.GetRequiredService<SbcTriggerService>();
     }
 

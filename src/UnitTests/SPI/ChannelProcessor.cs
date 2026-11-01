@@ -1,6 +1,4 @@
-using System;
 using System.IO;
-using System.Reflection;
 using DuetAPI;
 using DuetAPI.Commands;
 using DuetAPI.ObjectModel;
@@ -8,7 +6,6 @@ using DuetControlServer;
 using DuetControlServer.Codes;
 using DuetControlServer.Commands;
 using DuetControlServer.Files;
-using DuetControlServer.Link.Adapter;
 using DuetControlServer.Link.Channel;
 using DuetControlServer.Link.Protocol.Shared;
 using Microsoft.Extensions.DependencyInjection;
@@ -28,21 +25,6 @@ public class ChannelProcessor
     private ServiceProvider _provider = null!;
     private Processor _processor = null!;
     private string _macroFile = null!;
-
-    /// <summary>
-    /// Link adapter that does nothing, the tests feed replies and abort requests to the processor directly
-    /// </summary>
-    public class NullLinkAdapter : DispatchProxy
-    {
-        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
-        {
-            if (targetMethod!.Name == $"get_{nameof(ILinkAdapter.ProtocolVersion)}")
-            {
-                return (int)Consts.ProtocolVersion;
-            }
-            return targetMethod.ReturnType.IsValueType && targetMethod.ReturnType != typeof(void) ? Activator.CreateInstance(targetMethod.ReturnType) : null;
-        }
-    }
 
     [SetUp]
     public void SetUp()
@@ -83,6 +65,11 @@ public class ChannelProcessor
     /// Check if a code has been completed, cancelled codes have no result
     /// </summary>
     private static bool IsCompleted(Code code) => code.Result is not null;
+
+    /// <summary>
+    /// Get the reply of a completed code without the newline that the Executed pipeline stage may already have appended on another thread
+    /// </summary>
+    private static string? Reply(Code code) => code.Result?.Content.TrimEnd('\n');
 
     [Test]
     public void M99WithoutReply()
@@ -176,7 +163,7 @@ public class ChannelProcessor
         Assert.That(_processor.BufferedCodes, Is.EqualTo(new[] { code }));
 
         _processor.HandleReply(ReplyFlags, "second");
-        Assert.That(code.Result?.Content, Is.EqualTo("first second"));
+        Assert.That(Reply(code), Is.EqualTo("first second"));
         Assert.That(code.Result?.Type, Is.EqualTo(MessageType.Warning));
         Assert.That(_processor.BufferedCodes, Is.Empty);
     }
@@ -272,7 +259,7 @@ public class ChannelProcessor
         Assert.That(IsCompleted(m291), Is.False);
 
         _processor.MessageAcknowledged();
-        Assert.That(m291.Result?.Content, Is.EqualTo("reply"));
+        Assert.That(Reply(m291), Is.EqualTo("reply"));
         Assert.That(_processor.Stack, Has.Count.EqualTo(1));
     }
 
@@ -302,7 +289,7 @@ public class ChannelProcessor
         Assert.That(IsCompleted(startCode), Is.False);
 
         _processor.MacroFileClosed();
-        Assert.That(startCode.Result?.Content, Is.EqualTo("done"));
+        Assert.That(Reply(startCode), Is.EqualTo("done"));
         Assert.That(_processor.BufferedCodes, Is.Empty);
         Assert.That(_processor.Stack, Has.Count.EqualTo(1));
     }
@@ -318,7 +305,7 @@ public class ChannelProcessor
         Assert.That(_processor.BufferedCodes, Is.EqualTo(new[] { startCode }));
 
         _processor.HandleReply(ReplyFlags, "done");
-        Assert.That(startCode.Result?.Content, Is.EqualTo("done"));
+        Assert.That(Reply(startCode), Is.EqualTo("done"));
     }
 
     [Test]
