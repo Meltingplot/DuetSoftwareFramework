@@ -52,6 +52,60 @@ public class ReaderRobustness
         return result;
     }
 
+    [TestCase(DataType.IntArray, sizeof(int))]
+    [TestCase(DataType.UIntArray, sizeof(uint))]
+    [TestCase(DataType.FloatArray, sizeof(float))]
+    [TestCase(DataType.DriverIdArray, sizeof(uint))]
+    [TestCase(DataType.BoolArray, sizeof(byte))]
+    public void EvaluationResultArray(DataType type, int itemSize)
+    {
+        // Arrays that fit the packet are read as before
+        Assert.That(ReadEvaluationResult(type, 3, new byte[3 * itemSize]), Is.InstanceOf<Array>().With.Length.EqualTo(3));
+
+        // RepRapFirmware does not send arrays (DataTransfer::WriteEvaluationResult), but a malformed count must be reported
+        // like any other malformed packet and must not allocate more than the packet can hold
+        foreach (int count in new[] { 4, -1, 0x40000000, int.MaxValue })
+        {
+            long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            Assert.Throws<ArgumentOutOfRangeException>(() => ReadEvaluationResult(type, count, new byte[3 * itemSize]), $"count {count}");
+            Assert.That(GC.GetAllocatedBytesForCurrentThread() - allocatedBefore, Is.LessThan(65536), $"count {count}");
+        }
+    }
+
+    [Test]
+    public void EvaluationResultDateTime()
+    {
+        // RepRapFirmware formats dates as yyyy-MM-ddTHH:mm:ss (ExpressionValue::AppendAsString in ObjectModel.cpp)
+        Assert.That(ReadEvaluationResult(DataType.DateTime, "2026-11-01T12:34:56"), Is.EqualTo(new DateTime(2026, 11, 1, 12, 34, 56)));
+
+        // A value that is not a date is a malformed packet
+        Assert.Throws<ArgumentOutOfRangeException>(() => ReadEvaluationResult(DataType.DateTime, "2026-11-01T\u00002:34:56"));
+    }
+
+    private static object? ReadEvaluationResult(DataType type, string value) => ReadEvaluationResult(type, Encoding.UTF8.GetByteCount(value), Encoding.UTF8.GetBytes(value));
+
+    private static object? ReadEvaluationResult(DataType type, int intValue, byte[] payload)
+    {
+        const string expression = "state.time";
+        int headerSize = Marshal.SizeOf<EvaluationResultHeader>();
+
+        EvaluationResultHeader header = new()
+        {
+            Type = type,
+            Channel = DuetAPI.CodeChannel.HTTP,
+            ExpressionLength = (ushort)Encoding.UTF8.GetByteCount(expression),
+            IntValue = intValue
+        };
+
+        byte[] blob = new byte[headerSize + header.ExpressionLength + payload.Length];
+        MemoryMarshal.Write(blob, in header);
+        Encoding.UTF8.GetBytes(expression, blob.AsSpan(headerSize));
+        payload.CopyTo(blob.AsSpan(headerSize + header.ExpressionLength));
+
+        Reader.ReadEvaluationResult(blob, out _, out _, out object? result);
+        return result;
+    }
+
     [Test]
     public void ObjectModelKey()
     {
