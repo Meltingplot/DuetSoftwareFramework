@@ -1099,7 +1099,16 @@ public class MCodeHandler(
                     }
                     else
                     {
+                        // RRF stops logging before it checks the log level, so an invalid one stops logging as well
                         await eventLogger.StopAsync();
+                        if (sParam < 0)
+                        {
+                            return new Message(MessageType.Error, "expected non-negative integer after 'S'");
+                        }
+                        if (sParam > 3)
+                        {
+                            return new Message(MessageType.Error, "parameter 'S' too high");
+                        }
                     }
                     return new Message();
                 }

@@ -293,6 +293,19 @@ public class SystemCodes
         Assert.That(await _host.ExecuteAsync("M929 S0"), Is.EqualTo("\n"));
     }
 
+    [TestCase(4, "parameter 'S' too high")]
+    [TestCase(-1, "expected non-negative integer after 'S'")]
+    public async Task EventLoggingWithInvalidLevel(int sParam, string error)
+    {
+        // Platform.cpp:3387-3388 (ConfigureLogging) stops logging before GetLimitedUIValue('S', 0, 4) checks the value.
+        // GCodeBuffer.cpp:623-626 reports a value that is too high, BinaryParser.cpp:272-275 a negative one
+        Assert.That(await _host.ExecuteAsync("M929 S1"), Is.EqualTo("\n"));
+
+        Assert.That(await _host.ExecuteAsync($"M929 S{sParam}"), Is.EqualTo($"Error: M929: {error}\n"));
+        Assert.That(await _host.ExecuteAsync("M929"), Is.EqualTo("Event logging is disabled\n"));
+        Assert.That(Received(), Is.Empty);
+    }
+
     [TestCase("M998")]
     [TestCase("M998 P34")]
     public void ResendRequest(string code)
