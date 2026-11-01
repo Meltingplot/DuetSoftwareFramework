@@ -163,7 +163,7 @@ public class CodeParserFuzz
     [Test]
     public void SyncMatchesAsync() => Fuzzer.Run(Corpus, input => CheckSyncMatchesAsync(input, false), Dictionary);
 
-    [Test, Explicit("Code.Parse drops the first character of a following code on the same line")]
+    [Test]
     public void SyncMatchesAsyncOnFollowingCodes() => Fuzzer.Run(Corpus, input => CheckSyncMatchesAsync(input, true), Dictionary);
 
     /// <summary>
