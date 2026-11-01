@@ -101,8 +101,9 @@ public partial class Code
         /// <summary>
         /// Verify the checksum or CRC block of the line (if present) and remove it from the line
         /// </summary>
+        /// <param name="code">Code being read. The removed checksum block is added to its length right away if nothing is left to read</param>
         /// <exception cref="CodeParserException">Checksum or CRC is malformed or does not match</exception>
-        public void Verify()
+        public void Verify(Code code)
         {
             bool hasNewLine = Length > 0 && Content[Length - 1] == '\n';
             int contentLength = hasNewLine ? Length - 1 : Length;
@@ -125,7 +126,15 @@ public partial class Code
                     Content[contentLength - stripped] = (byte)'\n';
                 }
                 Length -= stripped;
-                StrippedBytes = stripped;
+                if (Length > 0)
+                {
+                    StrippedBytes = stripped;
+                }
+                else
+                {
+                    // The checksum block follows the 'N' at the end of the stream, so no byte is left that could carry it
+                    code.Length += stripped;
+                }
             }
         }
 

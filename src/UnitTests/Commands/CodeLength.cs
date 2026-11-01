@@ -46,6 +46,20 @@ public class CodeLength
         Assert.That(codes[0].Length, Is.EqualTo(length));
     }
 
+    [Test]
+    public async Task ChecksumAfterNAtEndOfFileAsync()
+    {
+        // A numbered line without content is not verified and everything from the '*' on is removed, which leaves nothing to read
+        await using MemoryStream stream = new("N*57"u8.ToArray());
+        CodeParserBuffer buffer = new(128, true);
+        DuetAPI.Commands.Code code = new();
+        await DuetAPI.Commands.Code.ParseAsync(stream, code, buffer);
+
+        Assert.That(code.FilePosition, Is.EqualTo(0));
+        Assert.That(code.Length, Is.EqualTo(4));
+        Assert.That(buffer.GetPosition(stream), Is.EqualTo(4));
+    }
+
     [TestCase("G1 X1", 5)]
     [TestCase("G1 X1\n", 6)]
     [TestCase("N1 G1 X10*80", 12)]

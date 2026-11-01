@@ -101,7 +101,7 @@ public partial class Code
 
             try
             {
-                line.Verify();
+                line.Verify(result);
 
                 if (buffer.EnforceLineNumbers && line.HasContent)
                 {
