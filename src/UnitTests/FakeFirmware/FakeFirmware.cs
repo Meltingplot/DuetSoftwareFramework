@@ -33,8 +33,9 @@ namespace UnitTests.FakeFirmware;
 /// </para>
 /// <para>
 /// Emulated: code buffer and buffer updates, code replies with RRF's flags, macro requests (M98, system macros), macro completion and
-/// M99 aborts, message boxes (M291/M292), M409, expression evaluation, local and global variables, movement locks, channel invalidation,
-/// emergency stop, reset, resend requests and the mutex hand-over between RRF's SBC and main tasks while a code waits for a macro.
+/// M99 aborts, message boxes (M291/M292), M409, the result variables of M260/M261, expression evaluation, local and global variables,
+/// movement locks, channel invalidation, emergency stop, reset, resend requests and the mutex hand-over between RRF's SBC and main tasks
+/// while a code waits for a macro.
 /// Not emulated: job files and pausing, file requests from RRF, codes RRF passes on to DSF (DoCode), timeouts, motion, heaters,
 /// the binary protocol and its transfer buffer limits. Codes without a test handler succeed with an empty reply
 /// </para>

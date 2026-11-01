@@ -553,11 +553,35 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
                 // Get object model values in JSON format
                 case 409:
                     return GetObjectModel(gb, code);
+
+                // I2C or Modbus send and receive, see Platform::SendI2cOrModbus and Platform::ReceiveI2cOrModbus
+                case 260:
+                case 261:
+                    CreateResultVariable(gb, code);
+                    return HandleResult(gb, CodeResult.Ok, string.Empty);
             }
         }
 
         // Everything else succeeds without a reply
         return HandleResult(gb, CodeResult.Ok, string.Empty);
+    }
+
+    /// <summary>
+    /// Create the variable named by the V parameter of M260 or M261, see GetResultVariable in Platform.cpp.
+    /// The I2C or Modbus transfer is not emulated, so the variable keeps the null value it is created with
+    /// </summary>
+    private void CreateResultVariable(FakeGCodeBuffer gb, FakeCode code)
+    {
+        if (code.HasParameter('V'))
+        {
+            string varName = GetString(gb, code, 'V');
+            Dictionary<string, object?> variables = gb.GetVariables();
+            if (variables.ContainsKey(varName))
+            {
+                throw new FakeExpressionException($"variable '{varName}' already exists");
+            }
+            variables.Add(varName, null);
+        }
     }
 
     /// <summary>

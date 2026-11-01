@@ -5,7 +5,10 @@ using System.Threading.Tasks;
 using DuetAPI;
 using DuetAPI.ObjectModel;
 using DuetControlServer.Link.Protocol.FirmwareRequests;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using NUnit.Framework;
+using SbcRequest = DuetControlServer.Link.Protocol.SbcRequests.Request;
 
 namespace UnitTests.FakeFirmware;
 
@@ -251,13 +254,51 @@ public class FakeFirmwareTests
         }
     }
 
-    [Test, Explicit("Hangs: after M112 DCS sets its code buffer space to 0 and RRF reports it again only when its code buffer changes")]
-    public async Task CodeAfterEmergencyStop()
+    [Test]
+    public async Task ResetAfterEmergencyStop()
+    {
+        // The wiki on M112: the Duet "can be started again by sending M999, pressing the reset button or power cycling the board"
+        IHostApplicationLifetime lifetime = _host.Services.GetRequiredService<IHostApplicationLifetime>();
+        TaskCompletionSource<DateTime> stopping = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        using CancellationTokenRegistration registration = lifetime.ApplicationStopping.Register(() => stopping.TrySetResult(DateTime.UtcNow));
+
+        Assert.That(await _host.ExecuteAsync("M112"), Is.EqualTo("\n"));
+        using (await _host.Model.AccessReadOnlyAsync())
+        {
+            Assert.That(_host.Model.State.Status, Is.EqualTo(MachineStatus.Halted));
+        }
+
+        // M999 without parameters is not sent as a code but as a reset request, see the M999 case in MCodeHandler and LinkInterface.ResetFirmwareAsync
+        Assert.That(await _host.ExecuteAsync("M999"), Is.EqualTo("\n"));
+        DateTime replied = DateTime.UtcNow;
+        Assert.That(_host.Firmware.GetReceivedRequests().Select(request => request.Request).Where(request => request is SbcRequest.EmergencyStop or SbcRequest.Reset),
+            Is.EqualTo(new[] { SbcRequest.EmergencyStop, SbcRequest.Reset }));
+        Assert.That(_host.Firmware.GetReceivedCodes(), Is.Empty);
+        Assert.That(_host.Firmware.IsEmergencyStopped, Is.False, "RRF has not been reset");
+
+        // DCS stops itself a second after the reply so that the reply can still reach the clients (Restart=always in duetcontrolserver.service starts it again)
+        Assert.That(stopping.Task.IsCompleted, Is.False, "DCS must not stop before the reply has gone out");
+        DateTime stopped = await stopping.Task.WaitAsync(FakeFirmwareHost.DefaultTimeout);
+        Assert.That(stopped - replied, Is.GreaterThan(TimeSpan.FromMilliseconds(500)));
+
+        // LinkService has left its transfer loop after the reset, the services must still stop
+        Assert.That(async () => await _host.DisposeAsync().AsTask().WaitAsync(FakeFirmwareHost.DefaultTimeout), Throws.Nothing, "Host did not stop after the reset");
+    }
+
+    [Test]
+    public async Task CodeAfterEmergencyStopWaitsForReset()
     {
         await _host.ExecuteAsync("M112");
 
-        // RRF still accepts status requests while it is halted, see GCodes::HandleMcode
-        Assert.That(await _host.ExecuteAsync("M115", timeout: TimeSpan.FromSeconds(2)), Is.EqualTo("\n"));
+        // After M112 no code reaches RRF until it is reset, which is intended
+        Task<string> code = _host.StartCode("G4 P1");
+        Assert.That(code.Wait(HoldTime), Is.False);
+        Assert.That(_host.Firmware.GetReceivedCodes(), Is.Empty);
+
+        // The reset invalidates the waiting code, so it finishes without a reply and is never sent
+        Assert.That(await _host.ExecuteAsync("M999"), Is.EqualTo("\n"));
+        Assert.That(await code.WaitAsync(FakeFirmwareHost.DefaultTimeout), Is.Empty);
+        Assert.That(_host.Firmware.GetReceivedCodes(), Is.Empty);
     }
 
     [Test]
