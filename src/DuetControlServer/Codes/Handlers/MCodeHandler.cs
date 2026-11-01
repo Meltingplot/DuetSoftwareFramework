@@ -410,6 +410,11 @@ public class MCodeHandler(
                 {
                     string file = code.GetUnprecedentedString();
                     string physicalFile = await filePathResolver.ToPhysicalAsync(file, FileDirectory.GCodes, cancellationToken);
+                    if (!Path.Exists(physicalFile))
+                    {
+                        // File.Delete does not fail if the file does not exist, but RRF does
+                        return new Message(MessageType.Error, $"Failed to delete file {file}: file not found");
+                    }
 
                     try
                     {
@@ -815,6 +820,12 @@ public class MCodeHandler(
                 if (await codeProcessor.FlushAsync(code, cancellationToken: cancellationToken))
                 {
                     string path = code.GetString('P'), physicalPath = await filePathResolver.ToPhysicalAsync(path, cancellationToken: cancellationToken);
+                    if (!Path.Exists(physicalPath))
+                    {
+                        // File.Delete does not fail if the file does not exist, but RRF does
+                        return new Message(MessageType.Error, $"Failed to delete file or directory {path}: file or directory not found");
+                    }
+
                     try
                     {
                         if (Directory.Exists(physicalPath))
