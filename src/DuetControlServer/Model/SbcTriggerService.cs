@@ -33,7 +33,7 @@ public sealed class SbcTriggerService(
     {
         public required string Expression { get; init; }
         public required string[] WatchedPaths { get; init; }
-        public int Condition { get; init; }
+        public int Condition { get; set; }
         public bool LastResult { get; set; }
     }
 
@@ -116,7 +116,8 @@ public sealed class SbcTriggerService(
 
         if (!code.TryGetParameter('P', out CodeParameter? pParam))
         {
-            return new Message(MessageType.Error, "P parameter (expression) is required");
+            // Without P, M581.1 reports the trigger or changes its enable condition
+            return await ReportOrChangeConditionAsync(triggerNumber, code, cancellationToken);
         }
 
         // P-1 (integer) means delete/clear the trigger. Pass it on like plain M581 P-1, so that RRF deletes a trigger it evaluates itself
@@ -154,18 +155,7 @@ public sealed class SbcTriggerService(
 
         // Evaluate the expression immediately to seed LastResult, so that a true expression
         // at registration time does not cause a spurious trigger on the first OM change
-        bool initialResult = false;
-        try
-        {
-            Commands.Code evalCode = codeFactory.Create();
-            evalCode.Channel = CodeChannel.Trigger;
-            object? evalResult = await expressions.EvaluateExpressionToValueAsync(evalCode, triggerExpression, false, cancellationToken);
-            initialResult = evalResult is bool b && b;
-        }
-        catch (Exception e) when (e is not OperationCanceledException)
-        {
-            logger.LogWarning(e, "Failed to evaluate initial state of M581.1 expression '{Expression}'", triggerExpression);
-        }
+        bool initialResult = await EvaluateInitialResultAsync(triggerExpression, cancellationToken);
 
         string[] watchedPaths = [.. expressions.ExtractFieldPaths(triggerExpression)];
         lock (_triggers)
@@ -181,6 +171,70 @@ public sealed class SbcTriggerService(
 
         logger.LogInformation("Registered SBC trigger {Number} with expression '{Expression}' (condition {Condition})", triggerNumber, triggerExpression, condition);
         return new Message();
+    }
+
+    /// <summary>
+    /// Report an SBC trigger or change its enable condition (R parameter), like RRF does for its own triggers.
+    /// Used by M581.1 without P and by plain M581 with no more than T, R and S
+    /// </summary>
+    /// <param name="triggerNumber">Trigger number (0–31)</param>
+    /// <param name="code">M581 or M581.1 code</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>Result message, or null to pass the code on to RRF because RRF evaluates this trigger</returns>
+    public async Task<Message?> ReportOrChangeConditionAsync(int triggerNumber, Commands.Code code, CancellationToken cancellationToken)
+    {
+        TriggerState? state;
+        lock (_triggers)
+        {
+            _triggers.TryGetValue(triggerNumber, out state);
+        }
+        if (state is null)
+        {
+            return null;
+        }
+
+        if (code.TryGetInt('R', out int condition))
+        {
+            // Determine the initial state again like RRF, so that enabling the trigger does not fire it for an expression that is already true
+            bool initialResult = await EvaluateInitialResultAsync(state.Expression, cancellationToken);
+            lock (_triggers)
+            {
+                state.Condition = condition;
+                state.LastResult = initialResult;
+            }
+            return new Message();
+        }
+
+        string enableCondition = state.Condition switch
+        {
+            < 0 => "if enabled would fire",
+            1 => "fires only when printing",
+            2 => "fires only when not printing",
+            _ => "fires"
+        };
+        return new Message(MessageType.Success, $"Trigger {triggerNumber} {enableCondition} {((state.Condition > 0) ? "and" : "when")} expression {{{state.Expression}}} becomes true");
+    }
+
+    /// <summary>
+    /// Evaluate a trigger expression to get its state before the trigger is checked for the first time
+    /// </summary>
+    /// <param name="expression">Trigger expression</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>Whether the expression is true</returns>
+    private async Task<bool> EvaluateInitialResultAsync(string expression, CancellationToken cancellationToken)
+    {
+        try
+        {
+            Commands.Code evalCode = codeFactory.Create();
+            evalCode.Channel = CodeChannel.Trigger;
+            object? evalResult = await expressions.EvaluateExpressionToValueAsync(evalCode, expression, false, cancellationToken);
+            return evalResult is bool b && b;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            logger.LogWarning(e, "Failed to evaluate initial state of M581.1 expression '{Expression}'", expression);
+            return false;
+        }
     }
 
     /// <summary>
@@ -284,10 +338,14 @@ public sealed class SbcTriggerService(
     /// <summary>
     /// Returns true if the trigger condition (R parameter) allows firing given the current print status.
     /// </summary>
-    /// <param name="condition">0 = always, 1 = only while printing, 2 = only while not printing</param>
+    /// <param name="condition">-1 = disabled, 0 = always, 1 = only while printing, 2 = only while not printing</param>
     /// <param name="cancellationToken">Optional cancellation token</param>
     private async Task<bool> IsTriggerConditionMetAsync(int condition, CancellationToken cancellationToken)
     {
+        if (condition < 0)
+        {
+            return false;
+        }
         if (condition == 0)
         {
             return true;

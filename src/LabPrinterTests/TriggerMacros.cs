@@ -62,13 +62,13 @@ public class TriggerMacros : LabTest
     /// Make sure the configuration does not use the test trigger
     /// </summary>
     /// <remarks>
-    /// DSF requires a P parameter for M581.1, so plain M581 reports the trigger
+    /// Plain M581, because DSF 3.7.0+mp.8 and older refuse M581.1 without P
     /// </remarks>
     private async Task RequireFreeTriggerAsync() =>
         Assert.That(await SendCodeAsync($"M581 T{TriggerNumber}"), Does.Contain("is not configured"), $"Trigger {TriggerNumber} is in use");
 
     /// <summary>
-    /// Delete the test trigger. DSF passes only plain M581 on to RRF, M581.1 P-1 deletes just a trigger that DSF evaluates itself
+    /// Delete the test trigger. Plain M581, because before #61 DSF did not pass M581.1 P-1 on to RRF
     /// </summary>
     private Task DeleteTriggerAsync() => SendCodeAsync($"M581 T{TriggerNumber} P-1");
 
@@ -130,6 +130,53 @@ public class TriggerMacros : LabTest
         {
             await DeleteTriggerAsync();
         }
+    }
+
+    /// <summary>
+    /// The G-code dictionary documents M581.1 T# as a report and M581.1 T# R&lt;n&gt; as a change of the enable condition, but DSF refused both
+    /// without a P parameter (fixed in #63)
+    /// </summary>
+    [Test]
+    public async Task ReportFirmwareTriggerWithM581Point1()
+    {
+        await RequireFreeTriggerAsync();
+
+        // Never true, so the trigger never fires
+        Assert.That(await SendCodeAsync($"M581.1 T{TriggerNumber} P\"state.upTime < 0\" R0"), Does.Not.Contain("Error"));
+        try
+        {
+            Assert.That(await SendCodeAsync($"M581.1 T{TriggerNumber}"), Does.Contain("fires when expression {state.upTime < 0} becomes true"));
+            Assert.That(await SendCodeAsync($"M581.1 T{TriggerNumber} R-1"), Does.Not.Contain("Error"));
+            Assert.That(await SendCodeAsync($"M581 T{TriggerNumber}"), Does.Contain("if enabled would fire"), "M581.1 R-1 did not reach RRF");
+        }
+        finally
+        {
+            await DeleteTriggerAsync();
+        }
+    }
+
+    /// <summary>
+    /// DSF evaluates a trigger with SBC fields itself, and plain M581 T# deleted such a trigger even when it only asked for a report (fixed in #63)
+    /// </summary>
+    [Test]
+    public async Task ReportSbcTriggerWithM581()
+    {
+        await RequireFreeTriggerAsync();
+
+        // Contains an SBC field, so DSF evaluates it, and it is never true
+        const string expression = "sbc.dsf.pluginSupport && state.upTime < 0";
+        Assert.That(await SendCodeAsync($"M581.1 T{TriggerNumber} P\"{expression}\" R0"), Does.Not.Contain("Error"));
+        try
+        {
+            string report = $"Trigger {TriggerNumber} fires when expression {{{expression}}} becomes true";
+            Assert.That(await SendCodeAsync($"M581 T{TriggerNumber}"), Does.Contain(report));
+            Assert.That(await SendCodeAsync($"M581.1 T{TriggerNumber}"), Does.Contain(report), "plain M581 deleted the trigger");
+        }
+        finally
+        {
+            await SendCodeAsync($"M581.1 T{TriggerNumber} P-1");
+        }
+        Assert.That(await SendCodeAsync($"M581 T{TriggerNumber}"), Does.Contain("is not configured"));
     }
 
     /// <summary>

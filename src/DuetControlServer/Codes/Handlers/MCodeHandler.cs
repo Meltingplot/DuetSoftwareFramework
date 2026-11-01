@@ -970,10 +970,22 @@ public class MCodeHandler(
                     }
                     throw new OperationCanceledException();
                 }
-                // Plain M581 hands ownership back to RRF — clear any DSF-managed trigger for this slot
                 if (code.TryGetInt('T', out int m581TriggerNumber))
                 {
-                    sbcTriggerService.Remove(m581TriggerNumber);
+                    if (code.Parameters.Any(parameter => parameter.Letter is not ('T' or 'R' or 'S')))
+                    {
+                        // Plain M581 with inputs or P-1 hands ownership back to RRF — clear any DSF-managed trigger for this slot
+                        sbcTriggerService.Remove(m581TriggerNumber);
+                    }
+                    else
+                    {
+                        // Without inputs it reports the trigger or changes its enable condition, which DSF does itself for its own triggers
+                        Message? m581Result = await sbcTriggerService.ReportOrChangeConditionAsync(m581TriggerNumber, code, cancellationToken);
+                        if (m581Result is not null)
+                        {
+                            return m581Result;
+                        }
+                    }
                 }
                 break;
 
