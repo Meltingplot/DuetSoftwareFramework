@@ -1021,7 +1021,8 @@ public class MCodeHandler(
             case 606:
                 if (await codeProcessor.FlushAsync(code, cancellationToken: cancellationToken))
                 {
-                    if (code.TryGetInt('S', out int sParam) && sParam == 1)
+                    // Only a job can be forked. RRF issues a warning if this is used from another channel
+                    if (code.Channel == CodeChannel.File && code.TryGetInt('S', out int sParam) && sParam == 1)
                     {
                         using (await model.AccessReadOnlyAsync(cancellationToken))
                         {
