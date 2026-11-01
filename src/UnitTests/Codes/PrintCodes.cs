@@ -1,6 +1,9 @@
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using DuetAPI;
+using DuetControlServer.Files;
+using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
 using UnitTests.FakeFirmware;
 
@@ -120,15 +123,34 @@ public class PrintCodes
         Assert.That(Received(), Is.EqualTo(new[] { "M606 S1" }));
     }
 
-    [Test, Explicit("Reproduces M606 S1 from a channel other than File being rejected by DCS instead of RRF issuing a warning")]
+    /// <summary>
+    /// Reply to M606 S from a channel other than File like GCodes5.cpp:213-217 (ForkInputReader)
+    /// </summary>
+    private void WarnAboutForkFromOtherChannel() =>
+        _host.Firmware.OnCode("M606", code => (code.HasParameter('S') && code.Channel != CodeChannel.File) ? FakeReply.Warning("this command is valid only when running a job from a stored file") : null);
+
+    [Test]
     public async Task ForkFromOtherChannel()
     {
-        // GCodes::ForkInputReader for a channel other than File, and the wiki: "a warning is issued but it is otherwise ignored".
-        // MCodeHandler calls JobProcessor.ForkAsync for any channel and replies "No file is selected" as an error, or forks the job of the
-        // File channel when one is running although RRF ignores the code
-        _host.Firmware.OnCode("M606", code => (code.HasParameter('S') && code.Channel != CodeChannel.File) ? FakeReply.Warning("this command is valid only when running a job from a stored file") : null);
+        // GCodes5.cpp:213-217 and the wiki (Gcodes.md:8108): from a channel other than File "a warning is issued but it is otherwise ignored".
+        // MCodeHandler used to call JobProcessor.ForkAsync for any channel and replied "No file is selected" as an error
+        WarnAboutForkFromOtherChannel();
 
         Assert.That(await _host.ExecuteAsync("M606 S1"), Is.EqualTo("Warning: M606: this command is valid only when running a job from a stored file\n"));
         Assert.That(Received(), Is.EqualTo(new[] { "M606 S1" }));
+    }
+
+    [Test]
+    public async Task ForkFromOtherChannelWithFileSelected()
+    {
+        System.IO.File.WriteAllText(Path.Combine(_host.BaseDirectory, "gcodes", "a.g"), "G1 X1\n");
+        Assert.That(await _host.ExecuteAsync("M23 \"a.g\""), Is.EqualTo("\n"));
+        WarnAboutForkFromOtherChannel();
+
+        // With a job file, MCodeHandler used to fork it although RRF ignores the code. JobProcessor then reported two job streams
+        // and started reading the second one together with the job (JobProcessor.cs:719-724)
+        Assert.That(await _host.ExecuteAsync("M606 S1"), Is.EqualTo("Warning: M606: this command is valid only when running a job from a stored file\n"));
+        Assert.That(Received(), Is.EqualTo(new[] { "M23 \"a.g\"", "M606 S1" }));
+        Assert.That(_host.Services.GetRequiredService<JobProcessor>().NumJobStreams, Is.EqualTo(1));
     }
 }
