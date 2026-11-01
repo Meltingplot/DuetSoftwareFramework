@@ -2,14 +2,16 @@
 
 ## References
 
-- **Duet3D wiki content**: https://github.com/Duet3D/wiki-content — source for the official Duet3D documentation (G-code dictionary, object model, RepRapFirmware and DSF behaviour).
+- **Duet3D wiki content**: https://github.com/Duet3D/wiki-content — source for the official Duet3D documentation (G-code dictionary, object model, RepRapFirmware and DSF behaviour). If a clone exists at `../wiki-content`, pull it and search there.
+- **RepRapFirmware source**: https://github.com/Duet3D/RepRapFirmware — what the firmware actually does on the other side of the SBC link.
 
-## G-code rules
+## No guessing
 
-Do not guess G-code semantics, parameters, or responses. Before writing, changing, or explaining any G-code handling:
+Do not guess. This applies to everything: G-code semantics, parameters and replies, object model keys, DSF and RRF behaviour, and the SBC protocol. Before writing, changing, or explaining any of it, including in tests, commits, PRs and replies:
 
-1. Check the DSF source (`src/`) for how the command is actually parsed and handled.
-2. Check the Duet3D wiki content (link above) for the documented command, its parameters, and expected output.
+1. Check the code that actually runs: the DSF source (`src/`) for how DSF parses and handles it, and the RRF source (link above) for what the firmware does.
+2. Check the Duet3D wiki content (link above) for what is documented: the command, its parameters, and the expected output.
+3. Name the file and line or wiki page that each statement rests on, instead of stating it from memory.
 
 If the code and the docs disagree, or neither covers the case, say so explicitly instead of filling the gap with an assumption.
 
