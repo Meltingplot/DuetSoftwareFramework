@@ -297,8 +297,8 @@ public class SystemCodes
     [TestCase("M998 P34")]
     public void ResendRequest(string code)
     {
-        // DCS does not support resend requests and throws NotSupportedException, which the IPC server reports to the client.
-        // RRF replies "Checksum error on line 34" instead (the M998 case in GCodes2.cpp)
+        // DCS does not support resend requests and throws NotSupportedException (MCodeHandler.cs:1233-1234), which the IPC server reports to the client.
+        // RRF replies "Checksum error on line 34" for M998 P34 and nothing for M998 without a non-zero P (GCodes2.cpp:4759-4766)
         Assert.That(async () => await _host.ExecuteAsync(code), Throws.TypeOf<NotSupportedException>());
         Assert.That(Received(), Is.Empty);
     }
