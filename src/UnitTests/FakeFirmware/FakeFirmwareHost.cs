@@ -195,11 +195,22 @@ public sealed class FakeFirmwareHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// Stop the services and delete the temporary directory
+    /// Whether the host has been disposed
+    /// </summary>
+    private bool _disposed;
+
+    /// <summary>
+    /// Stop the services and delete the temporary directory. Calling this again does nothing, so a test can dispose the host itself
     /// </summary>
     /// <returns>Asynchronous task</returns>
     public async ValueTask DisposeAsync()
     {
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
+
         // Stop the services in reverse order like the generic host does
         _lifetime.StopApplication();
         using (CancellationTokenSource cts = new(DefaultTimeout))
