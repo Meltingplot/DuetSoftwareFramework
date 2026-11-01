@@ -38,6 +38,12 @@ public sealed class SDInfoDetails
     /// Speed of the storage device (in bytes/s)
     /// </summary>
     public int? Speed { get; set; }
+
+    /// <summary>
+    /// Cluster size of the file system (in bytes)
+    /// </summary>
+    [JsonPropertyName("clsize")]
+    public long ClusterSize { get; set; }
 }
 
 /// <summary>

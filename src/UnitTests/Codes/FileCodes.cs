@@ -332,7 +332,7 @@ public class FileCodes
             _host.Model.Volumes.Add(new Volume { Capacity = 3965190144, PartitionSize = 3964665856, FreeSpace = 3807379456, Speed = 20000000, Mounted = true, Path = _host.BaseDirectory });
         }
 
-        // Fields of the wiki example for RRF 3.7. DCS does not report "clsize"
+        // Fields of the wiki example for RRF 3.7 (Gcodes.md:2112) and GCodes2.cpp:1548. DCS reports the block size of the file system as "clsize"
         using JsonDocument reply = JsonDocument.Parse(await _host.ExecuteAsync("M39 S2"));
         JsonElement info = reply.RootElement.GetProperty("SDinfo");
         Assert.That(info.GetProperty("slot").GetInt32(), Is.Zero);
@@ -341,6 +341,22 @@ public class FileCodes
         Assert.That(info.GetProperty("partitionSize").GetInt64(), Is.EqualTo(3964665856));
         Assert.That(info.GetProperty("free").GetInt64(), Is.EqualTo(3807379456));
         Assert.That(info.GetProperty("speed").GetInt64(), Is.EqualTo(20000000));
+        Assert.That(info.GetProperty("clsize").GetInt64(), Is.EqualTo(DuetSharedLibrary.FileExtensions.GetFileSystemBlockSize(_host.BaseDirectory)));
+        Assert.That(Received(), Is.Empty);
+    }
+
+    [Test]
+    public async Task SdCardInfoAsText()
+    {
+        using (await _host.Model.AccessReadWriteAsync())
+        {
+            _host.Model.Volumes.Add(new Volume { Capacity = 3965190144, PartitionSize = 3964665856, FreeSpace = 3807379456, Speed = 20000000, Mounted = true, Path = _host.BaseDirectory });
+        }
+
+        // Same text as the wiki example for RRF 3.7 (Gcodes.md:2110) and GCodes2.cpp:1572-1580, which prints the cluster size in bytes below 1024 and in kB otherwise
+        long clusterSize = DuetSharedLibrary.FileExtensions.GetFileSystemBlockSize(_host.BaseDirectory);
+        string clusterSizeText = (clusterSize < 1024) ? $"{clusterSize} bytes" : $"{clusterSize / 1024}kB";
+        Assert.That(await _host.ExecuteAsync("M39"), Is.EqualTo($"SD card in slot 0: capacity 3.97GB, partition size 3.96GB, free space 3.81GB, speed 20.00MBytes/sec, cluster size {clusterSizeText}\n"));
         Assert.That(Received(), Is.Empty);
     }
 
