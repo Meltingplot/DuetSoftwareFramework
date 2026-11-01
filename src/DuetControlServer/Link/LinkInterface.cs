@@ -318,6 +318,20 @@ public sealed partial class LinkInterface(
     }
 
     /// <summary>
+    /// Discard a state copied by <see cref="CopyStateAsync(CodeChannel, CodeChannel, CancellationToken)"/> that was never started
+    /// </summary>
+    /// <param name="channel">Channel the state was copied to</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>Asynchronous task</returns>
+    public async Task DiscardCopiedStateAsync(CodeChannel channel, CancellationToken cancellationToken = default)
+    {
+        using (await channels[channel].LockAsync(cancellationToken))
+        {
+            await channels[channel].DiscardCopiedStateAsync();
+        }
+    }
+
+    /// <summary>
     /// Request an immediate emergency stop
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
