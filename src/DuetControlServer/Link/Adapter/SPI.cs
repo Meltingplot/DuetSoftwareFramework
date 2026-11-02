@@ -52,6 +52,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     private bool _extendedRequested, _extendedTx;
     private int _extendedSwitchTransfers;
 
+    // Phase guard of RRF (LinkCapabilities.PhaseGuard), requested by DSF for the current connection
+    private bool _phaseGuardRequested;
+
     /// <summary>
     /// Number of completed transfers after which DSF gives up waiting for RRF to switch to the extended link
     /// </summary>
@@ -452,7 +455,7 @@ public class SPI : IDiagnostics, ILinkAdapter
         {
             _txHeader.SequenceNumber &= ExtendedLink.CounterMask;
         }
-        _extendedRequested = _extendedTx = false;
+        _extendedRequested = _extendedTx = _phaseGuardRequested = false;
     }
 
     /// <summary>
@@ -887,6 +890,7 @@ public class SPI : IDiagnostics, ILinkAdapter
 
         WritePacket(Protocol.SbcRequests.Request.ActivateLinkCapabilities, sizeof(uint));
         MemoryMarshal.Write(GetWriteBuffer(sizeof(uint)), (uint)capabilities);
+        _phaseGuardRequested |= capabilities.HasFlag(LinkCapabilities.PhaseGuard);
         if (extended && !_extendedRequested)
         {
             _extendedRequested = true;
@@ -1782,7 +1786,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             }
 
             // Check for possible response code
-            uint responseCode = DecodeResponse(MemoryMarshal.Read<uint>(_rxHeaderBuffer.Span));
+            uint receivedWord = MemoryMarshal.Read<uint>(_rxHeaderBuffer.Span), responseCode = DecodeResponse(receivedWord);
             if (responseCode == TransferResponse.BadResponse)
             {
                 if (!_connected)
@@ -1799,6 +1803,17 @@ public class SPI : IDiagnostics, ILinkAdapter
                     continue;
                 }
                 throw new OperationCanceledException("SPI data transfer failed");
+            }
+
+            // RRF sent its header response, so it took the start of this header for the header response of DSF. Without its phase guard RRF
+            // exchanges the headers next after a bad header checksum, so do the same. A response from DSF would be taken for a header again,
+            // which keeps both sides out of step. With the phase guard RRF waits for that response instead. A regular code on the extended link
+            // comes from an RRF that has left it by a restart or a connection reset, which ends its phase guard as well
+            bool firmwareLeftExtendedLink = _extendedRequested && receivedWord == TransferResponse.BadHeaderChecksum;
+            if (responseCode == TransferResponse.BadHeaderChecksum && (!_phaseGuardRequested || firmwareLeftExtendedLink))
+            {
+                _logger.LogWarning("Received bad header checksum response instead of header, exchanging the headers again");
+                continue;
             }
 
             // Read received header and verify the format code

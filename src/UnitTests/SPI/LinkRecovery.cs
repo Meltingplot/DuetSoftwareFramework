@@ -229,11 +229,13 @@ public class LinkRecovery
     }
 
     /// <summary>
-    /// Settings of the firmware end that are not known for sure or that are being considered
+    /// Settings of the firmware end that are not known for sure or that are being considered.
+    /// <see cref="MaxSbcRetries"/> overrides the retry limit of DSF (<see cref="Settings.MaxSbcRetries"/>)
     /// </summary>
     public sealed record RrfOptions(SequenceMismatchHandling SequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool PollWhileDisconnected = false,
         bool RrfFirstOnTie = true, byte UnderrunByte = 0, bool PhaseGuard = false, bool SequenceGuard = false,
-        LinkCapabilities Capabilities = LinkCapabilities.None, int TargetTransfer = TargetTransfer, RrfRule DisabledRules = RrfRule.None, bool InjectThroughDsf = false);
+        LinkCapabilities Capabilities = LinkCapabilities.None, int TargetTransfer = TargetTransfer, RrfRule DisabledRules = RrfRule.None, bool InjectThroughDsf = false,
+        int? MaxSbcRetries = null);
 
     private static IEnumerable<TestCaseData> OtherOptions =>
     [
@@ -387,13 +389,14 @@ public class LinkRecovery
             .Concat(GetRestartCases(RegularWrapTransfer).Where(c => c.Mutation.StartsWith("RRF restart after seq")).Select(c => c with { Field = "RegularWrap" }));
 
     /// <summary>
-    /// On the extended link, DSF notices every restart of RRF at once, also right after a wrap of either counter
+    /// On the extended link, DSF notices every restart of RRF at once, also right after a wrap of either counter. With a retry limit that is
+    /// never reached, DSF must notice them through the protocol and not by giving up a transfer
     /// </summary>
-    [TestCase(false), TestCase(true)]
-    public void ExtendedLinkNoticesEveryRestart(bool poll)
+    [TestCase(false, null), TestCase(true, null), TestCase(false, 1000), TestCase(true, 1000)]
+    public void ExtendedLinkNoticesEveryRestart(bool poll, int? maxSbcRetries)
     {
         List<string> failures = [.. GetExtendedRestartCases()
-            .Select(c => (Case: c, Result: Run(c.Variant, c.Fault, ExtendedRestartOptions(c, poll, RrfRule.None))))
+            .Select(c => (Case: c, Result: Run(c.Variant, c.Fault, ExtendedRestartOptions(c, poll, RrfRule.None) with { MaxSbcRetries = maxSbcRetries })))
             .Where(r => r.Result.Outcome != Outcome.ResetDetected)
             .Select(r => $"- {r.Case}: {r.Result.Outcome}, {r.Result.Details}")];
         Assert.That(failures, Is.Empty, string.Join("\n", failures.Take(20)));
@@ -864,7 +867,7 @@ public class LinkRecovery
             };
             injector.Arm(new SpiFaultSpec(kind, exchange, armed.Direction == ExchangeDirection.ToRrf, armed.Mutation!));
         }
-        SpiAdapter CreateAdapter(FakeRrfSpi rrf, List<string>? trace) => CreateSpiAdapter(rrf, trace, injector);
+        SpiAdapter CreateAdapter(FakeRrfSpi rrf, List<string>? trace) => CreateSpiAdapter(rrf, trace, injector, options.MaxSbcRetries);
         SpiAdapter dsf = CreateAdapter(rrf, trace);
 
         // Perform a full transfer and read the payloads RRF sent. Returns whether the transfer was clean
@@ -1096,8 +1099,12 @@ public class LinkRecovery
 
     private static bool HasDuplicate(List<string> payloads) => payloads.Count != payloads.Distinct().Count();
 
-    private SpiAdapter CreateSpiAdapter(FakeRrfSpi rrf, List<string>? trace, ISpiDevice? device = null) =>
-        new(_eventLogger, _model, (trace is null) ? NullLogger<SpiAdapter>.Instance : new TraceLogger(rrf, trace), Options.Create(new Settings()), rrf, device ?? rrf);
+    private SpiAdapter CreateSpiAdapter(FakeRrfSpi rrf, List<string>? trace, ISpiDevice? device = null, int? maxSbcRetries = null)
+    {
+        Settings settings = new();
+        settings.MaxSbcRetries = maxSbcRetries ?? settings.MaxSbcRetries;
+        return new(_eventLogger, _model, (trace is null) ? NullLogger<SpiAdapter>.Instance : new TraceLogger(rrf, trace), Options.Create(settings), rrf, device ?? rrf);
+    }
 
     /// <summary>
     /// Writes the warnings of DSF into the trace
