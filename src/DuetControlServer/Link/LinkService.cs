@@ -1478,7 +1478,8 @@ public sealed class LinkService(
         {
             _queryLinkCapabilities = false;
             _linkCapabilitiesToActivate = _activatedLinkCapabilities = LinkCapabilities.None;
-            _linkCapabilitiesQuery = (linkAdapter.SupportedLinkCapabilities != LinkCapabilities.None) ? linkInterface.RequestObjectModel("limits.sbcLinkCapabilities", string.Empty) : null;
+            // Like every limit, the key is verbose
+            _linkCapabilitiesQuery = (linkAdapter.SupportedLinkCapabilities != LinkCapabilities.None) ? linkInterface.RequestObjectModel("limits.sbcLinkCapabilities", "v") : null;
         }
         else if (_linkCapabilitiesQuery is { IsCompleted: true })
         {

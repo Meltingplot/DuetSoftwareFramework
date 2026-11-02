@@ -431,10 +431,12 @@ public class LinkRecovery
 
     private static IEnumerable<TestCaseData> DcsRestartOptions =>
     [
-        new TestCaseData(new RrfOptions()).SetName("DcsRestart"),
-        new TestCaseData(new RrfOptions(PollWhileDisconnected: true)).SetName("DcsRestart_PollWhileDisconnected"),
+        new TestCaseData(new RrfOptions()).SetName("DcsRestart").Explicit("2 of 42 DCS restarts need a second start of DCS with the RRF of today"),
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true)).SetName("DcsRestart_PollWhileDisconnected").Explicit("2 of 42 DCS restarts need a second start of DCS with the RRF of today"),
         new TestCaseData(new RrfOptions(Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("DcsRestart_Extended"),
-        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("DcsRestart_ExtendedPolling")
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("DcsRestart_ExtendedPolling"),
+        new TestCaseData(new RrfOptions(Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, DisabledRules: RrfRule.LeaveWhenDsfLeft))
+            .SetName("DcsRestart_ExtendedWithoutLeaveWhenDsfLeft").Explicit("Shows why RRF leaves the extended link when DSF left: 6 of 42 DCS restarts need a second start of DCS without it")
     ];
 
     /// <summary>
@@ -970,6 +972,11 @@ public class LinkRecovery
             if (HasDuplicate(rrf.ReceivedPayloads))
             {
                 return new(Outcome.Duplicate, rrf.Disconnects > 0, dcsDetails);
+            }
+            if (dcsRestarts > 0)
+            {
+                // The new DCS must connect at once. Failing to start makes systemctl report an error and costs another restart of DCS
+                return new(Outcome.DcsRestart, rrf.Disconnects > 0, dcsDetails);
             }
             return new((rrf.ConnectionResets > rrfResetsAtDcsRestart) ? Outcome.ResetDetected : Outcome.ResetMissed, rrf.Disconnects > 0, dcsDetails);
         }

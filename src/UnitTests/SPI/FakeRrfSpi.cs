@@ -94,7 +94,12 @@ public enum RrfRule
     /// <summary>
     /// Extended BadResponse read as the first word of a header (DataTransfer.cpp:913)
     /// </summary>
-    DecodeHeaderWord = 128
+    DecodeHeaderWord = 128,
+
+    /// <summary>
+    /// RRF leaves the extended link at once when a valid header from DSF has no session status, so that a new DCS understands the responses
+    /// </summary>
+    LeaveWhenDsfLeft = 256
 }
 
 /// <summary>
@@ -710,6 +715,13 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
                 {
                     ExchangeResponse(TransferResponse.BadDataLength);
                     break;
+                }
+                if (Extended && Enabled(RrfRule.LeaveWhenDsfLeft) && ExtendedLink.Distance(_lastTransferNumber, _rxHeader.SequenceNumber, true) < 0 && Hit(RrfRule.LeaveWhenDsfLeft))
+                {
+                    // Proposed change: DSF has left the extended link, which only a restart or a connection reset does. Leave it as well,
+                    // so that DSF understands the responses. The sequence number no longer matches, so the connection is reset when the transfer ends
+                    _activeCapabilities = LinkCapabilities.None;
+                    _lastTxValid = false;
                 }
                 if (GuardSequence())
                 {
