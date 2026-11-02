@@ -93,7 +93,8 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     private TransferHeader _rxHeader, _txHeader;
     private readonly byte[] _rxHeaderBytes = new byte[HeaderSize];
     private uint _rxResponse, _txResponse, _rxResponseWord;
-    private readonly byte[] _rxBuffer = new byte[SbcTransferBufferSize], _txBuffer = new byte[SbcTransferBufferSize];
+    private readonly byte[] _rxBuffer = new byte[SbcTransferBufferSize];
+    private byte[] _txBuffer = new byte[SbcTransferBufferSize];
     private int _txPointer;
     private byte _packetId;
     private bool _transferReadyHigh;
@@ -123,10 +124,11 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     private bool SequenceGuardActive => _sequenceGuard || _activeCapabilities.HasFlag(LinkCapabilities.SequenceGuard);
     private bool Extended => _activeCapabilities.HasFlag(LinkCapabilities.ExtendedHeader);
 
-    // Proposed change: last completed transfer, sent again when DSF repeats its part of it, and the transfer that waits meanwhile
+    // Proposed change: last completed transfer, sent again when DSF repeats its part of it, and the transfer that waits meanwhile.
+    // RRF has room for one more transfer buffer only, so the buffers are swapped instead of copied
     private TransferHeader _lastTxHeader, _pendingTxHeader;
-    private byte[]? _lastTxData;
-    private byte[] _pendingTxData = [];
+    private byte[] _lastTxBuffer = new byte[SbcTransferBufferSize];
+    private bool _lastTxValid;
     private int _pendingTxPointer;
     private byte _pendingPacketId;
     private bool _resending;
@@ -224,7 +226,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         _lastTransferNumber = 0;
         _txPointer = 0;
         _packetId = 0;
-        _lastTxData = null;
+        _lastTxValid = false;
         _resending = false;
         _deadline = double.PositiveInfinity;
         _bootAt = Now + bootTime;
@@ -397,7 +399,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             _txHeader.SequenceNumber &= ExtendedLink.CounterMask;
         }
         _activeCapabilities = LinkCapabilities.None;
-        _lastTxData = null;
+        _lastTxValid = false;
         _resending = false;
 
         // Reset the TfrRdy pin level and the seq numbers only if no communication is taking place
@@ -482,7 +484,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         {
             // Proposed change: DSF has completed the transfer it missed. Its data in it was processed already, so carry on with the pending transfer
             _txHeader = _pendingTxHeader;
-            _pendingTxData.CopyTo(_txBuffer, 0);
+            (_txBuffer, _lastTxBuffer) = (_lastTxBuffer, _txBuffer);
             _txPointer = _pendingTxPointer;
             _packetId = _pendingPacketId;
             _resending = false;
@@ -492,7 +494,8 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         if (SequenceGuardActive)
         {
             _lastTxHeader = _txHeader;
-            _lastTxData = _txBuffer.AsSpan(0, _txHeader.DataLength).ToArray();
+            (_txBuffer, _lastTxBuffer) = (_lastTxBuffer, _txBuffer);
+            _lastTxValid = true;
         }
 
         _txPointer = 0;
@@ -553,14 +556,13 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
 
         // DSF repeats the transfer RRF completed last, so DSF did not complete it. Send that transfer again before the current one
         int distance = ExtendedLink.Distance(_lastTransferNumber, _rxHeader.SequenceNumber, Extended);
-        if (!_resending && _lastTxData is not null && distance == 0)
+        if (!_resending && _lastTxValid && distance == 0)
         {
             _pendingTxHeader = _txHeader;
-            _pendingTxData = _txBuffer.AsSpan(0, _txHeader.DataLength).ToArray();
             _pendingTxPointer = _txPointer;
             _pendingPacketId = _packetId;
             _txHeader = _lastTxHeader;
-            _lastTxData.CopyTo(_txBuffer, 0);
+            (_txBuffer, _lastTxBuffer) = (_lastTxBuffer, _txBuffer);
             _txPointer = _lastTxHeader.DataLength;
             _resending = true;
 
@@ -624,7 +626,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
                     // Proposed change: DSF has left the extended link, which only a restart or a connection reset does. Leave it as well,
                     // so that DSF understands the responses. The sequence number no longer matches, so the connection is reset when the transfer ends
                     _activeCapabilities = LinkCapabilities.None;
-                    _lastTxData = null;
+                    _lastTxValid = false;
                 }
                 if (GuardSequence())
                 {
@@ -844,7 +846,13 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             offset += Marshal.SizeOf<PacketHeader>();
             if (packet.Request == (ushort)SbcRequest.ActivateLinkCapabilities && packet.Length >= sizeof(uint))
             {
-                _activeCapabilities = (LinkCapabilities)MemoryMarshal.Read<uint>(_rxBuffer.AsSpan(offset)) & _offeredCapabilities;
+                LinkCapabilities capabilities = (LinkCapabilities)MemoryMarshal.Read<uint>(_rxBuffer.AsSpan(offset)) & _offeredCapabilities;
+                if (Extended && !capabilities.HasFlag(LinkCapabilities.ExtendedHeader))
+                {
+                    // A later activation without the extended link leaves it like a connection reset does
+                    _txHeader.SequenceNumber &= ExtendedLink.CounterMask;
+                }
+                _activeCapabilities = capabilities;
                 Activations++;
             }
             offset += (packet.Length + 3) / 4 * 4;
