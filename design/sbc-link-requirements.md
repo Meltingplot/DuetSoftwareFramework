@@ -1,7 +1,8 @@
 # SBC link robustness: requirements
 
-Status: version 2, agreed on 2026-10-08, not implemented yet. Replaces version 1 of 2026-10-07; the
-decision log at the end lists what changed.
+Status: version 2, agreed on 2026-10-08. Partly implemented on 2026-11-02: DSF PRs #89–#93 and RRF
+PR Meltingplot/RepRapFirmware#35. The [implementation status](#implementation-status-2026-11-02) lists
+what is done and measured. Replaces version 1 of 2026-10-07; the decision log at the end lists what changed.
 Scope: the SPI link between Duet Control Server (DCS) on the SBC and RepRapFirmware (RRF), on the
 Meltingplot fork of DSF and RRF.
 Baseline: [sbc-link-current-state.md](sbc-link-current-state.md) describes what the link does today.
@@ -101,6 +102,35 @@ logic off the link.
 | R14 | Print while loading the SD card (writes with `fsync`), running large object-model queries, and making RRF file requests | No hold, no motion stall; the longest DSF answer time stays under 100 ms |
 | C1 | Stock RRF with fork DSF, and fork RRF with stock DSF | Both run with today's v7 behaviour |
 
+## Implementation status (2026-11-02)
+
+Evidence comes from two kinds of tests:
+- **The census:** `src/UnitTests/SPI/LinkRecovery.cs`, against `FakeRrfSpi`, a port of RRF's `DataTransfer` and `SbcInterface`.
+  `PortMatchesRealFirmware` replays the census against a host build of the real RRF code; result: 0 differences in all passes.
+  The single-fault census has 4142 faults: every bit of every exchange, special field values and whole-exchange patterns, in both directions.
+- **The lab suite:** `src/LabPrinterTests`, on the CHX 350 (MB6HC).
+
+| Req. | State | Evidence |
+|---|---|---|
+| R1, R2 | Simulator part met for an activated session; bench test pending | With all capabilities active, no single fault after the activation needs a reconnect, and every repair takes less than 20 ms (`ExtendedLinkRecoversFromEverySingleFault`, also for faults in the transfers of the switch). Still open: 7 faults in the connect transfer, before an activation is possible. The activation transfer itself fails like a stock transfer with DSF data (41), because the guards start with it. Without capabilities, 35 faults still need a reconnect or never recover, against 125 before the DSF fixes (then of 4238 faults). |
+| R3 | Not tested | — |
+| R4 | Not measured | — |
+| R5 | Not tested | The capabilities use no timing constant. |
+| R6 | Met with the capabilities | Every RRF restart is noticed: 128 at every exchange, plus 56 right after a wrap of the regular sequence numbers. Every DCS restart is noticed, and the new DCS connects at once: 42 cases (`ExtendedLinkNoticesEveryRestart`, `DcsRestart`). Without capabilities, 6 RRF restarts right after a 16-bit wrap go unnoticed, and 2 of 42 DCS restarts need a second start of DCS. On the lab printer, watchdog resets recover in 12.3 s, against 15.9 s before. |
+| R7, R8 | Not implemented | — |
+| R9 | Not implemented | Data is still protected by CRC32 alone. The extended response codes (below) cover the response words, not the data. |
+| R10–R14 | Not implemented | — |
+| C1 | Implemented | `limits.sbcLinkCapabilities` (offered, verbose like every limit) and `state.sbcLinkCapabilities` (active for the connection). DCS reads the first after every connect and reset, then activates with request `ActivateLinkCapabilities` (0x4D50). Reading never activates anything. Lab printer: new DSF with stock RRF passed 12/12; old DSF with new RRF behaves as before. |
+| C3 | Implemented | Only SAME70 boards offer capabilities. Mini 5+ and SAM4E report 0. |
+
+Capabilities:
+- **`PhaseGuard`:** RRF goes back to the header phase when it receives the start of a header in a response state, or a valid header in the data phase.
+- **`SequenceGuard`:** RRF resends its last completed transfer when DSF repeats its part of it.
+- **`ExtendedHeader`:**
+  - The sequence number carries a 5-bit counter and an 11-bit session status. A side that restarted or reset sends status 0, which the other side sees at the first header.
+  - The response codes are Walsh codes 16 bits apart, and up to 3 bit errors are corrected. This addresses E3 of the baseline within an activated session.
+- **DSF side,** without capabilities: refused response codes no longer stop DCS (E7), the sequence guard resends a transfer RRF did not complete, and DSF goes back to the phase RRF is in.
+
 ## Decision log
 
 | Date | Decision | Reason |
@@ -118,3 +148,10 @@ logic off the link.
 | 2026-10-08 | Update-path security handled in a separate project | Machinery Regulation 1.1.9 and the CRA need work beyond the link. |
 | 2026-10-08 | Two-stage dead-man switch (hold at 100 ms, resume automatically; category 0 stop at the R8 limit) on top of R10 | A stop pressed during an outage takes effect within about 100 ms, without throwing the job away on every short gap. |
 | 2026-10-08 | The dead-man switch is driven by DSF's answer time to armed exchanges, not by the spacing of full transfers (R14) | The time between full transfers can become very long in normal operation (observed by Tim in M122). It includes RRF's pacing, RRF's processing, and DSF's synchronous file I/O and lock waits on the transfer thread. |
+| 2026-11-02 | In the single-fault census, only a repair by protocol retries passes; a reconnect of either side and a DCS restart count as failures | A running print stops in both cases. |
+| 2026-11-02 | Capabilities are offered in `limits.sbcLinkCapabilities` and activated only by a DSF request, per connection | Reading the key, for example from DWC or a plugin, must not change the link. |
+| 2026-11-02 | After activation, the sequence number becomes a 5-bit counter plus an 11-bit session status | A small rolling counter is enough to tell next, repeated and missing transfers apart, as on CAN buses. The status makes a restart visible at once instead of through a sequence jump, which a 16-bit wrap can hide. |
+| 2026-11-02 | Response codes with maximum bit distance and 3-bit correction | The census found every failing single bit in the unprotected response words, where `Success` and `BadProtocolVersion` differ by one bit. |
+| 2026-11-02 | RRF rules stay only where a census case needs them; the wait for a missing transfer and the decoding of the first data word were dropped | Both were reached, but no case needed them. |
+| 2026-11-02 | RRF leaves the extended link as soon as DSF has left it | It was dropped on census data and restored after the lab printer showed a restarted DCS failing to start without it. The census had counted a second start of DCS as a pass; it now counts it as a failure. |
+| 2026-11-02 | The DSF sequence guard leaves sequence number 1 to the reset detection | Every new RRF connection starts at 1, so a 1 can also come from a restart. On the lab printer, the guard had taken a restart for a repeated transfer. |
