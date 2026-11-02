@@ -45,15 +45,6 @@ public enum ExchangeDirection
 }
 
 /// <summary>
-/// Corruption of a single SPI exchange
-/// </summary>
-/// <param name="Exchange">Index of the exchange, counted from the moment the fault is armed</param>
-/// <param name="Direction">Direction that is corrupted</param>
-/// <param name="Mutate">Mutation of the bytes</param>
-/// <param name="RestartBootTime">Instead of corrupting the exchange, RRF restarts right before it and boots for this time in ms</param>
-/// <param name="RestartAgain">The restarted RRF restarts once more right after its first transfer, as a reconnect timeout does</param>
-/// <param name="RrfFirstSequenceNumber">Sequence number of the first transfer of RRF, to make it wrap before the fault</param>
-/// <summary>
 /// Rules of the proposed RRF changes that a census can switch off one at a time, to find the cases each one is needed for.
 /// The names give the place in DataTransfer.cpp of 03a87245b
 /// </summary>
@@ -121,7 +112,30 @@ public enum RrfRule
     DecodeDataWord = 1024
 }
 
-public sealed record SpiFault(int Exchange, ExchangeDirection Direction, SpiMutation Mutate, double? RestartBootTime = null, bool RestartAgain = false, ushort RrfFirstSequenceNumber = 1);
+/// <summary>
+/// Corruption of a single SPI exchange
+/// </summary>
+/// <param name="Exchange">Index of the exchange, counted from the moment the fault is armed</param>
+/// <param name="Direction">Direction that is corrupted</param>
+/// <param name="Mutate">Mutation of the bytes</param>
+/// <param name="RestartBootTime">Instead of corrupting the exchange, RRF restarts right before it and boots for this time in ms</param>
+/// <param name="RestartAgain">The restarted RRF restarts once more right after its first transfer, as a reconnect timeout does</param>
+/// <param name="RrfFirstSequenceNumber">Sequence number of the first transfer of RRF, to make it wrap before the fault</param>
+/// <param name="DcsRestartDelay">Instead of corrupting the exchange, DCS dies right before it and a new instance starts after this time in ms</param>
+public sealed record SpiFault(int Exchange, ExchangeDirection Direction, SpiMutation Mutate, double? RestartBootTime = null, bool RestartAgain = false, ushort RrfFirstSequenceNumber = 1,
+    double? DcsRestartDelay = null);
+
+/// <summary>
+/// DCS died right before an exchange, see <see cref="SpiFault.DcsRestartDelay"/>
+/// </summary>
+/// <param name="delay">Time until a new instance of DCS starts in ms</param>
+public sealed class DcsRestartException(double delay) : Exception("DCS died")
+{
+    /// <summary>
+    /// Time until a new instance of DCS starts in ms
+    /// </summary>
+    public double Delay => delay;
+}
 
 /// <summary>
 /// Mutation of the bytes of an exchange
@@ -1025,6 +1039,15 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         if (_bootAt is double bootAt && Now >= bootAt)
         {
             Boot();
+        }
+        if (fault?.DcsRestartDelay is double delay)
+        {
+            // The exchange does not take place
+            Trace?.Add($"   {Now,9:F3} ms: DCS dies, a new instance starts after {delay} ms");
+            _fault = null;
+            FaultApplied = true;
+            FaultTime = Now;
+            throw new DcsRestartException(delay);
         }
         if (fault?.RestartBootTime is double bootTime)
         {

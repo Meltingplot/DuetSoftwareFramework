@@ -377,6 +377,10 @@ public class LinkRecovery
             {
                 Run(c.Variant, c.Fault, ExtendedRestartOptions(c, poll, RrfRule.None), ruleHits: hits);
             }
+            foreach (Case c in GetDcsRestartCases())
+            {
+                Run(c.Variant, c.Fault, new(PollWhileDisconnected: poll, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2), ruleHits: hits);
+            }
         }
         TestContext.Out.WriteLine("Rules taking effect with every rule active: " + string.Join(", ", Enum.GetValues<RrfRule>().Skip(1).Select(rule => $"{rule} {hits.GetValueOrDefault(rule)}")));
 
@@ -397,6 +401,11 @@ public class LinkRecovery
                     .Select(c => (Case: c, Result: Run(c.Variant, c.Fault, ExtendedRestartOptions(c, poll, rule))))
                     .Where(r => r.Result.Outcome != Outcome.ResetDetected)
                     .Select(r => $"restart{(poll ? ", polling" : "")}: {r.Case}: {r.Result.Label}"));
+                RrfOptions dcsOptions = new(PollWhileDisconnected: poll, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, DisabledRules: rule);
+                failures.AddRange(GetDcsRestartCases()
+                    .Select(c => (Case: c, Result: Run(c.Variant, c.Fault, dcsOptions)))
+                    .Where(r => r.Result.Outcome != Outcome.ResetDetected)
+                    .Select(r => $"DCS restart{(poll ? ", polling" : "")}: {r.Case}: {r.Result.Label}"));
             }
 
             TestContext.Out.WriteLine($"{rule} off: {failures.Count} cases fail");
@@ -409,6 +418,41 @@ public class LinkRecovery
 
     private static RrfOptions ExtendedRestartOptions(Case c, bool poll, RrfRule disabledRules) =>
         new(PollWhileDisconnected: poll, Capabilities: LinkCapabilities.All, TargetTransfer: (c.Field == "RegularWrap") ? RegularWrapTransfer : ExtendedTransfer + 2, DisabledRules: disabledRules);
+
+    /// <summary>
+    /// Get every restart of DCS: it dies right before each exchange of the target transfer, and a new instance starts after a short time,
+    /// after a time just under the connection timeout of RRF, or when systemd starts it again
+    /// </summary>
+    private static IEnumerable<Case> GetDcsRestartCases() =>
+        GetExchanges().Where(e => e.Variant != Variant.Connect).SelectMany(e => DcsRestartDelays.Select(delay =>
+            new Case(e.Variant, e.Phase, ExchangeDirection.ToRrf, "DcsRestart", $"DCS restart after {delay} ms", new SpiFault(e.Exchange, ExchangeDirection.ToRrf, _ => { }, DcsRestartDelay: delay))));
+
+    private static readonly double[] DcsRestartDelays = [100, 2000, DcsRestartDelay];
+
+    private static IEnumerable<TestCaseData> DcsRestartOptions =>
+    [
+        new TestCaseData(new RrfOptions()).SetName("DcsRestart"),
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true)).SetName("DcsRestart_PollWhileDisconnected"),
+        new TestCaseData(new RrfOptions(Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("DcsRestart_Extended"),
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("DcsRestart_ExtendedPolling")
+    ];
+
+    /// <summary>
+    /// DCS restarts at every exchange of a transfer. RRF must notice it (R6), the link must come back, and nothing DCS sent may reach RRF twice
+    /// </summary>
+    [TestCaseSource(nameof(DcsRestartOptions))]
+    public void DcsRestart(RrfOptions options)
+    {
+        List<(Case Case, Result Result)> results = [.. GetDcsRestartCases().Select(c => (c, Run(c.Variant, c.Fault, options)))];
+        TestContext.Out.WriteLine($"{results.Count} DCS restarts, RRF options {options}");
+        foreach (var group in results.GroupBy(r => r.Case.Mutation))
+        {
+            TestContext.Out.WriteLine($"{group.Key}: " + string.Join(", ", group.GroupBy(r => r.Result.Label).OrderBy(g => g.Key).Select(g => $"{g.Key} {g.Count()}")));
+        }
+
+        List<(Case Case, Result Result)> failures = [.. results.Where(r => r.Result.Outcome != Outcome.ResetDetected)];
+        Assert.That(failures, Is.Empty, $"{failures.Count} of {results.Count} DCS restarts break the link:\n" + string.Join("\n", failures.Select(r => $"- {r.Case}: {r.Result.Outcome}, {r.Result.Details}")));
+    }
 
     private static IEnumerable<TestCaseData> RestartOptions =>
     [
@@ -711,6 +755,8 @@ public class LinkRecovery
     #region Scenario
     private sealed class BudgetExceededException : Exception;
 
+    private sealed class DcsCannotConnectException : Exception;
+
     /// <summary>
     /// Connect, perform clean transfers, inject the fault into the target transfer and check whether clean transfers follow
     /// </summary>
@@ -790,6 +836,37 @@ public class LinkRecovery
             return !hadReset && lossesBefore == dsfConnectionLosses && rrfResetsBefore == rrf.ConnectionResets && dsf.ProtocolVersion == Consts.ProtocolVersion;
         }
 
+        // A DCS that died before an exchange is started again after the delay, and the new instance connects like the first one did
+        int rrfResetsAtDcsRestart = -1;
+        bool TransferOrRestartDcs(bool dsfData, bool activation)
+        {
+            try
+            {
+                return Transfer(dsfData, activation: activation);
+            }
+            catch (DcsRestartException e)
+            {
+                rrfResetsAtDcsRestart = rrf.ConnectionResets;
+                rrf.Wait(e.Delay);
+                for (dsf = CreateAdapter(rrf, trace); ; dsf = CreateAdapter(rrf, trace))
+                {
+                    try
+                    {
+                        Transfer(false, true);
+                        return false;
+                    }
+                    catch (Exception connectError) when (!rrf.Budget.IsCancellationRequested && connectError is not DcsRestartException)
+                    {
+                        if (++dcsRestarts > MaxDcsRestarts)
+                        {
+                            throw new DcsCannotConnectException();
+                        }
+                        rrf.Wait(DcsRestartDelay);
+                    }
+                }
+            }
+        }
+
         _model.OnConnectionLost += OnConnectionLost;
         try
         {
@@ -833,7 +910,7 @@ public class LinkRecovery
                 {
                     rrf.Arm(fault);
                 }
-                targetClean = Transfer(dsfDataInTarget, activation: activate && target == ActivationTransfer);
+                targetClean = TransferOrRestartDcs(dsfDataInTarget, activate && target == ActivationTransfer);
             }
 
             // The link must deliver clean transfers again. The transfer that got the fault counts if it completed cleanly through retries
@@ -862,6 +939,10 @@ public class LinkRecovery
         {
             return new(Outcome.NoRecovery, rrf.Disconnects > 0, $"no clean transfer within {rrf.Now:F0} ms and {rrf.Exchanges} exchanges");
         }
+        catch (DcsCannotConnectException)
+        {
+            return new(Outcome.NoRecovery, rrf.Disconnects > 0, $"the new DCS cannot connect after {MaxDcsRestarts} restarts");
+        }
         catch (OperationCanceledException) when (rrf.Budget.IsCancellationRequested)
         {
             return new(Outcome.NoRecovery, rrf.Disconnects > 0, $"no clean transfer within {rrf.Now:F0} ms and {rrf.Exchanges} exchanges");
@@ -878,6 +959,18 @@ public class LinkRecovery
         if (fault is not null && !rrf.FaultApplied)
         {
             return new(Outcome.NoRecovery, false, "the fault was never applied, the scenario does not reach the exchange");
+        }
+
+        // After a restart of DCS, RRF must notice it, because the new DCS knows nothing of what the old one left in RRF (R6), and nothing may reach RRF twice
+        if (fault?.DcsRestartDelay is not null)
+        {
+            string dcsDetails = $"RRF reset {rrf.ConnectionResets}x ({rrfResetsAtDcsRestart}x before the restart), RRF disconnect {rrf.Disconnects}x, DCS restart {dcsRestarts}x, " +
+                $"RRF got [{string.Join(", ", rrf.ReceivedPayloads)}] of [{string.Join(", ", dsfSent)}]";
+            if (HasDuplicate(rrf.ReceivedPayloads))
+            {
+                return new(Outcome.Duplicate, rrf.Disconnects > 0, dcsDetails);
+            }
+            return new((rrf.ConnectionResets > rrfResetsAtDcsRestart) ? Outcome.ResetDetected : Outcome.ResetMissed, rrf.Disconnects > 0, dcsDetails);
         }
 
         // After a restart of RRF, nothing DSF sent before may reach the new session again, and DSF must notice every restart that ends
