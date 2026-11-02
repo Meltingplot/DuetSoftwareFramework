@@ -31,9 +31,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     private readonly Settings _settings;
 
     // General transfer variables
-    private readonly InputGpioPin _transferReadyPin;
+    private readonly IInputGpioPin _transferReadyPin;
     private bool _expectedTfrRdyPinValue;
-    private readonly SpiDevice _spiDevice;
+    private readonly ISpiDevice _spiDevice;
     private bool _waitingForFirstTransfer = true, _connected, _hadTimeout, _hadReset, _resetting, _updating;
     private ushort _lastTransferNumber;
 
@@ -77,7 +77,24 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// <param name="logger">Logger instance</param>
     /// <param name="settings">Settings</param>
     /// <exception cref="OperationCanceledException">Failed to connect to board</exception>
-    public SPI(EventLogger eventLogger, Model.ObjectModel model, ILogger<SPI> logger, IOptions<Settings> settings)
+    public SPI(EventLogger eventLogger, Model.ObjectModel model, ILogger<SPI> logger, IOptions<Settings> settings) : this(eventLogger, model, logger, settings,
+        // Initialize transfer ready pin via the kernel GPIO character device (v1/v2 uAPI, no libgpiod)
+        new InputGpioPin(settings.Value.GpioChipDevice, settings.Value.TransferReadyPin, $"dcs-trp-{settings.Value.TransferReadyPin}"),
+        // Open the SPI device directly through the spidev character device
+        new SpiDevice(settings.Value.SpiDevice, settings.Value.SpiFrequency, settings.Value.SpiTransferMode))
+    {
+    }
+
+    /// <summary>
+    /// Constructor of this class for the given devices
+    /// </summary>
+    /// <param name="eventLogger">EVent logger</param>
+    /// <param name="model">Object model</param>
+    /// <param name="logger">Logger instance</param>
+    /// <param name="settings">Settings</param>
+    /// <param name="transferReadyPin">Transfer ready pin</param>
+    /// <param name="spiDevice">SPI device</param>
+    internal SPI(EventLogger eventLogger, Model.ObjectModel model, ILogger<SPI> logger, IOptions<Settings> settings, IInputGpioPin transferReadyPin, ISpiDevice spiDevice)
     {
         // Initialize variables
         _eventLogger = eventLogger;
@@ -97,12 +114,8 @@ public class SPI : IDiagnostics, ILinkAdapter
         }
         _txBuffer = _txBuffers.First!;
 
-        // Initialize transfer ready pin via the kernel GPIO character device (v1/v2 uAPI, no libgpiod)
-        int transferReadyPin = settings.Value.TransferReadyPin;
-        _transferReadyPin = new InputGpioPin(settings.Value.GpioChipDevice, transferReadyPin, $"dcs-trp-{transferReadyPin}");
-
-        // Open the SPI device directly through the spidev character device
-        _spiDevice = new SpiDevice(settings.Value.SpiDevice, settings.Value.SpiFrequency, settings.Value.SpiTransferMode);
+        _transferReadyPin = transferReadyPin;
+        _spiDevice = spiDevice;
     }
 
     /// <summary>
