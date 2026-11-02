@@ -79,6 +79,19 @@ public abstract class LabTest
     }
 
     /// <summary>
+    /// Replace the session of the current test after DCS has been restarted
+    /// </summary>
+    protected async Task ReconnectSessionAsync()
+    {
+        if (_session is not null)
+        {
+            await _session.DisposeAsync();
+        }
+        _session = await Lab.ReconnectAsync(TimeSpan.FromMinutes(2));
+        await Lab.WaitForModelAsync(Session, Lab.IsIdle, TimeSpan.FromMinutes(2), "the printer to become idle");
+    }
+
+    /// <summary>
     /// Send a code on the session of the current test
     /// </summary>
     protected Task<string> SendCodeAsync(string code, int timeoutSeconds = 10) => Lab.SendCodeAsync(Session, code, TimeSpan.FromSeconds(timeoutSeconds));

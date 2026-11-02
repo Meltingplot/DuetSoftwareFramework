@@ -4,9 +4,11 @@ using System.Linq;
 using System.Text;
 using DuetControlServer;
 using DuetControlServer.Files;
+using DuetControlServer.Link.Adapter;
 using DuetControlServer.Link.Protocol.Shared;
 using DuetControlServer.Model;
 using DuetControlServer.Utility;
+using DuetSharedLibrary;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Hosting.Internal;
@@ -231,7 +233,7 @@ public class LinkRecovery
     /// </summary>
     public sealed record RrfOptions(SequenceMismatchHandling SequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool PollWhileDisconnected = false,
         bool RrfFirstOnTie = true, byte UnderrunByte = 0, bool PhaseGuard = false, bool SequenceGuard = false,
-        LinkCapabilities Capabilities = LinkCapabilities.None, int TargetTransfer = TargetTransfer, RrfRule DisabledRules = RrfRule.None);
+        LinkCapabilities Capabilities = LinkCapabilities.None, int TargetTransfer = TargetTransfer, RrfRule DisabledRules = RrfRule.None, bool InjectThroughDsf = false);
 
     private static IEnumerable<TestCaseData> OtherOptions =>
     [
@@ -294,6 +296,63 @@ public class LinkRecovery
             }
             Assert.Fail(report.ToString());
         }
+    }
+
+    /// <summary>
+    /// The fault injection build for the lab printer injects through the SPI device of DSF and has to recognise the exchanges on its own.
+    /// Every single fault injected that way must have the same outcome as injected by the census in RRF
+    /// </summary>
+    [TestCase(false), TestCase(true)]
+    public void InjectorMatchesCensus(bool extended)
+    {
+        RrfOptions inRrf = extended ? new(Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2) : new();
+        RrfOptions throughDsf = inRrf with { InjectThroughDsf = true };
+        List<string> differences = [.. GetCases()
+            .Select(c => (Case: c, InRrf: Run(c.Variant, c.Fault, inRrf), ThroughDsf: Run(c.Variant, c.Fault, throughDsf)))
+            .Where(r => r.InRrf.Label != r.ThroughDsf.Label)
+            .Select(r => $"- {r.Case}: census {r.InRrf.Label}, injector {r.ThroughDsf.Label} ({r.ThroughDsf.Details})")];
+        Assert.That(differences, Is.Empty, string.Join("\n", differences.Take(20)));
+    }
+
+    private static IEnumerable<TestCaseData> HardwareCaseOptions =>
+    [
+        new TestCaseData("rrf-of-today", new RrfOptions(PollWhileDisconnected: true)).SetName("WriteHardwareCases_RrfOfToday"),
+        new TestCaseData("extended", new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("WriteHardwareCases_Extended")
+    ];
+
+    /// <summary>
+    /// Write the single faults for the fault injection build on the lab printer, with the outcome the census predicts for each kind of transfer.
+    /// The lab printer hits whatever transfer of the requested kind comes next, so the connect transfer is left out.
+    /// The file goes to the path in LAB_SPI_FAULT_CASES, or next to the test assembly
+    /// </summary>
+    /// <param name="name">Name of the configuration</param>
+    /// <param name="options">Firmware end, as on the lab printer: its MB6HC polls while disconnected</param>
+    [TestCaseSource(nameof(HardwareCaseOptions)), Explicit("Writes the cases for src/LabPrinterTests/SpiFaultInjection.cs")]
+    public void WriteHardwareCases(string name, RrfOptions options)
+    {
+        static SpiTransferKind Kind(Variant variant) => variant switch
+        {
+            Variant.NoData => SpiTransferKind.NoData,
+            Variant.BothData => SpiTransferKind.BothData,
+            Variant.DsfData => SpiTransferKind.DsfData,
+            _ => SpiTransferKind.RrfData
+        };
+
+        List<(Case Case, Result Result)> results = [.. GetCases().Where(c => c.Variant != Variant.Connect).Select(c => (c, Run(c.Variant, c.Fault, options)))];
+        var cases = results.Select(r => new
+        {
+            Name = r.Case.ToString(),
+            Spec = new SpiFaultSpec(Kind(r.Case.Variant), (SpiExchange)r.Case.Fault.Exchange, r.Case.Fault.Direction == ExchangeDirection.ToRrf, r.Case.Fault.Mutation!).ToString(),
+            Expected = r.Result.Outcome.ToString(),
+            ExpectedByKind = results
+                .Where(o => o.Case.Phase == r.Case.Phase && o.Case.Direction == r.Case.Direction && o.Case.Field == r.Case.Field && o.Case.Mutation == r.Case.Mutation)
+                .ToDictionary(o => Kind(o.Case.Variant).ToString(), o => o.Result.Outcome.ToString())
+        });
+
+        string path = Environment.GetEnvironmentVariable("LAB_SPI_FAULT_CASES") is { Length: > 0 } file ? file : System.IO.Path.Combine(TestContext.CurrentContext.WorkDirectory, $"spi-fault-cases-{name}.json");
+        System.IO.File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(new { Configuration = name, Options = options.ToString(), Cases = cases },
+            new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        TestContext.Out.WriteLine($"{results.Count} cases, {results.Count(r => r.Result.Outcome != Outcome.Retry)} predicted to break the link, written to {path}");
     }
 
     private static IEnumerable<TestCaseData> ExtendedOptions =>
@@ -515,11 +574,12 @@ public class LinkRecovery
     [TestCase("BothData / DataResponse / ToRrf / Restart / RRF restart after seq 65535, boot 100 ms")]
     [TestCase("BothData / Header / ToRrf / Restart / RRF restart, boot 100 ms", SequenceMismatchHandling.ConnectionReset, false, false, true)]
     [TestCase("NoData / Header / ToDsf / Exchange / BadResponse in first word", SequenceMismatchHandling.ConnectionReset, false, false, true, ActivationTransfer)]
+    [TestCase("BothData / Data / ToRrf / DcsRestart / DCS restart after 100 ms")]
     [Explicit("Analysis")]
     public void TraceCase(string name, SequenceMismatchHandling sequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool guards = false, bool poll = false,
         bool extended = false, int target = ExtendedTransfer + 2)
     {
-        Case c = GetCases().Concat(GetRestartCases()).Concat(GetRestartCases(ExtendedTransfer + 2, true)).First(c => c.ToString() == name);
+        Case c = GetCases().Concat(GetRestartCases()).Concat(GetRestartCases(ExtendedTransfer + 2, true)).Concat(GetDcsRestartCases()).First(c => c.ToString() == name);
         List<string> trace = [];
         Result result = Run(c.Variant, c.Fault, new(sequenceMismatchHandling, PollWhileDisconnected: poll, PhaseGuard: guards, SequenceGuard: guards,
             Capabilities: extended ? LinkCapabilities.All : LinkCapabilities.None, TargetTransfer: extended ? target : TargetTransfer), trace);
@@ -649,36 +709,38 @@ public class LinkRecovery
                 (string phase, int size, var fields) = exchanges[exchange];
                 foreach (ExchangeDirection direction in Enum.GetValues<ExchangeDirection>())
                 {
-                    Case Make(string field, string mutation, SpiMutation mutate) => new(variant, phase, direction, field, mutation, new SpiFault(exchange, direction, mutate));
+                    // The mutations are written as SpiFaultSpec text, so that the fault injection build applies the same ones on the real link
+                    Case Make(string field, string mutation, string spec) =>
+                        new(variant, phase, direction, field, mutation, new SpiFault(exchange, direction, data => SpiFaultSpec.Apply(spec, data), Mutation: spec));
 
                     // Every bit, named after the field it is in
                     for (int bit = 0; bit < size * 8; bit++)
                     {
                         int b = bit;
                         string field = fields.FirstOrDefault(f => b / 8 >= f.Offset && b / 8 < f.Offset + f.Size).Name ?? "Payload";
-                        yield return Make(field, $"flip bit {bit}", data => { if (b / 8 < data.Length) data[b / 8] ^= (byte)(1 << (b % 8)); });
+                        yield return Make(field, $"flip bit {bit}", $"flip {bit}");
                     }
 
                     // Special values of each field
                     foreach ((string name, int offset, int fieldSize) in fields)
                     {
-                        yield return Make(name, "zero", data => Field(data, offset, fieldSize).Clear());
-                        yield return Make(name, "all ones", data => Field(data, offset, fieldSize).Fill(0xFF));
-                        yield return Make(name, "plus one", data => AddToField(Field(data, offset, fieldSize), 1));
-                        yield return Make(name, "minus one", data => AddToField(Field(data, offset, fieldSize), -1));
+                        yield return Make(name, "zero", $"zero {offset} {fieldSize}");
+                        yield return Make(name, "all ones", $"ones {offset} {fieldSize}");
+                        yield return Make(name, "plus one", $"add {offset} {fieldSize} 1");
+                        yield return Make(name, "minus one", $"add {offset} {fieldSize} -1");
                     }
                     if (fields == ResponseFields)
                     {
                         foreach ((string name, uint value) in ResponseCodes)
                         {
-                            yield return Make("Response", name, data => BitConverter.TryWriteBytes(data, value));
+                            yield return Make("Response", name, $"word 0x{value:x8}");
                         }
                     }
 
                     // Whole exchange
-                    yield return Make("Exchange", "all 0x00", data => data.Clear());
-                    yield return Make("Exchange", "all 0xFF", data => data.Fill(0xFF));
-                    yield return Make("Exchange", "BadResponse in first word", data => BitConverter.TryWriteBytes(data, TransferResponse.BadResponse));
+                    yield return Make("Exchange", "all 0x00", "fill 0x00");
+                    yield return Make("Exchange", "all 0xFF", "fill 0xFF");
+                    yield return Make("Exchange", "BadResponse in first word", $"word 0x{TransferResponse.BadResponse:x8}");
                 }
 
             }
@@ -735,24 +797,6 @@ public class LinkRecovery
     /// </summary>
     private const int DsfDataSize = 24;
 
-    /// <summary>
-    /// Get a field of an exchange, or the part of it the exchange holds
-    /// </summary>
-    private static Span<byte> Field(Span<byte> data, int offset, int size) => (offset < data.Length) ? data[offset..Math.Min(offset + size, data.Length)] : [];
-
-    private static void AddToField(Span<byte> field, int delta)
-    {
-        ulong value = 0;
-        for (int i = field.Length - 1; i >= 0; i--)
-        {
-            value = (value << 8) | field[i];
-        }
-        value = unchecked(value + (ulong)delta);
-        for (int i = 0; i < field.Length; i++)
-        {
-            field[i] = (byte)(value >> (8 * i));
-        }
-    }
     #endregion
 
     #region Scenario
@@ -791,6 +835,36 @@ public class LinkRecovery
             dsfDetections.Add(rrf.Exchanges);
         }
         List<string> dsfSent = [], dsfReceived = [];
+        // The fault injection build injects through the SPI device of DSF instead of in RRF
+        FaultInjectingSpiDevice? injector = (options.InjectThroughDsf && fault?.Mutation is not null) ? new(rrf, null, NullLogger.Instance) : null;
+        bool injected = false;
+        double injectedAt = 0;
+        if (injector is not null)
+        {
+            injector.Injected += (_, _) =>
+            {
+                injected = true;
+                injectedAt = rrf.Now;
+            };
+        }
+        void ArmFault(SpiFault armed)
+        {
+            if (injector is null)
+            {
+                rrf.Arm(armed);
+                return;
+            }
+            SpiExchange exchange = (SpiExchange)armed.Exchange;
+            SpiTransferKind kind = variant switch
+            {
+                Variant.NoData => SpiTransferKind.NoData,
+                Variant.BothData => SpiTransferKind.BothData,
+                Variant.DsfData => SpiTransferKind.DsfData,
+                _ => SpiTransferKind.RrfData
+            };
+            injector.Arm(new SpiFaultSpec(kind, exchange, armed.Direction == ExchangeDirection.ToRrf, armed.Mutation!));
+        }
+        SpiAdapter CreateAdapter(FakeRrfSpi rrf, List<string>? trace) => CreateSpiAdapter(rrf, trace, injector);
         SpiAdapter dsf = CreateAdapter(rrf, trace);
 
         // Perform a full transfer and read the payloads RRF sent. Returns whether the transfer was clean
@@ -876,7 +950,7 @@ public class LinkRecovery
             // Connect. If that fails, DCS exits and systemd starts it again
             if (variant == Variant.Connect && fault is not null)
             {
-                rrf.Arm(fault);
+                ArmFault(fault);
             }
             bool targetClean = false;
             while (true)
@@ -911,7 +985,7 @@ public class LinkRecovery
                 }
                 if (fault is not null)
                 {
-                    rrf.Arm(fault);
+                    ArmFault(fault);
                 }
                 targetClean = TransferOrRestartDcs(dsfDataInTarget, activate && target == ActivationTransfer);
             }
@@ -959,7 +1033,7 @@ public class LinkRecovery
             _model.OnConnectionLost -= OnConnectionLost;
         }
 
-        if (fault is not null && !rrf.FaultApplied)
+        if (fault is not null && !(injector is null ? rrf.FaultApplied : injected))
         {
             return new(Outcome.NoRecovery, false, "the fault was never applied, the scenario does not reach the exchange");
         }
@@ -1014,7 +1088,7 @@ public class LinkRecovery
         }
 
         // The repair must not take longer than the limit
-        double recoveryTime = (fault is null || recoveredAt is null) ? 0 : recoveredAt.Value - rrf.FaultTime;
+        double recoveryTime = (fault is null || recoveredAt is null) ? 0 : recoveredAt.Value - (injector is null ? rrf.FaultTime : injectedAt);
         return (recoveryTime > MaxRecoveryTime)
             ? new(Outcome.Slow, false, $"recovered after {recoveryTime:F1} ms")
             : new(Outcome.Retry, false, $"recovered after {recoveryTime:F2} ms");
@@ -1022,8 +1096,8 @@ public class LinkRecovery
 
     private static bool HasDuplicate(List<string> payloads) => payloads.Count != payloads.Distinct().Count();
 
-    private SpiAdapter CreateAdapter(FakeRrfSpi rrf, List<string>? trace) =>
-        new(_eventLogger, _model, (trace is null) ? NullLogger<SpiAdapter>.Instance : new TraceLogger(rrf, trace), Options.Create(new Settings()), rrf, rrf);
+    private SpiAdapter CreateSpiAdapter(FakeRrfSpi rrf, List<string>? trace, ISpiDevice? device = null) =>
+        new(_eventLogger, _model, (trace is null) ? NullLogger<SpiAdapter>.Instance : new TraceLogger(rrf, trace), Options.Create(new Settings()), rrf, device ?? rrf);
 
     /// <summary>
     /// Writes the warnings of DSF into the trace

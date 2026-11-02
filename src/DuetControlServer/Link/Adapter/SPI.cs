@@ -101,9 +101,20 @@ public class SPI : IDiagnostics, ILinkAdapter
         // Initialize transfer ready pin via the kernel GPIO character device (v1/v2 uAPI, no libgpiod)
         new InputGpioPin(settings.Value.GpioChipDevice, settings.Value.TransferReadyPin, $"dcs-trp-{settings.Value.TransferReadyPin}"),
         // Open the SPI device directly through the spidev character device
+#if SPI_FAULT_INJECTION
+        new FaultInjectingSpiDevice(new SpiDevice(settings.Value.SpiDevice, settings.Value.SpiFrequency, settings.Value.SpiTransferMode), FaultControlFile, logger))
+#else
         new SpiDevice(settings.Value.SpiDevice, settings.Value.SpiFrequency, settings.Value.SpiTransferMode))
+#endif
     {
     }
+
+#if SPI_FAULT_INJECTION
+    /// <summary>
+    /// File through which the lab tests arm single faults of the link, see <see cref="FaultInjectingSpiDevice"/>
+    /// </summary>
+    private const string FaultControlFile = "/var/tmp/lab-tests/spi-fault";
+#endif
 
     /// <summary>
     /// Constructor of this class for the given devices
