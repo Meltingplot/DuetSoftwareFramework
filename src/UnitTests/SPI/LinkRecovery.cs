@@ -62,9 +62,14 @@ public class LinkRecovery
     public enum Outcome
     {
         /// <summary>
-        /// Recovered through the retries of the protocol
+        /// Recovered through the retries of the protocol within the time limit
         /// </summary>
         Retry,
+
+        /// <summary>
+        /// Recovered through the retries of the protocol, but later than the time limit
+        /// </summary>
+        Slow,
 
         /// <summary>
         /// Recovered only through a reconnect of DSF or RRF, which stops a running print
@@ -124,6 +129,11 @@ public class LinkRecovery
     /// Number of clean transfers in a row that count as recovered
     /// </summary>
     private const int RecoveredTransfers = 3;
+
+    /// <summary>
+    /// Maximum time from the fault to the first of the clean transfers (R2 in design/sbc-link-requirements.md: half the shortest motion lookahead)
+    /// </summary>
+    private const double MaxRecoveryTime = 20;
 
     /// <summary>
     /// Number of times DCS is started again when it cannot connect, like systemd does
@@ -379,6 +389,7 @@ public class LinkRecovery
         FakeRrfSpi rrf = new(n => n != target || rrfDataInTarget, options.SequenceMismatchHandling, options.PollWhileDisconnected, options.RrfFirstOnTie, options.UnderrunByte) { Trace = trace };
 
         int dsfConnectionLosses = 0, dcsRestarts = 0, dsfId = 0, dsfResets = 0;
+        double? recoveredAt = null;
         void OnConnectionLost(object? sender, EventArgs e) => dsfConnectionLosses++;
         List<string> dsfSent = [], dsfReceived = [];
         SpiAdapter dsf = CreateAdapter(rrf);
@@ -431,11 +442,12 @@ public class LinkRecovery
             {
                 rrf.Arm(fault);
             }
+            bool targetClean = false;
             while (true)
             {
                 try
                 {
-                    Transfer(false, true);
+                    targetClean = Transfer(false, true);
                     break;
                 }
                 catch (Exception e) when (!rrf.Budget.IsCancellationRequested)
@@ -458,14 +470,25 @@ public class LinkRecovery
                 {
                     rrf.Arm(fault);
                 }
-                Transfer(dsfDataInTarget);
+                targetClean = Transfer(dsfDataInTarget);
             }
 
-            // The link must deliver clean transfers again
-            int cleanInARow = 0;
+            // The link must deliver clean transfers again. The transfer that got the fault counts if it completed cleanly through retries
+            int cleanInARow = targetClean ? 1 : 0;
+            recoveredAt = targetClean ? rrf.Now : null;
             for (int i = 0; i < MaxTransfersAfterFault && cleanInARow < RecoveredTransfers; i++)
             {
-                cleanInARow = Transfer(true) ? cleanInARow + 1 : 0;
+                if (Transfer(true))
+                {
+                    if (cleanInARow++ == 0)
+                    {
+                        recoveredAt = rrf.Now;
+                    }
+                }
+                else
+                {
+                    cleanInARow = 0;
+                }
             }
             if (cleanInARow < RecoveredTransfers)
             {
@@ -506,7 +529,16 @@ public class LinkRecovery
         {
             return new(Outcome.SilentLoss, rrf.Disconnects > 0, $"DSF got [{string.Join(", ", dsfReceived)}] of [{string.Join(", ", rrf.SentPayloads)}], RRF got [{string.Join(", ", rrf.ReceivedPayloads)}] of [{string.Join(", ", dsfSent)}]");
         }
-        return new(dcsRestarts > 0 ? Outcome.DcsRestart : reconnected ? Outcome.Reconnect : Outcome.Retry, rrf.Disconnects > 0, details, duplicate);
+        if (dcsRestarts > 0 || reconnected)
+        {
+            return new(dcsRestarts > 0 ? Outcome.DcsRestart : Outcome.Reconnect, rrf.Disconnects > 0, details, duplicate);
+        }
+
+        // The repair must not take longer than the limit
+        double recoveryTime = (fault is null || recoveredAt is null) ? 0 : recoveredAt.Value - rrf.FaultTime;
+        return (recoveryTime > MaxRecoveryTime)
+            ? new(Outcome.Slow, false, $"recovered after {recoveryTime:F1} ms")
+            : new(Outcome.Retry, false, $"recovered after {recoveryTime:F2} ms");
     }
 
     private static bool HasDuplicate(List<string> payloads) => payloads.Count != payloads.Distinct().Count();

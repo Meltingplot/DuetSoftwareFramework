@@ -205,6 +205,11 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     public bool FaultApplied { get; private set; }
 
     /// <summary>
+    /// Virtual time at which the fault was applied
+    /// </summary>
+    public double FaultTime { get; private set; }
+
+    /// <summary>
     /// Corrupt a single exchange, counted from now
     /// </summary>
     /// <param name="fault">Fault to inject</param>
@@ -654,6 +659,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         {
             _fault = null;
             FaultApplied = true;
+            FaultTime = Now;
         }
 
         Now += toRrf.Length * MsPerByte;
