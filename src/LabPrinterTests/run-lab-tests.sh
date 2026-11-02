@@ -79,7 +79,8 @@ for dll in $SIDE_LOAD_DLLS; do
   findmnt -n /opt/dsf/bin/\$dll > /dev/null && sudo -n umount -l /opt/dsf/bin/\$dll
 done
 sudo -n rm -rf $SIDE_LOAD_DIR
-sudo -n systemctl restart duetcontrolserver
+# The first new instance may fail to connect, e.g. while RRF still waits for the old one, and systemd starts it again
+sudo -n systemctl restart duetcontrolserver || true
 EOF
         reset_firmware || status=1
     fi
@@ -119,7 +120,7 @@ if [ "$side_load" = 1 ]; then
 for dll in $SIDE_LOAD_DLLS; do
   sudo -n mount --bind $SIDE_LOAD_DIR/\$dll /opt/dsf/bin/\$dll
 done
-sudo -n systemctl restart duetcontrolserver
+sudo -n systemctl restart duetcontrolserver || true
 EOF
     side_loaded=1
     reset_firmware
