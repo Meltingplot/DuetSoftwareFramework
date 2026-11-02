@@ -431,7 +431,7 @@ public class LinkRecovery
 
     private static IEnumerable<TestCaseData> DcsRestartOptions =>
     [
-        new TestCaseData(new RrfOptions()).SetName("DcsRestart").Explicit("2 of 42 DCS restarts need a second start of DCS with the RRF of today"),
+        new TestCaseData(new RrfOptions()).SetName("DcsRestart_RrfOfToday").Explicit("2 of 42 DCS restarts need a second start of DCS with the RRF of today"),
         new TestCaseData(new RrfOptions(PollWhileDisconnected: true)).SetName("DcsRestart_PollWhileDisconnected").Explicit("2 of 42 DCS restarts need a second start of DCS with the RRF of today"),
         new TestCaseData(new RrfOptions(Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("DcsRestart_Extended"),
         new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("DcsRestart_ExtendedPolling"),
