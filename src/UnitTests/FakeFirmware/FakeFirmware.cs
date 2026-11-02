@@ -188,6 +188,57 @@ public sealed class FakeFirmware : ILinkAdapter
     }
 
     /// <summary>
+    /// Hold the transfers after the given number of further transfers, so that a test can check what DSF does before its requests reach RRF
+    /// </summary>
+    /// <param name="transfers">Number of transfers to perform before holding</param>
+    public void HoldTransfers(int transfers = 0)
+    {
+        lock (_lock)
+        {
+            _transfersAllowed = transfers;
+            Monitor.PulseAll(_lock);
+        }
+    }
+
+    /// <summary>
+    /// Let held transfers continue
+    /// </summary>
+    public void ReleaseTransfers()
+    {
+        lock (_lock)
+        {
+            _transfersAllowed = null;
+            Monitor.PulseAll(_lock);
+        }
+    }
+
+    /// <summary>
+    /// Whether LinkService waits for a held transfer
+    /// </summary>
+    public bool IsTransferHeld
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _transferHeld;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Get the requests DSF wrote for the next transfer
+    /// </summary>
+    /// <returns>Requests in order</returns>
+    public IReadOnlyList<FakeSbcRequest> GetPendingRequests()
+    {
+        lock (_lock)
+        {
+            return [.. _incoming];
+        }
+    }
+
+    /// <summary>
     /// Whether a reset has happened that LinkService has not seen yet via <see cref="HadReset"/>
     /// </summary>
     public bool IsResetPending
@@ -365,6 +416,8 @@ public sealed class FakeFirmware : ILinkAdapter
     #region Firmware state
     // Transfer state
     private int _transferNumber;
+    private int? _transfersAllowed;
+    private bool _transferHeld;
     private List<FakeSbcRequest> _incoming = [];
     private List<FakePacket> _txPackets = [];
     private List<FakePacket> _rxPackets = [];
@@ -416,6 +469,19 @@ public sealed class FakeFirmware : ILinkAdapter
         bool busy;
         lock (_lock)
         {
+            // Wait while a test holds the transfers
+            while (_transfersAllowed == 0 && !cancellationToken.IsCancellationRequested)
+            {
+                _transferHeld = true;
+                Monitor.PulseAll(_lock);
+                Monitor.Wait(_lock, 100);
+            }
+            _transferHeld = false;
+            if (_transfersAllowed > 0)
+            {
+                _transfersAllowed--;
+            }
+
             _transferNumber++;
             _requestsBeingResent.Clear();
 

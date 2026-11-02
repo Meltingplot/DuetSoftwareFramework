@@ -6,6 +6,7 @@ using DuetAPI;
 using DuetAPI.Commands;
 using DuetAPI.ObjectModel;
 using DuetControlServer.Commands;
+using DuetControlServer.Link;
 using DuetControlServer.Link.Protocol.FirmwareRequests;
 using DuetControlServer.Link.Protocol.Shared;
 using Microsoft.Extensions.DependencyInjection;
@@ -128,6 +129,39 @@ public class SimpleCodeExecution
         using (await _host.Model.AccessReadOnlyAsync())
         {
             Assert.That(_host.Model.State.Status, Is.EqualTo(MachineStatus.Halted));
+        }
+    }
+
+    [Test]
+    public async Task EmergencyStopCompletesOnceFirmwareHasHalted()
+    {
+        LinkInterface link = _host.Services.GetRequiredService<LinkInterface>();
+        try
+        {
+            // Hold the transfer LinkService is about to perform, then request the emergency stop
+            _host.Firmware.HoldTransfers();
+            Assert.That(_host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, FakeFirmwareHost.DefaultTimeout), Is.True);
+            Task<string> m112 = _host.StartCode("M112");
+            Assert.That(SpinWait.SpinUntil(() => link.FirmwareHaltRequest is not null, FakeFirmwareHost.DefaultTimeout), Is.True);
+
+            // The next cycle writes the request, but M112 must not complete before a transfer has carried it to RRF
+            _host.Firmware.HoldTransfers(1);
+            Assert.That(_host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld && firmware.GetPendingRequests().Any(request => request.Request == SbcRequest.EmergencyStop), FakeFirmwareHost.DefaultTimeout), Is.True);
+            Assert.That(await Task.WhenAny(m112, Task.Delay(500)), Is.Not.SameAs(m112), "M112 completed before RRF got the emergency stop");
+
+            // RRF halts with the next transfer. M112 completes once DSF has processed the data RRF sent before the stop, so nothing stale
+            // can replace the halted status afterwards
+            _host.Firmware.ReleaseTransfers();
+            Assert.That(await m112.WaitAsync(FakeFirmwareHost.DefaultTimeout), Is.EqualTo("\n"));
+            Assert.That(_host.Firmware.IsEmergencyStopped, Is.True);
+            using (await _host.Model.AccessReadOnlyAsync())
+            {
+                Assert.That(_host.Model.State.Status, Is.EqualTo(MachineStatus.Halted));
+            }
+        }
+        finally
+        {
+            _host.Firmware.ReleaseTransfers();
         }
     }
 

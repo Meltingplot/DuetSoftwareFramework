@@ -257,9 +257,13 @@ public sealed class LinkService(
     /// <param name="stoppingToken">Cancellation token</param>
     private void Execute(CancellationToken stoppingToken)
     {
+        // Emergency stop that went out with the last transfer. RRF carries it out as soon as it reads it, but the data RRF sent
+        // with the same transfer was written before, so the stop is complete only once that data has been processed
+        TaskCompletionSource? transferredHaltRequest = null;
         do
         {
             bool skipChannels = false;
+            TaskCompletionSource? writtenHaltRequest = null;
             using (linkInterface.FirmwareActionLock.Lock(stoppingToken))
             {
                 // Check if an emergency stop has been requested
@@ -269,7 +273,7 @@ public sealed class LinkService(
                     if (linkAdapter.WriteEmergencyStop())
                     {
                         logger.LogWarning("Emergency stop");
-                        linkInterface.FirmwareHaltRequest.SetResult();
+                        writtenHaltRequest = linkInterface.FirmwareHaltRequest;
                         linkInterface.FirmwareHaltRequest = null;
                     }
                     skipChannels = true;
@@ -285,6 +289,10 @@ public sealed class LinkService(
                         linkAdapter.PerformFullTransfer(cancellationToken: lifetime.ApplicationStopped);
                         linkInterface.FirmwareResetRequest.SetResult();
                         linkInterface.FirmwareResetRequest = null;
+
+                        // RRF performs an emergency stop before it resets
+                        transferredHaltRequest?.SetResult();
+                        writtenHaltRequest?.SetResult();
                         break;
                     }
                     skipChannels = true;
@@ -297,6 +305,10 @@ public sealed class LinkService(
                 if (linkInterface.IapStream is not null && linkInterface.FirmwareStream is not null)
                 {
                     Invalidate();
+
+                    // RRF performs an emergency stop when it receives the first IAP segment
+                    transferredHaltRequest?.SetResult();
+                    writtenHaltRequest?.SetResult();
 
                     try
                     {
@@ -375,6 +387,10 @@ public sealed class LinkService(
                 }
             }
             linkInterface.BytesReserved = 0;
+
+            // RRF has carried out the emergency stop that went out with the last transfer, and the data it sent before has been processed
+            transferredHaltRequest?.SetResult();
+            transferredHaltRequest = null;
 
             // Process pending codes, macro files and requests for resource locks/unlocks as well as flush requests
             if (!skipChannels)
@@ -516,6 +532,7 @@ public sealed class LinkService(
 
             // Do another full SPI transfer
             linkAdapter.PerformFullTransfer(cancellationToken: lifetime.ApplicationStopped);
+            transferredHaltRequest = writtenHaltRequest;
         }
         while (!stoppingToken.IsCancellationRequested);
     }
