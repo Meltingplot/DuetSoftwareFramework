@@ -7,7 +7,7 @@ namespace DuetSharedLibrary;
 /// <summary>
 /// Driver for full-duplex SPI transfers via the spidev character device
 /// </summary>
-public sealed class SpiDevice : IDisposable
+public sealed class SpiDevice : ISpiDevice, IDisposable
 {
     // SPI_IOC_MESSAGE(1) = _IOW(SPI_IOC_MAGIC (0x6B), 0, sizeof(spi_ioc_transfer) (32))
     private const uint SPI_IOC_MESSAGE_1 = 0x40206b00;

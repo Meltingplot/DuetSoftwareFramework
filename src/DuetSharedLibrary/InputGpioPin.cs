@@ -12,7 +12,7 @@ namespace DuetSharedLibrary;
 /// The caller consumes the kernel's edge event queue itself via <see cref="FlushEvents"/> and
 /// <see cref="WaitForEvent"/>, so the level always reflects the edge sequence and no second thread is involved
 /// </summary>
-public sealed class InputGpioPin : IDisposable
+public sealed class InputGpioPin : IInputGpioPin, IDisposable
 {
     private int _chipFd = -1, _reqFd = -1;
     private readonly uint _offset;
