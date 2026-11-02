@@ -66,6 +66,11 @@ public sealed class FakeSbcRequest
     public PrintStoppedReason PrintStoppedReason { get; init; }
 
     /// <summary>
+    /// Capabilities of the link to activate (ActivateLinkCapabilities)
+    /// </summary>
+    public LinkCapabilities LinkCapabilities { get; init; }
+
+    /// <summary>
     /// Copy this request because DSF sends it again
     /// </summary>
     /// <returns>Copy of this request</returns>

@@ -264,6 +264,19 @@ public interface ILinkAdapter
     bool WriteGetObjectModel(string key, string flags);
 
     /// <summary>
+    /// Capabilities of the link that this adapter can use
+    /// </summary>
+    Protocol.Shared.LinkCapabilities SupportedLinkCapabilities { get; }
+
+    /// <summary>
+    /// Ask the firmware to activate capabilities of the link for the current connection.
+    /// Only for firmware that offers them in limits.sbcLinkCapabilities
+    /// </summary>
+    /// <param name="capabilities">Capabilities to activate</param>
+    /// <returns>True if the packet could be written</returns>
+    bool WriteActivateLinkCapabilities(Protocol.Shared.LinkCapabilities capabilities);
+
+    /// <summary>
     /// Notify the firmware that a file print has started
     /// </summary>
     /// <param name="info">Information about the file being printed</param>

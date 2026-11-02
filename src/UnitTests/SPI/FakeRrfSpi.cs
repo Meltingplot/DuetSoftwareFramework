@@ -8,6 +8,7 @@ using DuetControlServer.Link.Protocol.Shared;
 using DuetControlServer.Utility;
 using DuetSharedLibrary;
 using FirmwareRequest = DuetControlServer.Link.Protocol.FirmwareRequests.Request;
+using SbcRequest = DuetControlServer.Link.Protocol.SbcRequests.Request;
 
 namespace UnitTests.SPI;
 
@@ -91,7 +92,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     private ushort _lastTransferNumber;
     private TransferHeader _rxHeader, _txHeader;
     private readonly byte[] _rxHeaderBytes = new byte[HeaderSize];
-    private uint _rxResponse, _txResponse;
+    private uint _rxResponse, _txResponse, _rxResponseWord;
     private readonly byte[] _rxBuffer = new byte[SbcTransferBufferSize], _txBuffer = new byte[SbcTransferBufferSize];
     private int _txPointer;
     private byte _packetId;
@@ -114,6 +115,13 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     private readonly Func<int, bool> _sendData;
     private readonly SequenceMismatchHandling _sequenceMismatchHandling;
     private readonly bool _pollWhileDisconnected, _rrfFirstOnTie, _phaseGuard, _sequenceGuard;
+
+    // Proposed change: capabilities RRF offers in limits.sbcLinkCapabilities and the ones DSF activated for the current connection
+    private readonly LinkCapabilities _offeredCapabilities;
+    private LinkCapabilities _activeCapabilities;
+    private bool PhaseGuardActive => _phaseGuard || _activeCapabilities.HasFlag(LinkCapabilities.PhaseGuard);
+    private bool SequenceGuardActive => _sequenceGuard || _activeCapabilities.HasFlag(LinkCapabilities.SequenceGuard);
+    private bool Extended => _activeCapabilities.HasFlag(LinkCapabilities.ExtendedHeader);
 
     // Proposed change: last completed transfer, sent again when DSF repeats its part of it, and the transfer that waits meanwhile
     private TransferHeader _lastTxHeader, _pendingTxHeader;
@@ -138,9 +146,12 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// <param name="phaseGuard">Proposed change: RRF recognises from what it receives that DSF is in another phase and goes back to it</param>
     /// <param name="sequenceGuard">Proposed change: when DSF repeats the last completed transfer, RRF sends it again, and when DSF is a transfer ahead, RRF waits for DSF to send it again</param>
     /// <param name="firstSequenceNumber">Sequence number of the first transfer</param>
+    /// <param name="capabilities">Proposed change: capabilities RRF offers, which DSF activates with a request</param>
     public FakeRrfSpi(Func<int, bool> sendData, SequenceMismatchHandling sequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset,
-        bool pollWhileDisconnected = false, bool rrfFirstOnTie = true, byte underrunByte = 0, bool phaseGuard = false, bool sequenceGuard = false, ushort firstSequenceNumber = 1)
+        bool pollWhileDisconnected = false, bool rrfFirstOnTie = true, byte underrunByte = 0, bool phaseGuard = false, bool sequenceGuard = false, ushort firstSequenceNumber = 1,
+        LinkCapabilities capabilities = LinkCapabilities.None)
     {
+        _offeredCapabilities = capabilities;
         _phaseGuard = phaseGuard;
         _sequenceGuard = sequenceGuard;
         _underrunByte = underrunByte;
@@ -163,6 +174,16 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// Current virtual time in ms
     /// </summary>
     public double Now { get; private set; }
+
+    /// <summary>
+    /// Number of activation requests RRF processed
+    /// </summary>
+    public int Activations { get; private set; }
+
+    /// <summary>
+    /// Capabilities that are active for the current connection
+    /// </summary>
+    public LinkCapabilities ActiveCapabilities => _activeCapabilities;
 
     /// <summary>
     /// When RRF restarted, counted in exchanges: 3.5 is between the third and the fourth exchange
@@ -198,7 +219,8 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         _state = InternalTransferState.ExchangingData;
         _rxHeader = _txHeader = default;
         Array.Clear(_rxHeaderBytes);
-        _rxResponse = _txResponse = 0;
+        _rxResponse = _txResponse = _rxResponseWord = 0;
+        _activeCapabilities = LinkCapabilities.None;
         _lastTransferNumber = 0;
         _txPointer = 0;
         _packetId = 0;
@@ -350,7 +372,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
 
         // Set up TX transfer header
         _txHeader.NumPackets = _packetId;
-        _txHeader.SequenceNumber++;
+        _txHeader.SequenceNumber = ExtendedLink.Next(_txHeader.SequenceNumber, Extended);
         _txHeader.DataLength = (ushort)_txPointer;
         _txHeader.ChecksumData32 = CRC32.Calculate(_txBuffer.AsSpan(0, _txPointer));
         byte[] header = new byte[HeaderSize];
@@ -368,6 +390,15 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         _dmaActive = false;
         _txPointer = 0;
         _packetId = 0;
+
+        // Proposed change: the capabilities end with the connection. Numbering from the counter on gives status 0, which tells DSF that RRF has left the extended link
+        if (Extended)
+        {
+            _txHeader.SequenceNumber &= ExtendedLink.CounterMask;
+        }
+        _activeCapabilities = LinkCapabilities.None;
+        _lastTxData = null;
+        _resending = false;
 
         // Reset the TfrRdy pin level and the seq numbers only if no communication is taking place
         if (fullReset)
@@ -392,7 +423,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     {
         _txResponse = response;
         _state = (_state == InternalTransferState.ExchangingHeader) ? InternalTransferState.ExchangingHeaderResponse : InternalTransferState.ExchangingDataResponse;
-        SetupSpi(DmaTarget.Response, BitConverter.GetBytes(response));
+        SetupSpi(DmaTarget.Response, BitConverter.GetBytes(EncodeResponse(response)));
     }
 
     private void ExchangeData()
@@ -411,12 +442,12 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
                 // Transfer bad data response and restart the transfer
                 _txResponse = TransferResponse.BadResponse;
                 _state = InternalTransferState.Resetting;
-                SetupSpi(DmaTarget.Response, BitConverter.GetBytes(_txResponse));
+                SetupSpi(DmaTarget.Response, BitConverter.GetBytes(EncodeResponse(_txResponse)));
             }
             else
             {
                 // No data was transferred so we are still in sync. Continue with the next transfer
-                _lastTransferNumber = (ushort)(_rxHeader.SequenceNumber - 1);
+                _lastTransferNumber = ExtendedLink.Previous(_rxHeader.SequenceNumber);
                 ExchangeHeader();
             }
         }
@@ -433,7 +464,17 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         }
     }
 
-    private bool IsConnectionReset() => _rxHeader.FormatCode == Consts.FormatCode && _rxHeader.SequenceNumber != (ushort)(_lastTransferNumber + 1);
+    private bool IsConnectionReset() => _rxHeader.FormatCode == Consts.FormatCode && ExtendedLink.Distance(_lastTransferNumber, _rxHeader.SequenceNumber, Extended) != 1;
+
+    /// <summary>
+    /// Proposed change: send a response as an extended code on the extended link
+    /// </summary>
+    private uint EncodeResponse(uint response) => Extended ? ExtendedLink.EncodeResponse(response) : response;
+
+    /// <summary>
+    /// Proposed change: read a response, which DSF sends as an extended code once it uses the extended link
+    /// </summary>
+    private uint DecodeResponse(uint word) => Extended ? ExtendedLink.DecodeResponse(word) : word;
 
     private TransferState Finish()
     {
@@ -448,7 +489,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             ExchangeHeader();
             return TransferState.DoingFullTransfer;
         }
-        if (_sequenceGuard)
+        if (SequenceGuardActive)
         {
             _lastTxHeader = _txHeader;
             _lastTxData = _txBuffer.AsSpan(0, _txHeader.DataLength).ToArray();
@@ -474,7 +515,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// <returns>Whether RRF went back to the phase of DSF</returns>
     private bool GuardPhase()
     {
-        if (!_phaseGuard)
+        if (!PhaseGuardActive)
         {
             return false;
         }
@@ -505,13 +546,14 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// <returns>Whether RRF asked for the headers to be exchanged again</returns>
     private bool GuardSequence()
     {
-        if (!_sequenceGuard || !_isConnected)
+        if (!SequenceGuardActive || !_isConnected)
         {
             return false;
         }
 
         // DSF repeats the transfer RRF completed last, so DSF did not complete it. Send that transfer again before the current one
-        if (!_resending && _lastTxData is not null && _rxHeader.SequenceNumber == _lastTransferNumber)
+        int distance = ExtendedLink.Distance(_lastTransferNumber, _rxHeader.SequenceNumber, Extended);
+        if (!_resending && _lastTxData is not null && distance == 0)
         {
             _pendingTxHeader = _txHeader;
             _pendingTxData = _txBuffer.AsSpan(0, _txHeader.DataLength).ToArray();
@@ -528,7 +570,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         }
 
         // DSF completed a transfer that RRF did not. DSF sends it again once it sees RRF repeat its part
-        if (_rxHeader.SequenceNumber == (ushort)(_lastTransferNumber + 2))
+        if (distance == 2)
         {
             ExchangeResponse(TransferResponse.BadHeaderChecksum);
             return true;
@@ -548,7 +590,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             case InternalTransferState.ExchangingHeader:
             {
                 // (1) Exchanged transfer headers
-                uint headerResponse = MemoryMarshal.Read<uint>(_rxHeaderBytes);
+                uint headerResponse = DecodeResponse(MemoryMarshal.Read<uint>(_rxHeaderBytes));
                 if (headerResponse == TransferResponse.BadResponse)
                 {
                     // SBC received a bad response code. We must have been happy if we got here, else RRF would have complained
@@ -576,6 +618,13 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
                 {
                     ExchangeResponse(TransferResponse.BadDataLength);
                     break;
+                }
+                if (Extended && ExtendedLink.Distance(_lastTransferNumber, _rxHeader.SequenceNumber, true) < 0)
+                {
+                    // Proposed change: DSF has left the extended link, which only a restart or a connection reset does. Leave it as well,
+                    // so that DSF understands the responses. The sequence number no longer matches, so the connection is reset when the transfer ends
+                    _activeCapabilities = LinkCapabilities.None;
+                    _lastTxData = null;
                 }
                 if (GuardSequence())
                 {
@@ -616,7 +665,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             case InternalTransferState.ExchangingData:
             {
                 // (3) Exchanged data
-                if (MemoryMarshal.Read<uint>(_rxBuffer) == TransferResponse.BadResponse)
+                if (DecodeResponse(MemoryMarshal.Read<uint>(_rxBuffer)) == TransferResponse.BadResponse)
                 {
                     RestartTransfer(false);
                     break;
@@ -727,9 +776,10 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
                 _rxHeader = MemoryMarshal.Read<TransferHeader>(_rxHeaderBytes);
                 break;
             case DmaTarget.Response:
-                byte[] response = BitConverter.GetBytes(_rxResponse);
+                byte[] response = BitConverter.GetBytes(_rxResponseWord);
                 received.CopyTo(response);
-                _rxResponse = BitConverter.ToUInt32(response);
+                _rxResponseWord = BitConverter.ToUInt32(response);
+                _rxResponse = DecodeResponse(_rxResponseWord);
                 break;
             case DmaTarget.Data:
                 received.CopyTo(_rxBuffer);
@@ -787,6 +837,19 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// </summary>
     private void ProcessData()
     {
+        // Proposed change: activate the requested capabilities that RRF offers, from the next transfer on
+        for (int offset = 0; offset + Marshal.SizeOf<PacketHeader>() <= _rxHeader.DataLength;)
+        {
+            PacketHeader packet = MemoryMarshal.Read<PacketHeader>(_rxBuffer.AsSpan(offset));
+            offset += Marshal.SizeOf<PacketHeader>();
+            if (packet.Request == (ushort)SbcRequest.ActivateLinkCapabilities && packet.Length >= sizeof(uint))
+            {
+                _activeCapabilities = (LinkCapabilities)MemoryMarshal.Read<uint>(_rxBuffer.AsSpan(offset)) & _offeredCapabilities;
+                Activations++;
+            }
+            offset += (packet.Length + 3) / 4 * 4;
+        }
+
         string data = Encoding.ASCII.GetString(_rxBuffer, 0, _rxHeader.DataLength);
         for (int index = data.IndexOf("dsf:", StringComparison.Ordinal); index >= 0; index = data.IndexOf("dsf:", index + 4, StringComparison.Ordinal))
         {
