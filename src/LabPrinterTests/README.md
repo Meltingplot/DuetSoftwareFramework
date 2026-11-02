@@ -5,13 +5,14 @@ Hardware tests that run against the CHX 350 lab printer (Pi 5 + Duet 3 MB6HC, si
 ## Running
 
 ```
-src/LabPrinterTests/run-lab-tests.sh [--side-load] [dotnet test arguments]
+src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection]] [dotnet test arguments]
 ```
 
 - Needs Tim's hardware token (plink uses gpg-agent as Pageant), PuTTY's `plink.exe` and the `mpadmin` account on the SBC (passwordless sudo).
 - The script stops `mp-ota-gate.timer`, so that no update starts, and starts it again at the end.
 - `tunnel.py` forwards `127.0.0.1:18080` in WSL to the SBC's HTTP API, with one `plink -nc` per connection. A plink listener on Windows does not work reliably, because Windows may drop connections from WSL to it.
 - `--side-load` publishes DCS from this tree and bind-mounts `DuetAPI.dll`, `DuetControlServer.dll` and `DuetSharedLibrary.dll` over the image's copies for the run. It removes them again at the end. Both steps restart DCS and send M999.
+- `--fault-injection` side-loads the test-only build that corrupts a single SPI exchange when one is written to `/var/tmp/lab-tests/spi-fault` (`DuetControlServer/Link/Adapter/SpiFaultInjection.cs`). Only `SpiFaultInjection` uses it; see below.
 - Examples: `--filter "TestCategory!=Restart"` skips the restarts. `--filter "FullyQualifiedName~LinkSoak"` runs the 30-minute soak.
 - Without `LAB_PRINTER_URL` and `LAB_PRINTER_SHELL`, which the script sets, every test is skipped.
 
@@ -21,6 +22,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load] [dotnet test arguments]
 - Always allowed: codes such as M409, M122, M291/M292, test macros in `0:/macros/lab-tests`, and global variables named `labTest...`. The globals stay until the next reset.
 - Category `Restart`: firmware restarts (`M122 P1001`; on the fork, the lost link also triggers an E-stop and switches ATX off), DCS restarts and M999.
 - Category `Trigger`: a temporary trigger 30 with `sys/trigger30.g`. These tests are skipped if the machine uses either.
+- Category `FaultInjection` (explicit): single corrupted SPI exchanges. A fault that breaks the link costs a DCS restart and M999, and on the fork the lost link also triggers an E-stop and switches ATX off.
 - Explicit only: the 30-minute soak, and the M581.1 string literal test, which hangs RRF until its watchdog resets it.
 - Never: print jobs, motion or heaters.
 - A test that leaves a channel stuck restarts DCS and sends M999 before it fails.
@@ -42,6 +44,21 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load] [dotnet test arguments]
 | `TriggerMacros.ReportSbcTriggerWithM581` | A plain `M581 T#` report deleted a trigger that DSF evaluates | DSF #63 (upstream still has it) |
 | `TriggerMacros.StringLiteralInExpression` (explicit) | M581.1 with a string literal in its expression hangs RRF 3.7 | Open (upstream RRF) |
 | `LinkSoak.NoLostConnectionWhileIdle` (explicit) | TfrRdy timeouts every 15 to 30 minutes (DSF 3.7.0-rc.1) | Upstream 46886f5d |
+
+## SPI fault injection
+
+`SpiFaultInjection.SingleFaultsMatchCensus` checks the link census of `src/UnitTests/SPI/LinkRecovery.cs` on the real link. The census
+writes its cases with the predicted outcome per kind of transfer, for the firmware on the printer:
+
+```
+LAB_SPI_FAULT_CASES=/tmp/cases.json dotnet test src/UnitTests --filter "Name=WriteHardwareCases_RrfOfToday"   # or _Extended
+LAB_SPI_FAULT_CASES=/tmp/cases.json src/LabPrinterTests/run-lab-tests.sh --side-load --fault-injection --filter "FullyQualifiedName~SpiFaultInjection"
+```
+
+- Each case arms one fault and waits until it hits the next transfer of the requested kind. It then sorts the result as `Retry` (repaired by the protocol), `Reconnect`, `DcsRestart` or `NoRecovery` (no answer to `M409 ... R1` after 2 s), and compares it with the census prediction for the kind of transfer that was hit.
+- `LAB_SPI_FAULT_SELECT`: `failures` (predicted to break the link), `responses` (every fault in a response word, where the census finds all failing single bits), or `all`. The default is `failures,responses`.
+- `LAB_SPI_FAULT_MAX` limits the number of cases.
+- `UnitTests` `InjectorMatchesCensus` checks that the injector hits the same exchanges as the census.
 
 ## Not covered
 

@@ -112,8 +112,9 @@ public enum RrfRule
 /// <param name="RestartAgain">The restarted RRF restarts once more right after its first transfer, as a reconnect timeout does</param>
 /// <param name="RrfFirstSequenceNumber">Sequence number of the first transfer of RRF, to make it wrap before the fault</param>
 /// <param name="DcsRestartDelay">Instead of corrupting the exchange, DCS dies right before it and a new instance starts after this time in ms</param>
+/// <param name="Mutation">Text form of the mutation for SpiFaultSpec, if it has one</param>
 public sealed record SpiFault(int Exchange, ExchangeDirection Direction, SpiMutation Mutate, double? RestartBootTime = null, bool RestartAgain = false, ushort RrfFirstSequenceNumber = 1,
-    double? DcsRestartDelay = null);
+    double? DcsRestartDelay = null, string? Mutation = null);
 
 /// <summary>
 /// DCS died right before an exchange, see <see cref="SpiFault.DcsRestartDelay"/>

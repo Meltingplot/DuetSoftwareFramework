@@ -1,9 +1,10 @@
 #!/bin/bash
 # Run the lab printer tests through a plink tunnel, see README.md
 #
-# Usage: run-lab-tests.sh [--side-load] [dotnet test arguments...]
-#   --side-load  publish DCS from this tree and bind-mount its DLLs over the image's copies for the run
-#   Example:     run-lab-tests.sh --side-load --filter "TestCategory!=Restart"
+# Usage: run-lab-tests.sh [--side-load [--fault-injection]] [dotnet test arguments...]
+#   --side-load        publish DCS from this tree and bind-mount its DLLs over the image's copies for the run
+#   --fault-injection  publish the test-only build that corrupts single SPI exchanges on request (SpiFaultInjection.cs)
+#   Example:           run-lab-tests.sh --side-load --filter "TestCategory!=Restart"
 set -euo pipefail
 
 PLINK=${PLINK:-"/mnt/c/Program Files/PuTTY/plink.exe"}
@@ -18,9 +19,14 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 export PATH=$HOME/.dotnet:$PATH
 
 side_load=0
+fault_injection=0
 if [ "${1:-}" = "--side-load" ]; then
     side_load=1
     shift
+    if [ "${1:-}" = "--fault-injection" ]; then
+        fault_injection=1
+        shift
+    fi
 fi
 
 # Run a script read from stdin on the SBC
@@ -96,7 +102,8 @@ ota_stopped=1
 if [ "$side_load" = 1 ]; then
     out=$(mktemp -d)
     echo "Publishing DCS from $ROOT"
-    dotnet publish "$ROOT/src/DuetControlServer/DuetControlServer.csproj" -c Release -r linux-arm64 --self-contained false -o "$out" --nologo -v quiet
+    dotnet publish "$ROOT/src/DuetControlServer/DuetControlServer.csproj" -c Release -r linux-arm64 --self-contained false -o "$out" --nologo -v quiet \
+        -p:SpiFaultInjection=$([ "$fault_injection" = 1 ] && echo true || echo false)
     for dll in $SIDE_LOAD_DLLS; do
         echo "Uploading $dll"
         {
@@ -116,7 +123,7 @@ sudo -n systemctl restart duetcontrolserver
 EOF
     side_loaded=1
     reset_firmware
-    echo "Side-loaded $SIDE_LOAD_DLLS from $(git -C "$ROOT" rev-parse --short HEAD)$(git -C "$ROOT" diff --quiet HEAD -- src || echo ' with uncommitted changes')"
+    echo "Side-loaded $SIDE_LOAD_DLLS from $(git -C "$ROOT" rev-parse --short HEAD)$(git -C "$ROOT" diff --quiet HEAD -- src || echo ' with uncommitted changes')$([ "$fault_injection" = 1 ] && echo ', fault injection build')"
 fi
 
 python3 -I "$ROOT/src/LabPrinterTests/tunnel.py" "$PLINK" "$JUMP_HOST" "$SBC:80" "$TUNNEL_PORT" &

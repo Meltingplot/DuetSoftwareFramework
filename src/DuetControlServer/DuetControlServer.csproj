@@ -48,4 +48,10 @@
 	<ItemGroup>
 		<InternalsVisibleTo Include="UnitTests" />
 	</ItemGroup>
+
+	<!-- Last, so that the configuration groups above do not replace it -->
+	<PropertyGroup Condition="'$(SpiFaultInjection)' == 'true'">
+		<!-- Test-only build for the lab printer, see Link/Adapter/SpiFaultInjection.cs -->
+		<DefineConstants>$(DefineConstants);SPI_FAULT_INJECTION</DefineConstants>
+	</PropertyGroup>
 </Project>
