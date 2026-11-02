@@ -276,6 +276,12 @@ public sealed class FaultInjectingSpiDevice(ISpiDevice device, string? controlFi
         try
         {
             DateTime lastWrite = File.GetLastWriteTimeUtc(controlFile);
+            if (_lastWrite == default)
+            {
+                // A fault written before DCS started belongs to the instance before it
+                _lastWrite = lastWrite;
+                return;
+            }
             if (lastWrite != _lastWrite && File.Exists(controlFile))
             {
                 _lastWrite = lastWrite;

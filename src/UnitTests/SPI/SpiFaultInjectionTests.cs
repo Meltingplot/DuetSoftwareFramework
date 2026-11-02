@@ -86,7 +86,13 @@ public class SpiFaultInjectionTests
                 return BitConverter.ToUInt32(rx);
             }
 
+            // A fault written before DCS started is not armed
+            System.IO.File.WriteAllText(file, "NoData HeaderResponse ToDsf flip 3");
+            Assert.That(Transfer(), Is.EqualTo(TransferResponse.Success));
+            Assert.That(hits, Is.Empty);
+
             // Arm a fault in the response that DSF receives
+            Thread.Sleep(60);
             System.IO.File.WriteAllText(file, "NoData HeaderResponse ToDsf flip 2");
             System.IO.File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddSeconds(1));
             Assert.That(Transfer(), Is.EqualTo(TransferResponse.Success ^ 4));

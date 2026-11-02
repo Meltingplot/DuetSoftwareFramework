@@ -89,7 +89,7 @@ public class SpiFaultInjection : LabTest
     /// <returns>Outcome in the terms of the census, and the kind of transfer it hit or null if no transfer of the kind came along</returns>
     private async Task<(string Outcome, string? Kind)> InjectAsync(string spec)
     {
-        // One round trip: arm, wait for the injection in the journal, give the link 2 s to recover, then report
+        // One round trip: arm, wait for the injection in the journal, empty the control file, give the link 2 s to recover, then report
         string report = await Lab.RunOnSbcAsync($"""
             cursor=$(sudo -n journalctl -u duetcontrolserver -n 1 --show-cursor -o cat --no-pager | sed -n 's/^-- cursor: //p')
             pid=$(systemctl show -p MainPID --value duetcontrolserver)
@@ -99,11 +99,8 @@ public class SpiFaultInjection : LabTest
               if sudo -n journalctl -u duetcontrolserver --after-cursor="$cursor" -o cat --no-pager | grep -qF 'SPI fault injected: {spec},'; then injected=1; break; fi
               sleep 0.1
             done
-            if [ $injected = 0 ]; then
-              : | sudo -n tee {ControlFile} > /dev/null
-            else
-              sleep 2
-            fi
+            : | sudo -n tee {ControlFile} > /dev/null
+            [ $injected = 1 ] && sleep 2
             echo "PID $pid $(systemctl show -p MainPID --value duetcontrolserver)"
             sudo -n journalctl -u duetcontrolserver --after-cursor="$cursor" -o cat --no-pager | grep -E 'SPI fault injected|Connection to controller has been reset|Lost connection to Duet|Duet Control Server v|Maximum number of SPI' | head -20
             """);

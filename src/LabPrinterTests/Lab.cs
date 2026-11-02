@@ -221,7 +221,9 @@ public static class Lab
     public static async Task RecoverAsync()
     {
         TestContext.Progress.WriteLine("Recovering: restarting DCS and resetting the firmware");
-        await RunOnSbcAsync("sudo -n systemctl restart duetcontrolserver");
+
+        // The new instance may fail to start, e.g. while RRF still hangs, and systemd starts it again
+        await RunOnSbcAsync("sudo -n systemctl restart duetcontrolserver || true");
         await ResetHaltedFirmwareAsync();
     }
 
