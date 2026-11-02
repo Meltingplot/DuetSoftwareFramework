@@ -194,7 +194,7 @@ public class LinkRecovery
         }
     }
 
-    [Test, Explicit("32 of 4142 single faults still break the link with the RRF of today")]
+    [Test, Explicit("35 of 4142 single faults still break the link with the RRF of today")]
     public void SingleCorruptedExchange() => RunCensus(new());
 
     private static IEnumerable<TestCaseData> RefusalCases => GetCases()
@@ -278,10 +278,26 @@ public class LinkRecovery
         new TestCaseData(new RrfOptions(PollWhileDisconnected: true)).SetName("RrfRestart_PollWhileDisconnected")
     ];
 
+    private static IEnumerable<TestCaseData> RestartsAtFirstNumber => GetRestartCases()
+        .Where(c => c.Mutation.StartsWith("RRF restart twice") || c.Mutation.StartsWith("RRF restart after seq 1,"))
+        .Select(c => new TestCaseData(c.ToString()).SetName($"RestartIsNotTakenForRepeat({c.Variant}, {c.Phase}, {c.Mutation})"));
+
+    /// <summary>
+    /// A restarted RRF numbers its transfers from 1 again. When DSF saw 1 last, which it does after every reset, the restart repeats
+    /// that number, and the sequence guard of DSF must not take it for a transfer RRF did not complete
+    /// </summary>
+    [TestCaseSource(nameof(RestartsAtFirstNumber))]
+    public void RestartIsNotTakenForRepeat(string name)
+    {
+        Case c = GetRestartCases().Single(c => c.ToString() == name);
+        Result result = Run(c.Variant, c.Fault, new(PollWhileDisconnected: true));
+        Assert.That(result.Outcome, Is.EqualTo(Outcome.ResetDetected), result.Details);
+    }
+
     /// <summary>
     /// RRF restarts at every exchange of a transfer. DSF must notice it (R6), the link must come back, and nothing DSF sent may reach RRF twice
     /// </summary>
-    [TestCaseSource(nameof(RestartOptions)), Explicit("The sequence guard of DSF takes a restart of RRF for a repeated transfer")]
+    [TestCaseSource(nameof(RestartOptions)), Explicit("6 of 128 restarts stay unnoticed when RRF of today restarts right after its sequence number wrapped")]
     public void RrfRestart(RrfOptions options)
     {
         List<(Case Case, Result Result)> results = [.. GetRestartCases().Select(c => (c, Run(c.Variant, c.Fault, options)))];

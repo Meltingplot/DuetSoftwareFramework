@@ -1798,8 +1798,11 @@ public class SPI : IDiagnostics, ILinkAdapter
                 throw new Exception($"Data too long ({_rxHeader.DataLength} bytes)");
             }
 
+            // A restarted RRF numbers its transfers from 1 again, so 1 is left to the reset detection instead of being taken for a repeat or a skip
+            bool mayBeRestart = _rxHeader.SequenceNumber == 1;
+
             // RRF repeats the transfer DSF completed last, so RRF did not complete it. Send that transfer again before the current one
-            if (_connected && !_resending && _lastTxBuffer is not null && _rxHeader.SequenceNumber == _lastTransferNumber)
+            if (_connected && !mayBeRestart && !_resending && _lastTxBuffer is not null && _rxHeader.SequenceNumber == _lastTransferNumber)
             {
                 _logger.LogWarning("Sending transfer #{SequenceNumber} again because RepRapFirmware did not complete it", _lastTxHeader.SequenceNumber);
                 _pendingTxHeader = _txHeader;
@@ -1819,7 +1822,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             }
 
             // RRF completed a transfer that DSF did not. RRF sends it again once it sees DSF repeat its part
-            if (_connected && _rxHeader.SequenceNumber == (ushort)(_lastTransferNumber + 2))
+            if (_connected && !mayBeRestart && _rxHeader.SequenceNumber == (ushort)(_lastTransferNumber + 2))
             {
                 _logger.LogWarning("Waiting for RepRapFirmware to send transfer #{SequenceNumber} again", (ushort)(_lastTransferNumber + 1));
                 ExchangeResponse(TransferResponse.BadHeaderChecksum);
