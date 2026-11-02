@@ -1771,12 +1771,6 @@ public class SPI : IDiagnostics, ILinkAdapter
             {
                 case TransferResponse.Success:
                     return true;
-                case TransferResponse.BadFormat:
-                    throw new Exception("RepRapFirmware refused message format");
-                case TransferResponse.BadProtocolVersion:
-                    throw new Exception("RepRapFirmware refused protocol version");
-                case TransferResponse.BadDataLength:
-                    throw new Exception("RepRapFirmware refused data length");
                 case TransferResponse.BadHeaderChecksum:
                     _logger.LogWarning("RepRapFirmware got a bad header checksum");
                     continue;
