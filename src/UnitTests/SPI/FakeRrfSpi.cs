@@ -49,7 +49,10 @@ public enum ExchangeDirection
 /// <param name="Exchange">Index of the exchange, counted from the moment the fault is armed</param>
 /// <param name="Direction">Direction that is corrupted</param>
 /// <param name="Mutate">Mutation of the bytes</param>
-public sealed record SpiFault(int Exchange, ExchangeDirection Direction, SpiMutation Mutate);
+/// <param name="RestartBootTime">Instead of corrupting the exchange, RRF restarts right before it and boots for this time in ms</param>
+/// <param name="RestartAgain">The restarted RRF restarts once more right after its first transfer, as a reconnect timeout does</param>
+/// <param name="RrfFirstSequenceNumber">Sequence number of the first transfer of RRF, to make it wrap before the fault</param>
+public sealed record SpiFault(int Exchange, ExchangeDirection Direction, SpiMutation Mutate, double? RestartBootTime = null, bool RestartAgain = false, ushort RrfFirstSequenceNumber = 1);
 
 /// <summary>
 /// Mutation of the bytes of an exchange
@@ -134,8 +137,9 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// <param name="underrunByte">Byte DSF reads when it clocks more bytes than RRF has set up</param>
     /// <param name="phaseGuard">Proposed change: RRF recognises from what it receives that DSF is in another phase and goes back to it</param>
     /// <param name="sequenceGuard">Proposed change: when DSF repeats the last completed transfer, RRF sends it again, and when DSF is a transfer ahead, RRF waits for DSF to send it again</param>
+    /// <param name="firstSequenceNumber">Sequence number of the first transfer</param>
     public FakeRrfSpi(Func<int, bool> sendData, SequenceMismatchHandling sequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset,
-        bool pollWhileDisconnected = false, bool rrfFirstOnTie = true, byte underrunByte = 0, bool phaseGuard = false, bool sequenceGuard = false)
+        bool pollWhileDisconnected = false, bool rrfFirstOnTie = true, byte underrunByte = 0, bool phaseGuard = false, bool sequenceGuard = false, ushort firstSequenceNumber = 1)
     {
         _phaseGuard = phaseGuard;
         _sequenceGuard = sequenceGuard;
@@ -148,6 +152,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         // DataTransfer::Init
         _txHeader.FormatCode = Consts.FormatCode;
         _txHeader.ProtocolVersion = Consts.ProtocolVersion;
+        _txHeader.SequenceNumber = (ushort)(firstSequenceNumber - 1);
 
         // Data written before the first transfer
         WritePayload();
@@ -158,6 +163,63 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// Current virtual time in ms
     /// </summary>
     public double Now { get; private set; }
+
+    /// <summary>
+    /// When RRF restarted, counted in exchanges: 3.5 is between the third and the fourth exchange
+    /// </summary>
+    public List<double> Restarts { get; } = [];
+
+    /// <summary>
+    /// Boot time of a restart to perform after the first transfer of the restarted RRF
+    /// </summary>
+    private double? _restartAgainBootTime;
+
+    /// <summary>
+    /// Virtual time at which a restarting RRF has booted, or null if it is running
+    /// </summary>
+    private double? _bootAt;
+
+    /// <summary>
+    /// The processor resets: SPI and DMA stop, TfrRdy becomes an output driven low (DataTransfer::Init) and the RAM content is gone
+    /// </summary>
+    private void Restart(double bootTime, double exchanges)
+    {
+        Trace?.Add($"   {Now,9:F3} ms: RRF restarts, booting for {bootTime} ms");
+        Restarts.Add(exchanges);
+        _dmaActive = false;
+        _isConnected = false;
+        _transferReadyHigh = false;
+        if (_pinLevel)
+        {
+            _pinLevel = false;
+            _edges.Enqueue(false);
+        }
+
+        _state = InternalTransferState.ExchangingData;
+        _rxHeader = _txHeader = default;
+        Array.Clear(_rxHeaderBytes);
+        _rxResponse = _txResponse = 0;
+        _lastTransferNumber = 0;
+        _txPointer = 0;
+        _packetId = 0;
+        _lastTxData = null;
+        _resending = false;
+        _deadline = double.PositiveInfinity;
+        _bootAt = Now + bootTime;
+    }
+
+    /// <summary>
+    /// The restarted RRF has booted and starts the first transfer like the constructor
+    /// </summary>
+    private void Boot()
+    {
+        _bootAt = null;
+        _txHeader.FormatCode = Consts.FormatCode;
+        _txHeader.ProtocolVersion = Consts.ProtocolVersion;
+        WritePayload();
+        StartNextTransfer();
+        _deadline = _pollWhileDisconnected ? Now + SbcConnectionTimeout : double.PositiveInfinity;
+    }
 
     /// <summary>
     /// Number of SPI exchanges so far
@@ -256,6 +318,9 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             return;
         }
 
+        // DataTransfer::WritePacketHeader pads only before the next packet, so the last packet ends unpadded
+        _txPointer = (_txPointer + 3) / 4 * 4;
+
         // A message packet like DataTransfer::WriteMessage writes it
         string payload = $"rrf:{++_payloadId}";
         byte[] text = Encoding.UTF8.GetBytes(payload);
@@ -266,7 +331,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         MemoryMarshal.Write(_txBuffer.AsSpan(_txPointer), in message);
         _txPointer += Marshal.SizeOf<MessageHeader>();
         text.CopyTo(_txBuffer, _txPointer);
-        _txPointer = (_txPointer + text.Length + 3) / 4 * 4;
+        _txPointer += text.Length;
         SentPayloads.Add(payload);
     }
 
@@ -703,6 +768,13 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
                 // SPI: reset the connection if no data could be exchanged
                 ResetConnection(hadTimeout);
             }
+
+            if (_restartAgainBootTime is double bootTime && (transferComplete || hadReset))
+            {
+                _restartAgainBootTime = null;
+                Restart(bootTime, Exchanges + 0.5);
+                return;
+            }
         }
 
         // Wait for the next DMA transfer
@@ -733,6 +805,13 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// <returns>Whether RRF timed out</returns>
     private bool AdvanceTo(double end)
     {
+        if (_bootAt is double bootAt && bootAt <= end)
+        {
+            Trace?.Add($"   {bootAt,9:F3} ms: RRF has booted");
+            Now = bootAt;
+            Boot();
+            return true;
+        }
         if (_deadline < end || (_deadline == end && _rrfFirstOnTie))
         {
             Trace?.Add($"   {_deadline,9:F3} ms: RRF timeout in {_state}{(_isConnected ? ", disconnect" : "")}");
@@ -768,7 +847,16 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         int exchange = Exchanges++;
         byte[] toRrf = writeBuffer.ToArray();
         SpiFault? fault = (_fault is not null && exchange - _faultArmedAt == _fault.Exchange) ? _fault : null;
-        if (fault?.Direction == ExchangeDirection.ToRrf)
+        if (_bootAt is double bootAt && Now >= bootAt)
+        {
+            Boot();
+        }
+        if (fault?.RestartBootTime is double bootTime)
+        {
+            Restart(bootTime, Exchanges - 0.5);
+            _restartAgainBootTime = fault.RestartAgain ? bootTime : null;
+        }
+        else if (fault?.Direction == ExchangeDirection.ToRrf)
         {
             fault.Mutate(toRrf);
         }
@@ -781,10 +869,10 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             readBuffer[i] = (i < count) ? _dmaTx[i] : completed ? _underrunByte : (byte)0xFF;
         }
         _dmaActive = false;
-        string rrfOutput = Convert.ToHexString(readBuffer);
+        string rrfOutput = Convert.ToHexStringLower(readBuffer);
         int receivedBefore = ReceivedPayloads.Count;
 
-        if (fault?.Direction == ExchangeDirection.ToDsf)
+        if (fault?.Direction == ExchangeDirection.ToDsf && fault.RestartBootTime is null)
         {
             fault.Mutate(readBuffer);
         }
@@ -802,7 +890,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             CompleteDma(toRrf.AsSpan(0, count));
             RunTask(DoTransfer(), false);
         }
-        Replay?.Add(($"X {Convert.ToHexString(toRrf)}", $"R {rrfOutput} {ReplayStatus(receivedBefore)}"));
+        Replay?.Add(($"X {Convert.ToHexStringLower(toRrf)}", $"R {rrfOutput} {ReplayStatus(receivedBefore)}"));
         Trace?.Add($"#{exchange} {Now,9:F3} ms{(fault is not null ? $" FAULT {fault.Direction}" : "")}: DSF {Convert.ToHexString(toRrf.AsSpan(0, Math.Min(toRrf.Length, 16)))} " +
             $"RRF {Convert.ToHexString(readBuffer[..Math.Min(readBuffer.Length, 16)])} | RRF {stateBefore} -> {_state}, pin {(_pinLevel ? 1 : 0)}, connected {_isConnected}");
     }
