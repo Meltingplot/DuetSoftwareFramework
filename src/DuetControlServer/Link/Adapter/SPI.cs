@@ -37,6 +37,17 @@ public class SPI : IDiagnostics, ILinkAdapter
     private bool _waitingForFirstTransfer = true, _connected, _hadTimeout, _hadReset, _resetting, _updating;
     private ushort _lastTransferNumber;
 
+    // Last completed transfer, sent again when RRF repeats its part of it because it did not complete it
+    private TransferHeader _lastTxHeader;
+    private LinkedListNode<Memory<byte>>? _lastTxBuffer;
+
+    // Transfer that waits while the last completed one is sent again
+    private TransferHeader _pendingTxHeader;
+    private LinkedListNode<Memory<byte>> _pendingTxBuffer = null!;
+    private int _pendingTxPointer;
+    private byte _pendingPacketId;
+    private bool _resending;
+
     private enum TransferPhase { Header, HeaderChecksum, Data, DataChecksum }
     private TransferPhase _transferPhase;
 
@@ -329,6 +340,21 @@ public class SPI : IDiagnostics, ILinkAdapter
                 {
                     _maxTxSize = _txHeader.DataLength;
                 }
+                if (_resending)
+                {
+                    // RRF has completed the transfer it missed. Its data in it was processed already, so carry on with the pending transfer
+                    _txHeader = _pendingTxHeader;
+                    _txBuffer = _pendingTxBuffer;
+                    _txPointer = _pendingTxPointer;
+                    _packetId = _pendingPacketId;
+                    WriteCRC();
+                    _resending = false;
+                    retry = 0;
+                    continue;
+                }
+
+                _lastTxHeader = _txHeader;
+                _lastTxBuffer = _txBuffer;
                 _txBuffer = _txBuffer.Next ?? _txBuffers.First!;
                 _rxPointer = _txPointer = 0;
                 _packetId = 0;
@@ -1660,8 +1686,16 @@ public class SPI : IDiagnostics, ILinkAdapter
             uint responseCode = MemoryMarshal.Read<uint>(_rxHeaderBuffer.Span);
             if (responseCode == TransferResponse.BadResponse)
             {
+                if (!_connected)
+                {
+                    // Without a previous transfer there is no data response to repeat, so the header got corrupted. Ask for it again
+                    _logger.LogWarning("Received bad response instead of the first header, exchanging the headers again");
+                    ExchangeResponse(TransferResponse.BadHeaderChecksum);
+                    continue;
+                }
+
                 _logger.LogWarning("Received bad response instead of header, retrying exchange of the data response");
-                if (_connected && ExchangeDataResponse(out bool success) && success)
+                if (ExchangeDataResponse(out bool success) && success)
                 {
                     continue;
                 }
@@ -1764,6 +1798,37 @@ public class SPI : IDiagnostics, ILinkAdapter
                 throw new Exception($"Data too long ({_rxHeader.DataLength} bytes)");
             }
 
+            // A restarted RRF numbers its transfers from 1 again, so 1 is left to the reset detection instead of being taken for a repeat or a skip
+            bool mayBeRestart = _rxHeader.SequenceNumber == 1;
+
+            // RRF repeats the transfer DSF completed last, so RRF did not complete it. Send that transfer again before the current one
+            if (_connected && !mayBeRestart && !_resending && _lastTxBuffer is not null && _rxHeader.SequenceNumber == _lastTransferNumber)
+            {
+                _logger.LogWarning("Sending transfer #{SequenceNumber} again because RepRapFirmware did not complete it", _lastTxHeader.SequenceNumber);
+                _pendingTxHeader = _txHeader;
+                _pendingTxBuffer = _txBuffer;
+                _pendingTxPointer = _txPointer;
+                _pendingPacketId = _packetId;
+                _txHeader = _lastTxHeader;
+                _txBuffer = _lastTxBuffer;
+                _txPointer = _lastTxHeader.DataLength;
+                _packetId = _lastTxHeader.NumPackets;
+                WriteCRC();
+                _resending = true;
+
+                // Make both sides exchange the headers again
+                ExchangeResponse(TransferResponse.BadHeaderChecksum);
+                continue;
+            }
+
+            // RRF completed a transfer that DSF did not. RRF sends it again once it sees DSF repeat its part
+            if (_connected && !mayBeRestart && _rxHeader.SequenceNumber == (ushort)(_lastTransferNumber + 2))
+            {
+                _logger.LogWarning("Waiting for RepRapFirmware to send transfer #{SequenceNumber} again", (ushort)(_lastTransferNumber + 1));
+                ExchangeResponse(TransferResponse.BadHeaderChecksum);
+                continue;
+            }
+
             // Acknowledge receipt
             _transferPhase = TransferPhase.HeaderChecksum;
             uint response = ExchangeResponse(TransferResponse.Success);
@@ -1778,6 +1843,13 @@ public class SPI : IDiagnostics, ILinkAdapter
                     _logger.LogWarning("Restarting full transfer because RepRapFirmware received a bad header response");
                     return false;
                 default:
+                    if ((response & 0xFF) == Consts.FormatCode)
+                    {
+                        // The start of a header means RRF is in the header phase again, so exchange the headers again
+                        _logger.LogWarning("RepRapFirmware sent a header instead of a header response, exchanging the headers again");
+                        continue;
+                    }
+
                     _logger.LogWarning("Restarting full transfer because a bad header response was received (0x{ResponseCode:x8})", response);
                     if (_rxHeader.DataLength == 0 && _txPointer == 0)
                     {
@@ -1917,6 +1989,14 @@ public class SPI : IDiagnostics, ILinkAdapter
                     success = false;
                     return true;
                 default:
+                    if ((responseCode & 0xFF) == Consts.FormatCode)
+                    {
+                        // The start of a header means RRF has restarted the transfer, so restart it as well
+                        _logger.LogWarning("Restarting full transfer because RepRapFirmware sent a header instead of a data response");
+                        success = false;
+                        return true;
+                    }
+
                     _logger.LogWarning("Restarting data response exchange because a bad code was received (0x{ResponseCode:x8})", responseCode);
                     ExchangeResponse(TransferResponse.BadResponse);
                     continue;

@@ -10,6 +10,7 @@ using DuetControlServer.Utility;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Hosting.Internal;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NUnit.Framework;
@@ -99,7 +100,17 @@ public class LinkRecovery
         /// <summary>
         /// A payload was lost although neither side reconnected
         /// </summary>
-        SilentLoss
+        SilentLoss,
+
+        /// <summary>
+        /// RRF restarted and DSF detected it (R6), so it discards pending work
+        /// </summary>
+        ResetDetected,
+
+        /// <summary>
+        /// RRF restarted but DSF did not detect it
+        /// </summary>
+        ResetMissed
     }
 
     private static bool IsFailure(Outcome outcome) => outcome != Outcome.Retry;
@@ -183,7 +194,7 @@ public class LinkRecovery
         }
     }
 
-    [Test, Explicit("100 of 4238 single faults still break the link")]
+    [Test, Explicit("35 of 4142 single faults still break the link with the RRF of today")]
     public void SingleCorruptedExchange() => RunCensus(new());
 
     private static IEnumerable<TestCaseData> RefusalCases => GetCases()
@@ -203,14 +214,18 @@ public class LinkRecovery
     /// Settings of the firmware end that are not known for sure or that are being considered
     /// </summary>
     public sealed record RrfOptions(SequenceMismatchHandling SequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool PollWhileDisconnected = false,
-        bool RrfFirstOnTie = true, byte UnderrunByte = 0);
+        bool RrfFirstOnTie = true, byte UnderrunByte = 0, bool PhaseGuard = false, bool SequenceGuard = false);
 
     private static IEnumerable<TestCaseData> OtherOptions =>
     [
         new TestCaseData(new RrfOptions(RrfFirstOnTie: false)).SetName("SingleCorruptedExchange_DsfFirstOnTie"),
         new TestCaseData(new RrfOptions(PollWhileDisconnected: true)).SetName("SingleCorruptedExchange_PollWhileDisconnected"),
         new TestCaseData(new RrfOptions(UnderrunByte: 0xFF)).SetName("SingleCorruptedExchange_UnderrunByteFF"),
-        new TestCaseData(new RrfOptions(SequenceMismatchHandling.Ignore)).SetName("SingleCorruptedExchange_IgnoreSequenceMismatch")
+        new TestCaseData(new RrfOptions(SequenceMismatchHandling.Ignore)).SetName("SingleCorruptedExchange_IgnoreSequenceMismatch"),
+        new TestCaseData(new RrfOptions(PhaseGuard: true)).SetName("SingleCorruptedExchange_PhaseGuard"),
+        new TestCaseData(new RrfOptions(SequenceGuard: true)).SetName("SingleCorruptedExchange_SequenceGuard"),
+        new TestCaseData(new RrfOptions(PhaseGuard: true, SequenceGuard: true)).SetName("SingleCorruptedExchange_PhaseAndSequenceGuard"),
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, PhaseGuard: true, SequenceGuard: true)).SetName("SingleCorruptedExchange_PhaseAndSequenceGuardPolling")
     ];
 
     [TestCaseSource(nameof(OtherOptions)), Explicit("Firmware variants and proposals, run on demand")]
@@ -257,6 +272,45 @@ public class LinkRecovery
         }
     }
 
+    private static IEnumerable<TestCaseData> RestartOptions =>
+    [
+        new TestCaseData(new RrfOptions()).SetName("RrfRestart"),
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true)).SetName("RrfRestart_PollWhileDisconnected")
+    ];
+
+    private static IEnumerable<TestCaseData> RestartsAtFirstNumber => GetRestartCases()
+        .Where(c => c.Mutation.StartsWith("RRF restart twice") || c.Mutation.StartsWith("RRF restart after seq 1,"))
+        .Select(c => new TestCaseData(c.ToString()).SetName($"RestartIsNotTakenForRepeat({c.Variant}, {c.Phase}, {c.Mutation})"));
+
+    /// <summary>
+    /// A restarted RRF numbers its transfers from 1 again. When DSF saw 1 last, which it does after every reset, the restart repeats
+    /// that number, and the sequence guard of DSF must not take it for a transfer RRF did not complete
+    /// </summary>
+    [TestCaseSource(nameof(RestartsAtFirstNumber))]
+    public void RestartIsNotTakenForRepeat(string name)
+    {
+        Case c = GetRestartCases().Single(c => c.ToString() == name);
+        Result result = Run(c.Variant, c.Fault, new(PollWhileDisconnected: true));
+        Assert.That(result.Outcome, Is.EqualTo(Outcome.ResetDetected), result.Details);
+    }
+
+    /// <summary>
+    /// RRF restarts at every exchange of a transfer. DSF must notice it (R6), the link must come back, and nothing DSF sent may reach RRF twice
+    /// </summary>
+    [TestCaseSource(nameof(RestartOptions)), Explicit("6 of 128 restarts stay unnoticed when RRF of today restarts right after its sequence number wrapped")]
+    public void RrfRestart(RrfOptions options)
+    {
+        List<(Case Case, Result Result)> results = [.. GetRestartCases().Select(c => (c, Run(c.Variant, c.Fault, options)))];
+        TestContext.Out.WriteLine($"{results.Count} restarts, RRF options {options}");
+        foreach (var group in results.GroupBy(r => r.Case.Mutation[..r.Case.Mutation.IndexOf(',')]))
+        {
+            TestContext.Out.WriteLine($"{group.Key}: " + string.Join(", ", group.GroupBy(r => r.Result.Label).OrderBy(g => g.Key).Select(g => $"{g.Key} {g.Count()}")));
+        }
+
+        List<(Case Case, Result Result)> failures = [.. results.Where(r => r.Result.Outcome != Outcome.ResetDetected)];
+        Assert.That(failures, Is.Empty, $"{failures.Count} of {results.Count} restarts break the link:\n" + string.Join("\n", failures.Select(r => $"- {r.Case}: {r.Result.Outcome}, {r.Result.Details}")));
+    }
+
     /// <summary>
     /// Print the exchanges of a single case, for analysing a finding
     /// </summary>
@@ -269,17 +323,73 @@ public class LinkRecovery
     [TestCase("BothData / DataResponse / ToDsf / Response / BadDataChecksum")]
     [TestCase("BothData / Data / ToRrf / Exchange / BadResponse in first word")]
     [TestCase("DsfData / HeaderResponse / ToRrf / Response / BadHeaderChecksum")]
+    [TestCase("BothData / Data / ToRrf / Exchange / BadResponse in first word", SequenceMismatchHandling.ConnectionReset, true)]
+    [TestCase("Connect / Header / ToDsf / Exchange / BadResponse in first word", SequenceMismatchHandling.ConnectionReset, true)]
+    [TestCase("BothData / Header / ToRrf / Restart / RRF restart twice, boot 100 ms", SequenceMismatchHandling.ConnectionReset, false, true)]
+    [TestCase("BothData / DataResponse / ToRrf / Restart / RRF restart after seq 65535, boot 100 ms")]
     [Explicit("Analysis")]
-    public void TraceCase(string name, SequenceMismatchHandling sequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset)
+    public void TraceCase(string name, SequenceMismatchHandling sequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool guards = false, bool poll = false)
     {
-        Case c = GetCases().Single(c => c.ToString() == name);
+        Case c = GetCases().Concat(GetRestartCases()).Single(c => c.ToString() == name);
         List<string> trace = [];
-        Result result = Run(c.Variant, c.Fault, new(sequenceMismatchHandling), trace);
+        Result result = Run(c.Variant, c.Fault, new(sequenceMismatchHandling, PollWhileDisconnected: poll, PhaseGuard: guards, SequenceGuard: guards), trace);
         TestContext.Out.WriteLine($"{c}: {result}");
-        foreach (string line in trace.Take(80))
+        foreach (string line in trace.Take(200))
         {
             TestContext.Out.WriteLine(line);
         }
+    }
+
+    /// <summary>
+    /// Replay every case against the real DataTransfer and SbcInterface of RRF, built as a host program whose path is in RRF_HOST_HARNESS,
+    /// and compare its answers with those of the port. Inputs are replayed open-loop, so only the first difference of a case counts
+    /// </summary>
+    [Test, Explicit("Needs the host build of RRF's DataTransfer and SbcInterface")]
+    public void PortMatchesRealFirmware()
+    {
+        string? harness = Environment.GetEnvironmentVariable("RRF_HOST_HARNESS");
+        if (string.IsNullOrEmpty(harness))
+        {
+            Assert.Ignore("RRF_HOST_HARNESS is not set");
+        }
+
+        using System.Diagnostics.Process process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(harness!)
+        {
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false
+        })!;
+
+        List<string> differences = [];
+        int cases = 0, events = 0;
+        foreach ((Variant variant, SpiFault? fault, string name) in Enum.GetValues<Variant>().Select(v => (v, (SpiFault?)null, $"{v} / clean")).Concat(GetCases().Select(c => (c.Variant, (SpiFault?)c.Fault, c.ToString()))))
+        {
+            List<(string Input, string? Output)> replay = [];
+            Run(variant, fault, new(PollWhileDisconnected: Environment.GetEnvironmentVariable("RRF_HOST_POLL") == "1"), replay: replay);
+            cases++;
+            for (int i = 0; i < replay.Count; i++)
+            {
+                (string input, string? expected) = replay[i];
+                process.StandardInput.WriteLine(input);
+                process.StandardInput.Flush();
+                if (expected is not null)
+                {
+                    events++;
+                    string? actual = process.StandardOutput.ReadLine();
+                    if (actual != expected)
+                    {
+                        differences.Add($"{name}, event {i} ({input}):\n  port: {expected}\n  RRF:  {actual}");
+                        break;
+                    }
+                }
+            }
+            process.StandardInput.WriteLine("END");
+        }
+        process.StandardInput.Close();
+        process.WaitForExit();
+
+        TestContext.Out.WriteLine($"{cases} cases, {events} events compared, {differences.Count} cases differ");
+        Assert.That(differences, Is.Empty, string.Join("\n", differences.Take(20)));
     }
 
     #region Faults
@@ -319,7 +429,7 @@ public class LinkRecovery
             ];
             if (variant != Variant.NoData)
             {
-                exchanges.Add(("Data", DataSize, DataFields));
+                exchanges.Add(("Data", (variant is Variant.BothData or Variant.DsfData) ? DsfDataSize : RrfDataSize, DataFields));
                 exchanges.Add(("DataResponse", 4, ResponseFields));
             }
 
@@ -359,14 +469,57 @@ public class LinkRecovery
                     yield return Make("Exchange", "all 0xFF", data => data.Fill(0xFF));
                     yield return Make("Exchange", "BadResponse in first word", data => BitConverter.TryWriteBytes(data, TransferResponse.BadResponse));
                 }
+
             }
         }
     }
 
     /// <summary>
-    /// Size of the data exchange: a message packet of either side, see FakeRrfSpi.WritePayload and Writer.WriteMessage
+    /// Exchanges of each variant
     /// </summary>
-    private const int DataSize = 24;
+    private static IEnumerable<(Variant Variant, int Exchange, string Phase)> GetExchanges() =>
+        Enum.GetValues<Variant>().SelectMany(variant => ((variant == Variant.NoData) ? new[] { "Header", "HeaderResponse" } : ["Header", "HeaderResponse", "Data", "DataResponse"])
+            .Select((phase, exchange) => (variant, exchange, phase)));
+
+    /// <summary>
+    /// Get every restart of RRF: right before each exchange of the target transfer, booting quickly or slowly. RRF may restart again
+    /// after its first transfer, as a reconnect timeout does, or restart when its sequence number has just wrapped, so that it starts
+    /// again at the number DSF saw last or at that plus two
+    /// </summary>
+    private static IEnumerable<Case> GetRestartCases()
+    {
+        foreach ((Variant variant, int exchange, string phase) in GetExchanges())
+        {
+            foreach (double bootTime in RestartBootTimes)
+            {
+                Case Make(string kind, bool again = false, ushort firstSequenceNumber = 1) =>
+                    new(variant, phase, ExchangeDirection.ToRrf, "Restart", $"RRF restart{kind}, boot {bootTime} ms", new SpiFault(exchange, ExchangeDirection.ToRrf, _ => { }, bootTime, again, firstSequenceNumber));
+                yield return Make("");
+                yield return Make(" twice", again: true);
+                if (variant != Variant.Connect)
+                {
+                    // Transfer 1 of RRF has this number, so the one before the target transfer has 1 or 65535
+                    yield return Make(" after seq 1", firstSequenceNumber: unchecked((ushort)(1 - (TargetTransfer - 2))));
+                    yield return Make(" after seq 65535", firstSequenceNumber: unchecked((ushort)(65535 - (TargetTransfer - 2))));
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Boot times of a restarting RRF
+    /// </summary>
+    private static readonly double[] RestartBootTimes = [100, 2000];
+
+    /// <summary>
+    /// Size of RRF's data: one message packet "rrf:N" without padding, because DataTransfer pads only before a following packet
+    /// </summary>
+    private const int RrfDataSize = 21;
+
+    /// <summary>
+    /// Size of DSF's data: one message packet "dsf:N", padded to 4 bytes by Writer.WriteMessage. The data exchange covers the longer of both
+    /// </summary>
+    private const int DsfDataSize = 24;
 
     /// <summary>
     /// Get a field of an exchange, or the part of it the exchange holds
@@ -394,18 +547,31 @@ public class LinkRecovery
     /// <summary>
     /// Connect, perform clean transfers, inject the fault into the target transfer and check whether clean transfers follow
     /// </summary>
-    private Result Run(Variant variant, SpiFault? fault, RrfOptions options, List<string>? trace = null)
+    private Result Run(Variant variant, SpiFault? fault, RrfOptions options, List<string>? trace = null, List<(string Input, string? Output)>? replay = null)
     {
         int target = (variant == Variant.Connect) ? 1 : TargetTransfer;
         bool rrfDataInTarget = variant is Variant.Connect or Variant.BothData or Variant.RrfData;
         bool dsfDataInTarget = variant is Variant.BothData or Variant.DsfData;
-        FakeRrfSpi rrf = new(n => n != target || rrfDataInTarget, options.SequenceMismatchHandling, options.PollWhileDisconnected, options.RrfFirstOnTie, options.UnderrunByte) { Trace = trace };
+        replay?.Add(($"NEW {(rrfDataInTarget ? 0 : target)} {options.UnderrunByte:X2}", null));
+        FakeRrfSpi rrf = new(n => n != target || rrfDataInTarget, options.SequenceMismatchHandling, options.PollWhileDisconnected, options.RrfFirstOnTie, options.UnderrunByte, options.PhaseGuard, options.SequenceGuard,
+            fault?.RrfFirstSequenceNumber ?? 1)
+        {
+            Trace = trace,
+            Replay = replay
+        };
 
         int dsfConnectionLosses = 0, dcsRestarts = 0, dsfId = 0, dsfResets = 0;
         double? recoveredAt = null;
-        void OnConnectionLost(object? sender, EventArgs e) => dsfConnectionLosses++;
+
+        // Numbers of exchanges after which DSF completed a transfer and noticed a reset of either side
+        List<int> dsfTransfers = [], dsfDetections = [];
+        void OnConnectionLost(object? sender, EventArgs e)
+        {
+            dsfConnectionLosses++;
+            dsfDetections.Add(rrf.Exchanges);
+        }
         List<string> dsfSent = [], dsfReceived = [];
-        SpiAdapter dsf = CreateAdapter(rrf);
+        SpiAdapter dsf = CreateAdapter(rrf, trace);
 
         // Perform a full transfer and read the payloads RRF sent. Returns whether the transfer was clean
         bool Transfer(bool dsfData, bool connecting = false)
@@ -429,7 +595,9 @@ public class LinkRecovery
             if (hadReset)
             {
                 dsfResets++;
+                dsfDetections.Add(rrf.Exchanges);
             }
+            dsfTransfers.Add(rrf.Exchanges);
 
             for (int i = 0; i < dsf.PacketsToRead; i++)
             {
@@ -469,8 +637,9 @@ public class LinkRecovery
                     {
                         return new(Outcome.NoRecovery, rrf.Disconnects > 0, $"DCS cannot connect again after {MaxDcsRestarts} restarts ({e.Message})");
                     }
+                    dsfDetections.Add(rrf.Exchanges);
                     rrf.Wait(DcsRestartDelay);
-                    dsf = CreateAdapter(rrf);
+                    dsf = CreateAdapter(rrf, trace);
                 }
             }
 
@@ -530,6 +699,21 @@ public class LinkRecovery
             return new(Outcome.NoRecovery, false, "the fault was never applied, the scenario does not reach the exchange");
         }
 
+        // After a restart of RRF, nothing DSF sent before may reach the new session again, and DSF must notice every restart that ends
+        // a session it completed a transfer in, because RRF forgot what DSF waits for (R6). Noticing needs an exchange after the restart
+        if (fault?.RestartBootTime is not null)
+        {
+            string restartDetails = $"DSF lost connection {dsfConnectionLosses}x, DSF reset {dsfResets}x, DCS restart {dcsRestarts}x, " +
+                $"RRF restarts in exchange [{string.Join(", ", rrf.Restarts)}], DSF noticed after [{string.Join(", ", dsfDetections)}], " +
+                $"RRF got [{string.Join(", ", rrf.ReceivedPayloads)}] of [{string.Join(", ", dsfSent)}]";
+            if (HasDuplicate(rrf.ReceivedPayloads))
+            {
+                return new(Outcome.Duplicate, rrf.Disconnects > 0, restartDetails);
+            }
+            bool missed = rrf.Restarts.Any(restart => dsfTransfers.Any(t => t < restart) && !dsfDetections.Any(t => t > restart));
+            return new(missed ? Outcome.ResetMissed : Outcome.ResetDetected, rrf.Disconnects > 0, restartDetails);
+        }
+
         // Every payload at most once and in order, and without a reconnect nothing may be lost
         bool reconnected = dsfConnectionLosses > 0 || dsfResets > 0 || rrf.ConnectionResets > 0 || dcsRestarts > 0;
         string details = $"DSF lost connection {dsfConnectionLosses}x, DSF reset {dsfResets}x, RRF reset {rrf.ConnectionResets}x, RRF disconnect {rrf.Disconnects}x, DCS restart {dcsRestarts}x";
@@ -556,6 +740,25 @@ public class LinkRecovery
 
     private static bool HasDuplicate(List<string> payloads) => payloads.Count != payloads.Distinct().Count();
 
-    private SpiAdapter CreateAdapter(FakeRrfSpi rrf) => new(_eventLogger, _model, NullLogger<SpiAdapter>.Instance, Options.Create(new Settings()), rrf, rrf);
+    private SpiAdapter CreateAdapter(FakeRrfSpi rrf, List<string>? trace) =>
+        new(_eventLogger, _model, (trace is null) ? NullLogger<SpiAdapter>.Instance : new TraceLogger(rrf, trace), Options.Create(new Settings()), rrf, rrf);
+
+    /// <summary>
+    /// Writes the warnings of DSF into the trace
+    /// </summary>
+    private sealed class TraceLogger(FakeRrfSpi rrf, List<string> trace) : ILogger<SpiAdapter>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (IsEnabled(logLevel))
+            {
+                trace.Add($"   {rrf.Now,9:F3} ms: DSF {formatter(state, exception)}");
+            }
+        }
+    }
     #endregion
 }
