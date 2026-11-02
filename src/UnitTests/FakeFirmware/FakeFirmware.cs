@@ -516,6 +516,8 @@ public sealed class FakeFirmware : ILinkAdapter
                     break;
 
                 case SbcRequest.GetObjectModel:
+                    // state.status is a live function in RRF (RepRap::GetStatusIndex), e.g. an emergency stop in the same transfer reports halted
+                    UpdateStatus();
                     WritePacket(new FakePacket { Request = FirmwareRequest.ObjectModel, Text = ObjectModel.GetModelResponse(request.Text, request.Argument) });
                     break;
 
