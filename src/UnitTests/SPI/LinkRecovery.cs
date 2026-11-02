@@ -403,6 +403,147 @@ public class LinkRecovery
     }
 
     /// <summary>
+    /// Random bit errors in both directions, far more than a real link has. With every capability active, DSF retries each transfer within
+    /// its retry limit until it gets through, so the link neither resets nor loses or duplicates a message. With the former limit of 3,
+    /// these runs reset in transfer 49 and 5
+    /// </summary>
+    /// <param name="bitErrorRate">Probability of each bit to flip</param>
+    /// <param name="padding">Filler characters per message: 0 gives about 850 bits per transfer, 1000 about 17,000</param>
+    [TestCase(1e-3, 0), TestCase(3e-5, 1000)]
+    public void ExtendedLinkSurvivesBitErrors(double bitErrorRate, int padding)
+    {
+        Assert.That(RunWithBitErrors(LinkCapabilities.All, bitErrorRate, padding, BitErrorTransfers), Is.Null);
+    }
+
+    /// <summary>
+    /// Number of transfers with bit errors in a run
+    /// </summary>
+    private const int BitErrorTransfers = 20000;
+
+    /// <summary>
+    /// Connect, activate the capabilities, then perform transfers with a message in both directions while bit errors hit every exchange
+    /// </summary>
+    /// <param name="capabilities">Capabilities RRF offers and DSF activates</param>
+    /// <param name="bitErrorRate">Probability of each bit to flip</param>
+    /// <param name="padding">Filler characters per message</param>
+    /// <param name="transfers">Number of transfers with bit errors</param>
+    /// <param name="maxSbcRetries">Retry limit of DSF, or null for the default</param>
+    /// <returns>Why the link failed, or null if it did not</returns>
+    private string? RunWithBitErrors(LinkCapabilities capabilities, double bitErrorRate, int padding, int transfers, int? maxSbcRetries = null)
+    {
+        FakeRrfSpi rrf = new(_ => true, capabilities: capabilities) { PayloadPadding = padding };
+        SpiAdapter dsf = CreateSpiAdapter(rrf, null, maxSbcRetries: maxSbcRetries);
+        List<string> dsfSent = [], dsfReceived = [];
+        int dsfConnectionLosses = 0, dsfId = 0;
+        void OnConnectionLost(object? sender, EventArgs e) => dsfConnectionLosses++;
+
+        // Perform a full transfer and read the messages RRF sent. Returns why the link failed, or null
+        string? Transfer(bool dsfData, bool connecting = false, bool activation = false)
+        {
+            // A transfer that does not complete within this budget is stuck
+            rrf.ExchangeBudget = rrf.Exchanges + 5000;
+            rrf.TimeBudget = rrf.Now + 10000;
+
+            if (activation && !dsf.WriteActivateLinkCapabilities(capabilities))
+            {
+                return "DSF did not request the capabilities";
+            }
+            if (dsfData)
+            {
+                // The fake RRF records only the "dsf:N" part of a message
+                string payload = $"dsf:{++dsfId}";
+                if (dsf.WriteMessage(MessageTypeFlags.UsbMessage, payload + new string('y', padding)))
+                {
+                    dsfSent.Add(payload);
+                }
+            }
+
+            int lossesBefore = dsfConnectionLosses, rrfResetsBefore = rrf.ConnectionResets;
+            dsf.PerformFullTransfer(connecting, rrf.Budget.Token);
+            if (rrf.Budget.IsCancellationRequested)
+            {
+                return $"no transfer within {rrf.Exchanges} exchanges";
+            }
+            bool hadReset = dsf.HadReset();
+            for (int i = 0; i < dsf.PacketsToRead; i++)
+            {
+                PacketHeader? packet = dsf.ReadNextPacket();
+                if (packet is null)
+                {
+                    break;
+                }
+                if (packet.Value.Request == (ushort)FirmwareRequest.Message)
+                {
+                    dsf.ReadMessage(out _, out string text);
+                    dsfReceived.Add(text);
+                }
+            }
+            return (dsfConnectionLosses > lossesBefore) ? "DSF lost the connection" : hadReset ? "DSF noticed a reset" :
+                (rrf.ConnectionResets > rrfResetsBefore) ? "RRF reset the connection" : null;
+        }
+
+        // Every message must arrive once and in order. What arrived is dropped, so that long runs keep their memory
+        string? CheckMessages(bool complete)
+        {
+            int rrfGot = rrf.ReceivedPayloads.Count;
+            if (rrfGot > dsfSent.Count || !rrf.ReceivedPayloads.SequenceEqual(dsfSent.Take(rrfGot)) || (complete && rrfGot != dsfSent.Count))
+            {
+                return "messages of DSF lost or duplicated";
+            }
+            if (dsfReceived.Count > rrf.SentPayloads.Count || !dsfReceived.SequenceEqual(rrf.SentPayloads.Take(dsfReceived.Count)) ||
+                (complete && dsfReceived.Count < rrf.SentPayloads.Count - 1))
+            {
+                return "messages of RRF lost or duplicated";
+            }
+            dsfSent.RemoveRange(0, rrfGot);
+            rrf.ReceivedPayloads.Clear();
+            rrf.SentPayloads.RemoveRange(0, dsfReceived.Count);
+            dsfReceived.Clear();
+            return null;
+        }
+
+        _model.OnConnectionLost += OnConnectionLost;
+        try
+        {
+            string? failure = Transfer(false, true) ?? Transfer(true, activation: true) ?? Transfer(true) ?? Transfer(true);
+            if (failure is not null || rrf.ActiveCapabilities != capabilities)
+            {
+                return $"no activation: {failure ?? rrf.ActiveCapabilities.ToString()}";
+            }
+
+            rrf.BitErrorRate = bitErrorRate;
+            for (int transfer = 1; transfer <= transfers; transfer++)
+            {
+                failure = Transfer(true) ?? ((transfer % 1000 == 0) ? CheckMessages(false) : null);
+                if (failure is not null)
+                {
+                    return $"transfer {transfer}: {failure}";
+                }
+            }
+
+            // Let the last messages arrive
+            rrf.BitErrorRate = 0;
+            for (int transfer = 0; transfer < RecoveredTransfers; transfer++)
+            {
+                failure = Transfer(false);
+                if (failure is not null)
+                {
+                    return $"after the bit errors: {failure}";
+                }
+            }
+            return CheckMessages(true);
+        }
+        catch (Exception e)
+        {
+            return $"{e.GetType().Name}: {e.Message}";
+        }
+        finally
+        {
+            _model.OnConnectionLost -= OnConnectionLost;
+        }
+    }
+
+    /// <summary>
     /// Switch off one rule of the proposed RRF changes at a time and list the single faults and restarts that then break the link,
     /// so that each rule is backed by the cases it is needed for
     /// </summary>

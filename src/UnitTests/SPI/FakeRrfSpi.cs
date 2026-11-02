@@ -425,6 +425,57 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         _faultArmedAt = Exchanges;
     }
 
+    /// <summary>
+    /// Probability with which each bit of every exchange flips, independently and in both directions
+    /// </summary>
+    public double BitErrorRate { get; set; }
+
+    /// <summary>
+    /// Random numbers for the bit errors
+    /// </summary>
+    public Random Noise { get; init; } = new(1);
+
+    /// <summary>
+    /// Number of filler characters at the end of each message RRF sends, to make its data longer
+    /// </summary>
+    public int PayloadPadding { get; init; }
+
+    /// <summary>
+    /// Number of correct bits before the next bit error, or -1 if it has not been drawn yet
+    /// </summary>
+    private long _bitsToNextError = -1;
+
+    /// <summary>
+    /// Flip the bits of an exchange that <see cref="BitErrorRate"/> hits. The gaps between bit errors follow a geometric distribution,
+    /// so that only the bit errors cost random numbers
+    /// </summary>
+    /// <param name="buffer">Bytes of the exchange</param>
+    private void AddBitErrors(Span<byte> buffer)
+    {
+        if (BitErrorRate <= 0)
+        {
+            return;
+        }
+
+        long bits = buffer.Length * 8L, position = 0;
+        while (true)
+        {
+            if (_bitsToNextError < 0)
+            {
+                _bitsToNextError = (long)Math.Floor(Math.Log(1 - Noise.NextDouble()) / Math.Log(1 - BitErrorRate));
+            }
+            if (position + _bitsToNextError >= bits)
+            {
+                _bitsToNextError -= bits - position;
+                return;
+            }
+            position += _bitsToNextError;
+            buffer[(int)(position / 8)] ^= (byte)(1 << (int)(position % 8));
+            position++;
+            _bitsToNextError = -1;
+        }
+    }
+
     #region DataTransfer
     private void WritePayload()
     {
@@ -437,7 +488,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         _txPointer = (_txPointer + 3) / 4 * 4;
 
         // A message packet like DataTransfer::WriteMessage writes it
-        string payload = $"rrf:{++_payloadId}";
+        string payload = $"rrf:{++_payloadId}" + new string('x', PayloadPadding);
         byte[] text = Encoding.UTF8.GetBytes(payload);
         PacketHeader packet = new() { Request = (ushort)FirmwareRequest.Message, Id = _packetId++, Length = (ushort)(Marshal.SizeOf<MessageHeader>() + text.Length) };
         MemoryMarshal.Write(_txBuffer.AsSpan(_txPointer), in packet);
@@ -1042,6 +1093,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         {
             fault.Mutate(toRrf);
         }
+        AddBitErrors(toRrf);
 
         // The rising edge of chip select ends the DMA transfer however many bytes were clocked
         bool completed = _dmaActive;
@@ -1058,6 +1110,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         {
             fault.Mutate(readBuffer);
         }
+        AddBitErrors(readBuffer);
         if (fault is not null)
         {
             _fault = null;
