@@ -538,8 +538,9 @@ public class LinkRecovery
     ];
 
     /// <summary>
-    /// Replay every case against the real DataTransfer and SbcInterface of RRF, built as a host program whose path is in RRF_HOST_HARNESS,
-    /// and compare its answers with those of the port. Inputs are replayed open-loop, so only the first difference of a case counts
+    /// Replay every single fault and every DCS restart against the real DataTransfer and SbcInterface of RRF, built as a host program whose path
+    /// is in RRF_HOST_HARNESS, and compare its answers with those of the port. Inputs are replayed open-loop, so only the first difference of a case counts.
+    /// Restarts of RRF cannot be replayed, because the host program does not restart
     /// </summary>
     /// <param name="capabilities">Capabilities DSF activates, which the host build must offer</param>
     /// <param name="target">Transfer with the fault</param>
@@ -562,7 +563,7 @@ public class LinkRecovery
         List<string> differences = [];
         int cases = 0, events = 0, extendedCases = 0;
         string extendedSuccess = Convert.ToHexStringLower(BitConverter.GetBytes(ExtendedLink.Success));
-        foreach ((Variant variant, SpiFault? fault, string name) in Enum.GetValues<Variant>().Select(v => (v, (SpiFault?)null, $"{v} / clean")).Concat(GetCases().Select(c => (c.Variant, (SpiFault?)c.Fault, c.ToString()))))
+        foreach ((Variant variant, SpiFault? fault, string name) in Enum.GetValues<Variant>().Select(v => (v, (SpiFault?)null, $"{v} / clean")).Concat(GetCases().Concat(GetDcsRestartCases()).Select(c => (c.Variant, (SpiFault?)c.Fault, c.ToString()))))
         {
             List<(string Input, string? Output)> replay = [];
             Run(variant, fault, new(PollWhileDisconnected: Environment.GetEnvironmentVariable("RRF_HOST_POLL") == "1", Capabilities: capabilities, TargetTransfer: target), replay: replay);

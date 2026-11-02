@@ -23,7 +23,7 @@ public enum LinkCapabilities : uint
     PhaseGuard = 1,
 
     /// <summary>
-    /// RRF sends its last completed transfer again when DSF repeats its part of it, and waits when DSF is a transfer ahead
+    /// RRF sends its last completed transfer again when DSF repeats its part of it
     /// </summary>
     SequenceGuard = 2,
 

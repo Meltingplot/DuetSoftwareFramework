@@ -72,44 +72,29 @@ public enum RrfRule
     SequenceGuardResend = 4,
 
     /// <summary>
-    /// Sequence guard: DSF is a transfer ahead (distance 2), so RRF waits for DSF to send it again
-    /// </summary>
-    SequenceGuardWait = 8,
-
-    /// <summary>
-    /// RRF leaves the extended link at once when a valid header from DSF has no session status
-    /// </summary>
-    LeaveWhenDsfLeft = 16,
-
-    /// <summary>
     /// RRF sends extended sequence numbers
     /// </summary>
-    ExtendedSequenceNumbers = 32,
+    ExtendedSequenceNumbers = 8,
 
     /// <summary>
     /// Extended codes read in ExchangingHeaderResponse (DataTransfer.cpp:958)
     /// </summary>
-    DecodeHeaderResponse = 64,
+    DecodeHeaderResponse = 16,
 
     /// <summary>
     /// Extended codes read in ExchangingDataResponse (DataTransfer.cpp:1015)
     /// </summary>
-    DecodeDataResponse = 128,
+    DecodeDataResponse = 32,
 
     /// <summary>
     /// Extended codes read in ExchangingDataResponseRetry (DataTransfer.cpp:1046)
     /// </summary>
-    DecodeDataResponseRetry = 256,
+    DecodeDataResponseRetry = 64,
 
     /// <summary>
     /// Extended BadResponse read as the first word of a header (DataTransfer.cpp:913)
     /// </summary>
-    DecodeHeaderWord = 512,
-
-    /// <summary>
-    /// Extended BadResponse read as the first word of data (DataTransfer.cpp:992)
-    /// </summary>
-    DecodeDataWord = 1024
+    DecodeHeaderWord = 128
 }
 
 /// <summary>
@@ -244,7 +229,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// <param name="rrfFirstOnTie">Whether RRF times out first when both sides would time out at the same moment</param>
     /// <param name="underrunByte">Byte DSF reads when it clocks more bytes than RRF has set up</param>
     /// <param name="phaseGuard">Proposed change: RRF recognises from what it receives that DSF is in another phase and goes back to it</param>
-    /// <param name="sequenceGuard">Proposed change: when DSF repeats the last completed transfer, RRF sends it again, and when DSF is a transfer ahead, RRF waits for DSF to send it again</param>
+    /// <param name="sequenceGuard">Proposed change: when DSF repeats the last completed transfer, RRF sends it again</param>
     /// <param name="firstSequenceNumber">Sequence number of the first transfer</param>
     /// <param name="capabilities">Proposed change: capabilities RRF offers, which DSF activates with a request</param>
     /// <param name="disabledRules">Rules of the proposed changes that are switched off</param>
@@ -656,7 +641,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     }
 
     /// <summary>
-    /// Proposed change: deal with DSF repeating the last completed transfer or being a transfer ahead
+    /// Proposed change: deal with DSF repeating the last completed transfer
     /// </summary>
     /// <returns>Whether RRF asked for the headers to be exchanged again</returns>
     private bool GuardSequence()
@@ -679,13 +664,6 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             _resending = true;
 
             // Make both sides exchange the headers again
-            ExchangeResponse(TransferResponse.BadHeaderChecksum);
-            return true;
-        }
-
-        // DSF completed a transfer that RRF did not. DSF sends it again once it sees RRF repeat its part
-        if (Enabled(RrfRule.SequenceGuardWait) && distance == 2 && Hit(RrfRule.SequenceGuardWait))
-        {
             ExchangeResponse(TransferResponse.BadHeaderChecksum);
             return true;
         }
@@ -733,13 +711,6 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
                     ExchangeResponse(TransferResponse.BadDataLength);
                     break;
                 }
-                if (Extended && Enabled(RrfRule.LeaveWhenDsfLeft) && ExtendedLink.Distance(_lastTransferNumber, _rxHeader.SequenceNumber, true) < 0 && Hit(RrfRule.LeaveWhenDsfLeft))
-                {
-                    // Proposed change: DSF has left the extended link, which only a restart or a connection reset does. Leave it as well,
-                    // so that DSF understands the responses. The sequence number no longer matches, so the connection is reset when the transfer ends
-                    _activeCapabilities = LinkCapabilities.None;
-                    _lastTxValid = false;
-                }
                 if (GuardSequence())
                 {
                     break;
@@ -779,7 +750,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             case InternalTransferState.ExchangingData:
             {
                 // (3) Exchanged data
-                if (DecodeResponse(MemoryMarshal.Read<uint>(_rxBuffer), RrfRule.DecodeDataWord) == TransferResponse.BadResponse)
+                if (MemoryMarshal.Read<uint>(_rxBuffer) == TransferResponse.BadResponse)
                 {
                     RestartTransfer(false);
                     break;
