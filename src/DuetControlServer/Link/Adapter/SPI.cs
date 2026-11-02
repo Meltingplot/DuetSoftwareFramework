@@ -48,6 +48,15 @@ public class SPI : IDiagnostics, ILinkAdapter
     private byte _pendingPacketId;
     private bool _resending;
 
+    // Extended link (LinkCapabilities.ExtendedHeader): requested by DSF, used by DSF from the transfer after the first extended header of RRF
+    private bool _extendedRequested, _extendedTx;
+    private int _extendedSwitchTransfers;
+
+    /// <summary>
+    /// Number of completed transfers after which DSF gives up waiting for RRF to switch to the extended link
+    /// </summary>
+    private const int MaxExtendedSwitchTransfers = 16;
+
     private enum TransferPhase { Header, HeaderChecksum, Data, DataChecksum }
     private TransferPhase _transferPhase;
 
@@ -260,7 +269,7 @@ public class SPI : IDiagnostics, ILinkAdapter
 
         // Set up TX transfer header
         _txHeader.NumPackets = _packetId;
-        _txHeader.SequenceNumber++;
+        _txHeader.SequenceNumber = ExtendedLink.Next(_txHeader.SequenceNumber, _extendedTx);
         _txHeader.DataLength = (ushort)_txPointer;
         WriteCRC();
 
@@ -326,7 +335,7 @@ public class SPI : IDiagnostics, ILinkAdapter
                 }
                 else if (!_connected)
                 {
-                    _lastTransferNumber = (ushort)(_rxHeader.SequenceNumber - 1);
+                    _lastTransferNumber = ExtendedLink.Previous(_rxHeader.SequenceNumber);
                 }
                 _connected = true;
 
@@ -353,6 +362,20 @@ public class SPI : IDiagnostics, ILinkAdapter
                     continue;
                 }
 
+                // Switch to the extended link once RRF has, or give up when it does not
+                if (_extendedRequested && !_extendedTx)
+                {
+                    if (ExtendedLink.IsExtended(_rxHeader.SequenceNumber))
+                    {
+                        _extendedTx = true;
+                    }
+                    else if (--_extendedSwitchTransfers <= 0)
+                    {
+                        _logger.LogWarning("RepRapFirmware did not switch to the extended link");
+                        _extendedRequested = false;
+                    }
+                }
+
                 _lastTxHeader = _txHeader;
                 _lastTxBuffer = _txBuffer;
                 _txBuffer = _txBuffer.Next ?? _txBuffers.First!;
@@ -370,6 +393,7 @@ public class SPI : IDiagnostics, ILinkAdapter
                 _logger.LogDebug(e, "Lost connection to Duet");
 
                 // The TX header buffer may still hold a protocol version adopted from a bad header, so rewrite it as well
+                EndSession(true);
                 _txHeader.ProtocolVersion = Consts.ProtocolVersion;
                 WriteCRC();
                 _waitingForFirstTransfer = true;
@@ -394,10 +418,36 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// <returns>Whether the controller has been reset</returns>
     public bool HadReset()
     {
-        bool result = _hadReset || (_connected && (ushort)(_lastTransferNumber + 1) != _rxHeader.SequenceNumber);
+        bool result = _hadReset || (_connected && ExtendedLink.Distance(_lastTransferNumber, _rxHeader.SequenceNumber, _extendedRequested) != 1);
         _hadReset = false;
+        if (result)
+        {
+            EndSession(true);
+        }
         return result;
     }
+
+    /// <summary>
+    /// Forget what belongs to the connection that a reset of either side has ended
+    /// </summary>
+    /// <param name="tellFirmware">Whether RRF may still use the extended link and has to learn that DSF left it</param>
+    private void EndSession(bool tellFirmware)
+    {
+        // The sequence guard must not send a transfer of the old connection again
+        _lastTxBuffer = null;
+
+        // Leave the extended link. Numbering from the counter on gives status 0, which tells RRF that DSF has left it
+        if (_extendedTx && tellFirmware)
+        {
+            _txHeader.SequenceNumber &= ExtendedLink.CounterMask;
+        }
+        _extendedRequested = _extendedTx = false;
+    }
+
+    /// <summary>
+    /// Get the regular code of a received response, which RRF sends as an extended code once it uses the extended link
+    /// </summary>
+    private uint DecodeResponse(uint word) => _extendedRequested ? ExtendedLink.DecodeResponse(word) : word;
 
     #region Read functions
     /// <summary>
@@ -800,6 +850,41 @@ public class SPI : IDiagnostics, ILinkAdapter
     }
 
     /// <summary>
+    /// Capabilities of the link that this adapter can use
+    /// </summary>
+    public LinkCapabilities SupportedLinkCapabilities => LinkCapabilities.All;
+
+    /// <summary>
+    /// Ask the firmware to activate capabilities of the link for the current connection.
+    /// Only for firmware that offers them in limits.sbcLinkCapabilities
+    /// </summary>
+    /// <param name="capabilities">Capabilities to activate</param>
+    /// <returns>True if the packet could be written</returns>
+    public bool WriteActivateLinkCapabilities(LinkCapabilities capabilities)
+    {
+        bool extended = capabilities.HasFlag(LinkCapabilities.ExtendedHeader);
+        if (extended && !_extendedRequested &&
+            (_txHeader.SequenceNumber > ExtendedLink.LastSafeRegularNumber || _rxHeader.SequenceNumber > ExtendedLink.LastSafeRegularNumber))
+        {
+            // Regular sequence numbers close to the end of their range look like extended ones, so wait until they have wrapped
+            return false;
+        }
+        if (!CanWritePacket(sizeof(uint)))
+        {
+            return false;
+        }
+
+        WritePacket(Protocol.SbcRequests.Request.ActivateLinkCapabilities, sizeof(uint));
+        MemoryMarshal.Write(GetWriteBuffer(sizeof(uint)), (uint)capabilities);
+        if (extended && !_extendedRequested)
+        {
+            _extendedRequested = true;
+            _extendedSwitchTransfers = MaxExtendedSwitchTransfers;
+        }
+        return true;
+    }
+
+    /// <summary>
     /// Request the key of a object module of a specific module
     /// </summary>
     /// <param name="key">Object model key to query</param>
@@ -1017,6 +1102,9 @@ public class SPI : IDiagnostics, ILinkAdapter
         // Tell the firmware to boot the IAP program
         WritePacket(Protocol.SbcRequests.Request.StartIap);
         PerformFullTransfer(cancellationToken: cancellationToken);
+
+        // The IAP program knows nothing of the connection, so its capabilities end here
+        EndSession(false);
 
         // Wait for the first transfer
         // The IAP firmware will pull the transfer ready pin to high when it is ready to receive data
@@ -1683,7 +1771,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             }
 
             // Check for possible response code
-            uint responseCode = MemoryMarshal.Read<uint>(_rxHeaderBuffer.Span);
+            uint responseCode = DecodeResponse(MemoryMarshal.Read<uint>(_rxHeaderBuffer.Span));
             if (responseCode == TransferResponse.BadResponse)
             {
                 if (!_connected)
@@ -1802,7 +1890,15 @@ public class SPI : IDiagnostics, ILinkAdapter
             bool mayBeRestart = _rxHeader.SequenceNumber == 1;
 
             // RRF repeats the transfer DSF completed last, so RRF did not complete it. Send that transfer again before the current one
-            if (_connected && !mayBeRestart && !_resending && _lastTxBuffer is not null && _rxHeader.SequenceNumber == _lastTransferNumber)
+            int distance = ExtendedLink.Distance(_lastTransferNumber, _rxHeader.SequenceNumber, _extendedRequested);
+            if (distance < 0)
+            {
+                // RRF has left the extended link, which only a restart or a connection reset does. Leave it as well, so that RRF understands the responses
+                _logger.LogWarning("RepRapFirmware has left the extended link");
+                EndSession(false);
+                _hadReset = true;
+            }
+            if (_connected && !mayBeRestart && !_resending && _lastTxBuffer is not null && distance == 0)
             {
                 _logger.LogWarning("Sending transfer #{SequenceNumber} again because RepRapFirmware did not complete it", _lastTxHeader.SequenceNumber);
                 _pendingTxHeader = _txHeader;
@@ -1822,9 +1918,9 @@ public class SPI : IDiagnostics, ILinkAdapter
             }
 
             // RRF completed a transfer that DSF did not. RRF sends it again once it sees DSF repeat its part
-            if (_connected && !mayBeRestart && _rxHeader.SequenceNumber == (ushort)(_lastTransferNumber + 2))
+            if (_connected && !mayBeRestart && distance == 2)
             {
-                _logger.LogWarning("Waiting for RepRapFirmware to send transfer #{SequenceNumber} again", (ushort)(_lastTransferNumber + 1));
+                _logger.LogWarning("Waiting for RepRapFirmware to send transfer #{SequenceNumber} again", ExtendedLink.Next(_lastTransferNumber, ExtendedLink.IsExtended(_rxHeader.SequenceNumber)));
                 ExchangeResponse(TransferResponse.BadHeaderChecksum);
                 continue;
             }
@@ -1854,7 +1950,7 @@ public class SPI : IDiagnostics, ILinkAdapter
                     if (_rxHeader.DataLength == 0 && _txPointer == 0)
                     {
                         // No data was transferred so we are still in sync. Continue with the next transfer
-                        _lastTransferNumber = (ushort)(_rxHeader.SequenceNumber - 1);
+                        _lastTransferNumber = ExtendedLink.Previous(_rxHeader.SequenceNumber);
                         return true;
                     }
 
@@ -1878,12 +1974,12 @@ public class SPI : IDiagnostics, ILinkAdapter
     private uint ExchangeResponse(uint response)
     {
         Span<byte> txResponseBuffer = stackalloc byte[sizeof(uint)], rxResponseBuffer = stackalloc byte[sizeof(uint)];
-        MemoryMarshal.Write(txResponseBuffer, response);
+        MemoryMarshal.Write(txResponseBuffer, _extendedTx ? ExtendedLink.EncodeResponse(response) : response);
 
         WaitForTransfer();
         _spiDevice.TransferFullDuplex(txResponseBuffer, rxResponseBuffer);
 
-        return MemoryMarshal.Read<uint>(rxResponseBuffer);
+        return DecodeResponse(MemoryMarshal.Read<uint>(rxResponseBuffer));
     }
 
     /// <summary>
@@ -1900,7 +1996,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             _spiDevice.TransferFullDuplex(_txBuffer.Value[..bytesToTransfer].Span, _rxBuffer[..bytesToTransfer].Span);
 
             // Check for possible response code
-            uint responseCode = MemoryMarshal.Read<uint>(_rxBuffer.Span);
+            uint responseCode = DecodeResponse(MemoryMarshal.Read<uint>(_rxBuffer.Span));
             if (responseCode == TransferResponse.BadResponse)
             {
                 _logger.LogWarning("Restarting full transfer because RepRapFirmware received a bad data response");

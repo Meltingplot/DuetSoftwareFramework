@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DuetAPI;
@@ -333,7 +334,13 @@ public sealed class LinkService(
             {
                 Invalidate();
                 eventLogger.LogOutput(MessageType.Warning, "Connection to controller has been reset");
+
+                // The capabilities of the link end with the connection
+                _queryLinkCapabilities = true;
             }
+
+            // Activate the capabilities of the link that RRF offers
+            UpdateLinkCapabilities();
 
             // Check for changes of the print status
             bool printStopped = false;
@@ -1444,6 +1451,88 @@ public sealed class LinkService(
                 channel.Invalidate();
             }
         }
+    }
+
+    /// <summary>
+    /// Whether the capabilities of the link have to be queried, which is the case after every connect and reset
+    /// </summary>
+    private bool _queryLinkCapabilities = true;
+
+    /// <summary>
+    /// Query of limits.sbcLinkCapabilities or state.sbcLinkCapabilities
+    /// </summary>
+    private Task<byte[]>? _linkCapabilitiesQuery;
+
+    /// <summary>
+    /// Capabilities of the link that RRF offers and DSF has yet to activate, then the ones it has activated
+    /// </summary>
+    private LinkCapabilities _linkCapabilitiesToActivate, _activatedLinkCapabilities;
+
+    /// <summary>
+    /// Query the capabilities of the link that RRF offers, activate the ones the adapter supports and check that RRF uses them.
+    /// RRF without them reports null for the key, and only RRF that offers them may get the activation request
+    /// </summary>
+    private void UpdateLinkCapabilities()
+    {
+        if (_queryLinkCapabilities)
+        {
+            _queryLinkCapabilities = false;
+            _linkCapabilitiesToActivate = _activatedLinkCapabilities = LinkCapabilities.None;
+            // Like every limit, the key is verbose
+            _linkCapabilitiesQuery = (linkAdapter.SupportedLinkCapabilities != LinkCapabilities.None) ? linkInterface.RequestObjectModel("limits.sbcLinkCapabilities", "v") : null;
+        }
+        else if (_linkCapabilitiesQuery is { IsCompleted: true })
+        {
+            LinkCapabilities capabilities = LinkCapabilities.None;
+            bool valid = _linkCapabilitiesQuery.IsCompletedSuccessfully && TryReadLinkCapabilities(_linkCapabilitiesQuery.Result, out capabilities);
+            _linkCapabilitiesQuery = null;
+            if (_activatedLinkCapabilities == LinkCapabilities.None)
+            {
+                // Answer to limits.sbcLinkCapabilities
+                _linkCapabilitiesToActivate = valid ? capabilities & linkAdapter.SupportedLinkCapabilities : LinkCapabilities.None;
+            }
+            else if (valid && capabilities == _activatedLinkCapabilities)
+            {
+                // Answer to state.sbcLinkCapabilities
+                logger.LogInformation("Link capabilities {Capabilities} are active", capabilities);
+            }
+            else
+            {
+                logger.LogWarning("RepRapFirmware reports other link capabilities than {Capabilities} as active", _activatedLinkCapabilities);
+            }
+        }
+
+        if (_linkCapabilitiesToActivate != LinkCapabilities.None && linkAdapter.WriteActivateLinkCapabilities(_linkCapabilitiesToActivate))
+        {
+            _activatedLinkCapabilities = _linkCapabilitiesToActivate;
+            _linkCapabilitiesToActivate = LinkCapabilities.None;
+            _linkCapabilitiesQuery = linkInterface.RequestObjectModel("state.sbcLinkCapabilities", string.Empty);
+        }
+    }
+
+    /// <summary>
+    /// Read the capabilities of the link from the response to an object model query
+    /// </summary>
+    /// <param name="json">Response</param>
+    /// <param name="capabilities">Capabilities</param>
+    /// <returns>Whether the result was a number</returns>
+    private static bool TryReadLinkCapabilities(byte[] json, out LinkCapabilities capabilities)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(json);
+            if (document.RootElement.TryGetProperty("result", out JsonElement result) && result.ValueKind == JsonValueKind.Number && result.TryGetUInt32(out uint value))
+            {
+                capabilities = (LinkCapabilities)value;
+                return true;
+            }
+        }
+        catch (JsonException)
+        {
+            // Not a valid response
+        }
+        capabilities = LinkCapabilities.None;
+        return false;
     }
 
     /// <summary>

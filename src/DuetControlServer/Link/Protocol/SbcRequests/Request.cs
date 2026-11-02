@@ -190,5 +190,11 @@ public enum Request : ushort
     /// <summary>
     /// Result of a directory listing request
     /// </summary>
-    FileListResult = 31
+    FileListResult = 31,
+
+    /// <summary>
+    /// Activate capabilities of the SPI link for the current connection, see <see cref="Shared.LinkCapabilities"/>.
+    /// Not part of upstream RRF, so it is far from the upstream requests and must only go to an RRF that offers the capabilities
+    /// </summary>
+    ActivateLinkCapabilities = 0x4D50
 }

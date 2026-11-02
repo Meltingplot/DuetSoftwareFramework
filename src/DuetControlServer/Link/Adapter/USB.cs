@@ -800,6 +800,18 @@ public class USB : IDiagnostics, ILinkAdapter
     }
 
     /// <summary>
+    /// Capabilities of the link that this adapter can use. They concern the SPI transfers, which USB does not have
+    /// </summary>
+    public LinkCapabilities SupportedLinkCapabilities => LinkCapabilities.None;
+
+    /// <summary>
+    /// Ask the firmware to activate capabilities of the link, which USB does not support
+    /// </summary>
+    /// <param name="capabilities">Capabilities to activate</param>
+    /// <returns>False</returns>
+    public bool WriteActivateLinkCapabilities(LinkCapabilities capabilities) => false;
+
+    /// <summary>
     /// Request the key of a object module of a specific module
     /// </summary>
     /// <param name="key">Object model key to query</param>

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json.Nodes;
 using System.Threading;
 using DuetAPI;
 using DuetAPI.ObjectModel;
@@ -97,6 +98,43 @@ public sealed class FakeFirmware : ILinkAdapter
     /// Object model of the fake firmware. Changes are reported to DSF via the sequence numbers
     /// </summary>
     public FakeObjectModel ObjectModel { get; } = new();
+
+    /// <summary>
+    /// Capabilities of the link the firmware offers in limits.sbcLinkCapabilities, or null for RRF without them
+    /// </summary>
+    public LinkCapabilities? OfferedLinkCapabilities
+    {
+        get => _offeredLinkCapabilities;
+        set
+        {
+            _offeredLinkCapabilities = value;
+            if (value is not null)
+            {
+                ObjectModel.Set("limits.sbcLinkCapabilities", JsonValue.Create((uint)value.Value));
+                SetActiveLinkCapabilities(LinkCapabilities.None);
+            }
+        }
+    }
+    private LinkCapabilities? _offeredLinkCapabilities;
+
+    /// <summary>
+    /// Capabilities of the link that are active for the current connection
+    /// </summary>
+    public LinkCapabilities ActiveLinkCapabilities { get; private set; }
+
+    /// <summary>
+    /// Activation requests the firmware received
+    /// </summary>
+    public List<LinkCapabilities> LinkCapabilityRequests { get; } = [];
+
+    private void SetActiveLinkCapabilities(LinkCapabilities capabilities)
+    {
+        ActiveLinkCapabilities = capabilities;
+        if (_offeredLinkCapabilities is not null)
+        {
+            ObjectModel.Set("state.sbcLinkCapabilities", JsonValue.Create((uint)capabilities));
+        }
+    }
 
     /// <summary>
     /// Handlers for specific commands
@@ -452,6 +490,7 @@ public sealed class FakeFirmware : ILinkAdapter
         _sendBufferUpdate = true;
         _repRapStopped = false;
         ObjectModel.ClearGlobals();
+        SetActiveLinkCapabilities(LinkCapabilities.None);
         _hadReset = true;
     }
     #endregion
@@ -740,6 +779,15 @@ public sealed class FakeFirmware : ILinkAdapter
                     else if (request.Text.Equals("volumes", StringComparison.OrdinalIgnoreCase))
                     {
                         ObjectModel.IncrementSeq("volumes");
+                    }
+                    break;
+
+                case SbcRequest.ActivateLinkCapabilities:
+                    // RRF without link capabilities reports an internal error for an unknown request (SbcInterface.cpp), which the tests check for
+                    LinkCapabilityRequests.Add(request.LinkCapabilities);
+                    if (_offeredLinkCapabilities is not null)
+                    {
+                        SetActiveLinkCapabilities(request.LinkCapabilities & _offeredLinkCapabilities.Value);
                     }
                     break;
 
@@ -1294,6 +1342,12 @@ public sealed class FakeFirmware : ILinkAdapter
 
     /// <inheritdoc />
     public bool WriteGetObjectModel(string key, string flags) => AddRequest(new FakeSbcRequest { Request = SbcRequest.GetObjectModel, Text = key, Argument = flags });
+
+    /// <inheritdoc />
+    public LinkCapabilities SupportedLinkCapabilities => LinkCapabilities.All;
+
+    /// <inheritdoc />
+    public bool WriteActivateLinkCapabilities(LinkCapabilities capabilities) => AddRequest(new FakeSbcRequest { Request = SbcRequest.ActivateLinkCapabilities, LinkCapabilities = capabilities });
 
     /// <inheritdoc />
     public bool WritePrintFileInfo(GCodeFileInfo info) => AddRequest(new FakeSbcRequest { Request = SbcRequest.SetPrintFileInfo, Text = info.FileName });
