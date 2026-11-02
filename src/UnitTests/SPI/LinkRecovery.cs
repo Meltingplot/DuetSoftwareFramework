@@ -183,7 +183,7 @@ public class LinkRecovery
         }
     }
 
-    [Test, Explicit("100 of 4238 single faults still break the link")]
+    [Test, Explicit("32 of 4238 single faults still break the link with the RRF of today")]
     public void SingleCorruptedExchange() => RunCensus(new());
 
     private static IEnumerable<TestCaseData> RefusalCases => GetCases()
@@ -203,14 +203,17 @@ public class LinkRecovery
     /// Settings of the firmware end that are not known for sure or that are being considered
     /// </summary>
     public sealed record RrfOptions(SequenceMismatchHandling SequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool PollWhileDisconnected = false,
-        bool RrfFirstOnTie = true, byte UnderrunByte = 0);
+        bool RrfFirstOnTie = true, byte UnderrunByte = 0, bool PhaseGuard = false, bool SequenceGuard = false);
 
     private static IEnumerable<TestCaseData> OtherOptions =>
     [
         new TestCaseData(new RrfOptions(RrfFirstOnTie: false)).SetName("SingleCorruptedExchange_DsfFirstOnTie"),
         new TestCaseData(new RrfOptions(PollWhileDisconnected: true)).SetName("SingleCorruptedExchange_PollWhileDisconnected"),
         new TestCaseData(new RrfOptions(UnderrunByte: 0xFF)).SetName("SingleCorruptedExchange_UnderrunByteFF"),
-        new TestCaseData(new RrfOptions(SequenceMismatchHandling.Ignore)).SetName("SingleCorruptedExchange_IgnoreSequenceMismatch")
+        new TestCaseData(new RrfOptions(SequenceMismatchHandling.Ignore)).SetName("SingleCorruptedExchange_IgnoreSequenceMismatch"),
+        new TestCaseData(new RrfOptions(PhaseGuard: true)).SetName("SingleCorruptedExchange_PhaseGuard"),
+        new TestCaseData(new RrfOptions(SequenceGuard: true)).SetName("SingleCorruptedExchange_SequenceGuard"),
+        new TestCaseData(new RrfOptions(PhaseGuard: true, SequenceGuard: true)).SetName("SingleCorruptedExchange_PhaseAndSequenceGuard")
     ];
 
     [TestCaseSource(nameof(OtherOptions)), Explicit("Firmware variants and proposals, run on demand")]
@@ -269,17 +272,71 @@ public class LinkRecovery
     [TestCase("BothData / DataResponse / ToDsf / Response / BadDataChecksum")]
     [TestCase("BothData / Data / ToRrf / Exchange / BadResponse in first word")]
     [TestCase("DsfData / HeaderResponse / ToRrf / Response / BadHeaderChecksum")]
+    [TestCase("BothData / Data / ToRrf / Exchange / BadResponse in first word", SequenceMismatchHandling.ConnectionReset, true)]
+    [TestCase("Connect / Header / ToDsf / Exchange / BadResponse in first word", SequenceMismatchHandling.ConnectionReset, true)]
     [Explicit("Analysis")]
-    public void TraceCase(string name, SequenceMismatchHandling sequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset)
+    public void TraceCase(string name, SequenceMismatchHandling sequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool guards = false)
     {
         Case c = GetCases().Single(c => c.ToString() == name);
         List<string> trace = [];
-        Result result = Run(c.Variant, c.Fault, new(sequenceMismatchHandling), trace);
+        Result result = Run(c.Variant, c.Fault, new(sequenceMismatchHandling, PhaseGuard: guards, SequenceGuard: guards), trace);
         TestContext.Out.WriteLine($"{c}: {result}");
         foreach (string line in trace.Take(80))
         {
             TestContext.Out.WriteLine(line);
         }
+    }
+
+    /// <summary>
+    /// Replay every case against the real DataTransfer and SbcInterface of RRF, built as a host program whose path is in RRF_HOST_HARNESS,
+    /// and compare its answers with those of the port. Inputs are replayed open-loop, so only the first difference of a case counts
+    /// </summary>
+    [Test, Explicit("Needs the host build of RRF's DataTransfer and SbcInterface")]
+    public void PortMatchesRealFirmware()
+    {
+        string? harness = Environment.GetEnvironmentVariable("RRF_HOST_HARNESS");
+        if (string.IsNullOrEmpty(harness))
+        {
+            Assert.Ignore("RRF_HOST_HARNESS is not set");
+        }
+
+        using System.Diagnostics.Process process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(harness!)
+        {
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false
+        })!;
+
+        List<string> differences = [];
+        int cases = 0, events = 0;
+        foreach ((Variant variant, SpiFault? fault, string name) in Enum.GetValues<Variant>().Select(v => (v, (SpiFault?)null, $"{v} / clean")).Concat(GetCases().Select(c => (c.Variant, (SpiFault?)c.Fault, c.ToString()))))
+        {
+            List<(string Input, string? Output)> replay = [];
+            Run(variant, fault, new(PollWhileDisconnected: Environment.GetEnvironmentVariable("RRF_HOST_POLL") == "1"), replay: replay);
+            cases++;
+            for (int i = 0; i < replay.Count; i++)
+            {
+                (string input, string? expected) = replay[i];
+                process.StandardInput.WriteLine(input);
+                process.StandardInput.Flush();
+                if (expected is not null)
+                {
+                    events++;
+                    string? actual = process.StandardOutput.ReadLine();
+                    if (actual != expected)
+                    {
+                        differences.Add($"{name}, event {i} ({input}):\n  port: {expected}\n  RRF:  {actual}");
+                        break;
+                    }
+                }
+            }
+            process.StandardInput.WriteLine("END");
+        }
+        process.StandardInput.Close();
+        process.WaitForExit();
+
+        TestContext.Out.WriteLine($"{cases} cases, {events} events compared, {differences.Count} cases differ");
+        Assert.That(differences, Is.Empty, string.Join("\n", differences.Take(20)));
     }
 
     #region Faults
@@ -394,12 +451,17 @@ public class LinkRecovery
     /// <summary>
     /// Connect, perform clean transfers, inject the fault into the target transfer and check whether clean transfers follow
     /// </summary>
-    private Result Run(Variant variant, SpiFault? fault, RrfOptions options, List<string>? trace = null)
+    private Result Run(Variant variant, SpiFault? fault, RrfOptions options, List<string>? trace = null, List<(string Input, string? Output)>? replay = null)
     {
         int target = (variant == Variant.Connect) ? 1 : TargetTransfer;
         bool rrfDataInTarget = variant is Variant.Connect or Variant.BothData or Variant.RrfData;
         bool dsfDataInTarget = variant is Variant.BothData or Variant.DsfData;
-        FakeRrfSpi rrf = new(n => n != target || rrfDataInTarget, options.SequenceMismatchHandling, options.PollWhileDisconnected, options.RrfFirstOnTie, options.UnderrunByte) { Trace = trace };
+        replay?.Add(($"NEW {(rrfDataInTarget ? 0 : target)} {options.UnderrunByte:X2}", null));
+        FakeRrfSpi rrf = new(n => n != target || rrfDataInTarget, options.SequenceMismatchHandling, options.PollWhileDisconnected, options.RrfFirstOnTie, options.UnderrunByte, options.PhaseGuard, options.SequenceGuard)
+        {
+            Trace = trace,
+            Replay = replay
+        };
 
         int dsfConnectionLosses = 0, dcsRestarts = 0, dsfId = 0, dsfResets = 0;
         double? recoveredAt = null;

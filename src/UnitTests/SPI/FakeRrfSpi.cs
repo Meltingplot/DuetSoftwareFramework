@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -109,7 +110,15 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     // Test control
     private readonly Func<int, bool> _sendData;
     private readonly SequenceMismatchHandling _sequenceMismatchHandling;
-    private readonly bool _pollWhileDisconnected, _rrfFirstOnTie;
+    private readonly bool _pollWhileDisconnected, _rrfFirstOnTie, _phaseGuard, _sequenceGuard;
+
+    // Proposed change: last completed transfer, sent again when DSF repeats its part of it, and the transfer that waits meanwhile
+    private TransferHeader _lastTxHeader, _pendingTxHeader;
+    private byte[]? _lastTxData;
+    private byte[] _pendingTxData = [];
+    private int _pendingTxPointer;
+    private byte _pendingPacketId;
+    private bool _resending;
     private readonly byte _underrunByte;
     private SpiFault? _fault;
     private int _faultArmedAt;
@@ -123,9 +132,13 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// <param name="pollWhileDisconnected">Whether RRF restarts the transfer after SbcConnectionTimeout while it is not connected, like builds with SUPPORTS_SBC_OVER_USB do</param>
     /// <param name="rrfFirstOnTie">Whether RRF times out first when both sides would time out at the same moment</param>
     /// <param name="underrunByte">Byte DSF reads when it clocks more bytes than RRF has set up</param>
+    /// <param name="phaseGuard">Proposed change: RRF recognises from what it receives that DSF is in another phase and goes back to it</param>
+    /// <param name="sequenceGuard">Proposed change: when DSF repeats the last completed transfer, RRF sends it again, and when DSF is a transfer ahead, RRF waits for DSF to send it again</param>
     public FakeRrfSpi(Func<int, bool> sendData, SequenceMismatchHandling sequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset,
-        bool pollWhileDisconnected = false, bool rrfFirstOnTie = true, byte underrunByte = 0)
+        bool pollWhileDisconnected = false, bool rrfFirstOnTie = true, byte underrunByte = 0, bool phaseGuard = false, bool sequenceGuard = false)
     {
+        _phaseGuard = phaseGuard;
+        _sequenceGuard = sequenceGuard;
         _underrunByte = underrunByte;
         _sendData = sendData;
         _sequenceMismatchHandling = sequenceMismatchHandling;
@@ -198,6 +211,22 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// Trace of the exchanges and timeouts, recorded if set
     /// </summary>
     public List<string>? Trace { get; set; }
+
+    /// <summary>
+    /// Inputs and expected outputs for replaying the run against the real RRF code built as a host program, recorded if set.
+    /// An exchange is recorded as "X hex" with what RRF sends before any corruption on the way to DSF, a timeout of the SBC task as "T"
+    /// </summary>
+    public List<(string Input, string? Output)>? Replay { get; set; }
+
+    /// <summary>
+    /// State reported after each replayed event, in the format of the host program
+    /// </summary>
+    private string ReplayStatus(int receivedBefore)
+    {
+        string wait = (_state != InternalTransferState.ExchangingHeader) ? "partial" : (_isConnected || _pollWhileDisconnected) ? "full" : "unlimited";
+        string got = (ReceivedPayloads.Count > receivedBefore) ? string.Join(",", ReceivedPayloads.Skip(receivedBefore)) : "-";
+        return $"state={_state} pin={(_pinLevel ? 1 : 0)} conn={(_isConnected ? 1 : 0)} disc={Disconnects} resets={ConnectionResets} wait={wait} got={got}";
+    }
 
     /// <summary>
     /// Whether the fault has been applied
@@ -343,6 +372,23 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
 
     private TransferState Finish()
     {
+        if (_resending)
+        {
+            // Proposed change: DSF has completed the transfer it missed. Its data in it was processed already, so carry on with the pending transfer
+            _txHeader = _pendingTxHeader;
+            _pendingTxData.CopyTo(_txBuffer, 0);
+            _txPointer = _pendingTxPointer;
+            _packetId = _pendingPacketId;
+            _resending = false;
+            ExchangeHeader();
+            return TransferState.DoingFullTransfer;
+        }
+        if (_sequenceGuard)
+        {
+            _lastTxHeader = _txHeader;
+            _lastTxData = _txBuffer.AsSpan(0, _txHeader.DataLength).ToArray();
+        }
+
         _txPointer = 0;
         _packetId = 0;
         _state = InternalTransferState.ProcessingData;
@@ -351,8 +397,87 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         return (IsConnectionReset() && _sequenceMismatchHandling == SequenceMismatchHandling.ConnectionReset) ? TransferState.ConnectionReset : TransferState.Finished;
     }
 
+    /// <summary>
+    /// Whether the given bytes are a transfer header with a valid checksum
+    /// </summary>
+    private static bool IsValidHeader(ReadOnlySpan<byte> data) =>
+        data.Length >= HeaderSize && data[0] == Consts.FormatCode && MemoryMarshal.Read<uint>(data[(HeaderSize - sizeof(uint))..]) == CRC32.Calculate(data[..(HeaderSize - sizeof(uint))]);
+
+    /// <summary>
+    /// Proposed change: deal with DSF being in another phase than RRF, as far as what RRF received shows it
+    /// </summary>
+    /// <returns>Whether RRF went back to the phase of DSF</returns>
+    private bool GuardPhase()
+    {
+        if (!_phaseGuard)
+        {
+            return false;
+        }
+
+        // RA: in a response state, the start of a header means DSF is in the header phase. Only 4 bytes of it arrived, so ask for it again
+        if (_state is InternalTransferState.ExchangingHeaderResponse or InternalTransferState.ExchangingDataResponse && (_rxResponse & 0xFF) == Consts.FormatCode)
+        {
+            ExchangeResponse(TransferResponse.BadHeaderChecksum);
+            _state = InternalTransferState.ExchangingHeaderResponse;
+            return true;
+        }
+
+        // RB: in the data phase, a valid header means DSF did not get the Success of the header response. DSF got data instead of a header, so ask for it again
+        if (_state == InternalTransferState.ExchangingData && IsValidHeader(_rxBuffer))
+        {
+            _rxBuffer.AsSpan(0, HeaderSize).CopyTo(_rxHeaderBytes);
+            _rxHeader = MemoryMarshal.Read<TransferHeader>(_rxHeaderBytes);
+            ExchangeResponse(TransferResponse.BadHeaderChecksum);
+            _state = InternalTransferState.ExchangingHeaderResponse;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Proposed change: deal with DSF repeating the last completed transfer or being a transfer ahead
+    /// </summary>
+    /// <returns>Whether RRF asked for the headers to be exchanged again</returns>
+    private bool GuardSequence()
+    {
+        if (!_sequenceGuard || !_isConnected)
+        {
+            return false;
+        }
+
+        // DSF repeats the transfer RRF completed last, so DSF did not complete it. Send that transfer again before the current one
+        if (!_resending && _lastTxData is not null && _rxHeader.SequenceNumber == _lastTransferNumber)
+        {
+            _pendingTxHeader = _txHeader;
+            _pendingTxData = _txBuffer.AsSpan(0, _txHeader.DataLength).ToArray();
+            _pendingTxPointer = _txPointer;
+            _pendingPacketId = _packetId;
+            _txHeader = _lastTxHeader;
+            _lastTxData.CopyTo(_txBuffer, 0);
+            _txPointer = _lastTxHeader.DataLength;
+            _resending = true;
+
+            // Make both sides exchange the headers again
+            ExchangeResponse(TransferResponse.BadHeaderChecksum);
+            return true;
+        }
+
+        // DSF completed a transfer that RRF did not. DSF sends it again once it sees RRF repeat its part
+        if (_rxHeader.SequenceNumber == (ushort)(_lastTransferNumber + 2))
+        {
+            ExchangeResponse(TransferResponse.BadHeaderChecksum);
+            return true;
+        }
+        return false;
+    }
+
     private TransferState DoTransfer()
     {
+        if (GuardPhase())
+        {
+            return TransferState.DoingPartialTransfer;
+        }
+
         switch (_state)
         {
             case InternalTransferState.ExchangingHeader:
@@ -385,6 +510,10 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
                 if (_rxHeader.DataLength > SbcTransferBufferSize)
                 {
                     ExchangeResponse(TransferResponse.BadDataLength);
+                    break;
+                }
+                if (GuardSequence())
+                {
                     break;
                 }
 
@@ -607,8 +736,10 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         if (_deadline < end || (_deadline == end && _rrfFirstOnTie))
         {
             Trace?.Add($"   {_deadline,9:F3} ms: RRF timeout in {_state}{(_isConnected ? ", disconnect" : "")}");
+            int receivedBefore = ReceivedPayloads.Count;
             Now = _deadline;
             RunTask(TransferState.DoingPartialTransfer, true);
+            Replay?.Add(("T", $"T {ReplayStatus(receivedBefore)}"));
             return true;
         }
         Now = end;
@@ -650,6 +781,8 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             readBuffer[i] = (i < count) ? _dmaTx[i] : completed ? _underrunByte : (byte)0xFF;
         }
         _dmaActive = false;
+        string rrfOutput = Convert.ToHexString(readBuffer);
+        int receivedBefore = ReceivedPayloads.Count;
 
         if (fault?.Direction == ExchangeDirection.ToDsf)
         {
@@ -669,6 +802,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             CompleteDma(toRrf.AsSpan(0, count));
             RunTask(DoTransfer(), false);
         }
+        Replay?.Add(($"X {Convert.ToHexString(toRrf)}", $"R {rrfOutput} {ReplayStatus(receivedBefore)}"));
         Trace?.Add($"#{exchange} {Now,9:F3} ms{(fault is not null ? $" FAULT {fault.Direction}" : "")}: DSF {Convert.ToHexString(toRrf.AsSpan(0, Math.Min(toRrf.Length, 16)))} " +
             $"RRF {Convert.ToHexString(readBuffer[..Math.Min(readBuffer.Length, 16)])} | RRF {stateBefore} -> {_state}, pin {(_pinLevel ? 1 : 0)}, connected {_isConnected}");
     }
