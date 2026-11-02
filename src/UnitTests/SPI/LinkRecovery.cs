@@ -183,8 +183,21 @@ public class LinkRecovery
         }
     }
 
-    [Test, Explicit("125 of 4238 single faults still break the link")]
+    [Test, Explicit("100 of 4238 single faults still break the link")]
     public void SingleCorruptedExchange() => RunCensus(new());
+
+    private static IEnumerable<TestCaseData> RefusalCases => GetCases()
+        .Where(c => c.Phase == "HeaderResponse" && c.Direction == ExchangeDirection.ToDsf && c.Mutation is "flip bit 1" or "plus one" or "BadFormat" or "BadProtocolVersion" or "BadDataLength")
+        .Select(c => new TestCaseData(c.ToString()).SetName($"RefusalCodeInHeaderResponse({c.Variant}, {c.Mutation})"));
+
+    [TestCaseSource(nameof(RefusalCases))]
+    public void RefusalCodeInHeaderResponse(string name)
+    {
+        // A single corrupted Success reads as BadProtocolVersion (bit 1) or BadFormat (plus one), so DCS must retry instead of giving up
+        Case c = GetCases().Single(c => c.ToString() == name);
+        Result result = Run(c.Variant, c.Fault, new());
+        Assert.That(result.Outcome, Is.EqualTo(Outcome.Retry), result.Details);
+    }
 
     /// <summary>
     /// Settings of the firmware end that are not known for sure or that are being considered
