@@ -53,6 +53,74 @@ public enum ExchangeDirection
 /// <param name="RestartBootTime">Instead of corrupting the exchange, RRF restarts right before it and boots for this time in ms</param>
 /// <param name="RestartAgain">The restarted RRF restarts once more right after its first transfer, as a reconnect timeout does</param>
 /// <param name="RrfFirstSequenceNumber">Sequence number of the first transfer of RRF, to make it wrap before the fault</param>
+/// <summary>
+/// Rules of the proposed RRF changes that a census can switch off one at a time, to find the cases each one is needed for.
+/// The names give the place in DataTransfer.cpp of 03a87245b
+/// </summary>
+[Flags]
+public enum RrfRule
+{
+    /// <summary>
+    /// Every rule is active
+    /// </summary>
+    None = 0,
+
+    /// <summary>
+    /// Phase guard RA: the start of a header in a response state
+    /// </summary>
+    PhaseGuardHeaderInResponse = 1,
+
+    /// <summary>
+    /// Phase guard RB: a valid header in the data phase
+    /// </summary>
+    PhaseGuardHeaderInData = 2,
+
+    /// <summary>
+    /// Sequence guard: DSF repeats the last completed transfer (distance 0), so RRF sends it again
+    /// </summary>
+    SequenceGuardResend = 4,
+
+    /// <summary>
+    /// Sequence guard: DSF is a transfer ahead (distance 2), so RRF waits for DSF to send it again
+    /// </summary>
+    SequenceGuardWait = 8,
+
+    /// <summary>
+    /// RRF leaves the extended link at once when a valid header from DSF has no session status
+    /// </summary>
+    LeaveWhenDsfLeft = 16,
+
+    /// <summary>
+    /// RRF sends extended sequence numbers
+    /// </summary>
+    ExtendedSequenceNumbers = 32,
+
+    /// <summary>
+    /// Extended codes read in ExchangingHeaderResponse (DataTransfer.cpp:958)
+    /// </summary>
+    DecodeHeaderResponse = 64,
+
+    /// <summary>
+    /// Extended codes read in ExchangingDataResponse (DataTransfer.cpp:1015)
+    /// </summary>
+    DecodeDataResponse = 128,
+
+    /// <summary>
+    /// Extended codes read in ExchangingDataResponseRetry (DataTransfer.cpp:1046)
+    /// </summary>
+    DecodeDataResponseRetry = 256,
+
+    /// <summary>
+    /// Extended BadResponse read as the first word of a header (DataTransfer.cpp:913)
+    /// </summary>
+    DecodeHeaderWord = 512,
+
+    /// <summary>
+    /// Extended BadResponse read as the first word of data (DataTransfer.cpp:992)
+    /// </summary>
+    DecodeDataWord = 1024
+}
+
 public sealed record SpiFault(int Exchange, ExchangeDirection Direction, SpiMutation Mutate, double? RestartBootTime = null, bool RestartAgain = false, ushort RrfFirstSequenceNumber = 1);
 
 /// <summary>
@@ -119,7 +187,23 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
 
     // Proposed change: capabilities RRF offers in limits.sbcLinkCapabilities and the ones DSF activated for the current connection
     private readonly LinkCapabilities _offeredCapabilities;
+    private readonly RrfRule _disabledRules;
     private LinkCapabilities _activeCapabilities;
+    private bool Enabled(RrfRule rule) => (_disabledRules & rule) == 0;
+
+    /// <summary>
+    /// Number of times each rule of the proposed changes took effect, counted if set
+    /// </summary>
+    public Dictionary<RrfRule, int>? RuleHits { get; set; }
+
+    private bool Hit(RrfRule rule)
+    {
+        if (RuleHits is not null)
+        {
+            RuleHits[rule] = RuleHits.GetValueOrDefault(rule) + 1;
+        }
+        return true;
+    }
     private bool PhaseGuardActive => _phaseGuard || _activeCapabilities.HasFlag(LinkCapabilities.PhaseGuard);
     private bool SequenceGuardActive => _sequenceGuard || _activeCapabilities.HasFlag(LinkCapabilities.SequenceGuard);
     private bool Extended => _activeCapabilities.HasFlag(LinkCapabilities.ExtendedHeader);
@@ -149,11 +233,13 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// <param name="sequenceGuard">Proposed change: when DSF repeats the last completed transfer, RRF sends it again, and when DSF is a transfer ahead, RRF waits for DSF to send it again</param>
     /// <param name="firstSequenceNumber">Sequence number of the first transfer</param>
     /// <param name="capabilities">Proposed change: capabilities RRF offers, which DSF activates with a request</param>
+    /// <param name="disabledRules">Rules of the proposed changes that are switched off</param>
     public FakeRrfSpi(Func<int, bool> sendData, SequenceMismatchHandling sequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset,
         bool pollWhileDisconnected = false, bool rrfFirstOnTie = true, byte underrunByte = 0, bool phaseGuard = false, bool sequenceGuard = false, ushort firstSequenceNumber = 1,
-        LinkCapabilities capabilities = LinkCapabilities.None)
+        LinkCapabilities capabilities = LinkCapabilities.None, RrfRule disabledRules = RrfRule.None)
     {
         _offeredCapabilities = capabilities;
+        _disabledRules = disabledRules;
         _phaseGuard = phaseGuard;
         _sequenceGuard = sequenceGuard;
         _underrunByte = underrunByte;
@@ -374,7 +460,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
 
         // Set up TX transfer header
         _txHeader.NumPackets = _packetId;
-        _txHeader.SequenceNumber = ExtendedLink.Next(_txHeader.SequenceNumber, Extended);
+        _txHeader.SequenceNumber = ExtendedLink.Next(_txHeader.SequenceNumber, Extended && Enabled(RrfRule.ExtendedSequenceNumbers));
         _txHeader.DataLength = (ushort)_txPointer;
         _txHeader.ChecksumData32 = CRC32.Calculate(_txBuffer.AsSpan(0, _txPointer));
         byte[] header = new byte[HeaderSize];
@@ -476,7 +562,19 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// <summary>
     /// Proposed change: read a response, which DSF sends as an extended code once it uses the extended link
     /// </summary>
-    private uint DecodeResponse(uint word) => Extended ? ExtendedLink.DecodeResponse(word) : word;
+    private uint DecodeResponse(uint word, RrfRule site)
+    {
+        if (!Extended || !Enabled(site))
+        {
+            return word;
+        }
+        uint response = ExtendedLink.DecodeResponse(word);
+        if (response != word)
+        {
+            Hit(site);
+        }
+        return response;
+    }
 
     private TransferState Finish()
     {
@@ -524,7 +622,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         }
 
         // RA: in a response state, the start of a header means DSF is in the header phase. Only 4 bytes of it arrived, so ask for it again
-        if (_state is InternalTransferState.ExchangingHeaderResponse or InternalTransferState.ExchangingDataResponse && (_rxResponse & 0xFF) == Consts.FormatCode)
+        if (Enabled(RrfRule.PhaseGuardHeaderInResponse) && _state is InternalTransferState.ExchangingHeaderResponse or InternalTransferState.ExchangingDataResponse && (_rxResponse & 0xFF) == Consts.FormatCode && Hit(RrfRule.PhaseGuardHeaderInResponse))
         {
             ExchangeResponse(TransferResponse.BadHeaderChecksum);
             _state = InternalTransferState.ExchangingHeaderResponse;
@@ -532,7 +630,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         }
 
         // RB: in the data phase, a valid header means DSF did not get the Success of the header response. DSF got data instead of a header, so ask for it again
-        if (_state == InternalTransferState.ExchangingData && IsValidHeader(_rxBuffer))
+        if (Enabled(RrfRule.PhaseGuardHeaderInData) && _state == InternalTransferState.ExchangingData && IsValidHeader(_rxBuffer) && Hit(RrfRule.PhaseGuardHeaderInData))
         {
             _rxBuffer.AsSpan(0, HeaderSize).CopyTo(_rxHeaderBytes);
             _rxHeader = MemoryMarshal.Read<TransferHeader>(_rxHeaderBytes);
@@ -556,7 +654,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
 
         // DSF repeats the transfer RRF completed last, so DSF did not complete it. Send that transfer again before the current one
         int distance = ExtendedLink.Distance(_lastTransferNumber, _rxHeader.SequenceNumber, Extended);
-        if (!_resending && _lastTxValid && distance == 0)
+        if (Enabled(RrfRule.SequenceGuardResend) && !_resending && _lastTxValid && distance == 0 && Hit(RrfRule.SequenceGuardResend))
         {
             _pendingTxHeader = _txHeader;
             _pendingTxPointer = _txPointer;
@@ -572,7 +670,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         }
 
         // DSF completed a transfer that RRF did not. DSF sends it again once it sees RRF repeat its part
-        if (distance == 2)
+        if (Enabled(RrfRule.SequenceGuardWait) && distance == 2 && Hit(RrfRule.SequenceGuardWait))
         {
             ExchangeResponse(TransferResponse.BadHeaderChecksum);
             return true;
@@ -592,7 +690,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             case InternalTransferState.ExchangingHeader:
             {
                 // (1) Exchanged transfer headers
-                uint headerResponse = DecodeResponse(MemoryMarshal.Read<uint>(_rxHeaderBytes));
+                uint headerResponse = DecodeResponse(MemoryMarshal.Read<uint>(_rxHeaderBytes), RrfRule.DecodeHeaderWord);
                 if (headerResponse == TransferResponse.BadResponse)
                 {
                     // SBC received a bad response code. We must have been happy if we got here, else RRF would have complained
@@ -621,7 +719,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
                     ExchangeResponse(TransferResponse.BadDataLength);
                     break;
                 }
-                if (Extended && ExtendedLink.Distance(_lastTransferNumber, _rxHeader.SequenceNumber, true) < 0)
+                if (Extended && Enabled(RrfRule.LeaveWhenDsfLeft) && ExtendedLink.Distance(_lastTransferNumber, _rxHeader.SequenceNumber, true) < 0 && Hit(RrfRule.LeaveWhenDsfLeft))
                 {
                     // Proposed change: DSF has left the extended link, which only a restart or a connection reset does. Leave it as well,
                     // so that DSF understands the responses. The sequence number no longer matches, so the connection is reset when the transfer ends
@@ -667,7 +765,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             case InternalTransferState.ExchangingData:
             {
                 // (3) Exchanged data
-                if (DecodeResponse(MemoryMarshal.Read<uint>(_rxBuffer)) == TransferResponse.BadResponse)
+                if (DecodeResponse(MemoryMarshal.Read<uint>(_rxBuffer), RrfRule.DecodeDataWord) == TransferResponse.BadResponse)
                 {
                     RestartTransfer(false);
                     break;
@@ -781,7 +879,13 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
                 byte[] response = BitConverter.GetBytes(_rxResponseWord);
                 received.CopyTo(response);
                 _rxResponseWord = BitConverter.ToUInt32(response);
-                _rxResponse = DecodeResponse(_rxResponseWord);
+                _rxResponse = DecodeResponse(_rxResponseWord, _state switch
+                {
+                    InternalTransferState.ExchangingHeaderResponse => RrfRule.DecodeHeaderResponse,
+                    InternalTransferState.ExchangingDataResponse => RrfRule.DecodeDataResponse,
+                    InternalTransferState.ExchangingDataResponseRetry => RrfRule.DecodeDataResponseRetry,
+                    _ => RrfRule.None
+                });
                 break;
             case DmaTarget.Data:
                 received.CopyTo(_rxBuffer);
