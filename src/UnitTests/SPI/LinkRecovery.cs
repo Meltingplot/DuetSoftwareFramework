@@ -233,7 +233,8 @@ public class LinkRecovery
     /// </summary>
     public sealed record RrfOptions(SequenceMismatchHandling SequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool PollWhileDisconnected = false,
         bool RrfFirstOnTie = true, byte UnderrunByte = 0, bool PhaseGuard = false, bool SequenceGuard = false,
-        LinkCapabilities Capabilities = LinkCapabilities.None, int TargetTransfer = TargetTransfer, RrfRule DisabledRules = RrfRule.None, bool InjectThroughDsf = false);
+        LinkCapabilities Capabilities = LinkCapabilities.None, int TargetTransfer = TargetTransfer, RrfRule DisabledRules = RrfRule.None, bool InjectThroughDsf = false,
+        double BootArmDelay = 0);
 
     private static IEnumerable<TestCaseData> OtherOptions =>
     [
@@ -684,7 +685,9 @@ public class LinkRecovery
         new TestCaseData(new RrfOptions()).SetName("RrfRestart"),
         new TestCaseData(new RrfOptions(PollWhileDisconnected: true)).SetName("RrfRestart_PollWhileDisconnected"),
         new TestCaseData(new RrfOptions(Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("RrfRestart_Extended"),
-        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("RrfRestart_ExtendedPolling")
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("RrfRestart_ExtendedPolling"),
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, BootArmDelay: 5)).SetName("RrfRestart_BootArmDelay"),
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, BootArmDelay: 5)).SetName("RrfRestart_ExtendedBootArmDelay")
     ];
 
     private static IEnumerable<TestCaseData> RestartsAtFirstNumber => GetRestartCases()
@@ -991,7 +994,8 @@ public class LinkRecovery
             Trace = trace,
             Replay = replay,
             RuleHits = ruleHits,
-            ExchangeBudget = 2000 + 8 * target
+            ExchangeBudget = 2000 + 8 * target,
+            BootArmDelay = options.BootArmDelay
         };
 
         int dsfConnectionLosses = 0, dcsRestarts = 0, dsfId = 0, dsfResets = 0;

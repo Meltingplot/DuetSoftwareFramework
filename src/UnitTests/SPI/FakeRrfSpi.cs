@@ -351,7 +351,36 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             _edges.Enqueue(false);
         }
         _holdNextEdge = _dsfBeforeFirstArm;
+        if (BootArmDelay > 0)
+        {
+            _armAt = Now + BootArmDelay;
+            return;
+        }
+        ArmFirstHeader();
+    }
 
+    /// <summary>
+    /// Proposed change: time from DataTransfer::Init to the first header after a boot in ms. A DSF that reacts to the falling edge of Init
+    /// within this time exchanges while no DMA is set up, so that exchange reaches nothing
+    /// </summary>
+    public double BootArmDelay { get; init; }
+
+    /// <summary>
+    /// Virtual time at which a booted RRF arms its first header, see <see cref="BootArmDelay"/>
+    /// </summary>
+    private double? _armAt;
+
+    /// <summary>
+    /// The SBC task of the booted RRF starts its first transfer
+    /// </summary>
+    private void ArmFirstHeader()
+    {
+        _armAt = null;
+        if (BootArmDelay > 0)
+        {
+            // With the delay, DSF has reacted to the falling edge already
+            _holdNextEdge = false;
+        }
         _txHeader.FormatCode = Consts.FormatCode;
         _txHeader.ProtocolVersion = Consts.ProtocolVersion;
         WritePayload();
@@ -1079,6 +1108,13 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             Boot();
             return true;
         }
+        if (_armAt is double armAt && armAt <= end)
+        {
+            Trace?.Add($"   {armAt,9:F3} ms: RRF arms its first header");
+            Now = armAt;
+            ArmFirstHeader();
+            return true;
+        }
         if (_deadline < end || (_deadline == end && _rrfFirstOnTie))
         {
             Trace?.Add($"   {_deadline,9:F3} ms: RRF timeout in {_state}{(_isConnected ? ", disconnect" : "")}");
@@ -1117,6 +1153,10 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         if (_bootAt is double bootAt && Now >= bootAt)
         {
             Boot();
+        }
+        if (_armAt is double armAt && Now >= armAt)
+        {
+            ArmFirstHeader();
         }
         if (fault?.DcsRestartDelay is double delay)
         {
