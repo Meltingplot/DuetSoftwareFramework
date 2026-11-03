@@ -366,6 +366,12 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     public double BootArmDelay { get; init; }
 
     /// <summary>
+    /// What DSF reads between DataTransfer::Init and the first header of <see cref="BootArmDelay"/>, while the SPI peripheral is clocked but disabled.
+    /// Not measured, so the census varies it
+    /// </summary>
+    public byte BootWindowMiso { get; init; } = 0xFF;
+
+    /// <summary>
     /// Virtual time at which a booted RRF arms its first header, see <see cref="BootArmDelay"/>
     /// </summary>
     private double? _armAt;
@@ -1184,7 +1190,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         int count = completed ? Math.Min(toRrf.Length, _dmaTx.Length) : 0;
         for (int i = 0; i < toRrf.Length; i++)
         {
-            readBuffer[i] = (i < count) ? _dmaTx[i] : completed ? _underrunByte : (byte)0xFF;
+            readBuffer[i] = (i < count) ? _dmaTx[i] : completed ? _underrunByte : (_armAt is not null) ? BootWindowMiso : (byte)0xFF;
         }
         _dmaActive = false;
         string rrfOutput = Convert.ToHexStringLower(readBuffer);
