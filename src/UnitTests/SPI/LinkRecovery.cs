@@ -234,7 +234,7 @@ public class LinkRecovery
     public sealed record RrfOptions(SequenceMismatchHandling SequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool PollWhileDisconnected = false,
         bool RrfFirstOnTie = true, byte UnderrunByte = 0, bool PhaseGuard = false, bool SequenceGuard = false,
         LinkCapabilities Capabilities = LinkCapabilities.None, int TargetTransfer = TargetTransfer, RrfRule DisabledRules = RrfRule.None, bool InjectThroughDsf = false,
-        bool DcsRestartAfterRecovery = false, double? BootArmDelay = null, byte BootWindowMiso = 0x00);
+        bool DcsRestartAfterRecovery = false, double? BootArmDelay = null, byte BootWindowMiso = 0x00, int? SbcRestartTimeout = null);
 
     private static IEnumerable<TestCaseData> OtherOptions =>
     [
@@ -647,6 +647,21 @@ public class LinkRecovery
 
     private static readonly double[] DcsRestartDelays = [100, 2000, DcsRestartDelay];
 
+    /// <summary>
+    /// A fault in the transfer that activates the link capabilities can leave both sides answering each other out of step, because the guards
+    /// only start with that transfer. DSF keeps exchanging, so no timeout of RRF ends that. DCS stops after SbcRestartTimeout without a complete
+    /// transfer, RRF times out meanwhile, and systemd starts a new instance. The census uses 200 ms instead of the default of 60 s
+    /// </summary>
+    [Test]
+    public void StuckLinkRestartsDcs()
+    {
+        RrfOptions options = new(Capabilities: LinkCapabilities.All, TargetTransfer: ActivationTransfer, SbcRestartTimeout: 200);
+        List<(Case Case, Result Result)> results = [.. GetCases().Where(c => c.Variant != Variant.Connect).Select(c => (c, Run(c.Variant, c.Fault, options)))];
+        TestContext.Out.WriteLine(string.Join(", ", results.GroupBy(r => r.Result.Outcome).OrderBy(g => g.Key).Select(g => $"{g.Key} {g.Count()}")));
+        List<string> stuck = [.. results.Where(r => r.Result.Outcome == Outcome.NoRecovery).Select(r => $"- {r.Case}: {r.Result.Details}")];
+        Assert.That(stuck, Is.Empty, $"{stuck.Count} faults leave the link stuck:\n" + string.Join("\n", stuck.Take(20)));
+    }
+
     private static IEnumerable<TestCaseData> DcsStartAfterFaultOptions =>
     [
         new TestCaseData(new RrfOptions(PollWhileDisconnected: true, DcsRestartAfterRecovery: true)).SetName("DcsStartsAfterRecoveredFault"),
@@ -1040,13 +1055,14 @@ public class LinkRecovery
             Trace = trace,
             Replay = replay,
             RuleHits = ruleHits,
-            ExchangeBudget = 2000 + 8 * target,
+            // A livelock has to run until the restart timeout of DSF ends it
+            ExchangeBudget = (options.SbcRestartTimeout is int restartTimeout) ? 2000 + 8 * target + 250 * restartTimeout : 2000 + 8 * target,
             // The fork's RRF, which offers link capabilities, delays its first header after a boot
             BootArmDelay = options.BootArmDelay ?? ((options.Capabilities != LinkCapabilities.None) ? FakeRrfSpi.ForkBootArmDelay : 0),
             BootWindowMiso = options.BootWindowMiso
         };
 
-        int dsfConnectionLosses = 0, dcsRestarts = 0, dsfId = 0, dsfResets = 0;
+        int dsfConnectionLosses = 0, dcsRestarts = 0, dsfId = 0, dsfResets = 0, restartTimeouts = 0;
         double? recoveredAt = null;
 
         // Numbers of exchanges after which DSF completed a transfer and noticed a reset of either side
@@ -1088,7 +1104,7 @@ public class LinkRecovery
             };
             injector.Arm(new SpiFaultSpec(kind, exchange, armed.Direction == ExchangeDirection.ToRrf, armed.Mutation!));
         }
-        SpiAdapter CreateAdapter(FakeRrfSpi rrf, List<string>? trace) => CreateSpiAdapter(rrf, trace, injector);
+        SpiAdapter CreateAdapter(FakeRrfSpi rrf, List<string>? trace) => CreateSpiAdapter(rrf, trace, injector, sbcRestartTimeout: options.SbcRestartTimeout);
         SpiAdapter dsf = CreateAdapter(rrf, trace);
 
         // Perform a full transfer and read the payloads RRF sent. Returns whether the transfer was clean
@@ -1140,16 +1156,22 @@ public class LinkRecovery
 
         // A DCS that died before an exchange is started again after the delay, and the new instance connects like the first one did
         int rrfResetsAtDcsRestart = -1;
-        bool TransferOrRestartDcs(bool dsfData, bool activation)
+        bool TransferOrRestartDcs(bool dsfData, bool activation = false)
         {
             try
             {
                 return Transfer(dsfData, activation: activation);
             }
-            catch (DcsRestartException e)
+            catch (Exception e) when (e is DcsRestartException || (e is TimeoutException && !rrf.Budget.IsCancellationRequested))
             {
+                // DCS stops after SbcRestartTimeout without a complete transfer, and systemd starts it again
+                if (e is TimeoutException)
+                {
+                    restartTimeouts++;
+                    trace?.Add($"   {rrf.Now,9:F3} ms: DCS stops after {options.SbcRestartTimeout} ms without a complete transfer");
+                }
                 rrfResetsAtDcsRestart = rrf.ConnectionResets;
-                rrf.Wait(e.Delay);
+                rrf.Wait((e as DcsRestartException)?.Delay ?? DcsRestartDelay);
                 for (dsf = CreateAdapter(rrf, trace); ; dsf = CreateAdapter(rrf, trace))
                 {
                     try
@@ -1221,7 +1243,7 @@ public class LinkRecovery
             recoveredAt = targetClean ? rrf.Now : null;
             for (int i = 0; i < MaxTransfersAfterFault && cleanInARow < RecoveredTransfers; i++)
             {
-                if (Transfer(true))
+                if (TransferOrRestartDcs(true))
                 {
                     if (cleanInARow++ == 0)
                     {
@@ -1314,6 +1336,13 @@ public class LinkRecovery
             return new(missed ? Outcome.ResetMissed : Outcome.ResetDetected, rrf.Disconnects > 0, restartDetails);
         }
 
+        // DCS got out of a stuck link only by stopping after SbcRestartTimeout
+        if (restartTimeouts > 0)
+        {
+            return new(Outcome.DcsRestart, rrf.Disconnects > 0, $"DCS stopped {restartTimeouts}x after {options.SbcRestartTimeout} ms without a complete transfer, " +
+                $"and the new instance connected; RRF reset {rrf.ConnectionResets}x, RRF disconnect {rrf.Disconnects}x");
+        }
+
         // Every payload at most once and in order, and without a reconnect nothing may be lost
         bool reconnected = dsfConnectionLosses > 0 || dsfResets > 0 || rrf.ConnectionResets > 0 || dcsRestarts > 0;
         string details = $"DSF lost connection {dsfConnectionLosses}x, DSF reset {dsfResets}x, RRF reset {rrf.ConnectionResets}x, RRF disconnect {rrf.Disconnects}x, DCS restart {dcsRestarts}x";
@@ -1340,11 +1369,12 @@ public class LinkRecovery
 
     private static bool HasDuplicate(List<string> payloads) => payloads.Count != payloads.Distinct().Count();
 
-    private SpiAdapter CreateSpiAdapter(FakeRrfSpi rrf, List<string>? trace, ISpiDevice? device = null, int? maxSbcRetries = null)
+    private SpiAdapter CreateSpiAdapter(FakeRrfSpi rrf, List<string>? trace, ISpiDevice? device = null, int? maxSbcRetries = null, int? sbcRestartTimeout = null)
     {
         Settings settings = new();
         settings.MaxSbcRetries = maxSbcRetries ?? settings.MaxSbcRetries;
-        return new(_eventLogger, _model, (trace is null) ? NullLogger<SpiAdapter>.Instance : new TraceLogger(rrf, trace), Options.Create(settings), rrf, device ?? rrf);
+        settings.SbcRestartTimeout = sbcRestartTimeout ?? settings.SbcRestartTimeout;
+        return new(_eventLogger, _model, (trace is null) ? NullLogger<SpiAdapter>.Instance : new TraceLogger(rrf, trace), Options.Create(settings), rrf, device ?? rrf, rrf.Clock);
     }
 
     /// <summary>

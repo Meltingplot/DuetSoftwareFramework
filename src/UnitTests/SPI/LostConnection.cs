@@ -104,6 +104,8 @@ public class LostConnection
         SetField(spi, "_txBuffer", new LinkedList<Memory<byte>>([new byte[settings.SbcBufferSize]]).First);
         SetField(spi, "_packetsBeingResent", new List<Request>());
         SetField(spi, "_fullTransferStopwatch", new Stopwatch());
+        SetField(spi, "_timeProvider", TimeProvider.System);
+        SetField(spi, "_lastCompleteTransfer", TimeProvider.System.GetTimestamp());
         if (connected)
         {
             // RRF restarts while the link is up, so TfrRdy never goes high for the next header
