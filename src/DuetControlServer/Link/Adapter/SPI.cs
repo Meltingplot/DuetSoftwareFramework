@@ -70,6 +70,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     private volatile int _numMeasuredTransfers, _numMeasuredCodes, _maxRxSize, _maxTxSize, _numTfrPinGlitches;
     private TimeSpan _maxFullTransferDelay = TimeSpan.Zero, _maxPinWaitDurationFull = TimeSpan.Zero, _maxPinWaitDuration = TimeSpan.Zero;
 
+    // Recoveries of the link since DCS started
+    private volatile int _numFullTransferRestarts, _numHeaderRetries, _numDataRetries, _numTransfersSentAgain, _numTransfersRequestedAgain, _numExtendedLinkLeft, _numConnectionLosses, _numConnectionResets;
+
     // Transfer headers
     private readonly Memory<byte> _rxHeaderBuffer = new byte[Marshal.SizeOf<TransferHeader>()];
     private readonly Memory<byte> _txHeaderBuffer = new byte[Marshal.SizeOf<TransferHeader>()];
@@ -263,6 +266,9 @@ public class SPI : IDiagnostics, ILinkAdapter
         builder.AppendLine($"Full transfers per second: {GetFullTransfersPerSecond():F2}, max time between full transfers: {GetMaxFullTransferDelay():0.0}ms, max pin wait times: {GetMaxPinWaitDuration(true):0.0}ms/{GetMaxPinWaitDuration(false):0.0}ms");
         builder.AppendLine($"Codes per second: {GetCodesPerSecond():F2}");
         builder.AppendLine($"Maximum length of RX/TX data transfers: {_maxRxSize}/{_maxTxSize}");
+        builder.AppendLine($"Full transfer restarts: {_numFullTransferRestarts}, header retries: {_numHeaderRetries}, data retries: {_numDataRetries}");
+        builder.AppendLine($"Transfers sent again: {_numTransfersSentAgain}, transfers requested again: {_numTransfersRequestedAgain}, extended link left by RRF: {_numExtendedLinkLeft}, " +
+            $"lost connections: {_numConnectionLosses}, connection resets: {_numConnectionResets}");
     }
 
     /// <summary>
@@ -334,6 +340,7 @@ public class SPI : IDiagnostics, ILinkAdapter
                 // Exchange transfer headers. This also deals with transfer responses
                 if (!ExchangeHeader())
                 {
+                    _numFullTransferRestarts++;
                     retry++;
                     continue;
                 }
@@ -341,6 +348,7 @@ public class SPI : IDiagnostics, ILinkAdapter
                 // Exchange data if there is anything to transfer
                 if ((_rxHeader.DataLength != 0 || _txPointer != 0) && !ExchangeData())
                 {
+                    _numFullTransferRestarts++;
                     retry++;
                     continue;
                 }
@@ -432,6 +440,7 @@ public class SPI : IDiagnostics, ILinkAdapter
 
                 if (!_hadTimeout && _connected)
                 {
+                    _numConnectionLosses++;
                     _hadTimeout = true;
                     _model.ConnectionLost();
                     _eventLogger.LogOutput(MessageType.Warning, $"Lost connection to Duet ({e.Message})");
@@ -451,6 +460,7 @@ public class SPI : IDiagnostics, ILinkAdapter
         _hadReset = false;
         if (result)
         {
+            _numConnectionResets++;
             EndSession(true);
         }
         return result;
@@ -1789,6 +1799,11 @@ public class SPI : IDiagnostics, ILinkAdapter
     {
         for (int retry = 0; retry < _settings.MaxSbcRetries; retry++)
         {
+            if (retry > 0)
+            {
+                _numHeaderRetries++;
+            }
+
             // Perform SPI header exchange
             _transferPhase = TransferPhase.Header;
             WaitForTransfer(false);
@@ -1926,12 +1941,14 @@ public class SPI : IDiagnostics, ILinkAdapter
             {
                 // RRF has left the extended link, which only a restart or a connection reset does. Leave it as well, so that RRF understands the responses
                 _logger.LogWarning("RepRapFirmware has left the extended link");
+                _numExtendedLinkLeft++;
                 EndSession(false);
                 _hadReset = true;
             }
             if (_connected && !mayBeRestart && !_resending && _lastTxBuffer is not null && distance == 0)
             {
                 _logger.LogWarning("Sending transfer #{SequenceNumber} again because RepRapFirmware did not complete it", _lastTxHeader.SequenceNumber);
+                _numTransfersSentAgain++;
                 _pendingTxHeader = _txHeader;
                 _pendingTxBuffer = _txBuffer;
                 _pendingTxPointer = _txPointer;
@@ -1952,6 +1969,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             if (_connected && !mayBeRestart && distance == 2)
             {
                 _logger.LogWarning("Waiting for RepRapFirmware to send transfer #{SequenceNumber} again", ExtendedLink.Next(_lastTransferNumber, ExtendedLink.IsExtended(_rxHeader.SequenceNumber)));
+                _numTransfersRequestedAgain++;
                 ExchangeResponse(TransferResponse.BadHeaderChecksum);
                 continue;
             }
@@ -1981,6 +1999,7 @@ public class SPI : IDiagnostics, ILinkAdapter
                     if (_rxHeader.DataLength == 0 && _txPointer == 0)
                     {
                         // No data was transferred so we are still in sync. Continue with the next transfer
+                        _numFullTransferRestarts++;
                         _lastTransferNumber = ExtendedLink.Previous(_rxHeader.SequenceNumber);
                         return true;
                     }
@@ -2022,6 +2041,11 @@ public class SPI : IDiagnostics, ILinkAdapter
         int bytesToTransfer = Math.Max(_rxHeader.DataLength, _txPointer);
         for (int retry = 0; retry < _settings.MaxSbcRetries; retry++)
         {
+            if (retry > 0)
+            {
+                _numDataRetries++;
+            }
+
             _transferPhase = TransferPhase.Data;
             WaitForTransfer();
             _spiDevice.TransferFullDuplex(_txBuffer.Value[..bytesToTransfer].Span, _rxBuffer[..bytesToTransfer].Span);
@@ -2100,6 +2124,11 @@ public class SPI : IDiagnostics, ILinkAdapter
     {
         for (int retry = 0; retry < _settings.MaxSbcRetries; retry++)
         {
+            if (retry > 0)
+            {
+                _numDataRetries++;
+            }
+
             _transferPhase = TransferPhase.DataChecksum;
             uint responseCode = ExchangeResponse(TransferResponse.Success);
             switch (responseCode)
