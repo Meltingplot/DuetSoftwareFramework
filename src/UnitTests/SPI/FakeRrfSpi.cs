@@ -360,16 +360,21 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     }
 
     /// <summary>
-    /// Proposed change: time from DataTransfer::Init to the first header after a boot in ms. A DSF that reacts to the falling edge of Init
-    /// within this time exchanges while no DMA is set up, so that exchange reaches nothing
+    /// Time from DataTransfer::Init to the first header after a boot in ms. A DSF that reacts to the falling edge of Init within this time
+    /// exchanges while no DMA is set up, so that exchange reaches nothing. The fork's RRF waits <see cref="ForkBootArmDelay"/>
     /// </summary>
     public double BootArmDelay { get; init; }
 
     /// <summary>
-    /// What DSF reads between DataTransfer::Init and the first header of <see cref="BootArmDelay"/>, while the SPI peripheral is clocked but disabled.
-    /// Not measured, so the census varies it
+    /// SbcBootArmDelay of the fork's RRF (SbcInterface.cpp, Meltingplot/RepRapFirmware#36)
     /// </summary>
-    public byte BootWindowMiso { get; init; } = 0xFF;
+    public const double ForkBootArmDelay = 10;
+
+    /// <summary>
+    /// What DSF reads between DataTransfer::Init and the first header of <see cref="BootArmDelay"/>, while the SPI peripheral is clocked but disabled.
+    /// 0x00 on an MB6HC (2026-11-03); other boards are not measured, so the census also tries other values
+    /// </summary>
+    public byte BootWindowMiso { get; init; } = 0x00;
 
     /// <summary>
     /// Virtual time at which a booted RRF arms its first header, see <see cref="BootArmDelay"/>

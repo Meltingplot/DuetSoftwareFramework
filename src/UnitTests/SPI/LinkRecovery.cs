@@ -234,7 +234,7 @@ public class LinkRecovery
     public sealed record RrfOptions(SequenceMismatchHandling SequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool PollWhileDisconnected = false,
         bool RrfFirstOnTie = true, byte UnderrunByte = 0, bool PhaseGuard = false, bool SequenceGuard = false,
         LinkCapabilities Capabilities = LinkCapabilities.None, int TargetTransfer = TargetTransfer, RrfRule DisabledRules = RrfRule.None, bool InjectThroughDsf = false,
-        bool DcsRestartAfterRecovery = false, double BootArmDelay = 0, byte BootWindowMiso = 0xFF);
+        bool DcsRestartAfterRecovery = false, double? BootArmDelay = null, byte BootWindowMiso = 0x00);
 
     private static IEnumerable<TestCaseData> OtherOptions =>
     [
@@ -397,6 +397,23 @@ public class LinkRecovery
             .Select(c => (Case: c, Result: Run(c.Variant, c.Fault, ExtendedRestartOptions(c, poll, RrfRule.None))))
             .Where(r => r.Result.Outcome != Outcome.ResetDetected)
             .Select(r => $"- {r.Case}: {r.Result.Outcome}, {r.Result.Details}")];
+        Assert.That(failures, Is.Empty, string.Join("\n", failures.Take(20)));
+    }
+
+    /// <summary>
+    /// With the fork's RRF, DSF notices a restart within 50 ms of the boot. Without the delay before the first header, DSF and the booted RRF
+    /// waited for each other until a timeout of RRF after 500 ms or 4 s (lab printer, 2026-11-02). Restarts in the connect transfer have no
+    /// connection to notice, and for a second restart the time is taken from the first boot, so both are left out
+    /// </summary>
+    [TestCase(false), TestCase(true)]
+    public void ExtendedLinkNoticesEveryRebootQuickly(bool poll)
+    {
+        System.Text.RegularExpressions.Regex noticed = new(@"noticed \[([^,\]]*)");
+        List<string> failures = [.. GetExtendedRestartCases()
+            .Where(c => c.Variant != Variant.Connect && !c.Mutation.Contains("twice"))
+            .Select(c => (Case: c, Delay: noticed.Match(Run(c.Variant, c.Fault, ExtendedRestartOptions(c, poll, RrfRule.None)).Details).Groups[1].Value))
+            .Where(r => !double.TryParse(r.Delay, System.Globalization.CultureInfo.InvariantCulture, out double ms) || ms >= 50)
+            .Select(r => $"- {r.Case}: noticed {r.Delay} ms after the boot")];
         Assert.That(failures, Is.Empty, string.Join("\n", failures.Take(20)));
     }
 
@@ -710,14 +727,13 @@ public class LinkRecovery
         new TestCaseData(new RrfOptions(PollWhileDisconnected: true)).SetName("RrfRestart_PollWhileDisconnected"),
         new TestCaseData(new RrfOptions(Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("RrfRestart_Extended"),
         new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("RrfRestart_ExtendedPolling"),
-        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, BootArmDelay: 5)).SetName("RrfRestart_BootArmDelay"),
-        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, BootArmDelay: 5)).SetName("RrfRestart_ExtendedBootArmDelay"),
-        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, BootArmDelay: 5, BootWindowMiso: 0x00)).SetName("RrfRestart_BootArmDelayMiso00"),
-        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, BootArmDelay: 5, BootWindowMiso: 0x00))
-            .SetName("RrfRestart_ExtendedBootArmDelayMiso00"),
-        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, BootArmDelay: 5, BootWindowMiso: Consts.FormatCode)).SetName("RrfRestart_BootArmDelayMiso5F"),
-        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, BootArmDelay: 5, BootWindowMiso: Consts.FormatCode))
-            .SetName("RrfRestart_ExtendedBootArmDelayMiso5F")
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, BootArmDelay: 0))
+            .SetName("RrfRestart_ExtendedWithoutBootArmDelay"),
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, BootArmDelay: FakeRrfSpi.ForkBootArmDelay)).SetName("RrfRestart_BootArmDelay"),
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, BootWindowMiso: 0xFF))
+            .SetName("RrfRestart_ExtendedBootWindowFF"),
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, BootWindowMiso: Consts.FormatCode))
+            .SetName("RrfRestart_ExtendedBootWindow5F")
     ];
 
     private static IEnumerable<TestCaseData> RestartsAtFirstNumber => GetRestartCases()
@@ -1025,7 +1041,8 @@ public class LinkRecovery
             Replay = replay,
             RuleHits = ruleHits,
             ExchangeBudget = 2000 + 8 * target,
-            BootArmDelay = options.BootArmDelay,
+            // The fork's RRF, which offers link capabilities, delays its first header after a boot
+            BootArmDelay = options.BootArmDelay ?? ((options.Capabilities != LinkCapabilities.None) ? FakeRrfSpi.ForkBootArmDelay : 0),
             BootWindowMiso = options.BootWindowMiso
         };
 
