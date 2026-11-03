@@ -656,6 +656,29 @@ public class LinkRecovery
         Assert.That(failures, Is.Empty, $"{failures.Count} of {results.Count} DCS restarts break the link:\n" + string.Join("\n", failures.Select(r => $"- {r.Case}: {r.Result.Outcome}, {r.Result.Details}")));
     }
 
+    /// <summary>
+    /// Time from the boot of a restarted RRF until DSF notices the restart, for every restart of the census. On the lab printer, DSF took
+    /// 500 ms or 4000 ms after a watchdog reset, until a timeout of RRF ended a wait of both sides (2026-11-02)
+    /// </summary>
+    /// <param name="options">Firmware end</param>
+    [TestCaseSource(nameof(RestartOptions)), Explicit("Analysis")]
+    public void RebootDetectionTime(RrfOptions options)
+    {
+        System.Text.RegularExpressions.Regex noticed = new(@"noticed \[([^\]]*)\] ms after the boot");
+        List<(Case Case, string Delay)> results = [.. GetRestartCases(options.TargetTransfer, options.Capabilities.HasFlag(LinkCapabilities.ExtendedHeader))
+            .Select(c => (c, noticed.Match(Run(c.Variant, c.Fault, options).Details).Groups[1].Value.Split(", ")[0]))];
+        static string Bucket(string delay) => !double.TryParse(delay, System.Globalization.CultureInfo.InvariantCulture, out double ms) ? delay :
+            (ms < 50) ? "< 50 ms" : (ms < 400) ? "50-400 ms" : (ms < 700) ? "about 500 ms" : (ms < 3500) ? "0.7-3.5 s" : "about 4 s";
+        foreach (var group in results.GroupBy(r => r.Case.Mutation.Contains("DSF before the first arm") ? "DSF before the first arm" : "RRF arms first"))
+        {
+            TestContext.Out.WriteLine($"{group.Key}: " + string.Join(", ", group.GroupBy(r => Bucket(r.Delay)).OrderBy(g => g.Key).Select(g => $"{g.Key} {g.Count()}")));
+        }
+        foreach ((Case c, string delay) in results)
+        {
+            TestContext.Out.WriteLine($"- {c}: {delay} ms");
+        }
+    }
+
     private static IEnumerable<TestCaseData> RestartOptions =>
     [
         new TestCaseData(new RrfOptions()).SetName("RrfRestart"),
@@ -683,7 +706,7 @@ public class LinkRecovery
     /// <summary>
     /// RRF restarts at every exchange of a transfer. DSF must notice it (R6), the link must come back, and nothing DSF sent may reach RRF twice
     /// </summary>
-    [TestCaseSource(nameof(RestartOptions)), Explicit("6 of 128 restarts stay unnoticed when RRF of today restarts right after its sequence number wrapped")]
+    [TestCaseSource(nameof(RestartOptions)), Explicit("5 of 256 restarts stay unnoticed when RRF of today restarts right after its sequence number wrapped")]
     public void RrfRestart(RrfOptions options)
     {
         List<(Case Case, Result Result)> results = [.. GetRestartCases(options.TargetTransfer, options.Capabilities.HasFlag(LinkCapabilities.ExtendedHeader)).Select(c => (c, Run(c.Variant, c.Fault, options)))];
@@ -909,15 +932,21 @@ public class LinkRecovery
         {
             foreach (double bootTime in RestartBootTimes)
             {
-                Case Make(string kind, bool again = false, ushort firstSequenceNumber = 1) =>
-                    new(variant, phase, ExchangeDirection.ToRrf, "Restart", $"RRF restart{kind}, boot {bootTime} ms", new SpiFault(exchange, ExchangeDirection.ToRrf, _ => { }, bootTime, again, firstSequenceNumber));
-                yield return Make("");
-                yield return Make(" twice", again: true);
-                if (variant != Variant.Connect)
+                // At the boot, DSF may exchange right after the falling edge of DataTransfer::Init, before RRF raises TfrRdy for its first header
+                foreach (bool dsfFirst in new[] { false, true })
                 {
-                    // Transfer 1 of RRF has this number, so the one before the target transfer has 1 or the last number before the wrap
-                    yield return Make(" after seq 1", firstSequenceNumber: (ushort)((1 - (target - 2)) & last));
-                    yield return Make($" after seq {last}", firstSequenceNumber: (ushort)((last - (target - 2)) & last));
+                    string race = dsfFirst ? ", DSF before the first arm" : "";
+                    Case Make(string kind, bool again = false, ushort firstSequenceNumber = 1) =>
+                        new(variant, phase, ExchangeDirection.ToRrf, "Restart", $"RRF restart{kind}, boot {bootTime} ms{race}",
+                            new SpiFault(exchange, ExchangeDirection.ToRrf, _ => { }, bootTime, again, firstSequenceNumber, DsfBeforeFirstArm: dsfFirst));
+                    yield return Make("");
+                    yield return Make(" twice", again: true);
+                    if (variant != Variant.Connect)
+                    {
+                        // Transfer 1 of RRF has this number, so the one before the target transfer has 1 or the last number before the wrap
+                        yield return Make(" after seq 1", firstSequenceNumber: (ushort)((1 - (target - 2)) & last));
+                        yield return Make($" after seq {last}", firstSequenceNumber: (ushort)((last - (target - 2)) & last));
+                    }
                 }
             }
         }
@@ -970,10 +999,12 @@ public class LinkRecovery
 
         // Numbers of exchanges after which DSF completed a transfer and noticed a reset of either side
         List<int> dsfTransfers = [], dsfDetections = [];
+        List<double> dsfDetectionTimes = [];
         void OnConnectionLost(object? sender, EventArgs e)
         {
             dsfConnectionLosses++;
             dsfDetections.Add(rrf.Exchanges);
+            dsfDetectionTimes.Add(rrf.Now);
         }
         List<string> dsfSent = [], dsfReceived = [];
         // The fault injection build injects through the SPI device of DSF instead of in RRF
@@ -1035,6 +1066,7 @@ public class LinkRecovery
             {
                 dsfResets++;
                 dsfDetections.Add(rrf.Exchanges);
+            dsfDetectionTimes.Add(rrf.Now);
             }
             dsfTransfers.Add(rrf.Exchanges);
 
@@ -1108,6 +1140,7 @@ public class LinkRecovery
                         return new(Outcome.NoRecovery, rrf.Disconnects > 0, $"DCS cannot connect again after {MaxDcsRestarts} restarts ({e.Message})");
                     }
                     dsfDetections.Add(rrf.Exchanges);
+            dsfDetectionTimes.Add(rrf.Now);
                     rrf.Wait(DcsRestartDelay);
                     dsf = CreateAdapter(rrf, trace);
                 }
@@ -1202,6 +1235,7 @@ public class LinkRecovery
         {
             string restartDetails = $"DSF lost connection {dsfConnectionLosses}x, DSF reset {dsfResets}x, DCS restart {dcsRestarts}x, " +
                 $"RRF restarts in exchange [{string.Join(", ", rrf.Restarts)}], DSF noticed after [{string.Join(", ", dsfDetections)}], " +
+                $"noticed [{string.Join(", ", rrf.Boots.Select(boot => dsfDetectionTimes.Where(t => t >= boot).Select(t => $"{t - boot:F1}").FirstOrDefault("never")))}] ms after the boot, " +
                 $"RRF got [{string.Join(", ", rrf.ReceivedPayloads)}] of [{string.Join(", ", dsfSent)}]";
             if (HasDuplicate(rrf.ReceivedPayloads))
             {

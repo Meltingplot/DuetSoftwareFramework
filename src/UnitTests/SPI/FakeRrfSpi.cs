@@ -113,8 +113,10 @@ public enum RrfRule
 /// <param name="RrfFirstSequenceNumber">Sequence number of the first transfer of RRF, to make it wrap before the fault</param>
 /// <param name="DcsRestartDelay">Instead of corrupting the exchange, DCS dies right before it and a new instance starts after this time in ms</param>
 /// <param name="Mutation">Text form of the mutation for SpiFaultSpec, if it has one</param>
+/// <param name="DsfBeforeFirstArm">At the end of a restart, DSF reacts to the falling edge of DataTransfer::Init and exchanges before RRF raises TfrRdy
+/// for its first header, instead of after it. The DMA of that header is set up before the pin toggles, so the exchange reaches it either way</param>
 public sealed record SpiFault(int Exchange, ExchangeDirection Direction, SpiMutation Mutate, double? RestartBootTime = null, bool RestartAgain = false, ushort RrfFirstSequenceNumber = 1,
-    double? DcsRestartDelay = null, string? Mutation = null);
+    double? DcsRestartDelay = null, string? Mutation = null, bool DsfBeforeFirstArm = false);
 
 /// <summary>
 /// DCS died right before an exchange, see <see cref="SpiFault.DcsRestartDelay"/>
@@ -294,7 +296,23 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     private double? _bootAt;
 
     /// <summary>
-    /// The processor resets: SPI and DMA stop, TfrRdy becomes an output driven low (DataTransfer::Init) and the RAM content is gone
+    /// Virtual times at which a restarted RRF booted
+    /// </summary>
+    public List<double> Boots { get; } = [];
+
+    /// <summary>
+    /// See <see cref="SpiFault.DsfBeforeFirstArm"/>: the rising edge of the first header after a boot is held back until DSF has exchanged
+    /// </summary>
+    private bool _dsfBeforeFirstArm, _holdNextEdge;
+
+    /// <summary>
+    /// Edge that has happened on the pin but that DSF has not seen yet, see <see cref="_holdNextEdge"/>
+    /// </summary>
+    private bool? _heldEdge;
+
+    /// <summary>
+    /// The processor hangs until its watchdog resets it: SPI and DMA stop, so DSF reads 0xFF, and the RAM content is gone. TfrRdy keeps its level
+    /// until DataTransfer::Init drives it low at the boot, as recorded on an MB6HC (M122 P1001, 2026-11-02)
     /// </summary>
     private void Restart(double bootTime, double exchanges)
     {
@@ -302,12 +320,6 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         Restarts.Add(exchanges);
         _dmaActive = false;
         _isConnected = false;
-        _transferReadyHigh = false;
-        if (_pinLevel)
-        {
-            _pinLevel = false;
-            _edges.Enqueue(false);
-        }
 
         _state = InternalTransferState.ExchangingData;
         _rxHeader = _txHeader = default;
@@ -329,6 +341,17 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     private void Boot()
     {
         _bootAt = null;
+        Boots.Add(Now);
+
+        // DataTransfer::Init makes TfrRdy an output driven low, and the SBC task arms the first header 20-30 us later
+        _transferReadyHigh = false;
+        if (_pinLevel)
+        {
+            _pinLevel = false;
+            _edges.Enqueue(false);
+        }
+        _holdNextEdge = _dsfBeforeFirstArm;
+
         _txHeader.FormatCode = Consts.FormatCode;
         _txHeader.ProtocolVersion = Consts.ProtocolVersion;
         WritePayload();
@@ -909,7 +932,27 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         if (_pinLevel != _transferReadyHigh)
         {
             _pinLevel = _transferReadyHigh;
-            _edges.Enqueue(_pinLevel);
+            if (_holdNextEdge)
+            {
+                _holdNextEdge = false;
+                _heldEdge = _pinLevel;
+            }
+            else
+            {
+                _edges.Enqueue(_pinLevel);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Let DSF see the edge it missed by being faster, see <see cref="_holdNextEdge"/>
+    /// </summary>
+    private void ReleaseHeldEdge()
+    {
+        if (_heldEdge is bool level)
+        {
+            _edges.Enqueue(level);
+            _heldEdge = null;
         }
     }
 
@@ -1086,6 +1129,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         }
         if (fault?.RestartBootTime is double bootTime)
         {
+            _dsfBeforeFirstArm = fault.DsfBeforeFirstArm;
             Restart(bootTime, Exchanges - 0.5);
             _restartAgainBootTime = fault.RestartAgain ? bootTime : null;
         }
@@ -1119,6 +1163,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         }
 
         Now += toRrf.Length * MsPerByte;
+        ReleaseHeldEdge();
         InternalTransferState stateBefore = _state;
         if (completed)
         {
@@ -1150,6 +1195,11 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     {
         CheckBudget();
         double end = Now + timeout;
+        if (_edges.Count == 0)
+        {
+            // DSF waits, so the held edge comes before any further exchange
+            ReleaseHeldEdge();
+        }
         while (_edges.Count == 0)
         {
             if (!AdvanceTo(end))
