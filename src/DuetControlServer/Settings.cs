@@ -185,7 +185,7 @@ public sealed class Settings
     /// <summary>
     /// Maximum number of sequential transfer retries
     /// </summary>
-    public int MaxSbcRetries { get; set; } = 3;
+    public int MaxSbcRetries { get; set; } = 10;
 
     /// <summary>
     /// Path to the GPIO chip device node
