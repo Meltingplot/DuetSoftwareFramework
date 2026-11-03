@@ -113,8 +113,10 @@ public enum RrfRule
 /// <param name="RrfFirstSequenceNumber">Sequence number of the first transfer of RRF, to make it wrap before the fault</param>
 /// <param name="DcsRestartDelay">Instead of corrupting the exchange, DCS dies right before it and a new instance starts after this time in ms</param>
 /// <param name="Mutation">Text form of the mutation for SpiFaultSpec, if it has one</param>
+/// <param name="DsfBeforeFirstArm">At the end of a restart, DSF reacts to the falling edge of DataTransfer::Init and exchanges before RRF raises TfrRdy
+/// for its first header, instead of after it. The DMA of that header is set up before the pin toggles, so the exchange reaches it either way</param>
 public sealed record SpiFault(int Exchange, ExchangeDirection Direction, SpiMutation Mutate, double? RestartBootTime = null, bool RestartAgain = false, ushort RrfFirstSequenceNumber = 1,
-    double? DcsRestartDelay = null, string? Mutation = null);
+    double? DcsRestartDelay = null, string? Mutation = null, bool DsfBeforeFirstArm = false);
 
 /// <summary>
 /// DCS died right before an exchange, see <see cref="SpiFault.DcsRestartDelay"/>
@@ -294,7 +296,23 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     private double? _bootAt;
 
     /// <summary>
-    /// The processor resets: SPI and DMA stop, TfrRdy becomes an output driven low (DataTransfer::Init) and the RAM content is gone
+    /// Virtual times at which a restarted RRF booted
+    /// </summary>
+    public List<double> Boots { get; } = [];
+
+    /// <summary>
+    /// See <see cref="SpiFault.DsfBeforeFirstArm"/>: the rising edge of the first header after a boot is held back until DSF has exchanged
+    /// </summary>
+    private bool _dsfBeforeFirstArm, _holdNextEdge;
+
+    /// <summary>
+    /// Edge that has happened on the pin but that DSF has not seen yet, see <see cref="_holdNextEdge"/>
+    /// </summary>
+    private bool? _heldEdge;
+
+    /// <summary>
+    /// The processor hangs until its watchdog resets it: SPI and DMA stop, so DSF reads 0xFF, and the RAM content is gone. TfrRdy keeps its level
+    /// until DataTransfer::Init drives it low at the boot, as recorded on an MB6HC (M122 P1001, 2026-11-02)
     /// </summary>
     private void Restart(double bootTime, double exchanges)
     {
@@ -302,12 +320,6 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         Restarts.Add(exchanges);
         _dmaActive = false;
         _isConnected = false;
-        _transferReadyHigh = false;
-        if (_pinLevel)
-        {
-            _pinLevel = false;
-            _edges.Enqueue(false);
-        }
 
         _state = InternalTransferState.ExchangingData;
         _rxHeader = _txHeader = default;
@@ -329,6 +341,52 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     private void Boot()
     {
         _bootAt = null;
+        Boots.Add(Now);
+
+        // DataTransfer::Init makes TfrRdy an output driven low, and the SBC task arms the first header 20-30 us later
+        _transferReadyHigh = false;
+        if (_pinLevel)
+        {
+            _pinLevel = false;
+            _edges.Enqueue(false);
+        }
+        _holdNextEdge = _dsfBeforeFirstArm;
+        if (BootArmDelay > 0)
+        {
+            _armAt = Now + BootArmDelay;
+            return;
+        }
+        ArmFirstHeader();
+    }
+
+    /// <summary>
+    /// Proposed change: time from DataTransfer::Init to the first header after a boot in ms. A DSF that reacts to the falling edge of Init
+    /// within this time exchanges while no DMA is set up, so that exchange reaches nothing
+    /// </summary>
+    public double BootArmDelay { get; init; }
+
+    /// <summary>
+    /// What DSF reads between DataTransfer::Init and the first header of <see cref="BootArmDelay"/>, while the SPI peripheral is clocked but disabled.
+    /// Not measured, so the census varies it
+    /// </summary>
+    public byte BootWindowMiso { get; init; } = 0xFF;
+
+    /// <summary>
+    /// Virtual time at which a booted RRF arms its first header, see <see cref="BootArmDelay"/>
+    /// </summary>
+    private double? _armAt;
+
+    /// <summary>
+    /// The SBC task of the booted RRF starts its first transfer
+    /// </summary>
+    private void ArmFirstHeader()
+    {
+        _armAt = null;
+        if (BootArmDelay > 0)
+        {
+            // With the delay, DSF has reacted to the falling edge already
+            _holdNextEdge = false;
+        }
         _txHeader.FormatCode = Consts.FormatCode;
         _txHeader.ProtocolVersion = Consts.ProtocolVersion;
         WritePayload();
@@ -909,7 +967,27 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         if (_pinLevel != _transferReadyHigh)
         {
             _pinLevel = _transferReadyHigh;
-            _edges.Enqueue(_pinLevel);
+            if (_holdNextEdge)
+            {
+                _holdNextEdge = false;
+                _heldEdge = _pinLevel;
+            }
+            else
+            {
+                _edges.Enqueue(_pinLevel);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Let DSF see the edge it missed by being faster, see <see cref="_holdNextEdge"/>
+    /// </summary>
+    private void ReleaseHeldEdge()
+    {
+        if (_heldEdge is bool level)
+        {
+            _edges.Enqueue(level);
+            _heldEdge = null;
         }
     }
 
@@ -1036,6 +1114,13 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             Boot();
             return true;
         }
+        if (_armAt is double armAt && armAt <= end)
+        {
+            Trace?.Add($"   {armAt,9:F3} ms: RRF arms its first header");
+            Now = armAt;
+            ArmFirstHeader();
+            return true;
+        }
         if (_deadline < end || (_deadline == end && _rrfFirstOnTie))
         {
             Trace?.Add($"   {_deadline,9:F3} ms: RRF timeout in {_state}{(_isConnected ? ", disconnect" : "")}");
@@ -1075,6 +1160,10 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         {
             Boot();
         }
+        if (_armAt is double armAt && Now >= armAt)
+        {
+            ArmFirstHeader();
+        }
         if (fault?.DcsRestartDelay is double delay)
         {
             // The exchange does not take place
@@ -1086,6 +1175,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         }
         if (fault?.RestartBootTime is double bootTime)
         {
+            _dsfBeforeFirstArm = fault.DsfBeforeFirstArm;
             Restart(bootTime, Exchanges - 0.5);
             _restartAgainBootTime = fault.RestartAgain ? bootTime : null;
         }
@@ -1100,7 +1190,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         int count = completed ? Math.Min(toRrf.Length, _dmaTx.Length) : 0;
         for (int i = 0; i < toRrf.Length; i++)
         {
-            readBuffer[i] = (i < count) ? _dmaTx[i] : completed ? _underrunByte : (byte)0xFF;
+            readBuffer[i] = (i < count) ? _dmaTx[i] : completed ? _underrunByte : (_armAt is not null) ? BootWindowMiso : (byte)0xFF;
         }
         _dmaActive = false;
         string rrfOutput = Convert.ToHexStringLower(readBuffer);
@@ -1119,6 +1209,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         }
 
         Now += toRrf.Length * MsPerByte;
+        ReleaseHeldEdge();
         InternalTransferState stateBefore = _state;
         if (completed)
         {
@@ -1150,6 +1241,11 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     {
         CheckBudget();
         double end = Now + timeout;
+        if (_edges.Count == 0)
+        {
+            // DSF waits, so the held edge comes before any further exchange
+            ReleaseHeldEdge();
+        }
         while (_edges.Count == 0)
         {
             if (!AdvanceTo(end))
