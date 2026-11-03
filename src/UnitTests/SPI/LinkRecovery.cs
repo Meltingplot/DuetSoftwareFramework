@@ -234,7 +234,7 @@ public class LinkRecovery
     public sealed record RrfOptions(SequenceMismatchHandling SequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool PollWhileDisconnected = false,
         bool RrfFirstOnTie = true, byte UnderrunByte = 0, bool PhaseGuard = false, bool SequenceGuard = false,
         LinkCapabilities Capabilities = LinkCapabilities.None, int TargetTransfer = TargetTransfer, RrfRule DisabledRules = RrfRule.None, bool InjectThroughDsf = false,
-        bool DcsRestartAfterRecovery = false, double BootArmDelay = 0);
+        bool DcsRestartAfterRecovery = false, double BootArmDelay = 0, byte BootWindowMiso = 0xFF);
 
     private static IEnumerable<TestCaseData> OtherOptions =>
     [
@@ -711,7 +711,13 @@ public class LinkRecovery
         new TestCaseData(new RrfOptions(Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("RrfRestart_Extended"),
         new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("RrfRestart_ExtendedPolling"),
         new TestCaseData(new RrfOptions(PollWhileDisconnected: true, BootArmDelay: 5)).SetName("RrfRestart_BootArmDelay"),
-        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, BootArmDelay: 5)).SetName("RrfRestart_ExtendedBootArmDelay")
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, BootArmDelay: 5)).SetName("RrfRestart_ExtendedBootArmDelay"),
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, BootArmDelay: 5, BootWindowMiso: 0x00)).SetName("RrfRestart_BootArmDelayMiso00"),
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, BootArmDelay: 5, BootWindowMiso: 0x00))
+            .SetName("RrfRestart_ExtendedBootArmDelayMiso00"),
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, BootArmDelay: 5, BootWindowMiso: Consts.FormatCode)).SetName("RrfRestart_BootArmDelayMiso5F"),
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, BootArmDelay: 5, BootWindowMiso: Consts.FormatCode))
+            .SetName("RrfRestart_ExtendedBootArmDelayMiso5F")
     ];
 
     private static IEnumerable<TestCaseData> RestartsAtFirstNumber => GetRestartCases()
@@ -1019,7 +1025,8 @@ public class LinkRecovery
             Replay = replay,
             RuleHits = ruleHits,
             ExchangeBudget = 2000 + 8 * target,
-            BootArmDelay = options.BootArmDelay
+            BootArmDelay = options.BootArmDelay,
+            BootWindowMiso = options.BootWindowMiso
         };
 
         int dsfConnectionLosses = 0, dcsRestarts = 0, dsfId = 0, dsfResets = 0;
