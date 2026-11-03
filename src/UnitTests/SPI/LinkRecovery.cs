@@ -233,7 +233,8 @@ public class LinkRecovery
     /// </summary>
     public sealed record RrfOptions(SequenceMismatchHandling SequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool PollWhileDisconnected = false,
         bool RrfFirstOnTie = true, byte UnderrunByte = 0, bool PhaseGuard = false, bool SequenceGuard = false,
-        LinkCapabilities Capabilities = LinkCapabilities.None, int TargetTransfer = TargetTransfer, RrfRule DisabledRules = RrfRule.None, bool InjectThroughDsf = false);
+        LinkCapabilities Capabilities = LinkCapabilities.None, int TargetTransfer = TargetTransfer, RrfRule DisabledRules = RrfRule.None, bool InjectThroughDsf = false,
+        bool DcsRestartAfterRecovery = false);
 
     private static IEnumerable<TestCaseData> OtherOptions =>
     [
@@ -628,6 +629,30 @@ public class LinkRecovery
             new Case(e.Variant, e.Phase, ExchangeDirection.ToRrf, "DcsRestart", $"DCS restart after {delay} ms", new SpiFault(e.Exchange, ExchangeDirection.ToRrf, _ => { }, DcsRestartDelay: delay))));
 
     private static readonly double[] DcsRestartDelays = [100, 2000, DcsRestartDelay];
+
+    private static IEnumerable<TestCaseData> DcsStartAfterFaultOptions =>
+    [
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, DcsRestartAfterRecovery: true)).SetName("DcsStartsAfterRecoveredFault"),
+        new TestCaseData(new RrfOptions(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, DcsRestartAfterRecovery: true))
+            .SetName("DcsStartsAfterRecoveredFault_Extended")
+    ];
+
+    /// <summary>
+    /// After every single fault that the link recovers from, DCS stops and a new instance starts at once, while RRF still waits for the next
+    /// transfer. RRF arms that header with TfrRdy low when it armed an odd number of extra exchanges since its last reset, which about one
+    /// recovery in five does, but a new DCS waits for TfrRdy to be high. It must connect anyway, at the latest once RRF's connection timeout
+    /// has reset it. On the lab printer the first start failed after 500 ms, as predicted (2026-11-02)
+    /// </summary>
+    /// <param name="options">Firmware end</param>
+    [TestCaseSource(nameof(DcsStartAfterFaultOptions))]
+    public void DcsStartsAfterRecoveredFault(RrfOptions options)
+    {
+        List<string> failures = [.. GetCases().Where(c => c.Variant != Variant.Connect)
+            .Select(c => (Case: c, Result: Run(c.Variant, c.Fault, options)))
+            .Where(r => r.Result.Outcome == Outcome.DcsRestart)
+            .Select(r => $"- {r.Case}: {r.Result.Details}")];
+        Assert.That(failures, Is.Empty, $"{failures.Count} new DCS instances cannot connect:\n" + string.Join("\n", failures.Take(20)));
+    }
 
     private static IEnumerable<TestCaseData> DcsRestartOptions =>
     [
@@ -1151,6 +1176,23 @@ public class LinkRecovery
             if (cleanInARow < RecoveredTransfers)
             {
                 return new(Outcome.NoRecovery, rrf.Disconnects > 0, $"no {RecoveredTransfers} clean transfers in a row within {MaxTransfersAfterFault}");
+            }
+
+            // DCS stops after the recovery and a new instance starts at once, while RRF still waits for the next transfer
+            if (options.DcsRestartAfterRecovery)
+            {
+                int resetsBefore = rrf.ConnectionResets;
+                double stoppedAt = rrf.Now;
+                dsf = CreateAdapter(rrf, trace);
+                try
+                {
+                    Transfer(false, true);
+                }
+                catch (Exception e) when (!rrf.Budget.IsCancellationRequested)
+                {
+                    return new(Outcome.DcsRestart, rrf.Disconnects > 0, $"the new DCS cannot connect: {e.Message}");
+                }
+                return new(Outcome.Retry, rrf.Disconnects > 0, $"the new DCS connected after {rrf.Now - stoppedAt:F1} ms, RRF reset {rrf.ConnectionResets - resetsBefore}x meanwhile");
             }
         }
         catch (BudgetExceededException)
