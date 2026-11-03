@@ -1676,7 +1676,9 @@ public class SPI : IDiagnostics, ILinkAdapter
             int timeout;
             if (_waitingForFirstTransfer)
             {
-                timeout = _updating ? Consts.IapTimeout : _settings.SbcConnectTimeout;
+                // A running RRF toggles TfrRdy for every exchange it arms, so it may wait at a header with TfrRdy low after an odd number of extra
+                // exchanges since its last reset. Wait until its connection timeout has reset it, which arms the header with TfrRdy high
+                timeout = _updating ? Consts.IapTimeout : Math.Max(_settings.SbcConnectTimeout, _settings.SbcConnectionTimeout + _settings.SbcTransferTimeout);
                 _expectedTfrRdyPinValue = true;
             }
             else
