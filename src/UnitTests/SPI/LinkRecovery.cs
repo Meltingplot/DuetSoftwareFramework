@@ -891,6 +891,105 @@ public class LinkRecovery
         }
     }
 
+    #region Diagnostics
+    /// <summary>
+    /// Counters of the recoveries that DSF reports in M122
+    /// </summary>
+    private static readonly string[] RecoveryCounters =
+    [
+        "Full transfer restarts", "header retries", "data retries", "Transfers sent again", "transfers requested again", "extended link left by RRF", "lost connections", "connection resets"
+    ];
+
+    private static Dictionary<string, int> ReadRecoveryCounters(StringBuilder diagnostics) =>
+        RecoveryCounters.ToDictionary(name => name, name => int.Parse(System.Text.RegularExpressions.Regex.Match(diagnostics.ToString(), $@"{name}: (\d+)").Groups[1].Value));
+
+    /// <summary>
+    /// Warnings of DSF in the trace, see <see cref="TraceLogger"/>
+    /// </summary>
+    private static bool IsDsfWarning(string line) => line.StartsWith("   ") && line.Contains(" ms: DSF ") && !line.Contains(" ms: DSF timeout after ");
+
+    private static IEnumerable<TestCaseData> RecoveryCounterOptions =>
+    [
+        new TestCaseData(new RrfOptions()).SetName("{m}"),
+        new TestCaseData(new RrfOptions(Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2)).SetName("{m}_Extended")
+    ];
+
+    /// <summary>
+    /// Without a fault, M122 of DSF reports no recovery
+    /// </summary>
+    [TestCaseSource(nameof(RecoveryCounterOptions))]
+    public void RecoveryCountersStayZeroWithoutFaults(RrfOptions options)
+    {
+        foreach (Variant variant in Enum.GetValues<Variant>())
+        {
+            StringBuilder diagnostics = new();
+            Result result = Run(variant, null, options, diagnostics: diagnostics);
+            Assert.That(result.Outcome, Is.EqualTo(Outcome.Retry), $"{variant}: {result.Details}");
+            Assert.That(ReadRecoveryCounters(diagnostics).Values, Is.All.Zero, $"{variant}: {diagnostics}");
+        }
+    }
+
+    /// <summary>
+    /// Every single fault that DSF had to deal with shows in M122 of DSF. When the link recovered through the retries of the protocol and DSF
+    /// logged a warning, a counter went up, but none of a reconnect. When DSF noticed a restart of RRF, the connection resets went up.
+    /// A fault in the first transfer is left out, because DCS exits then and a new instance starts with new counters
+    /// </summary>
+    [TestCaseSource(nameof(RecoveryCounterOptions))]
+    public void RecoveryCountersShowEveryFault(RrfOptions options)
+    {
+        List<string> failures = [];
+        foreach (Case c in GetCases().Concat(GetRestartCases(options.TargetTransfer, options.Capabilities.HasFlag(LinkCapabilities.ExtendedHeader))).Where(c => c.Variant != Variant.Connect))
+        {
+            List<string> trace = [];
+            StringBuilder diagnostics = new();
+            Result result = Run(c.Variant, c.Fault, options, trace, diagnostics: diagnostics);
+            Dictionary<string, int> counters = ReadRecoveryCounters(diagnostics);
+            bool counted = result.Outcome switch
+            {
+                Outcome.Retry or Outcome.Slow => (counters.Values.Sum() > 0 || !trace.Any(IsDsfWarning)) && counters["lost connections"] == 0 && counters["connection resets"] == 0,
+                Outcome.ResetDetected => counters["connection resets"] > 0,
+                _ => true
+            };
+            if (!counted)
+            {
+                failures.Add($"- {c}: {result.Outcome}, {string.Join(", ", counters.Select(counter => $"{counter.Key}: {counter.Value}"))}");
+            }
+        }
+        Assert.That(failures, Is.Empty, $"{failures.Count} faults do not show in M122 of DSF:\n" + string.Join("\n", failures.Take(20)));
+    }
+
+    /// <summary>
+    /// Each counter goes up for the recovery it is named after, and no other counter does
+    /// </summary>
+    /// <param name="name">Single fault</param>
+    /// <param name="extended">Whether the link is extended</param>
+    /// <param name="expected">Counters that are not zero</param>
+    [TestCase("BothData / Header / ToDsf / FormatCode / zero", false, "Full transfer restarts: 1")]
+    [TestCase("BothData / HeaderResponse / ToDsf / Response / zero", false, "Full transfer restarts: 1")]
+    [TestCase("NoData / HeaderResponse / ToDsf / Response / zero", false, "Full transfer restarts: 1")]
+    [TestCase("BothData / Header / ToDsf / ChecksumHeader32 / flip bit 96", false, "header retries: 1")]
+    [TestCase("BothData / Data / ToRrf / Payload / flip bit 128", false, "data retries: 1")]
+    [TestCase("BothData / DataResponse / ToDsf / Response / flip bit 0", false, "data retries: 1")]
+    [TestCase("BothData / DataResponse / ToRrf / Response / BadResponse", false, "header retries: 1, Transfers sent again: 1")]
+    [TestCase("BothData / DataResponse / ToDsf / Response / BadResponse", true, "Full transfer restarts: 1, header retries: 1, transfers requested again: 1")]
+    [TestCase("BothData / Header / ToRrf / Restart / RRF restart, boot 100 ms", true, "Full transfer restarts: 1, extended link left by RRF: 1, connection resets: 1")]
+    [TestCase("BothData / Header / ToRrf / Restart / RRF restart, boot 100 ms", false, "Full transfer restarts: 1, connection resets: 1")]
+    [TestCase("BothData / Data / ToDsf / Exchange / BadResponse in first word", false, "Full transfer restarts: 11, header retries: 1, lost connections: 1, connection resets: 1")]
+    public void RecoveryCounter(string name, bool extended, string expected)
+    {
+        RrfOptions options = extended ? new(Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2) : new();
+        Case c = GetCases().Concat(GetRestartCases(options.TargetTransfer, extended)).First(c => c.ToString() == name);
+        StringBuilder diagnostics = new();
+        Run(c.Variant, c.Fault, options, diagnostics: diagnostics);
+        Dictionary<string, int> expectedCounters = RecoveryCounters.ToDictionary(counter => counter, counter => 0);
+        foreach (string counter in expected.Split(", "))
+        {
+            expectedCounters[counter[..counter.IndexOf(':')]] = int.Parse(counter[(counter.IndexOf(':') + 2)..]);
+        }
+        Assert.That(ReadRecoveryCounters(diagnostics), Is.EqualTo(expectedCounters), diagnostics.ToString());
+    }
+    #endregion
+
     #region Faults
     private static readonly (string Name, int Offset, int Size)[] HeaderFields =
     [
@@ -1042,7 +1141,7 @@ public class LinkRecovery
     /// Connect, perform clean transfers, inject the fault into the target transfer and check whether clean transfers follow
     /// </summary>
     private Result Run(Variant variant, SpiFault? fault, RrfOptions options, List<string>? trace = null, List<(string Input, string? Output)>? replay = null,
-        Dictionary<RrfRule, int>? ruleHits = null)
+        Dictionary<RrfRule, int>? ruleHits = null, StringBuilder? diagnostics = null)
     {
         int target = (variant == Variant.Connect) ? 1 : options.TargetTransfer;
         bool activate = options.Capabilities != LinkCapabilities.None && variant != Variant.Connect;
@@ -1296,6 +1395,10 @@ public class LinkRecovery
         finally
         {
             _model.OnConnectionLost -= OnConnectionLost;
+            if (diagnostics is not null)
+            {
+                dsf.PrintDiagnostics(diagnostics);
+            }
         }
 
         if (fault is not null && !(injector is null ? rrf.FaultApplied : injected))
