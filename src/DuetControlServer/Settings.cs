@@ -183,6 +183,11 @@ public sealed class Settings
     public int SbcConnectionTimeout { get; set; } = 4000;
 
     /// <summary>
+    /// Maximum time without a single complete transfer (in ms). DCS stops after it, so that a new instance starts from a clean state
+    /// </summary>
+    public int SbcRestartTimeout { get; set; } = 60000;
+
+    /// <summary>
     /// Maximum number of sequential transfer retries
     /// </summary>
     public int MaxSbcRetries { get; set; } = 10;

@@ -271,6 +271,19 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     public double Now { get; private set; }
 
     /// <summary>
+    /// Virtual time as a time source for DSF
+    /// </summary>
+    public TimeProvider Clock => _clock ??= new VirtualClock(this);
+    private TimeProvider? _clock;
+
+    private sealed class VirtualClock(FakeRrfSpi rrf) : TimeProvider
+    {
+        public override long TimestampFrequency => 1_000_000_000;
+
+        public override long GetTimestamp() => (long)(rrf.Now * 1_000_000);
+    }
+
+    /// <summary>
     /// Number of activation requests RRF processed
     /// </summary>
     public int Activations { get; private set; }

@@ -29,6 +29,12 @@ public class SPI : IDiagnostics, ILinkAdapter
     private readonly Model.ObjectModel _model;
     private readonly ILogger<SPI> _logger;
     private readonly Settings _settings;
+    private readonly TimeProvider _timeProvider;
+
+    /// <summary>
+    /// Timestamp of the last complete transfer, see <see cref="Settings.SbcRestartTimeout"/>
+    /// </summary>
+    private long _lastCompleteTransfer;
 
     // General transfer variables
     private readonly IInputGpioPin _transferReadyPin;
@@ -125,13 +131,17 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// <param name="settings">Settings</param>
     /// <param name="transferReadyPin">Transfer ready pin</param>
     /// <param name="spiDevice">SPI device</param>
-    internal SPI(EventLogger eventLogger, Model.ObjectModel model, ILogger<SPI> logger, IOptions<Settings> settings, IInputGpioPin transferReadyPin, ISpiDevice spiDevice)
+    /// <param name="timeProvider">Time source of <see cref="Settings.SbcRestartTimeout"/>, or null for the system time</param>
+    internal SPI(EventLogger eventLogger, Model.ObjectModel model, ILogger<SPI> logger, IOptions<Settings> settings, IInputGpioPin transferReadyPin, ISpiDevice spiDevice,
+        TimeProvider? timeProvider = null)
     {
         // Initialize variables
         _eventLogger = eventLogger;
         _model = model;
         _logger = logger;
         _settings = settings.Value;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _lastCompleteTransfer = _timeProvider.GetTimestamp();
         _bufferSize = settings.Value.SbcBufferSize;
         _rxBuffer = new byte[_bufferSize];
 
@@ -288,6 +298,13 @@ public class SPI : IDiagnostics, ILinkAdapter
         int retry = 0;
         while (!cancellationToken.IsCancellationRequested)
         {
+            // Without any complete transfer for this long, the link is stuck in a way that no timeout ends, e.g. when both sides keep
+            // answering each other out of step. Stop DCS, so that systemd starts a new instance and RRF times out and resets meanwhile
+            if (!_updating && _timeProvider.GetElapsedTime(_lastCompleteTransfer).TotalMilliseconds > _settings.SbcRestartTimeout)
+            {
+                throw new TimeoutException($"No transfer with RepRapFirmware completed within {_settings.SbcRestartTimeout} ms");
+            }
+
             try
             {
                 // Don't retry forever
@@ -351,6 +368,7 @@ public class SPI : IDiagnostics, ILinkAdapter
                 _connected = true;
 
                 // Transfer OK
+                _lastCompleteTransfer = _timeProvider.GetTimestamp();
                 _numMeasuredTransfers++;
                 if (_maxRxSize < _rxHeader.DataLength)
                 {
