@@ -343,7 +343,7 @@ public class LinkRecovery
         var cases = results.Select(r => new
         {
             Name = r.Case.ToString(),
-            Spec = new SpiFaultSpec(Kind(r.Case.Variant), (SpiExchange)r.Case.Fault.Exchange, r.Case.Fault.Direction == ExchangeDirection.ToRrf, r.Case.Fault.Mutation!).ToString(),
+            Spec = new SpiFaultSpec(Kind(r.Case.Variant), (SpiExchange)r.Case.Fault.Exchange, Enum.Parse<SpiFaultDirection>(r.Case.Fault.Direction.ToString()), r.Case.Fault.Mutation!).ToString(),
             Expected = r.Result.Outcome.ToString(),
             ExpectedByKind = results
                 .Where(o => o.Case.Phase == r.Case.Phase && o.Case.Direction == r.Case.Direction && o.Case.Field == r.Case.Field && o.Case.Mutation == r.Case.Mutation)
@@ -1012,6 +1012,79 @@ public class LinkRecovery
     }
     #endregion
 
+    #region ESD events
+    /// <summary>
+    /// SPI events of the piezo ESD test on the lab printer (2026-11-03) as they reached the link, with the counters they leave in M122 of DSF.
+    /// No single wrong bit or byte gives the CRCs DSF logged for the data events, so these corrupt two bytes
+    /// </summary>
+    private static readonly (string Time, Variant Variant, string Phase, int Exchange, ExchangeDirection Direction, string Mutation, string Expected)[] EsdEvents =
+    [
+        ("14:13:00, 14:15:12, 16:09:28", Variant.RrfData, "Data", 2, ExchangeDirection.ToDsf, "ones 4 2", "data retries: 1"),
+        ("16:10:18", Variant.BothData, "Data", 2, ExchangeDirection.ToDsf, "ones 4 2", "data retries: 1"),
+        ("16:09:14", Variant.BothData, "Header", 0, ExchangeDirection.Both, "flip 100", "header retries: 1")
+    ];
+
+    private static SpiFault EsdFault(ExchangeDirection direction, int exchange, string mutation) =>
+        new(exchange, direction, data => SpiFaultSpec.Apply(mutation, data), Mutation: mutation);
+
+    private static IEnumerable<TestCaseData> EsdEventOptions =>
+        EsdEvents.SelectMany(e => new[] { false, true }.Select(extended => new TestCaseData(e.Time, extended).SetName($"EsdEventIsRepaired({e.Time}{(extended ? ", extended" : "")})")));
+
+    /// <summary>
+    /// Each SPI event of the ESD test is repaired by the retries of the protocol, without a restart of the full transfer
+    /// </summary>
+    /// <param name="time">Time of the event on the lab printer</param>
+    /// <param name="extended">Whether the link is extended</param>
+    [TestCaseSource(nameof(EsdEventOptions))]
+    public void EsdEventIsRepaired(string time, bool extended)
+    {
+        var e = EsdEvents.Single(e => e.Time == time);
+        RrfOptions options = extended ? new(Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2) : new();
+        StringBuilder diagnostics = new();
+        Result result = Run(e.Variant, EsdFault(e.Direction, e.Exchange, e.Mutation), options, diagnostics: diagnostics);
+        Assert.That(result.Outcome, Is.EqualTo(Outcome.Retry), result.Details);
+
+        Dictionary<string, int> expectedCounters = RecoveryCounters.ToDictionary(counter => counter, counter => 0);
+        foreach (string counter in e.Expected.Split(", "))
+        {
+            expectedCounters[counter[..counter.IndexOf(':')]] = int.Parse(counter[(counter.IndexOf(':') + 2)..]);
+        }
+        Assert.That(ReadRecoveryCounters(diagnostics), Is.EqualTo(expectedCounters), diagnostics.ToString());
+    }
+
+    /// <summary>
+    /// Write the SPI events of the ESD test for the fault injection build on the lab printer, each repeated LAB_ESD_REPEATS times (default 5),
+    /// in the format of <see cref="WriteHardwareCases"/>
+    /// </summary>
+    [Test, Explicit("Writes the cases for src/LabPrinterTests/SpiFaultInjection.cs")]
+    public void WriteEsdCases()
+    {
+        static SpiTransferKind Kind(Variant variant) => variant switch
+        {
+            Variant.NoData => SpiTransferKind.NoData,
+            Variant.BothData => SpiTransferKind.BothData,
+            Variant.DsfData => SpiTransferKind.DsfData,
+            _ => SpiTransferKind.RrfData
+        };
+
+        RrfOptions options = new(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2);
+        int repeats = int.TryParse(Environment.GetEnvironmentVariable("LAB_ESD_REPEATS"), out int value) ? value : 5;
+        var cases = EsdEvents.SelectMany(e =>
+        {
+            SpiFault fault = EsdFault(e.Direction, e.Exchange, e.Mutation);
+            Dictionary<string, string> expectedByKind = Enum.GetValues<Variant>().Where(variant => variant != Variant.Connect)
+                .ToDictionary(variant => Kind(variant).ToString(), variant => Run(variant, fault, options).Outcome.ToString());
+            string spec = new SpiFaultSpec(Kind(e.Variant), (SpiExchange)e.Exchange, Enum.Parse<SpiFaultDirection>(e.Direction.ToString()), e.Mutation).ToString();
+            return Enumerable.Range(1, repeats).Select(n => new { Name = $"ESD {e.Time} #{n}", Spec = spec, Expected = expectedByKind[Kind(e.Variant).ToString()], ExpectedByKind = expectedByKind });
+        }).ToList();
+
+        string path = Environment.GetEnvironmentVariable("LAB_SPI_FAULT_CASES") is { Length: > 0 } file ? file : System.IO.Path.Combine(TestContext.CurrentContext.WorkDirectory, "spi-fault-cases-esd.json");
+        System.IO.File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(new { Configuration = "esd", Options = options.ToString(), Cases = cases },
+            new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        TestContext.Out.WriteLine($"{cases.Count} cases written to {path}");
+    }
+    #endregion
+
     #region Faults
     private static readonly (string Name, int Offset, int Size)[] HeaderFields =
     [
@@ -1056,7 +1129,7 @@ public class LinkRecovery
             for (int exchange = 0; exchange < exchanges.Count; exchange++)
             {
                 (string phase, int size, var fields) = exchanges[exchange];
-                foreach (ExchangeDirection direction in Enum.GetValues<ExchangeDirection>())
+                foreach (ExchangeDirection direction in (ExchangeDirection[])[ExchangeDirection.ToRrf, ExchangeDirection.ToDsf])
                 {
                     // The mutations are written as SpiFaultSpec text, so that the fault injection build applies the same ones on the real link
                     Case Make(string field, string mutation, string spec) =>
@@ -1223,7 +1296,7 @@ public class LinkRecovery
                 Variant.DsfData => SpiTransferKind.DsfData,
                 _ => SpiTransferKind.RrfData
             };
-            injector.Arm(new SpiFaultSpec(kind, exchange, armed.Direction == ExchangeDirection.ToRrf, armed.Mutation!));
+            injector.Arm(new SpiFaultSpec(kind, exchange, Enum.Parse<SpiFaultDirection>(armed.Direction.ToString()), armed.Mutation!));
         }
         SpiAdapter CreateAdapter(FakeRrfSpi rrf, List<string>? trace) => CreateSpiAdapter(rrf, trace, injector, sbcRestartTimeout: options.SbcRestartTimeout);
         SpiAdapter dsf = CreateAdapter(rrf, trace);

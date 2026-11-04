@@ -41,7 +41,12 @@ public enum ExchangeDirection
     /// <summary>
     /// Bytes DSF receives from RRF
     /// </summary>
-    ToDsf
+    ToDsf,
+
+    /// <summary>
+    /// Bytes in both directions of the same exchange, as a disturbance on both data lines. Not a single fault, so the census leaves it out
+    /// </summary>
+    Both
 }
 
 /// <summary>
@@ -1197,7 +1202,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             Restart(bootTime, Exchanges - 0.5);
             _restartAgainBootTime = fault.RestartAgain ? bootTime : null;
         }
-        else if (fault?.Direction == ExchangeDirection.ToRrf)
+        else if (fault?.Direction is ExchangeDirection.ToRrf or ExchangeDirection.Both)
         {
             fault.Mutate(toRrf);
         }
@@ -1214,7 +1219,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         string rrfOutput = Convert.ToHexStringLower(readBuffer);
         int receivedBefore = ReceivedPayloads.Count;
 
-        if (fault?.Direction == ExchangeDirection.ToDsf && fault.RestartBootTime is null)
+        if ((fault?.Direction is ExchangeDirection.ToDsf or ExchangeDirection.Both) && fault.RestartBootTime is null)
         {
             fault.Mutate(readBuffer);
         }

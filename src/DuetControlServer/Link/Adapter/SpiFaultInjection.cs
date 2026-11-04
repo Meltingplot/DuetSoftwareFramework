@@ -69,19 +69,40 @@ public enum SpiTransferKind
 }
 
 /// <summary>
+/// Bytes of an exchange that are corrupted
+/// </summary>
+public enum SpiFaultDirection
+{
+    /// <summary>
+    /// Bytes DSF sends
+    /// </summary>
+    ToRrf,
+
+    /// <summary>
+    /// Bytes DSF receives
+    /// </summary>
+    ToDsf,
+
+    /// <summary>
+    /// Bytes in both directions of the same exchange, as a disturbance on both data lines
+    /// </summary>
+    Both
+}
+
+/// <summary>
 /// Single corrupted SPI exchange, as the link census (UnitTests/SPI/LinkRecovery.cs) injects it into its port of RRF
 /// and a build with SPI_FAULT_INJECTION injects it into the real link
 /// </summary>
 /// <param name="Kind">Kind of transfer to hit</param>
 /// <param name="Exchange">Exchange to corrupt</param>
-/// <param name="ToRrf">Whether the bytes DSF sends are corrupted instead of the bytes it receives</param>
+/// <param name="Direction">Bytes that are corrupted</param>
 /// <param name="Mutation">Mutation of the bytes, see <see cref="Apply"/></param>
-public sealed record SpiFaultSpec(SpiTransferKind Kind, SpiExchange Exchange, bool ToRrf, string Mutation)
+public sealed record SpiFaultSpec(SpiTransferKind Kind, SpiExchange Exchange, SpiFaultDirection Direction, string Mutation)
 {
     /// <summary>
     /// Text form, which <see cref="Parse"/> reads
     /// </summary>
-    public override string ToString() => $"{Kind} {Exchange} {(ToRrf ? "ToRrf" : "ToDsf")} {Mutation}";
+    public override string ToString() => $"{Kind} {Exchange} {Direction} {Mutation}";
 
     /// <summary>
     /// Read a fault from its text form, e.g. "BothData HeaderResponse ToDsf flip 2"
@@ -92,12 +113,12 @@ public sealed record SpiFaultSpec(SpiTransferKind Kind, SpiExchange Exchange, bo
     public static SpiFaultSpec Parse(string text)
     {
         string[] parts = text.Trim().Split(' ', 4, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length != 4 || !Enum.TryParse(parts[0], out SpiTransferKind kind) || !Enum.TryParse(parts[1], out SpiExchange exchange) || parts[2] is not ("ToRrf" or "ToDsf"))
+        if (parts.Length != 4 || !Enum.TryParse(parts[0], out SpiTransferKind kind) || !Enum.TryParse(parts[1], out SpiExchange exchange) || !Enum.GetNames<SpiFaultDirection>().Contains(parts[2]))
         {
             throw new FormatException($"Invalid SPI fault: {text}");
         }
         Apply(parts[3], []);
-        return new SpiFaultSpec(kind, exchange, parts[2] == "ToRrf", parts[3]);
+        return new SpiFaultSpec(kind, exchange, Enum.Parse<SpiFaultDirection>(parts[2]), parts[3]);
     }
 
     /// <summary>
@@ -215,7 +236,7 @@ public sealed class FaultInjectingSpiDevice(ISpiDevice device, string? controlFi
 
         // Only the DSF part of the kind is known before the headers are exchanged
         SpiFaultSpec? fault = (_armed is not null && _armed.Exchange == exchange && Matches(_armed.Kind, _txDataLength, (exchange == SpiExchange.Header) ? null : _rxDataLength)) ? _armed : null;
-        if (fault?.ToRrf == true)
+        if (fault?.Direction is SpiFaultDirection.ToRrf or SpiFaultDirection.Both)
         {
             byte[] corrupted = writeBuffer.ToArray();
             SpiFaultSpec.Apply(fault.Mutation, corrupted);
@@ -234,7 +255,7 @@ public sealed class FaultInjectingSpiDevice(ISpiDevice device, string? controlFi
         }
         if (fault is not null)
         {
-            if (!fault.ToRrf)
+            if (fault.Direction is SpiFaultDirection.ToDsf or SpiFaultDirection.Both)
             {
                 SpiFaultSpec.Apply(fault.Mutation, readBuffer);
             }
