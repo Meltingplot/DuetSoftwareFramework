@@ -20,8 +20,10 @@ public class SpiFaultInjectionTests
     public void SpecRoundTrip()
     {
         SpiFaultSpec fault = SpiFaultSpec.Parse(" BothData HeaderResponse ToDsf flip 2 ");
-        Assert.That(fault, Is.EqualTo(new SpiFaultSpec(SpiTransferKind.BothData, SpiExchange.HeaderResponse, false, "flip 2")));
+        Assert.That(fault, Is.EqualTo(new SpiFaultSpec(SpiTransferKind.BothData, SpiExchange.HeaderResponse, SpiFaultDirection.ToDsf, "flip 2")));
         Assert.That(SpiFaultSpec.Parse(fault.ToString()), Is.EqualTo(fault));
+        Assert.That(SpiFaultSpec.Parse("Any Header Both flip 100"), Is.EqualTo(new SpiFaultSpec(SpiTransferKind.Any, SpiExchange.Header, SpiFaultDirection.Both, "flip 100")));
+        Assert.That(() => SpiFaultSpec.Parse("BothData HeaderResponse 1 flip 2"), Throws.TypeOf<FormatException>());
         Assert.That(() => SpiFaultSpec.Parse("BothData HeaderResponse Sideways flip 2"), Throws.TypeOf<FormatException>());
         Assert.That(() => SpiFaultSpec.Parse("BothData HeaderResponse ToRrf twist 2"), Throws.TypeOf<FormatException>());
     }
@@ -119,5 +121,21 @@ public class SpiFaultInjectionTests
         {
             System.IO.File.Delete(file);
         }
+    }
+
+    [Test]
+    public void BothDirectionsAreCorrupted()
+    {
+        FirmwareStub firmware = new();
+        FaultInjectingSpiDevice injector = new(firmware, null, NullLogger.Instance);
+        injector.Arm(SpiFaultSpec.Parse("Any HeaderResponse Both flip 2"));
+        byte[] header = new byte[16];
+        header[0] = Consts.FormatCode;
+        injector.TransferFullDuplex(header, new byte[16]);
+
+        byte[] rx = new byte[4];
+        injector.TransferFullDuplex(BitConverter.GetBytes(TransferResponse.Success), rx);
+        Assert.That(BitConverter.ToUInt32(firmware.Received[^1]), Is.EqualTo(TransferResponse.Success ^ 4), "sent to RRF");
+        Assert.That(BitConverter.ToUInt32(rx), Is.EqualTo(TransferResponse.Success ^ 4), "received from RRF");
     }
 }
