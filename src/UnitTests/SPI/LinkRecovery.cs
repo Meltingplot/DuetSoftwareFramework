@@ -969,6 +969,7 @@ public class LinkRecovery
     [TestCase("NoData / HeaderResponse / ToDsf / Response / zero", false, "Full transfer restarts: 1")]
     [TestCase("BothData / Header / ToDsf / ChecksumHeader32 / flip bit 96", false, "header retries: 1")]
     [TestCase("BothData / Data / ToRrf / Payload / flip bit 128", false, "data retries: 1")]
+    [TestCase("RrfData / Data / ToDsf / Payload / flip bit 128", true, "data retries: 1")]
     [TestCase("BothData / DataResponse / ToDsf / Response / flip bit 0", false, "data retries: 1")]
     [TestCase("BothData / DataResponse / ToRrf / Response / BadResponse", false, "header retries: 1, Transfers sent again: 1")]
     [TestCase("BothData / DataResponse / ToDsf / Response / BadResponse", true, "Full transfer restarts: 1, header retries: 1, transfers requested again: 1")]
@@ -987,6 +988,27 @@ public class LinkRecovery
             expectedCounters[counter[..counter.IndexOf(':')]] = int.Parse(counter[(counter.IndexOf(':') + 2)..]);
         }
         Assert.That(ReadRecoveryCounters(diagnostics), Is.EqualTo(expectedCounters), diagnostics.ToString());
+    }
+
+    /// <summary>
+    /// A bit error in the data of RRF that only DSF got wrong is repaired by exchanging the data again, which RRF does on a bad data checksum
+    /// of either side, instead of restarting the full transfer. On the extended link that restart even took a second one
+    /// </summary>
+    [TestCaseSource(nameof(RecoveryCounterOptions))]
+    public void BadDataOnlyDsfGotIsExchangedAgain(RrfOptions options)
+    {
+        List<string> failures = [];
+        foreach (Case c in GetCases().Where(c => c.Variant is Variant.BothData or Variant.RrfData && c.Phase == "Data" && c.Direction == ExchangeDirection.ToDsf && c.Mutation.StartsWith("flip bit")))
+        {
+            StringBuilder diagnostics = new();
+            Result result = Run(c.Variant, c.Fault, options, diagnostics: diagnostics);
+            Dictionary<string, int> counters = ReadRecoveryCounters(diagnostics);
+            if (result.Outcome != Outcome.Retry || counters.Any(counter => counter.Key != "data retries" && counter.Value != 0) || counters["data retries"] > 1)
+            {
+                failures.Add($"- {c}: {result.Outcome}, {string.Join(", ", counters.Where(counter => counter.Value != 0).Select(counter => $"{counter.Key}: {counter.Value}"))}");
+            }
+        }
+        Assert.That(failures, Is.Empty, $"{failures.Count} bit errors in the data of RRF are not repaired by a single data retry:\n" + string.Join("\n", failures.Take(20)));
     }
     #endregion
 
