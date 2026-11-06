@@ -230,6 +230,7 @@ flowchart TD
   | M28/M29/M30 | Begin / end SD write, delete file |
   | M36/M38/M39 | File info (incl. thumbnails), CRC32, SD volume info |
   | M98 | Mark a macro as pausable |
+  | M98.n | Start a macro on another channel, n as in M118 P (2 Aux, 3 HTTP, 4 Telnet, 5 Aux2). Returns once it is queued, `result` is 1 if the channel is busy |
   | M111 P-1 | Set the DCS log level |
   | M112 | Emergency stop via the link interface |
   | M118 P6 | Publish over MQTT |
