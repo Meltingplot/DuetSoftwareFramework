@@ -58,7 +58,20 @@ The separated code runs after the macro has finished (`M98 P"t.g"`, the codes of
 
 **Possible wider effect, not observed:** any code DSF sends on these channels may hang, not only M98. DSF moves a priority code to any idle channel if none with the same compatibility is idle (`CodeProcessor.cs:223-236`), which can include USB.
 
+**Wanted (Tim, 2026-11-06):** with a USB host connected, the USB channels should be usable with `M98.n`.
+
+- By the code above this should already work while the host has the port open, because the reset only runs while `IsConnected()` is false. Not tested: the lab printer has no USB cable to the SBC.
+- DSF cannot decide this by itself, because `inputs[]` does not say whether a host is connected.
+
+**Proposed fix, not built or tested:** in RRF, leave codes from DSF alone in `GCodeBuffer::DiscardPartialLine`, in the style of `GCodeBuffer::Enable`:
+
+```cpp
+IF_NOT_BINARY(stringParser.DiscardPartialLine());
+```
+
+A partial line can only be a text line, because `GCodeBuffer::Put` clears `isBinaryBuffer` (`GCodeBuffer.cpp:295`). The USB channels would then run codes from DSF with or without a host, so `M98.n` would not have to depend on that.
+
 **Next steps:**
-1. Prove the cause: send a plain code such as `G4 P1` on the USB channel with no host, and repeat it with a host connected.
-2. If it is confirmed, report it to Duet3D with the versions above.
-3. Once it is fixed, add `1 => USB` and `7 => USB2` back to the `M98.n` table in `MCodeHandler.cs`.
+1. Build the fix and repeat the lab test on USB and USB2 without a host. Repeat it with a host that has the port open, which needs a USB cable.
+2. Add `1 => USB` and `7 => USB2` back to the `M98.n` table in `MCodeHandler.cs`. Do this only together with an RRF release that has the fix, otherwise a call without a host returns success and the channel stays busy.
+3. Report it to Duet3D with the versions above, as the files are unchanged against upstream.
