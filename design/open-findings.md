@@ -61,7 +61,7 @@ The separated code runs after the macro has finished (`M98 P"t.g"`, the codes of
 **Wanted (Tim, 2026-11-06):** with a USB host connected, the USB channels should be usable with `M98.n`.
 
 - By the code above this should already work while the host has the port open, because the reset only runs while `IsConnected()` is false. Not tested: the lab printer has no USB cable to the SBC.
-- DSF cannot decide this by itself, because `inputs[]` does not say whether a host is connected.
+- `inputs[]` does not say whether a host is connected. Only the text reply of `M575 P0` and `M575 P1` does (`Platform.cpp:2412-2425`), so DSF would have to send that code and parse its reply before every `M98.1` or `M98.7`.
 
 **Proposed fix, not built or tested:** in RRF, leave codes from DSF alone in `GCodeBuffer::DiscardPartialLine`, in the style of `GCodeBuffer::Enable`:
 
