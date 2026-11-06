@@ -43,6 +43,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection]] [dotnet t
 | `TriggerMacros.ReportFirmwareTriggerWithM581Point1` | `M581.1 T#` and `M581.1 T# R<n>` were refused without P | DSF #63 (upstream still has it) |
 | `TriggerMacros.ReportSbcTriggerWithM581` | A plain `M581 T#` report deleted a trigger that DSF evaluates | DSF #63 (upstream still has it) |
 | `TriggerMacros.StringLiteralInExpression` (explicit) | M581.1 with a string literal in its expression hangs RRF 3.7 | Open (upstream RRF) |
+| `MacrosOnOtherChannels.TriggerKeepsFiringWhileMacroRuns` | No bug: M98.3 starts a macro on HTTP from a trigger macro and the trigger keeps firing | New in M98.n |
 | `LinkSoak.NoLostConnectionWhileIdle` (explicit) | TfrRdy timeouts every 15 to 30 minutes (DSF 3.7.0-rc.1) | Upstream 46886f5d |
 
 ## SPI fault injection

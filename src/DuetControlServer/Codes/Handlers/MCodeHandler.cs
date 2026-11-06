@@ -13,6 +13,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -25,9 +26,12 @@ namespace DuetControlServer.Codes.Handlers;
 /// <summary>
 /// Class that processes M-codes in the control server
 /// </summary>
+/// <param name="channelManager">Channel manager</param>
+/// <param name="codeFactory">Code factory</param>
 /// <param name="codeProcessor">Code processor</param>
 /// <param name="commandFactory">Command factory</param>
 /// <param name="eventLogger">Event logger</param>
+/// <param name="expressions">Expression evaluator</param>
 /// <param name="fileInfoParser">File info parser</param>
 /// <param name="filePathResolver">File path resolver</param>
 /// <param name="diagnosticsProvider">Diagnostics provider</param>
@@ -41,10 +45,13 @@ namespace DuetControlServer.Codes.Handlers;
 /// <param name="lifetime">Host application lifetime</param>
 /// <param name="settings">Settings</param>
 public class MCodeHandler(
+    Link.Channel.Manager channelManager,
+    CodeFactory codeFactory,
     CodeProcessor codeProcessor,
     CommandFactory commandFactory,
     DiagnosticsProvider diagnosticsProvider,
     EventLogger eventLogger,
+    Meta.Expressions expressions,
     FileInfoParser fileInfoParser,
     FilePathResolver filePathResolver,
     LinkInterface linkInterface,
@@ -584,9 +591,86 @@ public class MCodeHandler(
                 }
                 throw new OperationCanceledException();
 
-            // Flag current macro file as (not) pausable
+            // Flag current macro file as (not) pausable or start a macro on another code channel.
+            // M98.n has the same parameters as M98 and n is the channel number of M118 P
             case 98:
                 {
+                    if (code.MinorNumber > 0)
+                    {
+                        if (await codeProcessor.FlushAsync(code, evaluateExpressions: false, cancellationToken: cancellationToken))
+                        {
+                            CodeChannel? channel = code.MinorNumber switch
+                            {
+                                1 => CodeChannel.USB,
+                                2 => CodeChannel.Aux,
+                                3 => CodeChannel.HTTP,
+                                4 => CodeChannel.Telnet,
+                                5 => CodeChannel.Aux2,
+                                7 => CodeChannel.USB2,
+                                _ => null
+                            };
+                            if (channel is null)
+                            {
+                                return new Message(MessageType.Error, $"Invalid code channel number {code.MinorNumber}");
+                            }
+                            if (channel == code.Channel)
+                            {
+                                return new Message(MessageType.Error, "Use M98 to start a macro on the same code channel");
+                            }
+
+                            using (await model.AccessReadOnlyAsync(cancellationToken))
+                            {
+                                if (model.Inputs[channel.Value] is null)
+                                {
+                                    return new Message(MessageType.Error, "Requested code channel has been disabled");
+                                }
+                            }
+
+                            // Expressions may use local variables, which exist only on this channel, so they must be evaluated here.
+                            // Their values remain expressions so that the macro gets them with the same types as from M98
+                            List<CodeParameter> parameters = [];
+                            foreach (CodeParameter parameter in code.Parameters)
+                            {
+                                if (parameter.IsExpression)
+                                {
+                                    string value = await expressions.EvaluateExpressionToStringAsync(code, ((string)parameter).Trim(), false, true, cancellationToken);
+                                    parameters.Add(new CodeParameter(parameter.Letter, value.StartsWith('{') ? value : '{' + value + '}', false, false));
+                                }
+                                else
+                                {
+                                    parameters.Add(parameter);
+                                }
+                            }
+
+                            await expressions.EvaluateAsync(code, true, cancellationToken);
+                            string fileName = code.GetString('P');
+                            if (!File.Exists(await filePathResolver.ToPhysicalAsync(fileName, FileDirectory.System, cancellationToken)))
+                            {
+                                return new Message(MessageType.Error, $"Macro file {fileName} not found");
+                            }
+
+                            // This is a regular M98 for the other channel
+                            Commands.Code macroCode = codeFactory.Create();
+                            macroCode.Flags = CodeFlags.Asynchronous;
+                            macroCode.Channel = channel.Value;
+                            macroCode.Type = CodeType.MCode;
+                            macroCode.MajorNumber = 98;
+                            macroCode.Parameters = parameters;
+
+                            // Don't queue it if the channel is busy, the caller may check 'result' and try again.
+                            // IsIdle alone does not do because a message box waiting for acknowledgement is on a stack level without a file
+                            if (channelManager.IsWaitingForAcknowledgment(channel.Value) || !codeProcessor.Processors.Value[(int)channel.Value].IsIdle(macroCode))
+                            {
+                                logger.LogDebug("Not starting macro file {File} because channel {Channel} is busy", fileName, channel);
+                                return new Message(MessageType.Warning, string.Empty);
+                            }
+
+                            await macroCode.ExecuteAsync();
+                            return new Message();
+                        }
+                        throw new OperationCanceledException();
+                    }
+
                     if (code.TryGetInt('R', out int rParam))
                     {
                         if (await codeProcessor.FlushAsync(code, cancellationToken: cancellationToken))
