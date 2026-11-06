@@ -23,6 +23,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection]] [dotnet t
 - Category `Restart`: firmware restarts (`M122 P1001`; on the fork, the lost link also triggers an E-stop and switches ATX off), DCS restarts and M999.
 - Category `Trigger`: a temporary trigger 30 with `sys/trigger30.g`. These tests are skipped if the machine uses either.
 - Category `FaultInjection` (explicit): single corrupted SPI exchanges. A fault that breaks the link costs a DCS restart and M999, and on the fork the lost link also triggers an E-stop and switches ATX off.
+- Category `Approval` (explicit): `IntrusiveCodes`, codes that change the state of the machine, such as M112, M929 or a test file in `0:/gcodes`. Tim decides on each run, see `design/lab-test-plan.md`. Run one with `--filter "FullyQualifiedName~IntrusiveCodes.M112StaysHaltedUntilM999"`.
 - Explicit only: the 30-minute soak, and the M581.1 string literal test, which hangs RRF until its watchdog resets it.
 - Never: print jobs, motion or heaters.
 - A test that leaves a channel stuck restarts DCS and sends M999 before it fails.
@@ -44,7 +45,21 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection]] [dotnet t
 | `TriggerMacros.ReportSbcTriggerWithM581` | A plain `M581 T#` report deleted a trigger that DSF evaluates | DSF #63 (upstream still has it) |
 | `TriggerMacros.StringLiteralInExpression` (explicit) | M581.1 with a string literal in its expression hangs RRF 3.7 | Open (upstream RRF) |
 | `MacrosOnOtherChannels.TriggerKeepsFiringWhileMacroRuns` | No bug: M98.n starts a macro on Aux, HTTP, Telnet or Aux2 from a trigger macro and the trigger keeps firing | New in M98.n |
+| `MacrosOnOtherChannels.CallIsRefused` | No bug: calls M98.n refuses, including USB and USB2 | New in M98.n |
+| `SelfTestAutostart.FlowStartsAfterBootAndCodesGetAnswers` | No bug: the machine starts its self-test with M98.3 after a boot, and M409 from a client gets answers meanwhile | New in M98.n |
+| `TriggerMacros.RrfExpressionReplacesSbcTrigger` | An M581.1 expression that RRF evaluates left the old trigger running in DSF | DSF #67 (upstream still has it) |
+| `TriggerMacros.DisabledSbcTriggerDoesNotFire` | A trigger that DSF evaluates fired with `R-1` while not printing | DSF #63 (upstream still has it) |
+| `LineChecksums.*` | No bug: a wrong CRC, a missing CRC or a wrong line number ends a macro | New in the line checksums |
+| `CodeReplies.M36MissingFileIsValidJson` | M36 replied with invalid JSON for a missing file | DSF #72 |
+| `CodeReplies.M39ReportsSizesAndClusterSize` | M39 reported sizes in "Gb" and no cluster size | DSF #82 |
 | `LinkSoak.NoLostConnectionWhileIdle` (explicit) | TfrRdy timeouts every 15 to 30 minutes (DSF 3.7.0-rc.1) | Upstream 46886f5d |
+| `SpiFaultRestarts.StuckLinkRestartsDcs` (explicit) | A stuck link needed a manual restart of DCS | DSF #102 |
+| `SpiFaultRestarts.DcsStartsWhileTfrRdyIsLow` (explicit) | A new DCS failed its first start when a recovered fault left TfrRdy low | DSF #99 |
+| `IntrusiveCodes.M112StaysHaltedUntilM999` (explicit) | M112 completed before the emergency stop reached RRF | DSF #88 |
+| `IntrusiveCodes.M111OutputDoesNotCrashDcs` (explicit) | DCS crashed with a stack overflow while `M111 P-1 O1` was active | DSF #70 |
+| `IntrusiveCodes.M30AndM472Delete` (explicit) | M30 used the wrong folder for a relative name, M30 and M472 reported success for a missing file | DSF #74, #80 |
+| `IntrusiveCodes.M929InvalidLevelReportsAnError` (explicit) | M929 with an invalid log level reported success | DSF #81 |
+| `IntrusiveCodes.M606FromHttpOnlyWarns` (explicit) | M606 S1 from another channel than File forked the job reader of DCS | DSF #76 |
 
 ## SPI fault injection
 
@@ -60,6 +75,16 @@ LAB_SPI_FAULT_CASES=/tmp/cases.json src/LabPrinterTests/run-lab-tests.sh --side-
 - `LAB_SPI_FAULT_SELECT`: `failures` (predicted to break the link), `responses` (every fault in a response word, where the census finds all failing single bits), or `all`. The default is `failures,responses`.
 - `LAB_SPI_FAULT_MAX` limits the number of cases.
 - `UnitTests` `InjectorMatchesCensus` checks that the injector hits the same exchanges as the census.
+
+`SpiFaultRestarts` uses the same build for two checks on the firmware that is on the printer. They need no case file:
+
+```
+src/LabPrinterTests/run-lab-tests.sh --side-load --fault-injection --filter "FullyQualifiedName~SpiFaultRestarts"
+```
+
+- `StuckLinkRestartsDcs` arms a fault of the kind `Activation`, which waits for the transfer that activates the link capabilities. A watchdog reset makes DCS connect and activate again.
+- `DcsStartsWhileTfrRdyIsLow` reads the pin after stopping DCS. A fault that leaves it high is no result, so the test tries the next one and is inconclusive without any.
+- The faults are checked offline by `LabFaultInActivationRestartsDcs` and `LabFaultLeavesTfrRdyLow`. Keep them in line with the lab test.
 
 ## Not covered
 

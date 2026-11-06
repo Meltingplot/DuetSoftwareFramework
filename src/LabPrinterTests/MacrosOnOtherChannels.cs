@@ -149,4 +149,17 @@ public class MacrosOnOtherChannels : LabTest
             }
         });
     }
+
+    /// <summary>
+    /// Calls that M98.n refuses without starting anything. USB and USB2 are left out, see design/open-findings.md
+    /// </summary>
+    [TestCase($"M98.1 P\"{BlockingMacro}\"", "Invalid code channel number 1")]
+    [TestCase($"M98.6 P\"{BlockingMacro}\"", "Invalid code channel number 6")]
+    [TestCase($"M98.7 P\"{BlockingMacro}\"", "Invalid code channel number 7")]
+    [TestCase($"M98.3 P\"{BlockingMacro}\"", "Use M98 to start a macro on the same code channel")]
+    [TestCase($"M98.2 P\"{Lab.MacroDirectory}/other-channel/missing.g\"", "not found")]
+    public async Task CallIsRefused(string code, string error)
+    {
+        Assert.That(await SendCodeAsync(code), Does.Contain(error));
+    }
 }
