@@ -65,7 +65,13 @@ public enum SpiTransferKind
     /// <summary>
     /// Only DSF has data
     /// </summary>
-    DsfData
+    DsfData,
+
+    /// <summary>
+    /// Transfer in which DSF asks RRF to activate the link capabilities. The injector recognises it from the packets DSF sends,
+    /// so a fault of this kind can only hit the data of that transfer or the response to the data
+    /// </summary>
+    Activation
 }
 
 /// <summary>
@@ -201,6 +207,7 @@ public sealed class FaultInjectingSpiDevice(ISpiDevice device, string? controlFi
     private SpiFaultSpec? _armed;
     private SpiExchange? _lastExchange;
     private int _txDataLength, _rxDataLength;
+    private bool _txActivates;
 
     /// <summary>
     /// Raised when a fault has been injected, with the kind of transfer it hit
@@ -222,6 +229,7 @@ public sealed class FaultInjectingSpiDevice(ISpiDevice device, string? controlFi
             exchange = SpiExchange.Header;
             _txDataLength = BinaryPrimitives.ReadUInt16LittleEndian(writeBuffer[6..]);
             _rxDataLength = -1;
+            _txActivates = false;
             CheckControlFile();
         }
         else if (writeBuffer.Length == sizeof(uint))
@@ -231,11 +239,12 @@ public sealed class FaultInjectingSpiDevice(ISpiDevice device, string? controlFi
         else
         {
             exchange = SpiExchange.Data;
+            _txActivates = ContainsActivationRequest(writeBuffer[..Math.Min(_txDataLength, writeBuffer.Length)]);
         }
         _lastExchange = exchange;
 
         // Only the DSF part of the kind is known before the headers are exchanged
-        SpiFaultSpec? fault = (_armed is not null && _armed.Exchange == exchange && Matches(_armed.Kind, _txDataLength, (exchange == SpiExchange.Header) ? null : _rxDataLength)) ? _armed : null;
+        SpiFaultSpec? fault = (_armed is not null && _armed.Exchange == exchange && Matches(_armed.Kind, _txDataLength, (exchange == SpiExchange.Header) ? null : _rxDataLength, _txActivates)) ? _armed : null;
         if (fault?.Direction is SpiFaultDirection.ToRrf or SpiFaultDirection.Both)
         {
             byte[] corrupted = writeBuffer.ToArray();
@@ -273,14 +282,35 @@ public sealed class FaultInjectingSpiDevice(ISpiDevice device, string? controlFi
         }
     }
 
-    private static bool Matches(SpiTransferKind kind, int txDataLength, int? rxDataLength) => kind switch
+    private static bool Matches(SpiTransferKind kind, int txDataLength, int? rxDataLength, bool txActivates) => kind switch
     {
         SpiTransferKind.NoData => txDataLength == 0 && (rxDataLength is null or 0),
         SpiTransferKind.BothData => txDataLength != 0 && (rxDataLength is null || rxDataLength > 0),
         SpiTransferKind.RrfData => txDataLength == 0 && (rxDataLength is null || rxDataLength > 0),
         SpiTransferKind.DsfData => txDataLength != 0 && (rxDataLength is null or 0),
+        SpiTransferKind.Activation => txActivates,
         _ => true
     };
+
+    /// <summary>
+    /// Check if the data DSF sends contains the request that activates the link capabilities
+    /// </summary>
+    /// <param name="data">Packets of the transfer, each with its data padded to a 4-byte boundary</param>
+    /// <returns>Whether the request is one of the packets</returns>
+    private static bool ContainsActivationRequest(ReadOnlySpan<byte> data)
+    {
+        int headerSize = Marshal.SizeOf<PacketHeader>();
+        while (data.Length >= headerSize)
+        {
+            PacketHeader packet = MemoryMarshal.Read<PacketHeader>(data);
+            if (packet.Request == (ushort)Protocol.SbcRequests.Request.ActivateLinkCapabilities)
+            {
+                return true;
+            }
+            data = data[Math.Min(headerSize + ((packet.Length + 3) & ~3), data.Length)..];
+        }
+        return false;
+    }
 
     /// <summary>
     /// Arm the fault written to the control file since the last check
