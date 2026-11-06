@@ -599,14 +599,13 @@ public class MCodeHandler(
                     {
                         if (await codeProcessor.FlushAsync(code, evaluateExpressions: false, cancellationToken: cancellationToken))
                         {
+                            // USB and USB2 are left out because a macro does not start there unless a USB host is connected, and the channel remains busy
                             CodeChannel? channel = code.MinorNumber switch
                             {
-                                1 => CodeChannel.USB,
                                 2 => CodeChannel.Aux,
                                 3 => CodeChannel.HTTP,
                                 4 => CodeChannel.Telnet,
                                 5 => CodeChannel.Aux2,
-                                7 => CodeChannel.USB2,
                                 _ => null
                             };
                             if (channel is null)

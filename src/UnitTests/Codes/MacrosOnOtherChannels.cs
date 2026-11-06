@@ -17,7 +17,7 @@ namespace UnitTests.Codes;
 
 /// <summary>
 /// Tests for M98.n, which starts a macro on another code channel and returns once it is queued.
-/// n is the channel number of M118 P (wiki: Gcodes.md, M118) and all other parameters are the same as for M98
+/// n is the channel number of M118 P (wiki: Gcodes.md, M118) except for USB and USB2, and all other parameters are the same as for M98
 /// </summary>
 [TestFixture]
 public class MacrosOnOtherChannels
@@ -97,12 +97,10 @@ public class MacrosOnOtherChannels
         FinishTargetMacro();
     }
 
-    [TestCase(1, CodeChannel.USB)]
     [TestCase(2, CodeChannel.Aux)]
     [TestCase(3, CodeChannel.HTTP)]
     [TestCase(4, CodeChannel.Telnet)]
     [TestCase(5, CodeChannel.Aux2)]
-    [TestCase(7, CodeChannel.USB2)]
     public void ChannelNumbersOfM118(int number, CodeChannel channel)
     {
         RunTriggerMacro($"M98.{number} P\"target.g\"\n", "G4 P11");
@@ -341,6 +339,8 @@ public class MacrosOnOtherChannels
         }
     }
 
+    [TestCase("M98.1 P\"target.g\"", "Invalid code channel number 1", TestName = "USB does not run macros without a USB host")]
+    [TestCase("M98.7 P\"target.g\"", "Invalid code channel number 7", TestName = "USB2 does not run macros without a USB host")]
     [TestCase("M98.6 P\"target.g\"", "Invalid code channel number 6", TestName = "MQTT is no code channel")]
     [TestCase("M98.8 P\"target.g\"", "Invalid code channel number 8", TestName = "Channel number out of range")]
     [TestCase("M98.3 P\"target.g\"", "same code channel", TestName = "Own channel")]
