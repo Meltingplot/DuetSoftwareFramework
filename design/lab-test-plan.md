@@ -70,8 +70,8 @@ Regeln für jeden Lauf:
 | 1 | E, RG-1 bis RG-16, Auswertung Self-Test | 2 | keine | 10 min |
 | 2 | RG-17 Dauerlauf | 1 | keine | 30 min |
 | 3 | F-1, F-2 | 2 | keine | 45 min |
-| 4 | A-1 bis A-7, A-10 | 1 und 2 | Tests bauen, für A-1 auch den Injektor erweitern | offen |
-| 5 | A-8, A-9, A-11 bis A-13 | 3 | Tests bauen, Einzelfreigabe | offen |
+| 4 | A-1 bis A-7, A-10 | 1 und 2 | Tests aus `feature/lab-tests-for-changes` | offen |
+| 5 | A-8, A-9, A-11 bis A-13 | 3 | Tests aus `feature/lab-tests-for-changes`, Einzelfreigabe | offen |
 | 6 | M-1 bis M-4 | 4 | Termin mit Tim | offen |
 
 Gemessen am 2026-11-06: Suite in Block 1 8,3 min, Block 3 44 min einschließlich Side-Load (F-1 3 min, F-2 41 min).
@@ -225,15 +225,15 @@ LAB_SPI_FAULT_CASES=/tmp/ext.json src/LabPrinterTests/run-lab-tests.sh --side-lo
 - Referenz: 678 von 679 `Retry` und 1 nicht injiziert auf RRF dev.3, noch ohne #98, #99, #102 und #105 (#95).
 - Nicht injizierte Fälle einzeln nennen und nachholen.
 
-### Neue Tests (noch zu bauen)
+### Neue Tests
 
-Alle als fork-eigene Tests in `src/LabPrinterTests`, jeweils mit Aufräumen im `finally`.
+Gebaut auf dem Branch `feature/lab-tests-for-changes`, auf Hardware noch nicht gelaufen. `src/LabPrinterTests/README.md` nennt zu jedem Test die Klasse und den Aufruf.
 
 | ID | Änderung | Stufe | Ablauf | Soll |
 |---|---|---|---|---|
-| A-1 | #102 | 2 | Injektor erweitern, siehe unten. Fehler `Activation HeaderResponse ToDsf flip 2` scharf schalten, `M122 P1001` senden. DCS verbindet neu und aktiviert den Link, dabei trifft der Fehler | `SPI fault injected: ...`, etwa 60 s danach `No transfer with RepRapFirmware completed within 60000 ms` (`SPI.cs:311`), neuer DCS nach 5 s (`duetcontrolserver.service:9-10`), `Link capabilities All are active`, nach `M999` idle |
+| A-1 | #102 | 2 | Fehler `Activation DataResponse ToRrf word 0x00000006` scharf schalten, `M122 P1001` senden. DCS verbindet neu und aktiviert den Link, dabei trifft der Fehler | `SPI fault injected: ...`, etwa 60 s danach `No transfer with RepRapFirmware completed within 60000 ms` (`SPI.cs:311`), neuer DCS nach 5 s (`duetcontrolserver.service:9-10`), `Link capabilities All are active`, nach `M999` idle |
 | A-2 | #99 | 2 | Fehler injizieren, DCS stoppen, `gpioget --numeric -c gpiochip0 25` lesen, DCS sofort starten | Pin liest 0, sonst ist der Fall ungültig. Verbunden nach höchstens 4,5 s (`SPI.cs:1709`), kein `timeout while waiting for TfrRdy pin` (`SPI.cs:1747`) |
-| A-3 | #108 | 2 | Nach einem Boot den Autostart beobachten, währenddessen `M409` senden | `Starting macro file ... on channel HTTP`, `Self-test: quick check passed`, `M409` antwortet, Maschinen-Tick läuft weiter, `inputs[0]` wieder Tiefe 0, kein `Out-of-order reply` |
+| A-3 | #108 | 2 | Nach einem Boot den Autostart abwarten, `M409` senden, sobald der Flow sichtbar ist | `Starting macro file ... on channel HTTP`, `Self-test: quick check passed`, `M409` antwortet, Maschinen-Tick läuft weiter, `inputs[0]` wieder Tiefe 0, kein `Out-of-order reply` |
 | A-4 | #108 | 1 | `M98.1`, `M98.7`, `M98.6`; `M98.3` über HTTP; `M98.2` mit fehlender Datei | `Invalid code channel number n` (`MCodeHandler.cs:613`), `Use M98 to start a macro on the same code channel` (`:617`), `Macro file ... not found` (`:648`) |
 | A-5 | Zeilenprüfsummen | 1 | Drei Testmakros mit falschem CRC, Sprung in der Zeilenfolge und fehlendem CRC, jedes setzt je Zeile ein Global | Makro stoppt vor der fehlerhaften Zeile. Journal: `CRC error on line` (`ParserChecksum.cs:370`), `Expected line number` (`ParserAsync.cs:227`), `Missing CRC on line` (`ParserAsync.cs:116`) |
 | A-6 | #67 | 2 | SBC-Trigger T30 mit laufendem Zähler, dann `M581.1 T30` mit nie wahrem RRF-Ausdruck | Bericht zeigt den neuen Ausdruck, der Zähler bleibt stehen (Wiki `Gcodes.md:7266`) |
@@ -243,19 +243,17 @@ Alle als fork-eigene Tests in `src/LabPrinterTests`, jeweils mit Aufräumen im `
 | A-10 | #72, #82 | 1 | `M36` mit fehlender Datei, `M39`, `M39 S2` | Gültiges JSON `{"err":1,"fileName":...}` (`MCodeHandler.cs:477`), `GB` und `cluster size` (`MCodeHandler.cs:588`), `clsize` (`SDInfoResponse.cs:45`) |
 | A-11 | #74, #80 | 3 | Testdatei in `0:/gcodes`, `M30` mit relativem Namen, dann `M30` und `M472` mit fehlendem Ziel | Datei gelöscht, `Failed to delete file ...: file not found` (`MCodeHandler.cs:423`), `Failed to delete file or directory ...: file or directory not found` (`MCodeHandler.cs:911`) |
 | A-12 | #81 | 3 | `state.logLevel` und `state.logFile` lesen, `M929 S4`, `M929 S-1`, Zustand wiederherstellen | `parameter 'S' too high` (`MCodeHandler.cs:1195`), `expected non-negative integer after 'S'` (`MCodeHandler.cs:1191`), Protokollierung danach wie vorher |
-| A-13 | #76 | 3 | `M606 S1` über HTTP ohne Job | Warnung `this command is valid only when running a job from a stored file` (RRF `GCodes5.cpp:213-216`), `inputs[12]` bleibt `unused` |
+| A-13 | #76 | 3 | `M606 S1` über HTTP ohne Job | Warnung `this command is valid only when running a job from a stored file` (RRF `GCodes5.cpp:213-216`), `File2` bleibt unverändert, Stack-Tiefe 0 |
 
 Hinweise:
-- **A-1, Fehlerfall:** Auf dem erweiterten Link sagt der Census nach der Aktivierung keinen hängenden Fall voraus (`ExtendedLinkRecoversFromEverySingleFault`). Hängen kann es nur in der Übertragung, die den Link aktiviert (`LinkRecovery.cs:650-654`, 23 Fälle laut #102). Darunter ist der Einzelbitfehler `flip 2` in der Header-Antwort an DSF. Weitere Fälle sind `HeaderResponse ToDsf word 0x00000005` und `word 0xfefefefe` sowie `DataResponse ToRrf word 0x00000006`.
-- **A-1, Injektor:** Er trifft heute nur die nächste Übertragung einer Art (`SpiFaultInjection.cs:238`, `:276-283`). Nötig sind:
-  - eine neue Art `Activation`,
-  - ein Hinweis aus `WriteActivateLinkCapabilities` (`SPI.cs:902-924`) an den Injektor, weil dieser den Paketinhalt erst in der Datenphase sieht (`SpiFaultInjection.cs:220-234`). Der Hinweis gilt nur im Test-Build (`SPI.cs:113`), Release-Builds bleiben unverändert,
-  - ein eigener Test, weil der vorhandene nach 2 s selbst wiederherstellt (`SpiFaultInjection.cs:103`, `:134-138`).
+- **A-1, Fehlerfall:** Auf dem erweiterten Link sagt der Census nach der Aktivierung keinen hängenden Fall voraus (`ExtendedLinkRecoversFromEverySingleFault`). Hängen kann es nur in der Übertragung, die den Link aktiviert (`LinkRecovery.cs:650-654`, 23 Fälle laut #102). Davon kann der Injektor nur `DataResponse ToRrf word 0x00000006` treffen. Dass dieser Fehler mit und ohne Polling zum DCS-Neustart führt, prüft `LabFaultInActivationRestartsDcs` offline.
+- **A-1, Injektor:** Die neue Art `Activation` erkennt die Übertragung am Aktivierungspaket in den Daten, die DSF sendet. Sie trifft daher nur die Daten und die Antwort darauf. `SPI.cs` bleibt unverändert. Der Test ist eigenständig, weil der vorhandene Injektionstest nach 2 s selbst wiederherstellt.
 - **A-1, Auslöser:** Einen Fehler von vor dem DCS-Start verwirft der Injektor (`SpiFaultInjection.cs:300-305`). Deshalb wird er bei laufendem DCS scharf geschaltet. `M122 P1001` startet nur RRF neu, und DCS fragt die Capabilities nach jedem Verbindungsaufbau und Reset neu ab (`design/sbc-link-requirements.md:123`).
-- **A-1, Vorhersage:** Der Hänger ist bisher nur eine Census-Vorhersage für die Aktivierung. Hängt der Link am DUT nicht, ist das eine Abweichung vom Census. Sie wird als Befund festgehalten, dann werden die anderen Fälle versucht.
-- **A-2, Fehlerfall:** #99 nutzte `RrfData Data ToDsf flip 0`. #105 hat genau diesen Pfad geändert, deshalb entscheidet die Pinmessung. Mit dem Fix ist die Prüfung bisher nur auf RRF mp.5 gelaufen, nie auf dem erweiterten Link.
+- **A-1, Vorhersage:** Der Hänger ist bisher nur eine Census-Vorhersage für die Aktivierung. Hängt der Link am DUT nicht, ist das eine Abweichung vom Census. Sie wird als Befund festgehalten. Einen zweiten hängenden Fall, den der Injektor treffen kann, gibt es nicht.
+- **A-2, Fehlerfall:** #99 nutzte `RrfData Data ToDsf flip 0`. Laut Census lässt dieser Fall den Pin seit #105 nicht mehr auf LOW. Der Test nutzt `RrfData HeaderResponse ToDsf zero 0 4` und zwei weitere Fälle (`LabFaultLeavesTfrRdyLow`). Am DUT entscheidet die Pinmessung, ohne LOW-Pin ist der Lauf ohne Aussage. Mit dem Fix ist die Prüfung bisher nur auf RRF mp.5 gelaufen, nie auf dem erweiterten Link.
 - **A-3, Journal:** Der Autostart endet mit `Aborted macro file`, ein Lauf ohne `A1` mit `Finished macro file`. Das ist kein Fehler: Der automatische Pfad endet mit `M99` (`maintenance/self-test:99-101`). `M99` erscheint im Journal als Abbruch der letzten Datei (`MacroFile.cs:241`), genauso bei den Testmakros von RG-3.
 - **A-3, Abdeckung:** Der Lauf vom 2026-11-06 zeigt bereits Start, `quick check passed` und kein `Out-of-order reply`. Offen ist der Fall mit `M409` während des Flows.
+- **A-3, `M409`:** Der Test sendet vorher keinen Code auf HTTP, weil `M98.3` sonst abgelehnt würde und der Flow erst eine Minute später käme. Der Flow dauert etwa 1 s, `M409` kann also auch danach ankommen. Sicher abgedeckt ist `M409` während eines Makros durch RG-4 und RG-5.
 - **A-4:** `M98.n` steht nicht im Wiki. Das Soll stammt nur aus dem Code und #108.
 - **A-5, Makrozeilen:** Ausgaben eines Makros erreichen die `M98`-Antwort nicht (`LabTest.cs:103`). Der Test wertet daher Globals und Journal aus.
 
