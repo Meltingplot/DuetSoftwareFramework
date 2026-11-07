@@ -268,22 +268,34 @@ public class WebServerFindings : WebServerFixture
     /// <summary>
     /// SessionStorage.MaintainSessions removes every expired session from DCS with an IPC connection of its own, all started at once
     /// (SessionStorage.cs:404 and 420-422). DCS listens with a backlog of 4 (DuetControlServer/Settings.cs:116, the same in
-    /// pkg/common/duetcontrolserver/opt/dsf/conf/config.json), so when more sessions expire in the same pass, some connects fail with
-    /// EAGAIN ("Resource temporarily unavailable"), DWS only logs "Failed to unregister expired user session" and the user sessions stay
-    /// in sbc.dsf.userSessions for good
+    /// pkg/common/duetcontrolserver/opt/dsf/conf/config.json) and accepts in a loop (IPC/Server.cs:98-101). When more connects arrive at
+    /// once than the backlog holds before the loop accepts them, they fail with EAGAIN ("Resource temporarily unavailable"), DWS only logs
+    /// "Failed to unregister expired user session" and the user sessions stay in sbc.dsf.userSessions for good. Whether that happens depends
+    /// on how many sessions expire in the same pass and how fast the thread pool starts the tasks: on the lab printer (DSF 3.7.0+mp.13)
+    /// 12 sessions created at once all left DCS again. This uses the real SessionExpiry service with the 3 s timeout of the fixture
     /// </summary>
-    [Test]
+    [TestCase(12)]
+    [TestCase(32)]
     [Explicit("Bug: expired sessions stay in DCS when more than the IPC backlog expire at once")]
-    public async Task ExpiredSessionsAreRemovedFromDcs()
+    public async Task ExpiredSessionsAreRemovedFromDcs(int numSessions)
     {
         using HttpClient client = CreateClient(0);
-        for (int i = 0; i < 32; i++)
+        int logStart = Dws.Log.Count;
+        for (int i = 0; i < numSessions; i++)
         {
             await ConnectAsync(client);
         }
-        Assert.That(await GetUserSessionsAsync(), Has.Length.EqualTo(33), "32 sessions plus the IP session of the first request");
+        Assert.That(await GetUserSessionsAsync(), Has.Length.EqualTo(numSessions + 1), "the sessions plus the IP session of the first request");
 
-        ExpireIdleSessions();
-        await WaitUntilAsync(async () => (await GetUserSessionsAsync()).Length == 0, "Expired sessions are still in the DCS object model", TimeSpan.FromSeconds(5));
+        // Wait for the expiry without touching the sessions, then for the background removals
+        string category = typeof(DuetWebServer.Singletons.SessionStorage).FullName!;
+        await WaitUntilAsync(() => Dws.Log.Since(logStart).Count(e => e.Category == category && e.Message.EndsWith(" expired")) == numSessions + 1, "The sessions did not expire", TimeSpan.FromSeconds(10));
+        DateTime end = DateTime.Now.AddSeconds(3);
+        while ((await GetUserSessionsAsync()).Length > 0 && DateTime.Now < end)
+        {
+            await Task.Delay(10);
+        }
+        int failed = Dws.Log.Since(logStart).Count(e => e.Category == category && e.Message == "Failed to unregister expired user session");
+        Assert.That(await GetUserSessionsAsync(), Is.Empty, $"Expired sessions are still in the DCS object model, {failed} removals failed");
     }
 }

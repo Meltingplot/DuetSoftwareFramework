@@ -55,7 +55,15 @@ public abstract class WebServerFixture
     [OneTimeSetUp]
     public async Task StartServersAsync()
     {
-        Dcs = await FakeFirmwareHost.StartAsync(configureSettings: settings => settings.SocketDirectory = SocketDirectory, ipc: true);
+        Dcs = await FakeFirmwareHost.StartAsync(configureSettings: settings =>
+        {
+            settings.SocketDirectory = SocketDirectory;
+            if (int.TryParse(Environment.GetEnvironmentVariable("DSF_TEST_DCS_BACKLOG"), out int backlog))
+            {
+                // Only for experiments with the IPC backlog, see WebServerFindings.ExpiredSessionsAreRemovedFromDcs
+                settings.Backlog = backlog;
+            }
+        }, ipc: true);
         await ConfigureDcsAsync();
         Dws = await DwsHost.StartAsync(Dcs.SocketPath!, Path.Combine(Dcs.BaseDirectory, "www"), ConfigureDws);
 
