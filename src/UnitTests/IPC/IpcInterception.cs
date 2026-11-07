@@ -187,7 +187,8 @@ public class IpcInterception
     /// DuetAPIClient enables AutoFlush by default (InterceptConnection.AutoFlush), and CodeInterception.InterceptAsync then flushes the channel
     /// before it passes the code. For a code in the Executed stage, ChannelProcessor.FlushAsync also waits for the Executed stage itself to become
     /// idle (PipelineStackItem.FlushAsync waits for its idle event), but that stage is busy with this very code, so it never finishes.
-    /// CodeLogger connects Executed interceptors with filters and the default AutoFlush, so "CodeLogger -t Executed -f M7101" would block the channel
+    /// CodeLogger connects Executed interceptors with filters and the default AutoFlush, so "CodeLogger -t Executed -f M7101" would block the channel.
+    /// Confirmed on the printer (DSF 3.7.0+mp.13, 2026-11-07), see IpcInterceptionStages.ExecutedInterceptorWithAutoFlushBlocksTheChannelAfterTheClientHasGone
     /// </summary>
     [Test]
     [Explicit("Bug: an Executed interceptor with filters and AutoFlush (the DuetAPIClient default) deadlocks the code channel")]
@@ -232,7 +233,9 @@ public class IpcInterception
     [Explicit("Bug: CodeInterception.CanIntercept throws ArgumentOutOfRangeException for a wildcard filter longer than the code")]
     public async Task WildcardFilterLongerThanTheCode()
     {
-        // "M10*" should match M100 to M109 and leave G4 alone, but filter[..3] is compared with "G4"[..3]
+        // "M10*" should match M100 to M109 and leave G4 alone, but filter[..3] is compared with "G4"[..3].
+        // Confirmed on the printer (DSF 3.7.0+mp.13, 2026-11-07), see IpcInterceptionStages.WildcardFilterLongerThanAComment
+        // and WildcardFilterLongerThanTheCodeOutlivesTheClient
         using InterceptConnection interceptor = await ConnectAsync(InterceptionMode.Pre, ["M10*"]);
         Assert.That(await StartCode("G4 P0").WaitAsync(FakeFirmwareHost.DefaultTimeout), Is.EqualTo("dwell\n"));
     }
