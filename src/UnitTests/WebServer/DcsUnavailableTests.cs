@@ -234,6 +234,33 @@ public class DcsUnavailableTests
     }
 
     /// <summary>
+    /// Any other init error is an IOException "Could not set connection type" (BaseConnection.cs:157), which DWS reports as generic error
+    /// ("500: Generic error", EndpointHelper.cs:145-146, WebSocketEndpoint.cs:109-113 and 194-196)
+    /// </summary>
+    [Test]
+    public async Task DcsRejectsTheConnection()
+    {
+        string socketPath = Path.Combine(_directory, "rejecting.sock");
+        using OldDcs rejectingDcs = new(socketPath, "UnauthorizedAccessException");
+        await SetSocketPathAsync(socketPath);
+        try
+        {
+            string key = MakeSession();
+            (HttpStatusCode status, string body) = await SendAsync(HttpMethod.Get, "machine/model", key);
+            Assert.That(status, Is.EqualTo(HttpStatusCode.InternalServerError));
+            Assert.That(body, Does.StartWith("Could not set connection type"));
+            Assert.That(await ConnectAsync("machine"), Is.EqualTo(HttpStatusCode.InternalServerError));
+            (System.Net.WebSockets.WebSocketCloseStatus? closeStatus, string? description) = await ConnectAndReceiveCloseAsync(key);
+            Assert.That(closeStatus, Is.EqualTo(WebSocketCloseStatus.EndpointUnavailable));
+            Assert.That(description, Does.StartWith("Could not set connection type"));
+        }
+        finally
+        {
+            await SetSocketPathAsync(Path.Combine(_directory, "missing.sock"));
+        }
+    }
+
+    /// <summary>
     /// Change the socket path in the configuration file, which DWS reloads (Program.cs:45, reloadOnChange)
     /// </summary>
     private async Task SetSocketPathAsync(string socketPath)
@@ -259,9 +286,11 @@ public class DcsUnavailableTests
     private sealed class OldDcs : IDisposable
     {
         private readonly Socket _socket = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        private readonly string _errorType;
 
-        public OldDcs(string socketPath)
+        public OldDcs(string socketPath, string errorType = "IncompatibleVersionException")
         {
+            _errorType = errorType;
             _socket.Bind(new UnixDomainSocketEndPoint(socketPath));
             _socket.Listen(16);
             _ = Task.Run(AcceptAsync);
@@ -288,7 +317,7 @@ public class DcsUnavailableTests
                         {
                             await client.SendAsync(Encoding.UTF8.GetBytes("{\"version\":12,\"id\":1}"));
                             await client.ReceiveAsync(new byte[4096]);
-                            await client.SendAsync(Encoding.UTF8.GetBytes("{\"success\":false,\"errorType\":\"IncompatibleVersionException\",\"errorMessage\":\"Incompatible API version\"}"));
+                            await client.SendAsync(Encoding.UTF8.GetBytes("{\"success\":false,\"errorType\":\"" + _errorType + "\",\"errorMessage\":\"Rejected\"}"));
                             client.Shutdown(SocketShutdown.Both);
                         }
                         catch (SocketException)

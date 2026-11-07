@@ -38,6 +38,7 @@ public class RrEndpointTests : WebServerFixture
         Assert.That(json.RootElement.GetProperty("err").GetInt32(), Is.Zero);
 
         File.Copy(Path.Combine(SampleDirectory, "Thumbnail_QOI.gcode"), Path.Combine(Dcs.BaseDirectory, "gcodes", "qoi.gcode"));
+        File.Copy(Path.Combine(SampleDirectory, "Thumbnail_JPG.gcode"), Path.Combine(Dcs.BaseDirectory, "gcodes", "jpg.gcode"));
         File.Copy(Path.Combine(SampleDirectory, "Circle.gcode"), Path.Combine(Dcs.BaseDirectory, "gcodes", "circle.gcode"));
     }
 
@@ -235,6 +236,10 @@ public class RrEndpointTests : WebServerFixture
             Assert.That(chunk.GetProperty("next").GetInt32(), Is.Zero);
             Assert.That(Convert.FromBase64String(chunk.GetProperty("data").GetString()!), Is.Not.Empty);
         }
+
+        // JPEG thumbnails are reported as such (RepRapFirmwareEndpoints.cs:711-717)
+        JsonElement jpeg = await GetJsonAsync("rr_fileinfo?name=0:/gcodes/jpg.gcode");
+        Assert.That(jpeg.GetProperty("thumbnails").EnumerateArray().Select(t => t.GetProperty("format").GetString()), Is.EqualTo(new[] { "jpeg" }));
 
         // The file info of another file is parsed again for rr_thumbnail (RepRapFirmwareEndpoints.cs:773-781)
         Assert.That((await GetJsonAsync("rr_fileinfo?name=0:/gcodes/circle.gcode")).GetProperty("err").GetInt32(), Is.Zero);
