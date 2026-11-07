@@ -106,7 +106,8 @@ public partial class SpiLinkFuzz
         Fuzzer.Run(random => GenerateBothLines(random, scope), check, input => input.ToString(), ShrinkBothLines, Inputs);
 
     /// <summary>
-    /// With every capability active and in use by both sides, errors on both lines of one exchange are repaired through retries
+    /// With every capability active and in use by both sides, errors on both lines of one exchange are repaired through retries.
+    /// The check on the hardware is pending (LinkRecovery.WriteBothLinesCases), so this rests on the port of RRF only
     /// </summary>
     [Test]
     public void ExtendedLinkRepairsErrorsOnBothLines() => RunBothLinesFuzzer(Scope.Extended, CheckRepaired);
@@ -147,7 +148,8 @@ public partial class SpiLinkFuzz
         });
 
     /// <summary>
-    /// Every exchange of each kind of transfer on the extended link, with an error on both lines at the same offset, is repaired through retries
+    /// Every exchange of each kind of transfer on the extended link, with an error on both lines at the same offset, is repaired through retries.
+    /// The check on the hardware is pending (LinkRecovery.WriteBothLinesCases), so this rests on the port of RRF only
     /// </summary>
     [Test]
     public void ExtendedLinkRepairsBothLinesCensus()
