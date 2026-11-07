@@ -44,7 +44,7 @@ The Meltingplot fork has fixes and a negotiated extension for most of these find
 
 Other findings that do not break the link:
 - **F11:** a data CRC error seen only by DSF restarts the whole transfer. The census has 2416 full transfer restarts, 1831 with a data retry.
-- **O1:** after an RRF reset, DSF can lose the firmware and IAP file names of the main board, so M997 and `DuetControlServer -u` cannot update it. This happened in 2 of 5 resets in the fake firmware host.
+- **O1:** after an RRF reset, DSF can lose the firmware and IAP file names of the main board, so M997 and `DuetControlServer -u` cannot update it. On the lab printer this happened after 9 of 10 watchdog resets.
 
 With polling while disconnected (`SUPPORTS_SBC_OVER_USB`) the counts are almost the same: one livelock fewer, one DCS restart more.
 
@@ -160,11 +160,13 @@ The same one-sided outcome happens in the data response, when only one side sees
   1. `LinkService.Invalidate` first cancels the pending object model query (`LinkService.cs:1432`, `LinkInterface.cs:645`).
   2. Only then it calls `ObjectModel.ConnectionLost` (`LinkService.cs:1442`), which clears the sequence numbers (`ObjectModel.cs:869`).
   3. Meanwhile the cancelled query continues on the thread pool (`ModelQueryRequest.cs:30`, `UpdateService.cs:374`). The next update can therefore start before the sequence numbers are cleared.
-  4. It then reads every key without the verbose flag. The four fields stay empty until DCS restarts.
+  4. It then reads every key without the verbose flag. The four fields stay empty until a later reset happens to read them again or DCS restarts.
 - **Effect:** M997 refuses with "Cannot update firmware because IAP and firmware filenames are unknown" (`MCodeHandler.cs:1134`). `DuetControlServer -u` next to a running DCS skips the main board (`FirmwareUpdater.cs:282`).
-- **On the lab printer** (2026-11-07): after a test run with six watchdog resets, the running DCS reported all four fields empty. A freshly started DCS had them.
+- **On the lab printer** (2026-11-07):
+  - After a test run with six watchdog resets, the running DCS reported all four fields empty. A freshly started DCS had them.
+  - With 10 x `M122 P1001` and DSF 3.7.0+mp.12, the names were missing after resets 1 to 9 and back after reset 10. With the fork fix they were there after all 10.
 - **Reproduced:** in the fork's fake firmware host the names were lost in 2 of 5 resets. Holding the model lock over the reset loses them every time.
-- **Fork fix:** branch `fix/verbose-board-fields-after-reset`. `ConnectionLost` requests a resync, which the update service performs before its next query, as it already does for a new verbose subscriber (`UpdateService.cs:238–246`). That leaves the update service as the only writer of the sequence numbers.
+- **Fork fix:** DSF #115. `ConnectionLost` requests a resync, which the update service performs before its next query, as it already does for a new verbose subscriber (`UpdateService.cs:238–246`). That leaves the update service as the only writer of the sequence numbers.
 
 ## Findings in the parsers and the packet reader (fuzz tests of DSF)
 
@@ -180,7 +182,7 @@ The same one-sided outcome happens in the data response, when only one side sees
 - DSF #59 (F8), #89 (F7), #91 (F1), #92 (F2, and part of F3).
 - DSF #84, #85, #86 (P1–P3).
 - DSF #99 (F9), #102 (F3, the livelock ends with a DCS restart after 60 s) and #105 (F11).
-- DSF `fix/verbose-board-fields-after-reset` (O1), not merged yet.
+- DSF #115 (O1), not merged yet.
 - DSF #98 raises the default of `MaxSbcRetries` from 3 to 10. Under random bit errors in both directions, with the link capabilities active, the retry limit was the only source of resets left in the census.
 - DSF #103 adds recovery counters to DSF's M122: full transfer restarts, header and data retries, transfers sent and requested again, extended link left by RRF, lost connections and connection resets.
 
@@ -212,5 +214,5 @@ Details are in `design/sbc-link-requirements.md`.
 - Census: `dotnet test src/UnitTests --filter "Name=SingleCorruptedExchange"`, plus `RrfRestart` and `DcsRestart_RrfOfToday`. These are explicit tests in the fork.
 - `TraceCase` prints the exchanges of a single case.
 - Port check against the real RRF code: `PortMatchesRealFirmware`, with a host build of `DataTransfer.cpp` and `SbcInterface.cpp` (`RRF_HOST_HARNESS`).
-- F9: `DcsStartsAfterRecoveredFault`. F10: `ExtendedLinkNoticesEveryRebootQuickly`, with the fork's boot delay. F11: `BadDataOnlyDsfGotIsExchangedAgain`. O1: `VerboseFieldsAfterReset` (branch `fix/verbose-board-fields-after-reset`).
+- F9: `DcsStartsAfterRecoveredFault`. F10: `ExtendedLinkNoticesEveryRebootQuickly`, with the fork's boot delay. F11: `BadDataOnlyDsfGotIsExchangedAgain`. O1: `VerboseFieldsAfterReset` (DSF #115).
 - Hardware: `src/LabPrinterTests/README.md`, section "SPI fault injection".
