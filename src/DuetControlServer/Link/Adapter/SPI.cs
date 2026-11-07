@@ -443,7 +443,7 @@ public class SPI : IDiagnostics, ILinkAdapter
                     _numConnectionLosses++;
                     _hadTimeout = true;
                     _model.ConnectionLost();
-                    _eventLogger.LogOutput(MessageType.Warning, $"Lost connection to Duet ({e.Message})");
+                    _eventLogger.LogOutput(MessageType.Error, $"Lost connection to Duet ({e.Message})");
                 }
                 _connected = false;
             }
@@ -1922,7 +1922,7 @@ public class SPI : IDiagnostics, ILinkAdapter
 
             if (lastProtocolVersion != _txHeader.ProtocolVersion)
             {
-                _logger.LogWarning(_txHeader.ProtocolVersion < Consts.ProtocolVersion ? "Downgrading protocol version {ProtocolVersion} to {DowngradedProtocolVersion}" : "Upgrading protocol version {ProtocolVersion} to {UpgradedProtocolVersion}", lastProtocolVersion, _txHeader.ProtocolVersion);
+                _logger.LogInformation(_txHeader.ProtocolVersion < Consts.ProtocolVersion ? "Downgrading protocol version {ProtocolVersion} to {DowngradedProtocolVersion}" : "Upgrading protocol version {ProtocolVersion} to {UpgradedProtocolVersion}", lastProtocolVersion, _txHeader.ProtocolVersion);
             }
 
             // Check the data length
@@ -1940,7 +1940,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             if (distance < 0)
             {
                 // RRF has left the extended link, which only a restart or a connection reset does. Leave it as well, so that RRF understands the responses
-                _logger.LogWarning("RepRapFirmware has left the extended link");
+                _logger.LogInformation("RepRapFirmware has left the extended link");
                 _numExtendedLinkLeft++;
                 EndSession(false);
                 _hadReset = true;

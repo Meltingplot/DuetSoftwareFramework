@@ -373,7 +373,7 @@ public class USB : IDiagnostics, ILinkAdapter
             {
                 _hadTimeout = true;
                 _model.ConnectionLost();
-                _eventLogger.LogOutput(MessageType.Warning, $"Lost USB connection to Duet ({e.Message})");
+                _eventLogger.LogOutput(MessageType.Error, $"Lost USB connection to Duet ({e.Message})");
             }
             _connected = false;
             _needsReconnect = true;

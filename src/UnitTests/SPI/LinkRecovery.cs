@@ -1702,13 +1702,13 @@ public class LinkRecovery
     }
 
     /// <summary>
-    /// Writes the warnings of DSF into the trace
+    /// Writes the information, warnings and errors of DSF into the trace
     /// </summary>
     private sealed class TraceLogger(FakeRrfSpi rrf, List<string> trace) : ILogger<SpiAdapter>
     {
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
-        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Information;
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {

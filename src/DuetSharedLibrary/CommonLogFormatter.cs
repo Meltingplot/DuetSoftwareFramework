@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Console;
 using System;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Text;
 
 namespace DuetSharedLibrary;
 
@@ -13,10 +14,24 @@ namespace DuetSharedLibrary;
 public sealed class CommonLogFormatter : ConsoleFormatter
 {
     /// <summary>
+    /// Whether the output goes to the systemd journal, see <see cref="CommonLogFormatter(bool)"/>
+    /// </summary>
+    private readonly bool _journal;
+
+    /// <summary>
+    /// Constructor. systemd sets JOURNAL_STREAM for a service whose output goes to the journal
+    /// </summary>
+    public CommonLogFormatter() : this(Environment.GetEnvironmentVariable("JOURNAL_STREAM") is not null) { }
+
+    /// <summary>
     /// Constructor
     /// </summary>
-    public CommonLogFormatter() : base(nameof(CommonLogFormatter))
+    /// <param name="journal">Whether the output goes to the systemd journal. Every line then starts with the syslog priority of its entry,
+    /// so that journald stores it with that priority and rate-limits each priority on its own, and colors are left out</param>
+    public CommonLogFormatter(bool journal) : base(nameof(CommonLogFormatter))
     {
+        _journal = journal;
+
         // Disable console output buffering to ensure journalctl -f works correctly
         // When stdout is not a terminal (e.g., systemd service), it's fully buffered by default
         Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true });
@@ -33,30 +48,27 @@ public sealed class CommonLogFormatter : ConsoleFormatter
 
         // Get log level name and color
         string levelName = GetLogLevelString(logEntry.LogLevel);
-        string colorCode = GetColorCode(logEntry.LogLevel);
+        string colorCode = _journal ? string.Empty : GetColorCode(logEntry.LogLevel);
+        string resetCode = _journal ? string.Empty : "\x1b[0m";
 
         // Get category name (logger name)
         string categoryName = logEntry.Category;
 
         // Format: [level] [logger:] message
-        textWriter.Write('[');
-        textWriter.Write(colorCode);
-        textWriter.Write(levelName);
-        textWriter.Write("\x1b[0m");  // Reset color
-        textWriter.Write("] ");
+        StringBuilder entry = new();
+        entry.Append('[').Append(colorCode).Append(levelName).Append(resetCode).Append("] ");
 
         // Only include category if it doesn't contain '.' and doesn't end with '.g'
         bool includeCategory = !categoryName.Contains('.') && !categoryName.EndsWith(".g");
         if (includeCategory)
         {
-            textWriter.Write(categoryName);
-            textWriter.Write(": ");
+            entry.Append(categoryName).Append(": ");
         }
 
         // Write message
         if (!string.IsNullOrEmpty(message))
         {
-            textWriter.Write(message);
+            entry.Append(message);
         }
 
         // Write exception if present and different from message
@@ -65,26 +77,47 @@ public sealed class CommonLogFormatter : ConsoleFormatter
             string exceptionString = logEntry.Exception.ToString();
             if (message != exceptionString)
             {
-                textWriter.WriteLine();
-                
+                entry.Append('\n');
+
                 // Color the exception based on log level
-                string exceptionColor = logEntry.LogLevel >= LogLevel.Error ? colorCode : "";
+                string exceptionColor = logEntry.LogLevel >= LogLevel.Error ? colorCode : string.Empty;
+                entry.Append(exceptionColor).Append("   ").Append(exceptionString);
                 if (!string.IsNullOrEmpty(exceptionColor))
                 {
-                    textWriter.Write(exceptionColor);
-                }
-                
-                textWriter.Write("   ");
-                textWriter.Write(exceptionString);
-                
-                if (!string.IsNullOrEmpty(exceptionColor))
-                {
-                    textWriter.Write("\x1b[0m");  // Reset color
+                    entry.Append(resetCode);
                 }
             }
         }
 
-        textWriter.WriteLine();
+        if (_journal)
+        {
+            // journald reads the priority from the start of each line, so the lines of an exception keep the priority of their entry
+            string priority = $"<{GetSyslogPriority(logEntry.LogLevel)}>";
+            textWriter.Write(priority);
+            textWriter.Write(entry.ToString().ReplaceLineEndings("\n" + priority));
+            textWriter.Write('\n');
+        }
+        else
+        {
+            textWriter.Write(entry.ToString().ReplaceLineEndings(textWriter.NewLine));
+            textWriter.WriteLine();
+        }
+    }
+
+    /// <summary>
+    /// Get the syslog priority of the log level (sd-daemon.h)
+    /// </summary>
+    private static int GetSyslogPriority(LogLevel logLevel)
+    {
+        return logLevel switch
+        {
+            LogLevel.Trace or LogLevel.Debug => 7,  // SD_DEBUG
+            LogLevel.Information => 6,              // SD_INFO
+            LogLevel.Warning => 4,                  // SD_WARNING
+            LogLevel.Error => 3,                    // SD_ERR
+            LogLevel.Critical => 2,                 // SD_CRIT
+            _ => 6
+        };
     }
 
     /// <summary>
