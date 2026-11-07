@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -33,8 +34,8 @@ namespace UnitTests.FakeFirmware;
 /// src/GCodes/GCodeBuffer/GCodeBuffer.cpp. Packets are passed as objects, there is no binary encoding and the transfer buffer size is not limited
 /// </para>
 /// <para>
-/// Emulated: code buffer and buffer updates, code replies with RRF's flags, macro requests (M98, system macros), macro completion and
-/// M99 aborts, message boxes (M291/M292), M409, the result variables of M260/M261, expression evaluation, local and global variables,
+/// Emulated: code buffer and buffer updates, code replies with RRF's flags, macro requests (M98, system macros), pending triggers and their
+/// macros (GCodes::CheckTriggers, see <see cref="FireTrigger"/>), macro completion and M99 aborts, message boxes (M291/M292), M409, the result variables of M260/M261, expression evaluation, local and global variables,
 /// movement locks, channel invalidation, emergency stop, reset, resend requests and the mutex hand-over between RRF's SBC and main tasks
 /// while a code waits for a macro.
 /// Not emulated: job files and pausing, file requests from RRF, codes RRF passes on to DSF (DoCode), timeouts, motion, heaters,
@@ -184,6 +185,35 @@ public sealed class FakeFirmware : ILinkAdapter
         lock (_lock)
         {
             _gcodes.QueueMacroRequest(channel, fileName, reportMissing);
+        }
+    }
+
+    /// <summary>
+    /// Let a trigger fire as if its input had changed or its expression had become true and its enable condition was met
+    /// (TriggerItem::Check). RRF marks the trigger as pending and the main task asks DSF for sys/triggerN.g on the trigger channel once that
+    /// channel is free, the lowest pending trigger first. A trigger that fires again before its macro has been requested runs only once
+    /// (GCodes::CheckTriggers, GCodes.cpp:981-1062)
+    /// </summary>
+    /// <param name="number">Trigger number from 2 up. Trigger 0 (emergency stop) and trigger 1 (pause) are not emulated</param>
+    public void FireTrigger(int number)
+    {
+        lock (_lock)
+        {
+            _gcodes.SetTriggerPending(number);
+        }
+    }
+
+    /// <summary>
+    /// Bitmap of the triggers that have fired and whose macros have not been requested yet (GCodes::triggersPending)
+    /// </summary>
+    public uint TriggersPending
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _gcodes.TriggersPending;
+            }
         }
     }
 
@@ -413,6 +443,36 @@ public sealed class FakeFirmware : ILinkAdapter
     }
 
     /// <summary>
+    /// Whether a channel has nothing to do: no file on its stack, no macro request, no code being executed, no message box and no file abort
+    /// that DSF has yet to be told about. For the trigger channel this means that the next pending trigger macro can be requested
+    /// (GCodes::IsTriggerBusy, GCodes.cpp:423-433)
+    /// </summary>
+    /// <param name="channel">Code channel</param>
+    /// <returns>Whether the channel is idle</returns>
+    public bool IsIdle(CodeChannel channel)
+    {
+        lock (_lock)
+        {
+            FakeGCodeBuffer gb = _gcodes[channel];
+            return !gb.IsDoingFile && !gb.IsWaitingForMacro && gb.PendingMacroCall is null && gb.CurrentCode is null &&
+                !gb.MachineState.WaitingForAcknowledgement && !gb.IsAbortRequested && gb.MachineState.Previous is null;
+        }
+    }
+
+    /// <summary>
+    /// Get the code that the emulated main task is executing on a channel
+    /// </summary>
+    /// <param name="channel">Code channel</param>
+    /// <returns>Code being executed or null if there is none</returns>
+    public FakeCode? GetCurrentCode(CodeChannel channel)
+    {
+        lock (_lock)
+        {
+            return _gcodes[channel].CurrentCode;
+        }
+    }
+
+    /// <summary>
     /// Number of open message boxes
     /// </summary>
     public int MessageBoxCount
@@ -522,6 +582,7 @@ public sealed class FakeFirmware : ILinkAdapter
             }
 
             _transferNumber++;
+            long timestamp = Stopwatch.GetTimestamp();
             _requestsBeingResent.Clear();
 
             // Deliver what the SBC task wrote after the previous transfer
@@ -532,6 +593,7 @@ public sealed class FakeFirmware : ILinkAdapter
             foreach (FakePacket packet in _rxPackets)
             {
                 packet.Transfer = _transferNumber;
+                packet.Timestamp = timestamp;
                 if (packet.Request is not FirmwareRequest.ObjectModel and not FirmwareRequest.CodeBufferUpdate)
                 {
                     Logger.LogDebug("RRF -> DSF: {Packet}", packet);
@@ -545,6 +607,7 @@ public sealed class FakeFirmware : ILinkAdapter
             foreach (FakeSbcRequest request in received)
             {
                 request.Transfer = _transferNumber;
+                request.Timestamp = timestamp;
                 if (request.Request is not SbcRequest.GetObjectModel)
                 {
                     Logger.LogDebug("DSF -> RRF: {Request}", request);

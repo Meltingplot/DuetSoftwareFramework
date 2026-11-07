@@ -25,6 +25,11 @@ public sealed class FakeSbcRequest
     public int Transfer { get; internal set; }
 
     /// <summary>
+    /// <see cref="System.Diagnostics.Stopwatch"/> timestamp of the transfer that delivered this request to the firmware
+    /// </summary>
+    public long Timestamp { get; internal set; }
+
+    /// <summary>
     /// Code channel of the request, if any
     /// </summary>
     public CodeChannel Channel { get; init; }
