@@ -179,6 +179,37 @@ public class DcsUnavailableTests
         return (result.CloseStatus, result.CloseStatusDescription);
     }
 
+    [Test]
+    public async Task HttpClientsReportTheMissingDcs()
+    {
+        // rr_connect and /machine/connect fail with 503, so DuetHttpSession cannot connect (DuetHttpSession.cs:35-45, RestConnector.cs:56-57)
+        Assert.That(async () => await DuetHttpClient.DuetHttpSession.ConnectAsync(_dws.BaseUri), Throws.InstanceOf<HttpRequestException>());
+
+        // A PollConnector that has an IP session marks the machine as disconnected when rr_model fails (PollConnector.cs:211-226 and 432-445),
+        // after it has fetched rr_reply once because of the 503 (PollConnector.cs:175-185)
+        string key = _dws.Services.GetRequiredService<ISessionStorage>().MakeSessionKey(1, "127.0.0.1", true);
+        await using DuetHttpClient.DuetHttpSession session = DuetHttpClientTests.CreatePollSession(_dws.BaseUri, new DuetHttpClient.DuetHttpOptions
+        {
+            UpdateInterval = TimeSpan.FromMilliseconds(50),
+            RetryDelay = TimeSpan.FromMilliseconds(50)
+        });
+        await WaitUntilAsync(() => { lock (session.Model) { return session.Model.State.Status == DuetAPI.ObjectModel.MachineStatus.Disconnected; } });
+        _dws.Services.GetRequiredService<ISessionStorage>().RemoveTicket(_dws.Services.GetRequiredService<ISessionStorage>().GetTicketFromKey(key)!.Principal);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        DateTime end = DateTime.Now + FakeFirmwareHost.DefaultTimeout;
+        while (!condition())
+        {
+            if (DateTime.Now > end)
+            {
+                Assert.Fail("Condition not met");
+            }
+            await Task.Delay(10);
+        }
+    }
+
     /// <summary>
     /// A DCS that speaks an older IPC protocol answers the init message with an IncompatibleVersionException (BaseConnection.cs:149-157)
     /// </summary>

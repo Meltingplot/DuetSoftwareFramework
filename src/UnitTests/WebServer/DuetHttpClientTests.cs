@@ -136,6 +136,42 @@ public class DuetHttpClientTests : WebServerFixture
     }
 
     [Test]
+    public async Task RestReportsAChangedPassword()
+    {
+        await SetPasswordAsync("client-secret");
+        await using DuetHttpSession session = await DuetHttpSession.ConnectAsync(Dws.BaseUri, Options("client-secret", observe: false));
+
+        // The new login after the 401 fails with 403, which the connector reports as invalid password (RestConnector.cs:120-124)
+        await SetPasswordAsync("changed");
+        ExpireIdleSessions();
+        Assert.That(async () => await session.SendCodeAsync("echo 1"), Throws.InstanceOf<InvalidPasswordException>());
+    }
+
+    [Test]
+    public async Task RestReportsTheLossOfTheServer()
+    {
+        // A second DWS that goes away while the connector is connected: the socket breaks, the connector marks the machine as disconnected
+        // and keeps trying to log in again (RestConnector.cs:298-324)
+        DwsHost dws = await DwsHost.StartAsync(Dcs.SocketPath!, Path.Combine(Dcs.BaseDirectory, "www"));
+        DuetHttpSession? session = null;
+        try
+        {
+            session = await DuetHttpSession.ConnectAsync(dws.BaseUri, Options());
+            await WaitForModelUpdateAsync(session).WaitAsync(FakeFirmwareHost.DefaultTimeout);
+            await dws.DisposeAsync();
+            await WaitUntilAsync(() => { lock (session.Model) { return session.Model.State.Status == MachineStatus.Disconnected; } }, "The connector did not notice the lost server");
+        }
+        finally
+        {
+            if (session is not null)
+            {
+                await session.DisposeAsync();
+            }
+            await dws.DisposeAsync();
+        }
+    }
+
+    [Test]
     public async Task RestDisconnectRemovesTheSession()
     {
         DuetHttpSession session = await DuetHttpSession.ConnectAsync(Dws.BaseUri, Options(observe: false));
@@ -188,13 +224,18 @@ public class DuetHttpClientTests : WebServerFixture
     /// Create a PollConnector session the way PollConnector.ConnectAsync does after its rr_connect (PollConnector.cs:87), without a session key
     /// because DWS returns none (RepRapFirmwareConnectResponse has no sessionKey), so DWS authenticates it by IP address
     /// </summary>
-    private DuetHttpSession CreatePollSession(DuetHttpOptions options)
+    private DuetHttpSession CreatePollSession(DuetHttpOptions options) => CreatePollSession(Dws.BaseUri, options);
+
+    /// <summary>
+    /// Create a PollConnector session for the given base URI, see <see cref="CreatePollSession(DuetHttpOptions)"/>
+    /// </summary>
+    internal static DuetHttpSession CreatePollSession(Uri baseUri, DuetHttpOptions options)
     {
         Assembly assembly = typeof(DuetHttpSession).Assembly;
         Type pollConnector = assembly.GetType("DuetHttpClient.Connector.PollConnector", true)!;
         Type baseConnector = assembly.GetType("DuetHttpClient.Connector.BaseConnector", true)!;
         object connector = pollConnector.GetConstructor(BindingFlags.NonPublic | BindingFlags.Instance, [typeof(Uri), typeof(DuetHttpOptions), typeof(uint?)])!
-            .Invoke([Dws.BaseUri, options, null]);
+            .Invoke([baseUri, options, null]);
         return (DuetHttpSession)typeof(DuetHttpSession).GetConstructor(BindingFlags.NonPublic | BindingFlags.Instance, [baseConnector])!.Invoke([connector]);
     }
 
@@ -274,6 +315,99 @@ public class DuetHttpClientTests : WebServerFixture
         int sessions = (await GetUserSessionsAsync()).Length;
         await session.DisposeAsync();
         Assert.That(await GetUserSessionsAsync(), Has.Length.EqualTo(sessions - 1));
+        await session.DisposeAsync();
+    }
+
+    [Test]
+    public async Task PollRefusesTheEmulatedBackendOnReconnect()
+    {
+        await SetPasswordAsync("poll-secret");
+        using (HttpClient client = new() { BaseAddress = Dws.BaseUri })
+        {
+            await client.GetStringAsync("rr_connect?password=poll-secret");
+        }
+        await using DuetHttpSession session = CreatePollSession(Options("poll-secret", observe: false));
+        Assert.That(await session.GetFileListAsync("0:/"), Is.Not.Empty);
+
+        // After the session expired, the 401 makes the connector log in again; DWS reports isEmulated, which the connector refuses
+        // (PollConnector.cs:118-159)
+        ExpireIdleSessions();
+        Assert.That(async () => await session.GetFileListAsync("0:/"), Throws.InstanceOf<HttpRequestException>().With.Message.EqualTo("HTTP backend is emulated"));
+    }
+
+    [Test]
+    public async Task PollKeepsTrackOfLayers()
+    {
+        await using DuetHttpSession session = CreatePollSession(Options());
+        await session.WaitForModelUpdateAsync().WaitAsync(FakeFirmwareHost.DefaultTimeout);
+        try
+        {
+            // The job values are live, so the root query with flag f has them (Job.cs, LiveAttribute, Filter.cs:77). The connector derives
+            // the layers from layer changes (PollConnector.cs:521-630)
+            await SetJobAsync(duration: 10, warmUp: 2, layer: 1, filePosition: 100, rawExtrusion: 1F);
+            await WaitUntilAsync(() => { lock (session.Model) { return session.Model.Job.Layer == 1; } }, "The first layer was not seen");
+            await SetJobAsync(duration: 30, warmUp: 2, layer: 3, filePosition: 500, rawExtrusion: 5F);
+            await WaitUntilAsync(() => { lock (session.Model) { return session.Model.Job.Layer == 3; } }, "The third layer was not seen");
+            lock (session.Model)
+            {
+                // Two layers changed since the first one was seen, the time since then (without warm-up) and the extrusion are split between them
+                Assert.That(session.Model.Job.Layers, Has.Count.EqualTo(2));
+                Assert.That(session.Model.Job.Layers.Sum(l => l.Duration), Is.EqualTo(28F));
+                Assert.That(session.Model.Job.Layers.Select(l => l.FilamentUsage), Is.All.EqualTo(2.5F));
+            }
+
+            // When the job ends the bookkeeping is reset, the next job starts with no layers
+            await SetJobAsync(null, null, null, null, null);
+            await WaitUntilAsync(() => { lock (session.Model) { return session.Model.Job.Duration is null; } }, "The end of the job was not seen");
+            await SetJobAsync(duration: 5, warmUp: null, layer: 1, filePosition: 10, rawExtrusion: 0.5F);
+            await WaitUntilAsync(() => { lock (session.Model) { return session.Model.Job.Duration == 5; } }, "The second job was not seen");
+            lock (session.Model)
+            {
+                Assert.That(session.Model.Job.Layers, Is.Empty);
+            }
+        }
+        finally
+        {
+            await SetJobAsync(null, null, null, null, null);
+        }
+    }
+
+    private async Task SetJobAsync(int? duration, int? warmUp, int? layer, long? filePosition, float? rawExtrusion)
+    {
+        using (await Dcs.Model.AccessReadWriteAsync())
+        {
+            Dcs.Model.Job.Duration = duration;
+            Dcs.Model.Job.WarmUpDuration = warmUp;
+            Dcs.Model.Job.Layer = layer;
+            Dcs.Model.Job.FilePosition = filePosition;
+            Dcs.Model.Job.RawExtrusion = rawExtrusion;
+        }
+    }
+
+    [Test]
+    public async Task PollQueriesManyAxesInChunks()
+    {
+        // move.axes is queried on its own if there are at least limits.reportedAxes or 9 axes (PollConnector.cs:382-401)
+        System.Text.Json.Nodes.JsonArray axes = [];
+        foreach (char letter in "XYZUVWABCD")
+        {
+            axes.Add(new System.Text.Json.Nodes.JsonObject { ["letter"] = letter.ToString(), ["homed"] = false, ["machinePosition"] = 0, ["userPosition"] = 0 });
+        }
+        System.Text.Json.Nodes.JsonNode original = Dcs.Firmware.ObjectModel.Get("move.axes")!;
+        Dcs.Firmware.ObjectModel.Set("move.axes", axes);
+        try
+        {
+            await using DuetHttpSession session = CreatePollSession(Options());
+            await WaitUntilAsync(() => { lock (session.Model) { return session.Model.Move.Axes.Count == 10; } }, "The axes were not loaded");
+            lock (session.Model)
+            {
+                Assert.That(string.Concat(session.Model.Move.Axes.Select(a => a.Letter)), Is.EqualTo("XYZUVWABCD"));
+            }
+        }
+        finally
+        {
+            Dcs.Firmware.ObjectModel.Set("move.axes", original);
+        }
     }
     #endregion
 
