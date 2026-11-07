@@ -234,7 +234,8 @@ public class LinkRecovery
     public sealed record RrfOptions(SequenceMismatchHandling SequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool PollWhileDisconnected = false,
         bool RrfFirstOnTie = true, byte UnderrunByte = 0, bool PhaseGuard = false, bool SequenceGuard = false,
         LinkCapabilities Capabilities = LinkCapabilities.None, int TargetTransfer = TargetTransfer, RrfRule DisabledRules = RrfRule.None, bool InjectThroughDsf = false,
-        bool DcsRestartAfterRecovery = false, double? BootArmDelay = null, byte BootWindowMiso = 0x00, int? SbcRestartTimeout = null, bool InjectIntoActivation = false);
+        bool DcsRestartAfterRecovery = false, double? BootArmDelay = null, byte BootWindowMiso = 0x00, int? SbcRestartTimeout = null, bool InjectIntoActivation = false,
+        bool HarnessBootDelay = false);
 
     private static IEnumerable<TestCaseData> OtherOptions =>
     [
@@ -399,6 +400,47 @@ public class LinkRecovery
             .Select(r => $"- {r.Case}: {r.Result.Outcome}, {r.Result.Details}")];
         Assert.That(failures, Is.Empty, string.Join("\n", failures.Take(20)));
     }
+
+    /// <summary>
+    /// RRF restarts after it has completed an exchange and before it sets up the next one. DSF takes the falling edge of DataTransfer::Init for
+    /// its next exchange, reads 0 from the disabled SPI and, with data in the transfer, answers with an extended BadResponse. That reaches the first
+    /// header of the booted RRF 10 ms later (SbcBootArmDelay). The restart must be noticed without losing the connection, except when RRF boots for
+    /// longer than the transfer timeout of DSF
+    /// </summary>
+    [TestCase(false, true), TestCase(true, true), TestCase(false, false), TestCase(true, false)]
+    public void RestartBeforeArmKeepsTheConnection(bool poll, bool extended)
+    {
+        List<string> failures = [.. GetRestartBeforeArmCases()
+            .Select(c => (Case: c, Result: Run(c.Variant, c.Fault, extended ? ExtendedRestartOptions(c, poll, RrfRule.None) : new(PollWhileDisconnected: poll))))
+            .Where(r => !KeepsConnectionThroughRestart(r.Case, r.Result))
+            .Select(r => $"- {r.Case}: {r.Result.Label}, {r.Result.Details}")];
+        Assert.That(failures, Is.Empty, string.Join("\n", failures.Take(20)));
+    }
+
+    /// <summary>
+    /// The restart of the lab printer on 2026-11-07 (design/open-findings.md). Without DecodeHeaderWordUnconnected, RRF answers the extended
+    /// BadResponse in its first header with BadHeaderChecksum, DSF reads that as a header and both sides stay one exchange apart until DSF has
+    /// used up its retries. DSF logs the same lines as the printer did
+    /// </summary>
+    [Test]
+    public void RestartBeforeArmMatchesLabPrinter()
+    {
+        Case c = GetRestartBeforeArmCases().Single(c => c.ToString() == "BothData / Header / ToRrf / Restart / RRF restart before the next arm, boot 100 ms");
+        List<string> trace = [];
+        Result result = Run(c.Variant, c.Fault, ExtendedRestartOptions(c, false, RrfRule.DecodeHeaderWordUnconnected), trace);
+        Assert.Multiple(() =>
+        {
+            Assert.That(trace, Has.One.Contains("Restarting full transfer because a bad header response was received (0x00000000)"));
+            Assert.That(trace.Count(line => line.Contains("Bad header CRC16 (expected 0x0000, got 0x1760)")), Is.EqualTo(99));
+            Assert.That(result.Details, Does.Contain("DSF lost connection 1x"));
+        });
+    }
+
+    /// <summary>
+    /// Whether DSF noticed a restart before the next arm without losing the connection, which it cannot keep if RRF boots for longer than its transfer timeout
+    /// </summary>
+    private static bool KeepsConnectionThroughRestart(Case c, Result result) =>
+        result.Outcome == Outcome.ResetDetected && (c.Fault.RestartBootTime >= new Settings().SbcTransferTimeout || result.Details.Contains("DSF lost connection 0x"));
 
     /// <summary>
     /// With the fork's RRF, DSF notices a restart within 50 ms of the boot. Without the delay before the first header, DSF and the booted RRF
@@ -591,7 +633,7 @@ public class LinkRecovery
         }
         foreach (bool poll in new[] { false, true })
         {
-            foreach (Case c in GetExtendedRestartCases())
+            foreach (Case c in GetExtendedRestartCases().Concat(GetRestartBeforeArmCases()))
             {
                 Run(c.Variant, c.Fault, ExtendedRestartOptions(c, poll, RrfRule.None), ruleHits: hits);
             }
@@ -619,6 +661,10 @@ public class LinkRecovery
                     .Select(c => (Case: c, Result: Run(c.Variant, c.Fault, ExtendedRestartOptions(c, poll, rule))))
                     .Where(r => r.Result.Outcome != Outcome.ResetDetected)
                     .Select(r => $"restart{(poll ? ", polling" : "")}: {r.Case}: {r.Result.Label}"));
+                failures.AddRange(GetRestartBeforeArmCases()
+                    .Select(c => (Case: c, Result: Run(c.Variant, c.Fault, ExtendedRestartOptions(c, poll, rule))))
+                    .Where(r => !KeepsConnectionThroughRestart(r.Case, r.Result))
+                    .Select(r => $"restart before the next arm{(poll ? ", polling" : "")}: {r.Case}: {r.Result.Label}"));
                 RrfOptions dcsOptions = new(PollWhileDisconnected: poll, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, DisabledRules: rule);
                 failures.AddRange(GetDcsRestartCases()
                     .Select(c => (Case: c, Result: Run(c.Variant, c.Fault, dcsOptions)))
@@ -839,11 +885,14 @@ public class LinkRecovery
     [TestCase("BothData / Header / ToRrf / Restart / RRF restart, boot 100 ms", SequenceMismatchHandling.ConnectionReset, false, false, true)]
     [TestCase("NoData / Header / ToDsf / Exchange / BadResponse in first word", SequenceMismatchHandling.ConnectionReset, false, false, true, ActivationTransfer)]
     [TestCase("BothData / Data / ToRrf / DcsRestart / DCS restart after 100 ms")]
+    [TestCase("BothData / Header / ToRrf / Restart / RRF restart before the next arm, boot 100 ms", SequenceMismatchHandling.ConnectionReset, false, false, true)]
+    [TestCase("BothData / Data / ToRrf / Restart / RRF restart before the next arm, boot 100 ms", SequenceMismatchHandling.ConnectionReset, false, false, true)]
     [Explicit("Analysis")]
     public void TraceCase(string name, SequenceMismatchHandling sequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool guards = false, bool poll = false,
         bool extended = false, int target = ExtendedTransfer + 2)
     {
-        Case c = GetCases().Concat(GetRestartCases()).Concat(GetRestartCases(ExtendedTransfer + 2, true)).Concat(GetDcsRestartCases()).First(c => c.ToString() == name);
+        Case c = GetCases().Concat(GetRestartCases()).Concat(GetRestartCases(ExtendedTransfer + 2, true)).Concat(GetRestartBeforeArmCases()).Concat(GetDcsRestartCases())
+            .First(c => c.ToString() == name);
         List<string> trace = [];
         Result result = Run(c.Variant, c.Fault, new(sequenceMismatchHandling, PollWhileDisconnected: poll, PhaseGuard: guards, SequenceGuard: guards,
             Capabilities: extended ? LinkCapabilities.All : LinkCapabilities.None, TargetTransfer: extended ? target : TargetTransfer), trace);
@@ -866,12 +915,39 @@ public class LinkRecovery
     /// <summary>
     /// Replay every single fault and every DCS restart against the real DataTransfer and SbcInterface of RRF, built as a host program whose path
     /// is in RRF_HOST_HARNESS, and compare its answers with those of the port. Inputs are replayed open-loop, so only the first difference of a case counts.
-    /// Restarts of RRF cannot be replayed, because the host program does not restart
+    /// The restarts before the next arm have a test of their own, because the host program needs -b for them
     /// </summary>
     /// <param name="capabilities">Capabilities DSF activates, which the host build must offer</param>
     /// <param name="target">Transfer with the fault</param>
     [TestCaseSource(nameof(HarnessOptions)), Explicit("Needs the host build of RRF's DataTransfer and SbcInterface")]
     public void PortMatchesRealFirmware(LinkCapabilities capabilities, int target)
+    {
+        RrfOptions options = new(PollWhileDisconnected: Environment.GetEnvironmentVariable("RRF_HOST_POLL") == "1", Capabilities: capabilities, TargetTransfer: target);
+        CompareWithHarness(string.Empty, capabilities.HasFlag(LinkCapabilities.ExtendedHeader),
+            Enum.GetValues<Variant>().Select(v => (v, (SpiFault?)null, $"{v} / clean", options))
+                .Concat(GetCases().Concat(GetDcsRestartCases()).Select(c => (c.Variant, (SpiFault?)c.Fault, c.ToString(), options))));
+    }
+
+    /// <summary>
+    /// Replay every restart before the next arm against the host build of RRF, started with -b so that the boot arm delay waits for T.
+    /// RRF_HOST_RULE=1 tells that the build reads an extended BadResponse in the first header while it is not connected
+    /// (<see cref="RrfRule.DecodeHeaderWordUnconnected"/>), otherwise the port runs without that rule
+    /// </summary>
+    [Test, Explicit("Needs the host build of RRF's DataTransfer and SbcInterface")]
+    public void PortMatchesRealFirmwareAfterRestartBeforeArm()
+    {
+        bool poll = Environment.GetEnvironmentVariable("RRF_HOST_POLL") == "1";
+        RrfRule disabledRules = (Environment.GetEnvironmentVariable("RRF_HOST_RULE") == "1") ? RrfRule.None : RrfRule.DecodeHeaderWordUnconnected;
+        CompareWithHarness("-b", true, GetRestartBeforeArmCases().Select(c => (c.Variant, (SpiFault?)c.Fault, c.ToString(), ExtendedRestartOptions(c, poll, disabledRules) with { HarnessBootDelay = true })));
+    }
+
+    /// <summary>
+    /// Replay the given cases against the host program in RRF_HOST_HARNESS and compare its answers with those of the port
+    /// </summary>
+    /// <param name="arguments">Arguments of the host program</param>
+    /// <param name="extended">Whether RRF must send extended codes in some case</param>
+    /// <param name="cases">Cases to replay</param>
+    private void CompareWithHarness(string arguments, bool extended, IEnumerable<(Variant Variant, SpiFault? Fault, string Name, RrfOptions Options)> cases)
     {
         string? harness = Environment.GetEnvironmentVariable("RRF_HOST_HARNESS");
         if (string.IsNullOrEmpty(harness))
@@ -879,7 +955,7 @@ public class LinkRecovery
             Assert.Ignore("RRF_HOST_HARNESS is not set");
         }
 
-        using System.Diagnostics.Process process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(harness!)
+        using System.Diagnostics.Process process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(harness!, arguments)
         {
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
@@ -887,13 +963,13 @@ public class LinkRecovery
         })!;
 
         List<string> differences = [];
-        int cases = 0, events = 0, extendedCases = 0;
+        int caseCount = 0, events = 0, extendedCases = 0;
         string extendedSuccess = Convert.ToHexStringLower(BitConverter.GetBytes(ExtendedLink.Success));
-        foreach ((Variant variant, SpiFault? fault, string name) in Enum.GetValues<Variant>().Select(v => (v, (SpiFault?)null, $"{v} / clean")).Concat(GetCases().Concat(GetDcsRestartCases()).Select(c => (c.Variant, (SpiFault?)c.Fault, c.ToString()))))
+        foreach ((Variant variant, SpiFault? fault, string name, RrfOptions options) in cases)
         {
             List<(string Input, string? Output)> replay = [];
-            Run(variant, fault, new(PollWhileDisconnected: Environment.GetEnvironmentVariable("RRF_HOST_POLL") == "1", Capabilities: capabilities, TargetTransfer: target), replay: replay);
-            cases++;
+            Run(variant, fault, options, replay: replay);
+            caseCount++;
             if (replay.Any(r => r.Output?.StartsWith($"R {extendedSuccess}", StringComparison.Ordinal) == true))
             {
                 extendedCases++;
@@ -919,9 +995,9 @@ public class LinkRecovery
         process.StandardInput.Close();
         process.WaitForExit();
 
-        TestContext.Out.WriteLine($"{cases} cases, {events} events compared, {differences.Count} cases differ, {extendedCases} cases with extended codes from RRF");
+        TestContext.Out.WriteLine($"{caseCount} cases, {events} events compared, {differences.Count} cases differ, {extendedCases} cases with extended codes from RRF");
         Assert.That(differences, Is.Empty, string.Join("\n", differences.Take(20)));
-        if (capabilities.HasFlag(LinkCapabilities.ExtendedHeader))
+        if (extended)
         {
             Assert.That(extendedCases, Is.GreaterThan(0), "RRF never sent an extended code");
         }
@@ -1247,6 +1323,15 @@ public class LinkRecovery
     }
 
     /// <summary>
+    /// Get every restart of RRF that happens after RRF has completed an exchange of the target transfer and before it sets up the next one,
+    /// see <see cref="SpiFault.RestartBeforeArm"/>
+    /// </summary>
+    private static IEnumerable<Case> GetRestartBeforeArmCases() =>
+        GetExchanges().SelectMany(e => RestartBootTimes.Select(bootTime =>
+            new Case(e.Variant, e.Phase, ExchangeDirection.ToRrf, "Restart", $"RRF restart before the next arm, boot {bootTime} ms",
+                new SpiFault(e.Exchange, ExchangeDirection.ToRrf, _ => { }, bootTime, RestartBeforeArm: true))));
+
+    /// <summary>
     /// Boot times of a restarting RRF
     /// </summary>
     private static readonly double[] RestartBootTimes = [100, 2000];
@@ -1291,6 +1376,11 @@ public class LinkRecovery
             BootArmDelay = options.BootArmDelay ?? ((options.Capabilities != LinkCapabilities.None) ? FakeRrfSpi.ForkBootArmDelay : 0),
             BootWindowMiso = options.BootWindowMiso
         };
+        if (options.HarnessBootDelay)
+        {
+            // A host program started with -b waits in the boot arm delay of every NEW until T, also at the start of a case
+            replay?.Add(("T", $"T {rrf.ReplayStatusNow}"));
+        }
 
         int dsfConnectionLosses = 0, dcsRestarts = 0, dsfId = 0, dsfResets = 0, restartTimeouts = 0;
         double? recoveredAt = null;
