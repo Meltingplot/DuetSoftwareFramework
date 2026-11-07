@@ -138,4 +138,82 @@ public class SpiFaultInjectionTests
         Assert.That(BitConverter.ToUInt32(firmware.Received[^1]), Is.EqualTo(TransferResponse.Success ^ 4), "sent to RRF");
         Assert.That(BitConverter.ToUInt32(rx), Is.EqualTo(TransferResponse.Success ^ 4), "received from RRF");
     }
+
+    /// <summary>
+    /// A fault of the kind Activation waits for the transfer whose packets contain the activation request. Its data does not count, and
+    /// neither does a request code in the data of another packet
+    /// </summary>
+    [Test]
+    public void ActivationKindHitsTheTransferThatActivates()
+    {
+        const ushort activation = (ushort)DuetControlServer.Link.Protocol.SbcRequests.Request.ActivateLinkCapabilities;
+        FirmwareStub firmware = new();
+        FaultInjectingSpiDevice injector = new(firmware, null, NullLogger.Instance);
+        int hits = 0;
+        injector.Injected += (_, _) => hits++;
+        injector.Arm(SpiFaultSpec.Parse("Activation DataResponse ToRrf word 0x00000006"));
+
+        // Perform a transfer with the given packets and return the data response that reached the firmware
+        uint Transfer(params (ushort Request, byte[] Data)[] packets)
+        {
+            List<byte> data = [];
+            foreach ((ushort request, byte[] packetData) in packets)
+            {
+                data.AddRange(BitConverter.GetBytes(request));
+                data.AddRange(BitConverter.GetBytes((ushort)0));
+                data.AddRange(BitConverter.GetBytes((ushort)packetData.Length));
+                data.AddRange(BitConverter.GetBytes((ushort)0));
+                data.AddRange(packetData);
+                data.AddRange(new byte[(4 - packetData.Length % 4) % 4]);
+            }
+
+            byte[] header = new byte[16];
+            header[0] = Consts.FormatCode;
+            BitConverter.TryWriteBytes(header.AsSpan(6), (ushort)data.Count);
+            injector.TransferFullDuplex(header, new byte[16]);
+            injector.TransferFullDuplex(BitConverter.GetBytes(TransferResponse.Success), new byte[4]);
+            injector.TransferFullDuplex(data.ToArray(), new byte[data.Count]);
+            injector.TransferFullDuplex(BitConverter.GetBytes(TransferResponse.Success), new byte[4]);
+            return BitConverter.ToUInt32(firmware.Received[^1]);
+        }
+
+        Assert.That(Transfer((1, [1, 2, 3])), Is.EqualTo(TransferResponse.Success), "another request");
+        Assert.That(Transfer((1, BitConverter.GetBytes((uint)activation))), Is.EqualTo(TransferResponse.Success), "the request code in the data of a packet");
+        Assert.That(hits, Is.Zero);
+
+        Assert.That(Transfer((1, [1, 2, 3]), (activation, new byte[4])), Is.EqualTo(6u), "the request behind another packet");
+        Assert.That(hits, Is.EqualTo(1));
+
+        Assert.That(Transfer((activation, new byte[4])), Is.EqualTo(TransferResponse.Success), "the fault is injected once");
+        Assert.That(hits, Is.EqualTo(1));
+    }
+
+    /// <summary>
+    /// The transfer that activates is known only from its data, so a fault in an exchange before the data never hits it
+    /// </summary>
+    [Test]
+    public void ActivationKindCannotHitTheHeaders()
+    {
+        const ushort activation = (ushort)DuetControlServer.Link.Protocol.SbcRequests.Request.ActivateLinkCapabilities;
+        FirmwareStub firmware = new();
+        FaultInjectingSpiDevice injector = new(firmware, null, NullLogger.Instance);
+        int hits = 0;
+        injector.Injected += (_, _) => hits++;
+        injector.Arm(SpiFaultSpec.Parse("Activation HeaderResponse ToDsf flip 2"));
+
+        byte[] data = new byte[12];
+        BitConverter.TryWriteBytes(data, activation);
+        BitConverter.TryWriteBytes(data.AsSpan(4), (ushort)4);
+        byte[] header = new byte[16];
+        header[0] = Consts.FormatCode;
+        BitConverter.TryWriteBytes(header.AsSpan(6), (ushort)data.Length);
+        for (int i = 0; i < 2; i++)
+        {
+            injector.TransferFullDuplex(header, new byte[16]);
+            injector.TransferFullDuplex(BitConverter.GetBytes(TransferResponse.Success), new byte[4]);
+            injector.TransferFullDuplex(data, new byte[data.Length]);
+            injector.TransferFullDuplex(BitConverter.GetBytes(TransferResponse.Success), new byte[4]);
+        }
+        Assert.That(hits, Is.Zero);
+    }
 }

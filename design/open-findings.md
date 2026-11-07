@@ -2,7 +2,7 @@
 
 The fork has no issue tracker, so findings to solve later are kept here. Remove an entry when it is solved.
 
-Status: 2026-11-06. Line numbers refer to the Meltingplot fork: DSF `v3.7-dev` at 4c8b3fec and RRF `3.7-dev` at fc939b3.
+Status: 2026-11-07. Line numbers refer to the Meltingplot fork: DSF `v3.7-dev` at 4c8b3fec and RRF `3.7-dev` at fc939b3.
 
 ## G and M cannot be macro parameters
 
@@ -75,3 +75,73 @@ A partial line can only be a text line, because `GCodeBuffer::Put` clears `isBin
 1. Build the fix and repeat the lab test on USB and USB2 without a host. Repeat it with a host that has the port open, which needs a USB cable.
 2. Add `1 => USB` and `7 => USB2` back to the `M98.n` table in `MCodeHandler.cs`. Do this only together with an RRF release that has the fix, otherwise a call without a host returns success and the channel stays busy.
 3. Report it to Duet3D with the versions above, as the files are unchanged against upstream.
+
+## A stuck link floods the journal, so the reason for the DCS restart gets lost
+
+**Problem:** while the SPI link is stuck, DCS logs warnings so fast that journald drops them. The line that names the reason for the restart, `No transfer with RepRapFirmware completed within 60000 ms` (`SPI.cs:311`), is missing afterwards. Whoever reads the journal after a stuck link sees `Lost connection to Duet`, warnings, a gap, and a stop without a reason. The restart itself works.
+
+**Observed** on 2026-11-07 on the lab printer (DSF 3.7.0+mp.12 with the fault injection build from c866895b, RRF 3.7.0+1.mp.7), in `SpiFaultRestarts.StuckLinkRestartsDcs`:
+- The fault hit at 07:45:23.753, and systemd reported the stop at 07:46:23.783, 60.03 s later.
+- journald reported 1,204,179 suppressed messages (159679, 609061, 435439). The visible lines are `Bad header CRC16` (`SPI.cs:1885`), `Note: RepRapFirmware didn't receive valid data either` (`SPI.cs:1894`) and `Restarting full transfer because the number of maximum retries has been exceeded` (`SPI.cs:2015`). The last visible one is from 07:46:01.
+- The limit on the image is `RateLimitInterval=30s`, `RateLimitBurst=2000` (`/etc/systemd/journald.conf.d/persistent.conf`).
+- The line is not in `0:/sys/eventlog.log` either.
+- This instance of DCS used 53.7 s of CPU time over its 84 s, and the service runs with `CPUSchedulingPolicy=fifo` (`duetcontrolserver.service:15-16`).
+- The repeat at 07:53:05 gave the same picture: stop after 60.03 s, 1,192,457 suppressed messages, no such line in the journal.
+
+**Not proven:** that DCS logged the line and journald dropped it. The stop after 60.03 s fits only `SPI.cs:309-311`, and it falls into the time in which journald suppressed messages.
+
+**Open questions:**
+1. Should DSF report repeated link warnings once or at a limited rate while the link is stuck? That would also shrink the journal writes on the SD card during the 60 s.
+2. Should the reason for the stop reach the journal by another route, for example after DCS has stopped retrying?
+
+`StuckLinkRestartsDcs` therefore measures the stop at the line of systemd.
+
+## A firmware restart can leave DSF and RRF one exchange apart until the connection is lost
+
+**Problem:** on one firmware restart, DSF did not notice the restart the usual way (`RepRapFirmware has left the extended link`). DSF and RRF ran one exchange apart until DSF ran out of retries and lost the connection. The link came back 500 ms later, without a DCS restart.
+
+**Observed** on 2026-11-07 on the lab printer (DSF 3.7.0+mp.12 from the image, no side-load, no fault injection, RRF 3.7.0+1.mp.7), in run 4 of 5 of `FirmwareRestart.LinkRecoversAfterWatchdogReset`:
+
+| Time (UTC) | Journal |
+|---|---|
+| 07:59:38.180 | `Restarting full transfer because a bad header response was received (0x00000000)` |
+| 07:59:38.191 to .202 | 99 x `Bad header CRC16 (expected 0x0000, got 0x1760)`, each with `Note: RepRapFirmware didn't receive valid data either (code 0x0007005f)`, and 10 x `Restarting full transfer because the number of maximum retries has been exceeded` |
+| 07:59:38.203 | `Lost connection to Duet (Maximum number of SPI transfer retries exceeded)` |
+| 07:59:38.702 | `Connection to Duet established`, then `Connection to controller has been reset` |
+| 07:59:38.768 | `Link capabilities All are active` |
+
+- The test passed. The printer was idle again after 12.6 s, the other runs took 12.0 to 12.8 s. M122 of DSF afterwards: full transfer restarts 16, header retries 90, extended link left 5, lost connections 1, connection resets 6.
+- It is the only `Maximum number of SPI transfer retries exceeded` without fault injection in the journal, which starts on 2026-10-29. The journal has 39 x `has left the extended link`, the first on 2026-11-02, so this was about 1 in 40 restarts. The same suite ran without it earlier that morning and in block 1 on 2026-11-06.
+
+**What the values show:**
+- `0x0007005f` is `5F 00 07 00`, the start of a valid RRF header (`Consts.cs:12`, `:27`, `TransferHeader.cs:16-29`), read where DSF expects the response.
+- `0x1760` is the CRC16 of `05 00 00 00` and six zero bytes, computed offline with the table in `CRC16.cs`. That is the response `BadHeaderChecksum` (`TransferResponse.cs:34`), read where DSF expects the header.
+- The protocol version in that "header" is 0, so `SPI.cs:1848-1858` sets DSF's own version to 0 without a log line. The check then takes the CRC16 path (`SPI.cs:1882-1885`), which explains a CRC16 message on a link with protocol 7.
+
+**Cause, shown later on 2026-11-07** (census, real RRF code in the host harness, RRF review):
+1. RRF resets after an exchange has completed and before it sets up the next one, so TfrRdy keeps its level. `M122 P1001` resets go through `SoftwareReset`, which writes the reset data to flash with the interrupts off (reset code `0x80a3`), so an exchange can complete by DMA in that time. `M999` takes the same path.
+2. DSF takes the falling edge of `DataTransfer::Init` for its pending exchange and reads 0 from the disabled SPI. With data in the transfer, it answers with `BadResponse`, extended as `0xCCCCCCCC` (`SPI.cs:2008`, `:2027`).
+3. That word lands in the first header of the booted RRF, which decodes extended codes only while the extended link is active (RRF `DataTransfer.cpp:873`, `:1086`). It answers `BadHeaderChecksum`, and both sides stay one exchange apart.
+
+The census showed it once a restart between two exchanges was added (`SpiFault.RestartBeforeArm`): the same lines, `0x1760` and 99 x `Bad header CRC16`. 9 combinations of variant and phase lose the connection, all on the extended link. The regular link does not have it.
+
+**Fix (not merged):** RRF decodes extended codes while it is not connected (Meltingplot/RepRapFirmware branch `fix/sbc-decode-header-unconnected`, one condition in `DecodeResponse`). DSF branch `feature/census-restart-before-arm` has the census cases and the harness check. Results:
+- In the host harness, the build with the condition matches the port with the rule and the build without it matches the port without it, 0 differences each, on usb0 and usb1.
+- On the lab printer (side-load RRF 3.7.0+1.mp.7-dev.1, 2026-11-07): suite 30 of 30, A-1/A-2/F-1, and 40 watchdog restarts without a lost connection (12 of them through the boot window). That is a hint, not a proof, at about 1 in 40.
+
+**Still open:** the duration of the flash write in `SoftwareReset` is unmeasured. Whether `M999` hits the same window has not been shown.
+
+**Next steps:** the PRs of both branches, then an RRF release with the condition. Remove this entry once that is on the printer.
+
+## DCS logs "Failed to process code in stage Executed" while it shuts down
+
+**Problem:** while DCS stopped for a restart, a code was still in the Executed stage and logged an error.
+
+**Observed** on the lab printer (DSF 3.7.0+mp.12):
+- 2026-11-07 11:24:14 UTC, during the DCS restart of `run-lab-tests.sh` that removes a side-load. Right after `Application is shutting down...`, `Failed to process code in stage Executed` with `TaskCanceledException` in `AsyncLock.LockAsync`, called from `EventLogger.LogAsync` and `Executed.ProcessCodeAsync`.
+- 2026-11-06 09:36:49 UTC, same message, but the stack does not have `EventLogger.LogAsync`. Context not checked yet.
+- These are the only two in the journal since 2026-10-25.
+
+**Likely cause, read from the stack and not proven:** the Executed stage writes to the event log with the token that is cancelled on shutdown, and the cancellation is reported as a failure of the code.
+
+**Next step:** check both occurrences in the code and decide whether a cancelled log write on shutdown should be quiet.

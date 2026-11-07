@@ -234,14 +234,18 @@ public class UpdateService : BackgroundService
                 // Verbose and obsolete fields are read once on start-up and from then on only while a
                 // subscriber asks for them. Sequence numbers do not change just because a client changed its
                 // mind, so drop them to have every key read again. Losing the last subscriber needs no
-                // resync, the values that were already read simply go stale
-                if ((IPC.Processors.ModelSubscription.VerboseSubscribers && !_verboseQueries) ||
+                // resync, the values that were already read simply go stale. A lost connection needs the same,
+                // because the first query of a new connection is the only other one that reads the verbose fields
+                bool connectionLost = _model.ResyncAfterConnectionLoss;
+                if (connectionLost ||
+                    (IPC.Processors.ModelSubscription.VerboseSubscribers && !_verboseQueries) ||
                     (IPC.Processors.ModelSubscription.ObsoleteSubscribers && !_obsoleteQueries))
                 {
-                    _logger.LogDebug("Resyncing object model because a subscriber requires extra fields");
+                    _logger.LogDebug(connectionLost ? "Resyncing object model after a lost connection" : "Resyncing object model because a subscriber requires extra fields");
                     using (await _model.AccessReadWriteAsync(stoppingToken))
                     {
                         _model.Seqs.Clear();
+                        _model.ResyncAfterConnectionLoss = false;
                     }
                 }
                 _verboseQueries = IPC.Processors.ModelSubscription.VerboseSubscribers;

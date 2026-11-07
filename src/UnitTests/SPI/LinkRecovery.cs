@@ -234,7 +234,8 @@ public class LinkRecovery
     public sealed record RrfOptions(SequenceMismatchHandling SequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool PollWhileDisconnected = false,
         bool RrfFirstOnTie = true, byte UnderrunByte = 0, bool PhaseGuard = false, bool SequenceGuard = false,
         LinkCapabilities Capabilities = LinkCapabilities.None, int TargetTransfer = TargetTransfer, RrfRule DisabledRules = RrfRule.None, bool InjectThroughDsf = false,
-        bool DcsRestartAfterRecovery = false, double? BootArmDelay = null, byte BootWindowMiso = 0x00, int? SbcRestartTimeout = null, bool HarnessBootDelay = false);
+        bool DcsRestartAfterRecovery = false, double? BootArmDelay = null, byte BootWindowMiso = 0x00, int? SbcRestartTimeout = null, bool InjectIntoActivation = false,
+        bool HarnessBootDelay = false);
 
     private static IEnumerable<TestCaseData> OtherOptions =>
     [
@@ -705,6 +706,42 @@ public class LinkRecovery
         TestContext.Out.WriteLine(string.Join(", ", results.GroupBy(r => r.Result.Outcome).OrderBy(g => g.Key).Select(g => $"{g.Key} {g.Count()}")));
         List<string> stuck = [.. results.Where(r => r.Result.Outcome == Outcome.NoRecovery).Select(r => $"- {r.Case}: {r.Result.Details}")];
         Assert.That(stuck, Is.Empty, $"{stuck.Count} faults leave the link stuck:\n" + string.Join("\n", stuck.Take(20)));
+    }
+
+    /// <summary>
+    /// The fault of the lab test SpiFaultRestarts.StuckLinkRestartsDcs, through the injector and into the transfer that activates the capabilities.
+    /// Keep it in line with the lab test. A transfer with DSF data is the only kind the activation request can be in
+    /// </summary>
+    /// <param name="variant">Kind of the transfer that activates</param>
+    /// <param name="poll">Whether RRF polls while disconnected, as the MB6HC of the lab printer does</param>
+    [TestCase(Variant.BothData, false), TestCase(Variant.BothData, true), TestCase(Variant.DsfData, false), TestCase(Variant.DsfData, true)]
+    public void LabFaultInActivationRestartsDcs(Variant variant, bool poll)
+    {
+        RrfOptions options = new(PollWhileDisconnected: poll, Capabilities: LinkCapabilities.All, TargetTransfer: ActivationTransfer, SbcRestartTimeout: 200, InjectThroughDsf: true, InjectIntoActivation: true);
+        Case fault = GetCases().First(c => c.Variant == variant && (SpiExchange)c.Fault.Exchange == SpiExchange.DataResponse && c.Fault.Direction == ExchangeDirection.ToRrf && c.Fault.Mutation == "word 0x00000006");
+        Result result = Run(fault.Variant, fault.Fault, options);
+        Assert.That(result.Outcome, Is.EqualTo(Outcome.DcsRestart), result.Details);
+    }
+
+    /// <summary>
+    /// The faults of the lab test SpiFaultRestarts.DcsStartsWhileTfrRdyIsLow. Each is repaired by the protocol but leaves RRF at its idle header with
+    /// TfrRdy low, so a new DCS must wait for the connection timeout of RRF. Which faults do that depends on the recovery paths of DSF, so this
+    /// test tells when the list in the lab test has to change. Keep it in line with the lab test
+    /// </summary>
+    /// <param name="variant">Kind of transfer</param>
+    /// <param name="exchange">Exchange that is corrupted</param>
+    /// <param name="direction">Direction that is corrupted</param>
+    /// <param name="mutation">Mutation of the exchange</param>
+    [TestCase(Variant.RrfData, SpiExchange.HeaderResponse, ExchangeDirection.ToDsf, "zero 0 4")]
+    [TestCase(Variant.RrfData, SpiExchange.HeaderResponse, ExchangeDirection.ToRrf, "zero 0 4")]
+    [TestCase(Variant.RrfData, SpiExchange.Data, ExchangeDirection.ToDsf, "word 0xfefefefe")]
+    public void LabFaultLeavesTfrRdyLow(Variant variant, SpiExchange exchange, ExchangeDirection direction, string mutation)
+    {
+        RrfOptions options = new(PollWhileDisconnected: true, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, DcsRestartAfterRecovery: true);
+        Case fault = GetCases().First(c => c.Variant == variant && (SpiExchange)c.Fault.Exchange == exchange && c.Fault.Direction == direction && c.Fault.Mutation == mutation);
+        Result result = Run(fault.Variant, fault.Fault, options);
+        Assert.That(result.Outcome, Is.EqualTo(Outcome.Retry), result.Details);
+        Assert.That(result.Details, Does.Contain("connected after 4000.0 ms"));
     }
 
     private static IEnumerable<TestCaseData> DcsStartAfterFaultOptions =>
@@ -1378,7 +1415,7 @@ public class LinkRecovery
                 return;
             }
             SpiExchange exchange = (SpiExchange)armed.Exchange;
-            SpiTransferKind kind = variant switch
+            SpiTransferKind kind = options.InjectIntoActivation ? SpiTransferKind.Activation : variant switch
             {
                 Variant.NoData => SpiTransferKind.NoData,
                 Variant.BothData => SpiTransferKind.BothData,

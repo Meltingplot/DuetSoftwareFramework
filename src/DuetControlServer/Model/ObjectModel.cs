@@ -132,6 +132,13 @@ public partial class ObjectModel : DuetAPI.ObjectModel.ObjectModel, IDiagnostics
     internal Dictionary<string, int> Seqs { get; } = [];
 
     /// <summary>
+    /// Set when the connection to the firmware has been lost, so that the update service drops <see cref="Seqs"/> before its next query and
+    /// reads every key again, including the verbose fields. Only the update service clears the sequence numbers, else a query it has already
+    /// started might go out without the verbose flag
+    /// </summary>
+    internal bool ResyncAfterConnectionLoss { get; set; }
+
+    /// <summary>
     /// Configured password (see M551)
     /// </summary>
     internal string Password { get; set; } = DuetAPI.Connection.Defaults.Password;
@@ -866,7 +873,7 @@ public partial class ObjectModel : DuetAPI.ObjectModel.ObjectModel, IDiagnostics
         {
             Boards.Clear();
             Global.Clear();
-            Seqs.Clear();
+            ResyncAfterConnectionLoss = true;
             if (State.Status != MachineStatus.Halted && State.Status != MachineStatus.Updating)
             {
                 State.Status = MachineStatus.Disconnected;
