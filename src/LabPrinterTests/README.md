@@ -82,7 +82,7 @@ LAB_SPI_FAULT_CASES=/tmp/cases.json src/LabPrinterTests/run-lab-tests.sh --side-
 src/LabPrinterTests/run-lab-tests.sh --side-load --fault-injection --filter "FullyQualifiedName~SpiFaultRestarts"
 ```
 
-- `StuckLinkRestartsDcs` arms a fault of the kind `Activation`, which waits for the transfer that activates the link capabilities. A watchdog reset makes DCS connect and activate again.
+- `StuckLinkRestartsDcs` arms a fault of the kind `Activation`, which waits for the transfer that activates the link capabilities. A watchdog reset makes DCS connect and activate again. The test measures the stop at the line of systemd, because a stuck link logs more than journald lets through, see `design/open-findings.md`.
 - `DcsStartsWhileTfrRdyIsLow` reads the pin after stopping DCS. A fault that leaves it high is no result, so the test tries the next one and is inconclusive without any.
 - The faults are checked offline by `LabFaultInActivationRestartsDcs` and `LabFaultLeavesTfrRdyLow`. Keep them in line with the lab test.
 
