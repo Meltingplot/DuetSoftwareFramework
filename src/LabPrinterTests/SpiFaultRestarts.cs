@@ -104,8 +104,8 @@ public class SpiFaultRestarts : LabTest
             """);
         TestContext.Progress.WriteLine(report);
 
-        // The stop comes from systemd's line and not from the message of DCS (SPI.cs). A stuck link logs so much that journald drops that message,
-        // see design/open-findings.md
+        // The stop comes from systemd's line and not from the message of DCS (SPI.cs). A stuck link logs so much that journald drops that message
+        // when DCS writes all lines with one priority, as builds before the journal priorities do
         double? injectedAt = JournalTime(report, "SPI fault injected"), stoppedAt = JournalTime(report, "Deactivated successfully");
         if (injectedAt is null || !report.Contains("RESTARTED"))
         {

@@ -76,26 +76,6 @@ A partial line can only be a text line, because `GCodeBuffer::Put` clears `isBin
 2. Add `1 => USB` and `7 => USB2` back to the `M98.n` table in `MCodeHandler.cs`. Do this only together with an RRF release that has the fix, otherwise a call without a host returns success and the channel stays busy.
 3. Report it to Duet3D with the versions above, as the files are unchanged against upstream.
 
-## A stuck link floods the journal, so the reason for the DCS restart gets lost
-
-**Problem:** while the SPI link is stuck, DCS logs warnings so fast that journald drops them. The line that names the reason for the restart, `No transfer with RepRapFirmware completed within 60000 ms` (`SPI.cs:311`), is missing afterwards. Whoever reads the journal after a stuck link sees `Lost connection to Duet`, warnings, a gap, and a stop without a reason. The restart itself works.
-
-**Observed** on 2026-11-07 on the lab printer (DSF 3.7.0+mp.12 with the fault injection build from c866895b, RRF 3.7.0+1.mp.7), in `SpiFaultRestarts.StuckLinkRestartsDcs`:
-- The fault hit at 07:45:23.753, and systemd reported the stop at 07:46:23.783, 60.03 s later.
-- journald reported 1,204,179 suppressed messages (159679, 609061, 435439). The visible lines are `Bad header CRC16` (`SPI.cs:1885`), `Note: RepRapFirmware didn't receive valid data either` (`SPI.cs:1894`) and `Restarting full transfer because the number of maximum retries has been exceeded` (`SPI.cs:2015`). The last visible one is from 07:46:01.
-- The limit on the image is `RateLimitInterval=30s`, `RateLimitBurst=2000` (`/etc/systemd/journald.conf.d/persistent.conf`).
-- The line is not in `0:/sys/eventlog.log` either.
-- This instance of DCS used 53.7 s of CPU time over its 84 s, and the service runs with `CPUSchedulingPolicy=fifo` (`duetcontrolserver.service:15-16`).
-- The repeat at 07:53:05 gave the same picture: stop after 60.03 s, 1,192,457 suppressed messages, no such line in the journal.
-
-**Not proven:** that DCS logged the line and journald dropped it. The stop after 60.03 s fits only `SPI.cs:309-311`, and it falls into the time in which journald suppressed messages.
-
-**Open questions:**
-1. Should DSF report repeated link warnings once or at a limited rate while the link is stuck? That would also shrink the journal writes on the SD card during the 60 s.
-2. Should the reason for the stop reach the journal by another route, for example after DCS has stopped retrying?
-
-`StuckLinkRestartsDcs` therefore measures the stop at the line of systemd.
-
 ## A firmware restart can leave DSF and RRF one exchange apart until the connection is lost
 
 **Problem:** on one firmware restart, DSF did not notice the restart the usual way (`RepRapFirmware has left the extended link`). DSF and RRF ran one exchange apart until DSF ran out of retries and lost the connection. The link came back 500 ms later, without a DCS restart.
