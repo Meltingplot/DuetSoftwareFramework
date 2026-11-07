@@ -19,7 +19,10 @@ namespace LabPrinterTests;
 [TestFixture, Category("Restart")]
 public class FirmwareRestart : LabTest
 {
-    private const int Restarts = 5;
+    /// <summary>
+    /// Number of watchdog resets, 5 unless LAB_WATCHDOG_RESTARTS sets another one, e.g. to look for a rare reboot race
+    /// </summary>
+    private static readonly int Restarts = int.TryParse(Environment.GetEnvironmentVariable("LAB_WATCHDOG_RESTARTS"), out int restarts) && restarts > 0 ? restarts : 5;
 
     [Test]
     public async Task LinkRecoversAfterWatchdogReset()
