@@ -237,8 +237,9 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     private byte _pendingPacketId;
     private bool _resending;
     private readonly byte _underrunByte;
-    private SpiFault? _fault;
+    private List<SpiFault> _faults = [];
     private int _faultArmedAt;
+    private bool _faultTimeTaken;
     private int _transfersStarted, _payloadId;
 
     /// <summary>
@@ -522,12 +523,12 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     public string ReplayStatusNow => ReplayStatus(ReceivedPayloads.Count);
 
     /// <summary>
-    /// Whether the fault has been applied
+    /// Whether every armed fault has been applied
     /// </summary>
     public bool FaultApplied { get; private set; }
 
     /// <summary>
-    /// Virtual time at which the fault was applied
+    /// Virtual time at which the first armed fault was applied
     /// </summary>
     public double FaultTime { get; private set; }
 
@@ -535,11 +536,35 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// Corrupt a single exchange, counted from now
     /// </summary>
     /// <param name="fault">Fault to inject</param>
-    public void Arm(SpiFault fault)
+    public void Arm(SpiFault fault) => Arm([fault]);
+
+    /// <summary>
+    /// Corrupt several exchanges, each counted from now. Faults of the same exchange are applied in order. Only the first fault
+    /// of an exchange may restart RRF or DCS, the others only mutate the bytes
+    /// </summary>
+    /// <param name="faults">Faults to inject</param>
+    public void Arm(IReadOnlyList<SpiFault> faults)
     {
-        _fault = fault;
+        _faults = [.. faults];
         _faultArmedAt = Exchanges;
+        _faultTimeTaken = false;
     }
+
+    /// <summary>
+    /// Check every transfer RRF processes against the data DSF clocked out before any corruption, see <see cref="CorruptedTransfers"/>
+    /// </summary>
+    public bool CheckIntegrity { get; init; }
+
+    /// <summary>
+    /// Data exchanges as DSF clocked them out, before any corruption, if <see cref="CheckIntegrity"/> is set
+    /// </summary>
+    private readonly List<byte[]> _cleanDsfData = [];
+
+    /// <summary>
+    /// Number of transfers whose data RRF processed although DSF never clocked out that data, counted if <see cref="CheckIntegrity"/> is set.
+    /// Every data exchange is kept, so do not use this for long runs
+    /// </summary>
+    public int CorruptedTransfers { get; private set; }
 
     /// <summary>
     /// Probability with which each bit of every exchange flips, independently and in both directions
@@ -1133,6 +1158,14 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// </summary>
     private void ProcessData()
     {
+        // RRF must only process data that DSF sent
+        if (CheckIntegrity && _rxHeader.DataLength > 0 &&
+            !_cleanDsfData.Any(data => data.Length >= _rxHeader.DataLength && data.AsSpan(0, _rxHeader.DataLength).SequenceEqual(_rxBuffer.AsSpan(0, _rxHeader.DataLength))))
+        {
+            CorruptedTransfers++;
+            Trace?.Add($"   {Now,9:F3} ms: RRF processes data DSF never sent");
+        }
+
         // Proposed change: activate the requested capabilities that RRF offers, from the next transfer on
         for (int offset = 0; offset + Marshal.SizeOf<PacketHeader>() <= _rxHeader.DataLength;)
         {
@@ -1218,7 +1251,8 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         CheckBudget();
         int exchange = Exchanges++;
         byte[] toRrf = writeBuffer.ToArray();
-        SpiFault? fault = (_fault is not null && exchange - _faultArmedAt == _fault.Exchange) ? _fault : null;
+        List<SpiFault> due = _faults.FindAll(f => exchange - _faultArmedAt == f.Exchange);
+        SpiFault? fault = due.FirstOrDefault();
         if (_bootAt is double bootAt && Now >= bootAt)
         {
             Boot();
@@ -1233,10 +1267,14 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         {
             // The exchange does not take place
             Trace?.Add($"   {Now,9:F3} ms: DCS dies, a new instance starts after {delay} ms");
-            _fault = null;
+            _faults.Clear();
             FaultApplied = true;
             FaultTime = Now;
             throw new DcsRestartException(delay);
+        }
+        if (CheckIntegrity && _dmaActive && _dmaTarget == DmaTarget.Data)
+        {
+            _cleanDsfData.Add(toRrf.ToArray());
         }
         if (fault?.RestartBootTime is double bootTime && !fault.RestartBeforeArm)
         {
@@ -1244,9 +1282,12 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             Restart(bootTime, Exchanges - 0.5);
             _restartAgainBootTime = fault.RestartAgain ? bootTime : null;
         }
-        else if (fault?.Direction is ExchangeDirection.ToRrf or ExchangeDirection.Both)
+        else
         {
-            fault.Mutate(toRrf);
+            foreach (SpiFault mutation in due.Where(f => f.Direction is ExchangeDirection.ToRrf or ExchangeDirection.Both))
+            {
+                mutation.Mutate(toRrf);
+            }
         }
         AddBitErrors(toRrf);
 
@@ -1261,16 +1302,20 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         string rrfOutput = Convert.ToHexStringLower(readBuffer);
         int receivedBefore = ReceivedPayloads.Count;
 
-        if ((fault?.Direction is ExchangeDirection.ToDsf or ExchangeDirection.Both) && fault.RestartBootTime is null)
+        foreach (SpiFault mutation in due.Where(f => (f.Direction is ExchangeDirection.ToDsf or ExchangeDirection.Both) && f.RestartBootTime is null))
         {
-            fault.Mutate(readBuffer);
+            mutation.Mutate(readBuffer);
         }
         AddBitErrors(readBuffer);
-        if (fault is not null)
+        if (due.Count > 0)
         {
-            _fault = null;
-            FaultApplied = true;
-            FaultTime = Now;
+            if (!_faultTimeTaken)
+            {
+                _faultTimeTaken = true;
+                FaultTime = Now;
+            }
+            _faults.RemoveAll(due.Contains);
+            FaultApplied = _faults.Count == 0;
         }
 
         Now += toRrf.Length * MsPerByte;
@@ -1288,7 +1333,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             Restart(fault.RestartBootTime!.Value, Exchanges + 0.5);
             _restartAgainBootTime = fault.RestartAgain ? fault.RestartBootTime : null;
         }
-        Trace?.Add($"#{exchange} {Now,9:F3} ms{(fault is not null ? $" FAULT {fault.Direction}" : "")}: DSF {Convert.ToHexString(toRrf.AsSpan(0, Math.Min(toRrf.Length, 16)))} " +
+        Trace?.Add($"#{exchange} {Now,9:F3} ms{(fault is not null ? $" FAULT {string.Join("+", due.Select(f => f.Direction))}" : "")}: DSF {Convert.ToHexString(toRrf.AsSpan(0, Math.Min(toRrf.Length, 16)))} " +
             $"RRF {Convert.ToHexString(readBuffer[..Math.Min(readBuffer.Length, 16)])} | RRF {stateBefore} -> {_state}, pin {(_pinLevel ? 1 : 0)}, connected {_isConnected}");
     }
 

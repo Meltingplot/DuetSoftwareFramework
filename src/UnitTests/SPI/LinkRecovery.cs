@@ -26,7 +26,7 @@ namespace UnitTests.SPI;
 /// It has to recover through the retries of the protocol, because a reconnect of either side or a restart of DCS stops a running print
 /// </summary>
 [TestFixture]
-public class LinkRecovery
+public partial class LinkRecovery
 {
     /// <summary>
     /// Transfer that gets the corrupted exchange
@@ -112,7 +112,12 @@ public class LinkRecovery
         /// <summary>
         /// RRF restarted but DSF did not detect it
         /// </summary>
-        ResetMissed
+        ResetMissed,
+
+        /// <summary>
+        /// A side processed data or a message that the other side never sent, so the checksums let corrupted data through
+        /// </summary>
+        Corrupted
     }
 
     private static bool IsFailure(Outcome outcome) => outcome != Outcome.Retry;
@@ -136,17 +141,17 @@ public class LinkRecovery
     /// <summary>
     /// RRF transfer that carries the corrupted exchange: 1 is the connect transfer, 2 and 3 are clean transfers before the target
     /// </summary>
-    private const int TargetTransfer = 4;
+    internal const int TargetTransfer = 4;
 
     /// <summary>
     /// Transfer in which DSF requests the capabilities RRF offers. RRF uses the extended link from the next transfer on, DSF from the one after
     /// </summary>
-    private const int ActivationTransfer = 2;
+    internal const int ActivationTransfer = 2;
 
     /// <summary>
     /// First transfer in which both sides use the extended link
     /// </summary>
-    private const int ExtendedTransfer = ActivationTransfer + 2;
+    internal const int ExtendedTransfer = ActivationTransfer + 2;
 
     /// <summary>
     /// Target transfer at which the regular sequence numbers of RRF wrap long after the activation: with the restarts after seq 1 and after seq 65535,
@@ -1356,8 +1361,17 @@ public class LinkRecovery
     /// <summary>
     /// Connect, perform clean transfers, inject the fault into the target transfer and check whether clean transfers follow
     /// </summary>
+    /// <param name="variant">Kind of the target transfer</param>
+    /// <param name="fault">Fault to inject into the target transfer</param>
+    /// <param name="options">Firmware end</param>
+    /// <param name="trace">Trace of the exchanges, recorded if set</param>
+    /// <param name="replay">Replay for the host build of RRF, recorded if set</param>
+    /// <param name="ruleHits">Number of times each rule of the proposed RRF changes took effect, counted if set</param>
+    /// <param name="diagnostics">Diagnostics of DSF at the end, written if set</param>
+    /// <param name="moreFaults">Further corruptions armed together with <paramref name="fault"/>, each counted from the start of the target transfer.
+    /// The clean transfers then count from the one that got the last fault, and the repair lasts from the first fault to the first of them</param>
     private Result Run(Variant variant, SpiFault? fault, RrfOptions options, List<string>? trace = null, List<(string Input, string? Output)>? replay = null,
-        Dictionary<RrfRule, int>? ruleHits = null, StringBuilder? diagnostics = null)
+        Dictionary<RrfRule, int>? ruleHits = null, StringBuilder? diagnostics = null, IReadOnlyList<SpiFault>? moreFaults = null)
     {
         int target = (variant == Variant.Connect) ? 1 : options.TargetTransfer;
         bool activate = options.Capabilities != LinkCapabilities.None && variant != Variant.Connect;
@@ -1374,7 +1388,8 @@ public class LinkRecovery
             ExchangeBudget = (options.SbcRestartTimeout is int restartTimeout) ? 2000 + 8 * target + 250 * restartTimeout : 2000 + 8 * target,
             // The fork's RRF, which offers link capabilities, delays its first header after a boot
             BootArmDelay = options.BootArmDelay ?? ((options.Capabilities != LinkCapabilities.None) ? FakeRrfSpi.ForkBootArmDelay : 0),
-            BootWindowMiso = options.BootWindowMiso
+            BootWindowMiso = options.BootWindowMiso,
+            CheckIntegrity = true
         };
         if (options.HarnessBootDelay)
         {
@@ -1382,7 +1397,7 @@ public class LinkRecovery
             replay?.Add(("T", $"T {rrf.ReplayStatusNow}"));
         }
 
-        int dsfConnectionLosses = 0, dcsRestarts = 0, dsfId = 0, dsfResets = 0, restartTimeouts = 0;
+        int dsfConnectionLosses = 0, dcsRestarts = 0, dsfId = 0, dsfResets = 0, restartTimeouts = 0, unexpectedPackets = 0;
         double? recoveredAt = null;
 
         // Numbers of exchanges after which DSF completed a transfer and noticed a reset of either side
@@ -1411,7 +1426,7 @@ public class LinkRecovery
         {
             if (injector is null)
             {
-                rrf.Arm(armed);
+                rrf.Arm(moreFaults is null ? [armed] : [armed, .. moreFaults]);
                 return;
             }
             SpiExchange exchange = (SpiExchange)armed.Exchange;
@@ -1470,6 +1485,11 @@ public class LinkRecovery
                     dsf.ReadMessage(out _, out string text);
                     dsfReceived.Add(text);
                 }
+                else
+                {
+                    // The fake RRF sends nothing but messages
+                    unexpectedPackets++;
+                }
             }
             return !hadReset && lossesBefore == dsfConnectionLosses && rrfResetsBefore == rrf.ConnectionResets && dsf.ProtocolVersion == Consts.ProtocolVersion;
         }
@@ -1511,6 +1531,17 @@ public class LinkRecovery
             }
         }
 
+        // Whatever happened to the link, each side may only take in what the other side sent: the checksums must keep corrupted data out
+        Result? Corruption()
+        {
+            List<string> foreign = [.. dsfReceived.Where(m => !rrf.SentPayloads.Contains(m)).Select(m => $"DSF got {m}"),
+                .. rrf.ReceivedPayloads.Where(m => !dsfSent.Contains(m)).Select(m => $"RRF got {m}")];
+            return (foreign.Count > 0 || rrf.CorruptedTransfers > 0 || unexpectedPackets > 0)
+                ? new(Outcome.Corrupted, rrf.Disconnects > 0, $"{string.Join(", ", foreign)}; RRF processed {rrf.CorruptedTransfers} transfers that DSF never sent, " +
+                    $"DSF got {unexpectedPackets} packets that RRF never sent")
+                : null;
+        }
+
         _model.OnConnectionLost += OnConnectionLost;
         try
         {
@@ -1531,7 +1562,7 @@ public class LinkRecovery
                 {
                     if (++dcsRestarts > MaxDcsRestarts)
                     {
-                        return new(Outcome.NoRecovery, rrf.Disconnects > 0, $"DCS cannot connect again after {MaxDcsRestarts} restarts ({e.Message})");
+                        return Corruption() ?? new(Outcome.NoRecovery, rrf.Disconnects > 0, $"DCS cannot connect again after {MaxDcsRestarts} restarts ({e.Message})");
                     }
                     dsfDetections.Add(rrf.Exchanges);
             dsfDetectionTimes.Add(rrf.Now);
@@ -1558,14 +1589,16 @@ public class LinkRecovery
                 targetClean = TransferOrRestartDcs(dsfDataInTarget, activate && target == ActivationTransfer);
             }
 
-            // The link must deliver clean transfers again. The transfer that got the fault counts if it completed cleanly through retries
-            int cleanInARow = targetClean ? 1 : 0;
-            recoveredAt = targetClean ? rrf.Now : null;
+            // The link must deliver clean transfers again. The transfer that got the fault counts if it completed cleanly through retries.
+            // Further faults may hit the transfers after it, so only the transfers from the one that got the last fault on count
+            bool AllFaultsApplied() => injector is not null || fault is null || rrf.FaultApplied;
+            int cleanInARow = (targetClean && AllFaultsApplied()) ? 1 : 0;
+            recoveredAt = (cleanInARow > 0) ? rrf.Now : null;
             for (int i = 0; i < MaxTransfersAfterFault && cleanInARow < RecoveredTransfers; i++)
             {
                 if (TransferOrRestartDcs(true))
                 {
-                    if (cleanInARow++ == 0)
+                    if (AllFaultsApplied() && cleanInARow++ == 0)
                     {
                         recoveredAt = rrf.Now;
                     }
@@ -1577,7 +1610,7 @@ public class LinkRecovery
             }
             if (cleanInARow < RecoveredTransfers)
             {
-                return new(Outcome.NoRecovery, rrf.Disconnects > 0, $"no {RecoveredTransfers} clean transfers in a row within {MaxTransfersAfterFault}");
+                return Corruption() ?? new(Outcome.NoRecovery, rrf.Disconnects > 0, $"no {RecoveredTransfers} clean transfers in a row within {MaxTransfersAfterFault}");
             }
 
             // DCS stops after the recovery and a new instance starts at once, while RRF still waits for the next transfer
@@ -1599,19 +1632,19 @@ public class LinkRecovery
         }
         catch (BudgetExceededException)
         {
-            return new(Outcome.NoRecovery, rrf.Disconnects > 0, $"no clean transfer within {rrf.Now:F0} ms and {rrf.Exchanges} exchanges");
+            return Corruption() ?? new(Outcome.NoRecovery, rrf.Disconnects > 0, $"no clean transfer within {rrf.Now:F0} ms and {rrf.Exchanges} exchanges");
         }
         catch (DcsCannotConnectException)
         {
-            return new(Outcome.NoRecovery, rrf.Disconnects > 0, $"the new DCS cannot connect after {MaxDcsRestarts} restarts");
+            return Corruption() ?? new(Outcome.NoRecovery, rrf.Disconnects > 0, $"the new DCS cannot connect after {MaxDcsRestarts} restarts");
         }
         catch (OperationCanceledException) when (rrf.Budget.IsCancellationRequested)
         {
-            return new(Outcome.NoRecovery, rrf.Disconnects > 0, $"no clean transfer within {rrf.Now:F0} ms and {rrf.Exchanges} exchanges");
+            return Corruption() ?? new(Outcome.NoRecovery, rrf.Disconnects > 0, $"no clean transfer within {rrf.Now:F0} ms and {rrf.Exchanges} exchanges");
         }
         catch (Exception e)
         {
-            return new(Outcome.Fatal, rrf.Disconnects > 0, $"{e.GetType().Name}: {e.Message}");
+            return Corruption() ?? new(Outcome.Fatal, rrf.Disconnects > 0, $"{e.GetType().Name}: {e.Message}");
         }
         finally
         {
@@ -1625,6 +1658,11 @@ public class LinkRecovery
         if (fault is not null && !(injector is null ? rrf.FaultApplied : injected))
         {
             return new(Outcome.NoRecovery, false, "the fault was never applied, the scenario does not reach the exchange");
+        }
+
+        if (Corruption() is Result corrupted)
+        {
+            return corrupted;
         }
 
         // After a restart of DCS, RRF must notice it, because the new DCS knows nothing of what the old one left in RRF (R6), and nothing may reach RRF twice
