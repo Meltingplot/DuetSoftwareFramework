@@ -23,8 +23,10 @@ namespace UnitTests.Fuzz;
 /// answers bad data with BadDataChecksum and RRF sends the data again when either side reports it (DataTransfer.cpp ExchangingDataResponse,
 /// SPI.cs ExchangeData), and the extended response codes correct up to 3 bits in each direction on their own. One ESD event of the lab printer
 /// hit both lines of a header (LinkRecovery.EsdEvents, 16:09:14) and is repaired. So on the extended link these tests require the repair, and
-/// <see cref="ExploreBothLines"/> reports what does not hold. These tests rest on the port of RRF; a check of single faults on both lines with the
-/// fault injection build of the lab printer (SpiFaultSpec direction Both) is pending
+/// <see cref="ExploreBothLines"/> reports what does not hold. These tests rest on the port of RRF. On the lab printer (DSF 3.7.0+mp.13 with the fault
+/// injection build, RRF 3.7.0+1.mp.8, extended link, 2026-11-07), the five cases of LinkRecovery.WriteBothLinesCases (SpiFaultSpec direction Both:
+/// the same bit on both lines in each exchange of a BothData transfer, and 8 bits in both response words) were all repaired by retries as predicted,
+/// without a lost connection. Independent bits on the two lines are checked here only, because the injector applies one mutation to both directions
 /// </remarks>
 public partial class SpiLinkFuzz
 {
@@ -107,7 +109,7 @@ public partial class SpiLinkFuzz
 
     /// <summary>
     /// With every capability active and in use by both sides, errors on both lines of one exchange are repaired through retries.
-    /// The check on the hardware is pending (LinkRecovery.WriteBothLinesCases), so this rests on the port of RRF only
+    /// The lab printer repaired the five cases of LinkRecovery.WriteBothLinesCases (see the remarks of the class)
     /// </summary>
     [Test]
     public void ExtendedLinkRepairsErrorsOnBothLines() => RunBothLinesFuzzer(Scope.Extended, CheckRepaired);
@@ -149,7 +151,7 @@ public partial class SpiLinkFuzz
 
     /// <summary>
     /// Every exchange of each kind of transfer on the extended link, with an error on both lines at the same offset, is repaired through retries.
-    /// The check on the hardware is pending (LinkRecovery.WriteBothLinesCases), so this rests on the port of RRF only
+    /// The lab printer repaired the five cases of LinkRecovery.WriteBothLinesCases (see the remarks of the class)
     /// </summary>
     [Test]
     public void ExtendedLinkRepairsBothLinesCensus()
