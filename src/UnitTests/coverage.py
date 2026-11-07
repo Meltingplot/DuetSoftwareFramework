@@ -9,6 +9,7 @@ command-line tools, the plugins and generated code are left out.
   python3 src/UnitTests/coverage.py --report FILE    summarize an existing Cobertura report instead of running the tests
   python3 src/UnitTests/coverage.py --files NAME     also list the files of the components whose name contains NAME
   python3 src/UnitTests/coverage.py --uncovered PATH list the uncovered lines of the files whose path contains PATH
+  python3 src/UnitTests/coverage.py --results DIR    keep the Cobertura report and a TRX file of the test results in DIR
 
 The exit code is 1 if a goal is missed, so the script can gate a branch.
 """
@@ -84,12 +85,17 @@ def percent(covered, total):
     return 100.0 * covered / total if total else 100.0
 
 
-def run_tests(filter_expression):
+def run_tests(filter_expression, results_directory):
     tool = shutil.which("dotnet-coverage") or os.path.expanduser("~/.dotnet/tools/dotnet-coverage")
     if not os.path.exists(tool):
         sys.exit("dotnet-coverage not found, install it with: dotnet tool install -g dotnet-coverage")
-    report = os.path.join(tempfile.mkdtemp(prefix="dsf-coverage-"), "coverage.cobertura.xml")
+    if results_directory:
+        os.makedirs(results_directory, exist_ok=True)
+    directory = os.path.abspath(results_directory) if results_directory else tempfile.mkdtemp(prefix="dsf-coverage-")
+    report = os.path.join(directory, "coverage.cobertura.xml")
     command = f"dotnet test \"{os.path.join(SRC, 'UnitTests', 'UnitTests.csproj')}\""
+    if results_directory:
+        command += f" --logger trx --results-directory \"{directory}\""
     if filter_expression:
         command += f" --filter \"{filter_expression}\""
     result = subprocess.run([tool, "collect", "-f", "cobertura", "-o", report, command])
@@ -120,9 +126,10 @@ def main():
     parser.add_argument("--filter", help="dotnet test filter, for a quick look at a part of the tests (the goals are not checked then)")
     parser.add_argument("--files", help="list the files of the components whose name contains this text")
     parser.add_argument("--uncovered", help="list the uncovered lines of the files whose path contains this text")
+    parser.add_argument("--results", help="directory for the Cobertura report and a TRX file of the test results, instead of a temporary one")
     args = parser.parse_args()
 
-    report = args.report or run_tests(args.filter)
+    report = args.report or run_tests(args.filter, args.results)
     files = read_report(report)
     print(f"Report: {report}\n")
 

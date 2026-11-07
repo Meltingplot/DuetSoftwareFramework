@@ -1,0 +1,88 @@
+name: Unit tests
+
+# Runs the unit tests with the fuzz tests and checks the coverage goals of src/UnitTests/coverage.py
+# (DSF overall at least 50 %, each critical component at least 80 %). Pull requests and pushes use the
+# default fuzz seed 1, so that a failure can be reproduced locally with the same inputs; the weekly run
+# draws a new seed and more inputs, and prints the seed to reproduce a failure with DSF_FUZZ_SEED
+on:
+  pull_request:
+    branches: [v3.7-dev]
+  push:
+    branches: [v3.7-dev]
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      fuzz_seed:
+        description: "Fuzz seed (empty = a new one)"
+        required: false
+        default: ""
+      fuzz_iterations:
+        description: "Inputs per fuzz test"
+        required: false
+        default: "5000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unit-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10
+
+      - name: Install dotnet-coverage
+        run: dotnet tool install -g dotnet-coverage
+
+      - name: Select the fuzz inputs
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_SEED: ${{ github.event.inputs.fuzz_seed }}
+          INPUT_ITERATIONS: ${{ github.event.inputs.fuzz_iterations }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          seed=1
+          iterations=5000
+          if [ "$EVENT" = "schedule" ]; then
+            seed=$(( RUN_ID % 2147483647 ))
+            iterations=20000
+          elif [ "$EVENT" = "workflow_dispatch" ]; then
+            seed=${INPUT_SEED:-$(( RUN_ID % 2147483647 ))}
+            iterations=${INPUT_ITERATIONS:-5000}
+          fi
+          # Both values go into GITHUB_ENV, so only plain numbers are accepted
+          [[ "$seed" =~ ^-?[0-9]{1,10}$ && "$iterations" =~ ^[0-9]{1,7}$ ]] || { echo "Seed and iterations must be numbers"; exit 1; }
+          echo "DSF_FUZZ_SEED=$seed" >> "$GITHUB_ENV"
+          echo "DSF_FUZZ_ITERATIONS=$iterations" >> "$GITHUB_ENV"
+          echo "Fuzz seed $seed, $iterations inputs per fuzz test" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Run the unit tests and check the coverage goals
+        shell: bash
+        run: python3 src/UnitTests/coverage.py --results test-results | tee coverage.txt
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f coverage.txt ]; then
+            { echo '```'; sed -n '/^Critical component/,$p' coverage.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the test results and the coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: test-results
+          if-no-files-found: ignore
