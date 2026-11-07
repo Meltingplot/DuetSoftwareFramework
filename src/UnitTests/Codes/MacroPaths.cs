@@ -48,7 +48,10 @@ public class MacroPaths
     public async Task MacroPathRefusedByResolver(string fileName)
     {
         // FilePathResolver throws for a path that escapes the volume (FilePathResolver.cs:63-72) or an unknown drive (FilePathResolver.cs:80-95).
-        // The macro cannot be run, so it should be reported as not found like a missing file, and DCS must go on
+        // The macro cannot be run, so it should be reported as not found like a missing file, and DCS must go on.
+        // Confirmed on the lab printer (DSF 3.7.0+mp.13, RRF 3.7.0+1.mp.8, 2026-11-07): M98 P"99:/macros/..." got no reply, DCS logged
+        // "Invalid drive index" from GetDrivePath via DoMacroFile and HandleMacroRequest, the host stopped (BackgroundServiceExceptionBehavior StopHost),
+        // systemd killed DCS after the 15 s stop timeout and restarted it, and RRF was halted until M999. Drive 9 exists there, so the test used 99
         string? reply = await TryExecuteAsync($"M98 P\"{fileName}\"");
         string? firmwareCode = await TryExecuteAsync("M117 \"alive\"");
         Assert.Multiple(() =>
