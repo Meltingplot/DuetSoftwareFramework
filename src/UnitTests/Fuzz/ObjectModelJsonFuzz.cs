@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -36,6 +37,74 @@ public class ObjectModelJsonFuzz
     /// Reproduced by <see cref="OutOfRangeNumberFailsWithJsonException"/>; let through here so that the fuzzer can find other problems
     /// </summary>
     private static bool IsKnownBug(Exception e) => e is FormatException || (e is IndexOutOfRangeException && e.TargetSite?.Name == "get_Chars");
+
+    /// <summary>
+    /// Backing field of the static event ObjectModel.OnDeserializationFailed
+    /// </summary>
+    private static readonly FieldInfo DeserializationFailedField = typeof(ObjectModel).GetField(nameof(ObjectModel.OnDeserializationFailed), BindingFlags.NonPublic | BindingFlags.Static)!;
+
+    /// <summary>
+    /// Handlers of ObjectModel.OnDeserializationFailed that were registered before this fixture ran
+    /// </summary>
+    private Delegate? _deserializationFailedHandlers;
+
+    /// <summary>
+    /// Every DCS model registers a handler for ObjectModel.OnDeserializationFailed (DuetControlServer/Model/ObjectModel.cs:83), and with a handler
+    /// the collections skip items that fail to deserialize instead of throwing (ObjectModel.DeserializationFailed). The handlers are static and stay
+    /// registered after a host is disposed, so whether the fuzz tests ran like a client of DuetAPI (no handler) or like DCS depended on whether a
+    /// test with a DCS model had run before. The fuzz tests run like a client; see <see cref="ScalarListItemIsSkippedTheSameWayByBothUpdateMethods"/>
+    /// for what differs with a handler
+    /// </summary>
+    [OneTimeSetUp]
+    public void RemoveDeserializationFailedHandlers()
+    {
+        _deserializationFailedHandlers = (Delegate?)DeserializationFailedField.GetValue(null);
+        DeserializationFailedField.SetValue(null, null);
+    }
+
+    [OneTimeTearDown]
+    public void RestoreDeserializationFailedHandlers()
+    {
+        DeserializationFailedField.SetValue(null, Delegate.Combine((Delegate?)DeserializationFailedField.GetValue(null), _deserializationFailedHandlers));
+    }
+
+    /// <summary>
+    /// With a handler for ObjectModel.OnDeserializationFailed, as DCS registers one, a list item that fails to deserialize is skipped
+    /// (DuetAPI/ObjectModel/Base/StaticModelCollection.cs:176-179 and 249-253). UpdateFromJson counts the skipped item and keeps the existing item
+    /// at that index, but UpdateFromJsonReader ignores every item that is neither an object nor null without counting it (StaticModelCollection.cs:220-267),
+    /// so the following items are applied to the wrong indices and the last existing item is removed. StructurallyMutatedJson found this with
+    /// "$.sbc.dsf.httpEndpoints[0] = -0.5" while a handler of an earlier DCS test was registered
+    /// </summary>
+    [Test]
+    [Explicit("Bug: with a DeserializationFailed handler, UpdateFromJsonReader drops a scalar list item instead of skipping it like UpdateFromJson")]
+    public void ScalarListItemIsSkippedTheSameWayByBothUpdateMethods()
+    {
+        const string start = "{\"sbc\":{\"dsf\":{\"httpEndpoints\":[{\"endpointType\":\"GET\",\"namespace\":\"a\",\"path\":\"x\",\"unixSocket\":\"/run/a.sock\"},{\"endpointType\":\"GET\",\"namespace\":\"b\",\"path\":\"y\",\"unixSocket\":\"/run/b.sock\"}]}}}";
+        byte[] patch = "{\"sbc\":{\"dsf\":{\"httpEndpoints\":[-0.5,{\"endpointType\":\"POST\",\"namespace\":\"b\",\"path\":\"y\",\"unixSocket\":\"/run/b.sock\"}]}}}"u8.ToArray();
+        DeserializationFailedEventHandler handler = delegate { };
+        ObjectModel.OnDeserializationFailed += handler;
+        try
+        {
+            ObjectModel elementModel = new(), readerModel = new();
+            using (JsonDocument document = JsonDocument.Parse(start))
+            {
+                elementModel.UpdateFromJson(document.RootElement, false);
+                readerModel.UpdateFromJson(document.RootElement, false);
+            }
+            using (JsonDocument document = JsonDocument.Parse(patch))
+            {
+                elementModel.UpdateFromJson(document.RootElement, false);
+            }
+            Utf8JsonReader reader = new(patch);
+            reader.Read();
+            readerModel.UpdateFromJsonReader(ref reader, false);
+            Assert.That(JsonSerializer.Serialize(readerModel, ObjectModelContext.Default.ObjectModel), Is.EqualTo(JsonSerializer.Serialize(elementModel, ObjectModelContext.Default.ObjectModel)));
+        }
+        finally
+        {
+            ObjectModel.OnDeserializationFailed -= handler;
+        }
+    }
 
     private static List<byte[]>? _corpus;
 
