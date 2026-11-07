@@ -27,7 +27,7 @@ namespace UnitTests.Fuzz;
 /// ExtendedLinkCodes), while the regular codes of the RRF of today differ by single bits (TransferResponse.cs)
 /// </remarks>
 [TestFixture]
-public class SpiLinkFuzz
+public partial class SpiLinkFuzz
 {
     /// <summary>
     /// A bit error
@@ -396,65 +396,12 @@ public class SpiLinkFuzz
 
     #region Exploration
     /// <summary>
-    /// Run many inputs per scope for several seeds without stopping at the first failure, and print the outcomes and the inputs that violate
-    /// the properties of the tests of the scope. DSF_FUZZ_ITERATIONS sets the inputs per seed and scope (default 5000), DSF_FUZZ_SEEDS the number of seeds
-    /// from DSF_FUZZ_SEED on (default 3)
+    /// Run many inputs with two bit errors per scope for several seeds without stopping at the first failure, and print the outcomes and the inputs
+    /// that violate the properties of the tests of the scope, see <see cref="Explore"/>
     /// </summary>
     [Test, Explicit("Exploration for the report, takes a while")]
-    public void ExploreTwoBitErrors()
-    {
-        int seeds = int.TryParse(Environment.GetEnvironmentVariable("DSF_FUZZ_SEEDS"), out int value) ? value : 3;
-        foreach (Scope scope in Enum.GetValues<Scope>())
-        {
-            Dictionary<string, int> outcomes = [];
-            List<(string Property, string Message)> failures = [];
-            for (int seed = Fuzzer.Seed; seed < Fuzzer.Seed + seeds; seed++)
-            {
-                for (int i = 0; i < Fuzzer.Iterations; i++)
-                {
-                    // Same inputs as Fuzzer.Run draws for this seed
-                    FlipCase input = Generate(new Random(unchecked(seed * 1_000_003 + i)), scope);
-                    LinkRecovery.ScenarioResult result = Run(input);
-                    string kind = (input.Capabilities == LinkCapabilities.None) ? "RRF of today" : (input.Variant == Variant.Connect) ? "fork, connect" :
-                        input.IsActivation ? "fork, activation" : $"fork, transfer {input.Target}";
-                    string label = result.Label;
-                    if (result.Outcome == Outcome.NoRecovery)
-                    {
-                        label += $" ({result.Details[..Math.Min(result.Details.Length, 16)]}...), with restart timeout {Run(input, sbcRestartTimeout: StuckLinkRestartTimeout).Label}";
-                    }
-                    string key = $"{kind}: {label}";
-                    outcomes[key] = outcomes.GetValueOrDefault(key) + 1;
-                    foreach (Action<FlipCase> check in (scope == Scope.Plain) ? [CheckSafe] : new Action<FlipCase>[] { CheckRepaired, CheckSafe })
-                    {
-                        try
-                        {
-                            check(input);
-                        }
-                        catch (FuzzFailure e)
-                        {
-                            failures.Add((e.Property, $"seed {seed}, iteration {i}: {e.Message}"));
-                        }
-                    }
-                }
-            }
+    public void ExploreTwoBitErrors() => Explore(Generate, "two bit errors");
 
-            StringBuilder report = new($"{scope}: {seeds} seeds x {Fuzzer.Iterations} inputs from seed {Fuzzer.Seed}, checked for {(scope == Scope.Plain ? "safety" : "repair and safety")}\n");
-            foreach ((string key, int count) in outcomes.OrderBy(o => o.Key))
-            {
-                report.AppendLine($"  {key}: {count}");
-            }
-            report.AppendLine($"  {failures.Count} inputs violate the property");
-            foreach (var group in failures.GroupBy(f => f.Property))
-            {
-                report.AppendLine($"  {group.Key}: {group.Count()}");
-                foreach ((_, string message) in group.Take(12))
-                {
-                    report.AppendLine($"  - {message}");
-                }
-            }
-            TestContext.Out.WriteLine(report.ToString());
-        }
-    }
 
     /// <summary>
     /// Print the exchanges of a single input, for analysing a failure

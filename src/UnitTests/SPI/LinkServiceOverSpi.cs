@@ -605,7 +605,7 @@ public class LinkServiceOverSpi
         evaluation = link.EvaluateExpressionAsync(CodeChannel.SBC, "nonsense");
         host.WaitFor(SbcRequest.EvaluateExpression);
         rrf.SendPacket(FirmwareRequest.EvaluationResult, RrfPackets.ExpressionResult(CodeChannel.SBC, "nonsense", "unknown value 'nonsense'"));
-        Assert.ThrowsAsync<CodeParserException>(async () => await evaluation.WaitAsync(Timeout));
+        await Assert.ThrowsAsync<CodeParserException>(async () => await evaluation.WaitAsync(Timeout));
 
         Task<object?> assignment = link.SetVariableAsync(CodeChannel.SBC, true, "global.fuzz", "4");
         Assert.That(SbcPackets.SetVariable(host.WaitFor(SbcRequest.SetVariable)), Is.EqualTo((CodeChannel.SBC, true, "global.fuzz", "4")));
@@ -658,7 +658,7 @@ public class LinkServiceOverSpi
         query = host.Link.RequestObjectModel("move", "v");
         host.WaitFor(SbcRequest.GetObjectModel);
         rrf.SendPacket(FirmwareRequest.ObjectModel, RrfPackets.String(string.Empty));
-        Assert.ThrowsAsync<ArgumentException>(async () => await query.WaitAsync(Timeout));
+        await Assert.ThrowsAsync<ArgumentException>(async () => await query.WaitAsync(Timeout));
         Assert.That(host.Fault, Is.Null);
     }
 
@@ -687,7 +687,7 @@ public class LinkServiceOverSpi
         host.WaitFor(SbcRequest.EvaluateExpression);
         await host.Link.EmergencyStopAsync().WaitAsync(Timeout);
         host.WaitFor(SbcRequest.EmergencyStop);
-        Assert.ThrowsAsync<TaskCanceledException>(async () => await evaluation.WaitAsync(Timeout));
+        await Assert.ThrowsAsync<TaskCanceledException>(async () => await evaluation.WaitAsync(Timeout));
         Assert.That(host.Fault, Is.Null);
     }
 
