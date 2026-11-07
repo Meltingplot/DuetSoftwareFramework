@@ -180,6 +180,82 @@ public class TriggerMacros : LabTest
     }
 
     /// <summary>
+    /// Contains an SBC field, so DSF evaluates it, and it turns true every 2 s
+    /// </summary>
+    private const string FiringSbcExpression = "sbc.dsf.pluginSupport && mod(state.upTime, 2) == 0";
+
+    /// <summary>
+    /// Wait until the test trigger has run, or fail
+    /// </summary>
+    private async Task WaitForTriggerRunAsync()
+    {
+        for (int i = 0; i < 20; i++)
+        {
+            if ((await QueryAsync("global.labTestTriggerRuns")).GetInt32() > 0)
+            {
+                return;
+            }
+            await Task.Delay(TimeSpan.FromSeconds(1));
+        }
+        Assert.Fail("The trigger did not fire within 20 s");
+    }
+
+    /// <summary>
+    /// An M581.1 expression that RRF evaluates must replace a trigger that DSF evaluates, otherwise both run the trigger macro (#67)
+    /// </summary>
+    [Test]
+    public async Task RrfExpressionReplacesSbcTrigger()
+    {
+        await RequireFreeTriggerAsync();
+        await SendCodeAsync($"M98 P\"{ResetMacro}\"");
+        Assert.That(await SendCodeAsync($"M581.1 T{TriggerNumber} P\"{FiringSbcExpression}\" R0"), Does.Not.Contain("Error"));
+        try
+        {
+            await WaitForTriggerRunAsync();
+
+            // Never true, so RRF never fires the trigger
+            Assert.That(await SendCodeAsync($"M581.1 T{TriggerNumber} P\"state.upTime < 0\" R0"), Does.Not.Contain("Error"));
+            Assert.That(await SendCodeAsync($"M581 T{TriggerNumber}"), Does.Contain("fires when expression {state.upTime < 0} becomes true"));
+
+            // Let a trigger macro that is on its way finish, then the count must stay
+            await Task.Delay(TimeSpan.FromSeconds(3));
+            int runs = (await QueryAsync("global.labTestTriggerRuns")).GetInt32();
+            await Task.Delay(TimeSpan.FromSeconds(8));
+            Assert.That((await QueryAsync("global.labTestTriggerRuns")).GetInt32(), Is.EqualTo(runs), "DSF kept firing the old trigger");
+        }
+        finally
+        {
+            await DeleteTriggerAsync();
+        }
+    }
+
+    /// <summary>
+    /// A trigger that DSF evaluates fired with R-1 whenever the printer was not printing, but R-1 means disabled (#63)
+    /// </summary>
+    [Test]
+    public async Task DisabledSbcTriggerDoesNotFire()
+    {
+        await RequireFreeTriggerAsync();
+        await SendCodeAsync($"M98 P\"{ResetMacro}\"");
+        Assert.That(await SendCodeAsync($"M581.1 T{TriggerNumber} P\"{FiringSbcExpression}\" R-1"), Does.Not.Contain("Error"));
+        try
+        {
+            Assert.That(await SendCodeAsync($"M581 T{TriggerNumber}"), Does.Contain("if enabled would fire"));
+            await Task.Delay(TimeSpan.FromSeconds(8));
+            Assert.That((await QueryAsync("global.labTestTriggerRuns")).GetInt32(), Is.Zero, "The disabled trigger fired");
+
+            // The expression does fire once the trigger is enabled
+            Assert.That(await SendCodeAsync($"M581.1 T{TriggerNumber} R0"), Does.Not.Contain("Error"));
+            await WaitForTriggerRunAsync();
+        }
+        finally
+        {
+            await SendCodeAsync($"M581.1 T{TriggerNumber} P-1");
+        }
+        Assert.That(await SendCodeAsync($"M581 T{TriggerNumber}"), Does.Contain("is not configured"));
+    }
+
+    /// <summary>
     /// RRF 3.7 parses a trigger expression under the heap read lock, and a string literal in it takes the write lock, so M581.1 hangs RRF
     /// until its watchdog resets it with StuckInSpinLoop (not fixed)
     /// </summary>

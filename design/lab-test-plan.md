@@ -70,8 +70,8 @@ Regeln für jeden Lauf:
 | 1 | E, RG-1 bis RG-16, Auswertung Self-Test | 2 | keine | 10 min |
 | 2 | RG-17 Dauerlauf | 1 | keine | 30 min |
 | 3 | F-1, F-2 | 2 | keine | 45 min |
-| 4 | A-1 bis A-7, A-10 | 1 und 2 | Tests bauen, für A-1 auch den Injektor erweitern | offen |
-| 5 | A-8, A-9, A-11 bis A-13 | 3 | Tests bauen, Einzelfreigabe | offen |
+| 4 | A-1 bis A-7, A-10 | 1 und 2 | Tests aus `feature/lab-tests-for-changes` | Suite 11,2 min, A-1 und A-2 etwa 5 min |
+| 5 | A-8, A-9, A-11 bis A-13 | 3 | Tests aus `feature/lab-tests-for-changes`, Einzelfreigabe | offen |
 | 6 | M-1 bis M-4 | 4 | Termin mit Tim | offen |
 
 Gemessen am 2026-11-06: Suite in Block 1 8,3 min, Block 3 44 min einschließlich Side-Load (F-1 3 min, F-2 41 min).
@@ -225,15 +225,15 @@ LAB_SPI_FAULT_CASES=/tmp/ext.json src/LabPrinterTests/run-lab-tests.sh --side-lo
 - Referenz: 678 von 679 `Retry` und 1 nicht injiziert auf RRF dev.3, noch ohne #98, #99, #102 und #105 (#95).
 - Nicht injizierte Fälle einzeln nennen und nachholen.
 
-### Neue Tests (noch zu bauen)
+### Neue Tests
 
-Alle als fork-eigene Tests in `src/LabPrinterTests`, jeweils mit Aufräumen im `finally`.
+A-1 bis A-7 und A-10 liefen am 2026-11-07 auf Hardware ([Abschnitt 14](#14-durchgeführte-läufe)), A-8, A-9 und A-11 bis A-13 noch nicht. `src/LabPrinterTests/README.md` nennt zu jedem Test die Klasse und den Aufruf.
 
 | ID | Änderung | Stufe | Ablauf | Soll |
 |---|---|---|---|---|
-| A-1 | #102 | 2 | Injektor erweitern, siehe unten. Fehler `Activation HeaderResponse ToDsf flip 2` scharf schalten, `M122 P1001` senden. DCS verbindet neu und aktiviert den Link, dabei trifft der Fehler | `SPI fault injected: ...`, etwa 60 s danach `No transfer with RepRapFirmware completed within 60000 ms` (`SPI.cs:311`), neuer DCS nach 5 s (`duetcontrolserver.service:9-10`), `Link capabilities All are active`, nach `M999` idle |
+| A-1 | #102 | 2 | Fehler `Activation DataResponse ToRrf word 0x00000006` scharf schalten, `M122 P1001` senden. DCS verbindet neu und aktiviert den Link, dabei trifft der Fehler | `SPI fault injected: ...`, 55 bis 70 s danach `Deactivated successfully` von systemd (`SPI.cs:309-311`, `duetcontrolserver.service:9-10`), neue DCS-Instanz, `Link capabilities All are active`, nach `M999` idle |
 | A-2 | #99 | 2 | Fehler injizieren, DCS stoppen, `gpioget --numeric -c gpiochip0 25` lesen, DCS sofort starten | Pin liest 0, sonst ist der Fall ungültig. Verbunden nach höchstens 4,5 s (`SPI.cs:1709`), kein `timeout while waiting for TfrRdy pin` (`SPI.cs:1747`) |
-| A-3 | #108 | 2 | Nach einem Boot den Autostart beobachten, währenddessen `M409` senden | `Starting macro file ... on channel HTTP`, `Self-test: quick check passed`, `M409` antwortet, Maschinen-Tick läuft weiter, `inputs[0]` wieder Tiefe 0, kein `Out-of-order reply` |
+| A-3 | #108 | 2 | Nach einem Boot den Autostart abwarten, `M409` senden, sobald der Flow sichtbar ist | `Starting macro file ... on channel HTTP`, `Self-test: quick check passed`, `M409` antwortet, Maschinen-Tick läuft weiter, `inputs[0]` wieder Tiefe 0, kein `Out-of-order reply` |
 | A-4 | #108 | 1 | `M98.1`, `M98.7`, `M98.6`; `M98.3` über HTTP; `M98.2` mit fehlender Datei | `Invalid code channel number n` (`MCodeHandler.cs:613`), `Use M98 to start a macro on the same code channel` (`:617`), `Macro file ... not found` (`:648`) |
 | A-5 | Zeilenprüfsummen | 1 | Drei Testmakros mit falschem CRC, Sprung in der Zeilenfolge und fehlendem CRC, jedes setzt je Zeile ein Global | Makro stoppt vor der fehlerhaften Zeile. Journal: `CRC error on line` (`ParserChecksum.cs:370`), `Expected line number` (`ParserAsync.cs:227`), `Missing CRC on line` (`ParserAsync.cs:116`) |
 | A-6 | #67 | 2 | SBC-Trigger T30 mit laufendem Zähler, dann `M581.1 T30` mit nie wahrem RRF-Ausdruck | Bericht zeigt den neuen Ausdruck, der Zähler bleibt stehen (Wiki `Gcodes.md:7266`) |
@@ -243,19 +243,18 @@ Alle als fork-eigene Tests in `src/LabPrinterTests`, jeweils mit Aufräumen im `
 | A-10 | #72, #82 | 1 | `M36` mit fehlender Datei, `M39`, `M39 S2` | Gültiges JSON `{"err":1,"fileName":...}` (`MCodeHandler.cs:477`), `GB` und `cluster size` (`MCodeHandler.cs:588`), `clsize` (`SDInfoResponse.cs:45`) |
 | A-11 | #74, #80 | 3 | Testdatei in `0:/gcodes`, `M30` mit relativem Namen, dann `M30` und `M472` mit fehlendem Ziel | Datei gelöscht, `Failed to delete file ...: file not found` (`MCodeHandler.cs:423`), `Failed to delete file or directory ...: file or directory not found` (`MCodeHandler.cs:911`) |
 | A-12 | #81 | 3 | `state.logLevel` und `state.logFile` lesen, `M929 S4`, `M929 S-1`, Zustand wiederherstellen | `parameter 'S' too high` (`MCodeHandler.cs:1195`), `expected non-negative integer after 'S'` (`MCodeHandler.cs:1191`), Protokollierung danach wie vorher |
-| A-13 | #76 | 3 | `M606 S1` über HTTP ohne Job | Warnung `this command is valid only when running a job from a stored file` (RRF `GCodes5.cpp:213-216`), `inputs[12]` bleibt `unused` |
+| A-13 | #76 | 3 | `M606 S1` über HTTP ohne Job | Warnung `this command is valid only when running a job from a stored file` (RRF `GCodes5.cpp:213-216`), `File2` bleibt unverändert, Stack-Tiefe 0 |
 
 Hinweise:
-- **A-1, Fehlerfall:** Auf dem erweiterten Link sagt der Census nach der Aktivierung keinen hängenden Fall voraus (`ExtendedLinkRecoversFromEverySingleFault`). Hängen kann es nur in der Übertragung, die den Link aktiviert (`LinkRecovery.cs:650-654`, 23 Fälle laut #102). Darunter ist der Einzelbitfehler `flip 2` in der Header-Antwort an DSF. Weitere Fälle sind `HeaderResponse ToDsf word 0x00000005` und `word 0xfefefefe` sowie `DataResponse ToRrf word 0x00000006`.
-- **A-1, Injektor:** Er trifft heute nur die nächste Übertragung einer Art (`SpiFaultInjection.cs:238`, `:276-283`). Nötig sind:
-  - eine neue Art `Activation`,
-  - ein Hinweis aus `WriteActivateLinkCapabilities` (`SPI.cs:902-924`) an den Injektor, weil dieser den Paketinhalt erst in der Datenphase sieht (`SpiFaultInjection.cs:220-234`). Der Hinweis gilt nur im Test-Build (`SPI.cs:113`), Release-Builds bleiben unverändert,
-  - ein eigener Test, weil der vorhandene nach 2 s selbst wiederherstellt (`SpiFaultInjection.cs:103`, `:134-138`).
+- **A-1, Fehlerfall:** Auf dem erweiterten Link sagt der Census nach der Aktivierung keinen hängenden Fall voraus (`ExtendedLinkRecoversFromEverySingleFault`). Hängen kann es nur in der Übertragung, die den Link aktiviert (`LinkRecovery.cs:650-654`, 23 Fälle laut #102). Davon kann der Injektor nur `DataResponse ToRrf word 0x00000006` treffen. Dass dieser Fehler mit und ohne Polling zum DCS-Neustart führt, prüft `LabFaultInActivationRestartsDcs` offline.
+- **A-1, Injektor:** Die neue Art `Activation` erkennt die Übertragung am Aktivierungspaket in den Daten, die DSF sendet. Sie trifft daher nur die Daten und die Antwort darauf. `SPI.cs` bleibt unverändert. Der Test ist eigenständig, weil der vorhandene Injektionstest nach 2 s selbst wiederherstellt.
 - **A-1, Auslöser:** Einen Fehler von vor dem DCS-Start verwirft der Injektor (`SpiFaultInjection.cs:300-305`). Deshalb wird er bei laufendem DCS scharf geschaltet. `M122 P1001` startet nur RRF neu, und DCS fragt die Capabilities nach jedem Verbindungsaufbau und Reset neu ab (`design/sbc-link-requirements.md:123`).
-- **A-1, Vorhersage:** Der Hänger ist bisher nur eine Census-Vorhersage für die Aktivierung. Hängt der Link am DUT nicht, ist das eine Abweichung vom Census. Sie wird als Befund festgehalten, dann werden die anderen Fälle versucht.
-- **A-2, Fehlerfall:** #99 nutzte `RrfData Data ToDsf flip 0`. #105 hat genau diesen Pfad geändert, deshalb entscheidet die Pinmessung. Mit dem Fix ist die Prüfung bisher nur auf RRF mp.5 gelaufen, nie auf dem erweiterten Link.
+- **A-1, Vorhersage:** Der Hänger trat am 2026-11-07 am DUT wie vom Census vorhergesagt auf. Hängt der Link am DUT einmal nicht, ist das eine Abweichung vom Census. Sie wird als Befund festgehalten. Einen zweiten hängenden Fall, den der Injektor treffen kann, gibt es nicht.
+- **A-1, Journal:** Der Test misst den Stopp an der Zeile von systemd. Die Meldung `No transfer with RepRapFirmware completed` (`SPI.cs:311`) stand am 2026-11-07 nicht im Journal, weil journald in dieser Minute über 1,2 Millionen Zeilen unterdrückte (`design/open-findings.md`). `Lost connection to Duet` und die Warnungen des hängenden Links sind in A-1 erwartet.
+- **A-2, Fehlerfall:** #99 nutzte `RrfData Data ToDsf flip 0`. Laut Census lässt dieser Fall den Pin seit #105 nicht mehr auf LOW. Der Test nutzt `RrfData HeaderResponse ToDsf zero 0 4` und zwei weitere Fälle (`LabFaultLeavesTfrRdyLow`). Am DUT entscheidet die Pinmessung, ohne LOW-Pin ist der Lauf ohne Aussage. Mit dem Fix ist die Prüfung bisher nur auf RRF mp.5 gelaufen, nie auf dem erweiterten Link.
 - **A-3, Journal:** Der Autostart endet mit `Aborted macro file`, ein Lauf ohne `A1` mit `Finished macro file`. Das ist kein Fehler: Der automatische Pfad endet mit `M99` (`maintenance/self-test:99-101`). `M99` erscheint im Journal als Abbruch der letzten Datei (`MacroFile.cs:241`), genauso bei den Testmakros von RG-3.
 - **A-3, Abdeckung:** Der Lauf vom 2026-11-06 zeigt bereits Start, `quick check passed` und kein `Out-of-order reply`. Offen ist der Fall mit `M409` während des Flows.
+- **A-3, `M409`:** Der Test sendet vorher keinen Code auf HTTP, weil `M98.3` sonst abgelehnt würde und der Flow erst eine Minute später käme. Der Flow dauert etwa 1 s, `M409` kann also auch danach ankommen. Sicher abgedeckt ist `M409` während eines Makros durch RG-4 und RG-5.
 - **A-4:** `M98.n` steht nicht im Wiki. Das Soll stammt nur aus dem Code und #108.
 - **A-5, Makrozeilen:** Ausgaben eines Makros erreichen die `M98`-Antwort nicht (`LabTest.cs:103`). Der Test wertet daher Globals und Journal aus.
 
@@ -286,7 +285,7 @@ Nach jedem Lauf das Journal ab dem Cursor des Laufs lesen und auch auf fehlgesch
 - Neue Datei `sys/transferDump.bin` (`SPI.cs:726`)
 - `Connection to controller has been reset` (`LinkService.cs:336`) ohne Neustart oder Reboot
 
-**Erwartet je RRF-Reboot:** je einmal Reset und `RepRapFirmware has left the extended link` (`SPI.cs:1943`), dazu ein `Restarting full transfer because ...` (`SPI.cs:1843`, `:1870`, `:1889`).
+**Erwartet je RRF-Reboot:** je einmal Reset und `RepRapFirmware has left the extended link` (`SPI.cs:1943`), dazu ein `Restarting full transfer because ...` (`SPI.cs:1843`, `:1870`, `:1889`). Einmal, am 2026-11-07, verlor DSF dabei stattdessen die Verbindung (`design/open-findings.md`). Das bleibt ein Fehlerbefund.
 
 **Erwartet in bestimmten Testfällen:**
 - RG-3: 20 x `Failed to find corresponding state for code M291 P"never" S3` (`PipelineBase.cs:243`). Das `M291` steht im Testmakro hinter einem `M99` und wird absichtlich nie erreicht (`MacroReturns.cs:20`, `:54`, `:65`).
@@ -407,3 +406,72 @@ Journalbefunde F-2: 672 x injiziert, 118 x Restarting full transfer, 22 x Bad he
 Abweichungen und Folgeaufgabe: 1 x "Daemon: Out-of-order reply (flags DaemonMessage, BinaryCodeReplyFlag): ''" um 21:25:42,541, 11 ms nach dem Verbindungsaufbau der neuen DCS-Instanz beim Rückbau. Die letzte Injektion war 15 s vorher (21:25:27). Gleiches Muster wie im Journal seit 2026-10-29, siehe Abschnitt 9. Ursache nicht belegt
 Rückbau geprüft: ja, 21:26:04 (kein Side-Load, /var/tmp/lab-tests weg, OTA-Timer aktiv, idle, alle Erweiterungen running, Versionen wie vorher)
 ```
+
+### 2026-11-07: Block 4, A-Prüfungen bestanden, ein offener Fehlerbefund aus RG-6
+
+Nach der Bestehensregel ([Abschnitt 4](#bestehensregel)) ist kein Lauf des Standardumfangs bestanden: Lauf 1 hat einen fehlgeschlagenen Fall, Lauf 2 einen Fehlerbefund im Journal. Der Fehlschlag war ein Testfehler und ist behoben. Den Fehlerbefund entscheidet Tim.
+
+```
+Datum, Zeit (UTC): 2026-11-07, 07:14:17 bis 08:07:57
+Anlass, PR, Commit: Änderungsprüfung A-1 bis A-7 und A-10 aus #114. Testcode: Lauf 1 9b3a70c5, Injektion 1 c866895b, Injektion 2 und Lauf 2 26bf5a7c
+DSF: 3.7.0+mp.12. Standardläufe aus dem Image ohne Side-Load, A-1 und A-2 mit dem Injektions-Build als Side-Load
+RRF: 3.7.0+1.mp.7
+Stufen und Freigabe durch: 1 und 2, Tim
+IDs: Block 0: 827 bestanden, 0 fehlgeschlagen, 6 übersprungen. E-1 bis E-7 bestanden
+IDs, Lauf 1 (07:16:51 bis 07:28:16, 11,2 min): 30 Fälle, 29 bestanden, 1 fehlgeschlagen (RG-13, Testfehler), 0 übersprungen
+IDs, Wiederholung RG-13 bis RG-16 (07:31:55 bis 07:42:13): 6 Durchgänge, 24 von 24 bestanden
+IDs, Injektion 1 (07:42:47 bis 07:47:46): A-2 bestanden, A-1 fehlgeschlagen (Testfehler)
+IDs, Injektion 2 (07:50:22 bis 07:55:36): A-1 und A-2 bestanden
+IDs, Lauf 2 (07:56:29 bis 08:07:57, 11,2 min): 30 Fälle, 30 bestanden, 0 übersprungen, 1 Fehlerbefund im Journal
+RG-6, Erholzeit je Reboot: Lauf 1 12,8 / 12,0 / 12,0 / 12,0 / 12,0 s. Lauf 2 12,8 / 12,1 / 12,0 / 12,6 / 12,1 s
+M122 DSF vorher: jeweils alle Zähler 0
+M122 DSF, Lauf 1 nachher: Full transfer restarts 6, header retries 0, data retries 0, sent again 0, requested again 0, extended left 6, lost connections 0, connection resets 6
+M122 DSF, Lauf 2 nachher: Full transfer restarts 16, header retries 90, data retries 0, sent again 0, requested again 0, extended left 5, lost connections 1, connection resets 6
+M122 DSF, Injektion: nicht auswertbar, der Runner startet DCS beim Rückbau neu
+M122 RRF nach beiden Läufen (seit dem letzten Boot): failed transfers 0, checksum errors 0, underruns 0, overruns 0, disconnects 0, timeouts 0
+Self-Test im Laufzeitraum: Lauf 1 07:24:35 bis 07:24:37. Lauf 2 08:03:05 bis 08:03:06 und 08:04:17 bis 08:04:18. Jeweils quick check passed, keine Störung
+Journalbefunde Lauf 1: kein Fehlerbefund aus Abschnitt 9. 20 x M291 P"never" (RG-3), 2 x "Machine is halted" (RG-7), 7 x "Aborting orphaned macro file daemon.g", 3 x "Error while reading code from macro" (A-5), 0 x stop-sigterm, 0 x Out-of-order
+Journalbefunde Lauf 2: Fehlerbefund 1 x "Lost connection to Duet (Maximum number of SPI transfer retries exceeded)" um 07:59:38,203 beim Reboot von RG-6 Run 4, ohne Injektion, Verbindung nach 500 ms wieder da. Sonst wie Lauf 1
+Journalbefunde Injektion 2: A-1 wie erwartet 1 x Lost connection, 1,19 Millionen unterdrückte Zeilen. 1 x "Failed to find query for object model response" beim Rückbau (Abschnitt 9)
+Abweichungen und Folgeaufgabe: zwei Befunde in design/open-findings.md ("A stuck link floods the journal", "A firmware restart can leave DSF and RRF one exchange apart"). Entscheidung liegt bei Tim
+Rückbau geprüft: ja, zuletzt 08:13:28 (kein Side-Load, /var/tmp/lab-tests weg, OTA-Timer aktiv, Trigger 30 und Testmakros weg, idle, alle Erweiterungen running, Versionen wie vorher)
+```
+
+Ergebnisse je Prüfung:
+- **A-1:** Der Link hing wie vom Census vorhergesagt. Zweimal stoppte DCS 60,03 s nach der Injektion, systemd startete es neu, nach `M999` idle. Die Meldung `No transfer with RepRapFirmware completed` fehlte beide Male im Journal.
+- **A-2:** Beim ersten Fehlerfall `RrfData HeaderResponse ToDsf zero 0 4` stand der Pin auf LOW. Der neue DCS verband sich nach 3,84 und 3,88 s, ohne TfrRdy-Timeout. Damit lief der Fix von #99 erstmals auf dem erweiterten Link.
+- **A-3:** Der Autostart lief, `M409` wurde beantwortet, `trigger8.g` lief weiter. Ob `M409` während des Flows ankam, zeigt der Lauf nicht, siehe die Hinweise zu A-3.
+- **A-4, A-5, A-6, A-7, A-10:** bestanden wie in der Tabelle beschrieben.
+
+Testfehler, behoben in #114:
+- **RG-13 (`busy False`):** Der Test las den Status einmal, sobald das Makro in `inputs[]` stand. DSF holt den Live-Status vor dem Schlüssel `inputs` (`UpdateService.cs:282`, `:296`), `stackDepth` ist kein Live-Feld (RRF `GCodeBuffer.cpp:76`), und der Trigger-Kanal zählt nicht als busy (RRF `GCodes.cpp:381`). Der Test wartet jetzt bis zu 2 s und schreibt den ersten Status mit. Gemessen: in 28 Stichproben zweimal zuerst `Idle`, `Busy` 102 ms später.
+- **RG-13 bis RG-16, nur bei Wiederholung:** `MacrosOnOtherChannels` und `TriggerMacros` teilten sich die Global `labTestTriggerRuns`, sodass `reset.g` nach den Trigger-Tests ohne Reboot die übrigen Globals nicht anlegte. Die Kanal-Tests haben jetzt eine eigene Global.
+- **A-1:** Der Test suchte die Meldung von `SPI.cs:311`, die journald verwarf. Er misst den Stopp jetzt an der Zeile von systemd.
+
+Weitere Werte:
+- **`M98.n`:** in allen Läufen Parameter `5,2,5,true`, 1 Makro je Fall, Trigger-Läufe = Makro + Ablehnungen.
+- **RG-9:** 242 und 241 Trigger-Läufe.
+
+### 2026-11-07: RRF-Fix für den Neustart vor dem nächsten Austausch, Side-Load, bestanden
+
+Prüfung des RRF-Fixes aus `fix/sbc-decode-header-unconnected` (Befund „A firmware restart can leave DSF and RRF one exchange apart“, `design/open-findings.md`) vor dem PR, auf Tims Wunsch per Side-Load.
+
+```
+Datum, Zeit (UTC): 2026-11-07, 11:13:53 bis 11:40:25
+Anlass, PR, Commit: RRF-Fix vor dem PR. DSF aus tmp/lab-restart-fix (lokal, #114 4e28df23 + feature/census-restart-before-arm 1220f18d), Produktionscode wie v3.7-dev
+DSF: 3.7.0+mp.12, Side-Load je Schritt, für A-1/A-2/F-1 der Injektions-Build
+RRF: 3.7.0+1.mp.7-dev.1 (19de9c0e6, CI-Run 42365694522, sha256 9ff56cc0...00b4), Side-Load der RRF-Sitzung mit fw-sideload.sh
+Stufen und Freigabe durch: 1 und 2, Tim (RRF-Side-Load in der RRF-Sitzung freigegeben)
+IDs: Standardlauf 30 von 30 bestanden (11:13:53 bis 11:24:35). Injektions-Build 3 von 3 (11:24:36 bis 11:29:25): A-1, A-2, F-1. LinkRecoversAfterWatchdogReset mit LAB_WATCHDOG_RESTARTS=40, 1 von 1 (11:29:26 bis 11:40:25)
+RG-6, Erholzeit je Reboot: Standardlauf 12,5 / 12,1 / 12,2 / 12,0 / 12,0 s. 40 Neustarts: 12,0 bis 12,5 s, Median 12,1 s
+M122 DSF: nicht auswertbar, der Runner startet DCS beim Rückbau neu
+M122 RRF nach den 40 Neustarts: failed transfers 0, checksum errors 0, underruns 0, overruns 0, disconnects 0, timeouts 0
+Self-Test im Laufzeitraum: 11:20:57 bis 11:20:58, quick check passed. In den 40 Neustarts kein Lauf, sie folgen sich alle 17 s
+Journalbefunde 40 Neustarts: je Neustart genau 1 Reset, 1 "left the extended link" und 1 Neustart der Übertragung (28 x 0xff, 12 x 0x00000000). 0 x Lost connection, 0 x Bad header CRC16, 0 x Out-of-order, 0 x stop-sigterm
+Journalbefunde Standardlauf: 6 Resets, 20 x M291 P"never" (RG-3), 4 x "Machine is halted", 7 x "Aborting orphaned macro file daemon.g", 1 x "Failed to find query" (Abschnitt 9). Dazu 1 Fehlerbefund: "Failed to process code in stage Executed" um 11:24:14 beim Rückbau, siehe unten
+Journalbefunde Injektions-Build: A-1 wie erwartet (1 x Lost connection, Stopp 60,03 s nach der Injektion), A-2 TfrRdy LOW, verbunden nach 3,88 s, F-1 15 von 15 Retry, 0 Abweichungen
+Abweichungen und Folgeaufgabe: "Failed to process code in stage Executed" (TaskCanceledException in EventLogger.LogAsync) beim Herunterfahren von DCS, Befund in design/open-findings.md
+Rückbau geprüft: ja, 11:40:25 (kein DSF-Side-Load, /var/tmp/lab-tests weg, OTA-Timer aktiv, idle). Der RRF-Side-Load bleibt bis zum nächsten SBC-Boot oder fw-sideload.sh remove, Entscheidung bei Tim
+```
+
+Bewertung: Ohne den Fix traf die Schleife etwa einen von 40 Neustarts. 40 saubere Neustarts mit 12 Läufen über das Boot-Fenster sind ein Hinweis, kein Beweis. Den Fix zeigen der Census und der Abgleich mit dem echten RRF-Code (`PortMatchesRealFirmwareAfterRestartBeforeArm`).
