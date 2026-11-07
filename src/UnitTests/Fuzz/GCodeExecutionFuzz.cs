@@ -534,6 +534,14 @@ public class GCodeExecutionFuzz
 
         // DCS stays responsive: a sentinel on the same channel runs and reaches the firmware after everything else
         await ResetAsync();
+        await CheckSentinelAsync(replyChannel);
+    }
+
+    /// <summary>
+    /// Check that a sentinel code runs on a channel, reaches the firmware after everything else and that echo works
+    /// </summary>
+    private async Task CheckSentinelAsync(CodeChannel replyChannel)
+    {
         string sentinel = $"M117 \"sentinel {++_sentinel}\"";
         int beforeSentinel = _host.Firmware.GetExecutedCodes(replyChannel).Count;
         string sentinelReply;
@@ -568,4 +576,160 @@ public class GCodeExecutionFuzz
 
     [Test]
     public void ExecuteCodes() => Fuzzer.Run(Generate, Check, Format, Shrink, Fuzzer.Scale(300), TimeSpan.FromSeconds(30));
+
+    #region File codes with fuzzed paths
+    /// <summary>
+    /// Directory next to the base directory of the host that the fuzzed paths aim at. It must stay as it is
+    /// </summary>
+    private string _canary = null!;
+
+    /// <summary>
+    /// Prefix of the file names that the fuzzed paths create, so that files outside the base directory can be found
+    /// </summary>
+    private const string EscapePrefix = "dsf-fuzz-escape";
+
+    /// <summary>
+    /// Codes that take file paths, with {0} and {1} for the paths. All of them resolve their paths with FilePathResolver
+    /// (MCodeHandler.cs, KeywordHandler.cs:137-138, Functions.cs:69 and 110, Logger.cs:99, Processor.cs:1334)
+    /// </summary>
+    private static readonly string[] PathCodes =
+    [
+        "M28 \"{0}\"\nM29", "M30 \"{0}\"", "M32 \"{0}\"", "M23 \"{0}\"", "M36 \"{0}\"", "M36.1 P\"{0}\" S0", "M37 P\"{0}\"", "M38 \"{0}\"",
+        "M98 P\"{0}\"", "M470 P\"{0}\"", "M471 S\"{0}\" T\"{1}\"", "M471 S\"{0}\" T\"{1}\" D1", "M472 P\"{0}\"", "M472 P\"{0}\" R1",
+        "echo >\"{0}\" \"x\"", "echo >>\"{0}\" \"x\"", "echo fileexists(\"{0}\")", "echo #fileread(\"{0}\", 0, 1, ',')",
+        "M929 P\"{0}\" S1", "M505 P\"{0}\"", "M20 P\"{0}\"", "M20 S2 P\"{0}\"", "M36.2 P\"{0}\" S0"
+    ];
+
+    /// <summary>
+    /// Draw a path from segments that aim at the canary directory, the base directory and the temporary directory
+    /// </summary>
+    private string DrawPath(Random random)
+    {
+        string canaryName = Path.GetFileName(_canary);
+        string[] segments =
+        [
+            "..", "..", "../..", ".", "", canaryName, "canary.g", "sub", "sys", "gcodes", "macros", "0:", "1:", "\\", "/", "//", "\0", " ", "ä", "😀",
+            $"{EscapePrefix}-{random.Next(100)}.g", $"{EscapePrefix}-dir", "tmp", "..\\..", "%2e%2e", "~", "*", "sd"
+        ];
+
+        StringBuilder path = new();
+        switch (random.Next(5))
+        {
+            case 0:
+                path.Append("0:/");
+                break;
+            case 1:
+                path.Append('/');
+                break;
+            case 2:
+                path.Append($"../{canaryName}/");
+                break;
+        }
+        for (int i = random.Next(5); i >= 0; i--)
+        {
+            path.Append(segments[random.Next(segments.Length)]);
+            if (i > 0)
+            {
+                path.Append((random.Next(4) == 0) ? '\\' : '/');
+            }
+        }
+        return path.ToString().Replace("\"", "\"\"");
+    }
+
+    private Input GeneratePathInput(Random random)
+    {
+        string template = PathCodes[random.Next(PathCodes.Length)];
+        return new Input(Mode.Http, string.Format(template, DrawPath(random), DrawPath(random)));
+    }
+
+    /// <summary>
+    /// Names and contents of the entries of a directory tree
+    /// </summary>
+    private static string Snapshot(string directory) => string.Join('\n', Directory.EnumerateFileSystemEntries(directory, "*", SearchOption.AllDirectories).Order()
+        .Select(entry => System.IO.File.Exists(entry) ? $"{entry}={System.IO.File.ReadAllText(entry)}" : entry));
+
+    private string _canarySnapshot = string.Empty;
+
+    private void CheckPath(Input input) => CheckPathAsync(input).GetAwaiter().GetResult();
+
+    private async Task CheckPathAsync(Input input)
+    {
+        Parse(input.Text, false, out List<Code> codes);
+        FilePathResolver resolver = _host.Services.GetRequiredService<FilePathResolver>();
+        foreach (Code code in codes.Where(code => code.Type == CodeType.MCode && code.MajorNumber == 98 && code.MinorNumber < 0 && code.HasParameter('P')))
+        {
+            try
+            {
+                resolver.ToPhysical(code.GetString('P'), FileDirectory.System);
+            }
+            catch (ArgumentException)
+            {
+                // A refused macro path ends the LinkService thread, see MacroPaths.MacroPathRefusedByResolver
+                return;
+            }
+        }
+
+        await ResetAsync();
+        try
+        {
+            await _host.ExecuteAsync(input.Text, CodeChannel.HTTP, CodeTimeout);
+        }
+        catch (TimeoutException)
+        {
+            throw new FuzzFailure("hang", $"No reply within {CodeTimeout.TotalSeconds} s");
+        }
+        catch (Exception e) when (IsExpectedException(e))
+        {
+            // Defined error
+        }
+        catch (Exception e)
+        {
+            throw new FuzzFailure("exception", $"{e.GetType().Name}: {e.Message}\n{e}");
+        }
+
+        // A job selected by M32 or M37 must not run on, M28 must be closed, before the file system is checked
+        await ResetAsync();
+
+        // Nothing outside the base directory has changed
+        if (Snapshot(_canary) != _canarySnapshot)
+        {
+            throw new FuzzFailure("canary", $"The directory next to the base directory has changed:\n{Snapshot(_canary)}");
+        }
+        string[] escaped = [.. Directory.EnumerateFileSystemEntries(Path.GetTempPath(), EscapePrefix + "*")];
+        if (escaped.Length > 0)
+        {
+            foreach (string entry in escaped)
+            {
+                if (Directory.Exists(entry))
+                {
+                    Directory.Delete(entry, true);
+                }
+                else
+                {
+                    System.IO.File.Delete(entry);
+                }
+            }
+            throw new FuzzFailure("escape", $"Created outside the base directory: {string.Join(", ", escaped)}");
+        }
+        await CheckSentinelAsync(CodeChannel.HTTP);
+    }
+
+    [Test]
+    public void FileCodesWithFuzzedPaths()
+    {
+        _canary = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(_host.BaseDirectory))!, "dsf-fuzz-canary-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(_canary, "sub"));
+        System.IO.File.WriteAllText(Path.Combine(_canary, "canary.g"), "G1 X1\n");
+        System.IO.File.WriteAllText(Path.Combine(_canary, "sub", "canary.g"), "G1 X2\n");
+        _canarySnapshot = Snapshot(_canary);
+        try
+        {
+            Fuzzer.Run(GeneratePathInput, CheckPath, Format, Shrink, Fuzzer.Scale(200), TimeSpan.FromSeconds(30));
+        }
+        finally
+        {
+            Directory.Delete(_canary, true);
+        }
+    }
+    #endregion
 }
