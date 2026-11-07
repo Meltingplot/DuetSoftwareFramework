@@ -398,11 +398,8 @@ public class DuetHttpClientTests : WebServerFixture
         try
         {
             await using DuetHttpSession session = CreatePollSession(Options());
-            await WaitUntilAsync(() => { lock (session.Model) { return session.Model.Move.Axes.Count == 10; } }, "The axes were not loaded");
-            lock (session.Model)
-            {
-                Assert.That(string.Concat(session.Model.Move.Axes.Select(a => a.Letter)), Is.EqualTo("XYZUVWABCD"));
-            }
+            // The root query with flag f creates the axes first with their live fields only, the letters follow with the query of move
+            await WaitUntilAsync(() => { lock (session.Model) { return string.Concat(session.Model.Move.Axes.Select(a => a.Letter)) == "XYZUVWABCD"; } }, "The axes were not loaded");
         }
         finally
         {

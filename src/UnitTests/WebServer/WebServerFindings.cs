@@ -271,8 +271,10 @@ public class WebServerFindings : WebServerFixture
     /// pkg/common/duetcontrolserver/opt/dsf/conf/config.json) and accepts in a loop (IPC/Server.cs:98-101). When more connects arrive at
     /// once than the backlog holds before the loop accepts them, they fail with EAGAIN ("Resource temporarily unavailable"), DWS only logs
     /// "Failed to unregister expired user session" and the user sessions stay in sbc.dsf.userSessions for good. Whether that happens depends
-    /// on how many sessions expire in the same pass and how fast the thread pool starts the tasks: on the lab printer (DSF 3.7.0+mp.13)
-    /// 12 sessions created at once all left DCS again. This uses the real SessionExpiry service with the 3 s timeout of the fixture
+    /// on how many sessions expire in the same pass: on the lab printer (DSF 3.7.0+mp.13, 4 cores, Backlog 4) 12 sessions created one after
+    /// the other all left DCS again, but of 40 created in parallel 4 stayed in DCS with "Failed to unregister expired user session
+    /// System.Net.Sockets.SocketException (11): Resource temporarily unavailable" in the DWS journal. In-process 12 sessions are enough,
+    /// with a backlog of 64 (DSF_TEST_DCS_BACKLOG) none stay. This uses the real SessionExpiry service with the 3 s timeout of the fixture
     /// </summary>
     [TestCase(12)]
     [TestCase(32)]
