@@ -195,6 +195,7 @@ public class IpcCommandMode
     [TestCase("{\"command\":\"UninstallSystemPackage\",\"package\":\"nano\"}", Description = "SuperUser")]
     [TestCase("{\"command\":\"InstallSystemPackage\",\"packageFile\":\"/tmp/does-not-exist.deb\"}", Description = "SuperUser")]
     [TestCase("{\"command\":\"SetPluginProcess\",\"plugin\":\"NoSuchPlugin\",\"pid\":1}", Description = "ServicePlugins")]
+    [TestCase("{\"command\":\"SetNetworkProtocol\",\"protocol\":\"ftp\",\"enabled\":true}", Description = "SuperUser")]
     [Explicit("Bug: RequiredPermissionsAttribute.Check grants every permission, so these commands are executed")]
     public async Task RefusesCommandsWithoutPermission(string json)
     {
