@@ -274,7 +274,7 @@ public class RrEndpointTests : WebServerFixture
         {
             using (await Dcs.Model.AccessReadWriteAsync())
             {
-                Dcs.Model.Job.File.FileName = null;
+                Dcs.Model.Job.File.FileName = string.Empty;
                 Dcs.Model.Job.Duration = null;
             }
         }

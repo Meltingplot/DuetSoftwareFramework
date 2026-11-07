@@ -246,6 +246,7 @@ public class WebServerFindings : WebServerFixture
     /// </summary>
     [Test]
     [Explicit("Bug: rr_ endpoints registered while DWS runs are mapped to /machine/rr_/{path}")]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
     public async Task RrEndpointRegisteredAtRuntime()
     {
         using DuetAPIClient.CommandConnection connection = new();

@@ -23,6 +23,7 @@ using HttpClient = System.Net.Http.HttpClient;
 /// endpoints that plugins register via DCS (CustomEndpointMiddleware.cs, HttpEndpointConnection.cs and DuetAPIClient/HttpEndpoints)
 /// </summary>
 [TestFixture]
+[System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
 public class MiddlewareTests : WebServerFixture
 {
     private HttpClient _client = null!;
