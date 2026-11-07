@@ -73,7 +73,12 @@ public class LinkServiceOverSpi
         /// Start the LinkService on a fake RRF that polls while it is not connected, like the SAME70 builds do
         /// </summary>
         /// <param name="capabilities">Link capabilities RRF offers and reports in limits.sbcLinkCapabilities</param>
-        public static async Task<Host> StartAsync(LinkCapabilities capabilities = LinkCapabilities.None)
+        /// <param name="createAdapter">Create the SPI adapter from the services, the fake RRF and the settings, or null for the plain one</param>
+        /// <param name="respond">Answers of RRF to packets of DSF in the next transfer, see <see cref="FakeRrfSpi.Respond"/></param>
+        /// <param name="answerCapabilities">Whether to wait for the query of the link capabilities and answer it</param>
+        public static async Task<Host> StartAsync(LinkCapabilities capabilities = LinkCapabilities.None,
+            Func<IServiceProvider, FakeRrfSpi, IOptions<Settings>, SpiAdapter>? createAdapter = null,
+            Func<SbcRequest, ushort, byte[], IEnumerable<(FirmwareRequest Request, byte[] Payload, ushort ResendPacketId)>>? respond = null, bool answerCapabilities = true)
         {
             string baseDirectory = Path.Combine(Path.GetTempPath(), "dsf-spi-link-" + Guid.NewGuid().ToString("N"));
             foreach (string directory in new[] { "sys", "macros", "gcodes", "filaments", "firmware" })
@@ -86,15 +91,21 @@ public class LinkServiceOverSpi
             {
                 RecordPackets = true,
                 ExchangeBudget = int.MaxValue,
-                TimeBudget = double.PositiveInfinity
+                TimeBudget = double.PositiveInfinity,
+                Respond = respond
             };
             ServiceProvider provider = DcsServices.Build(settings, DispatchProxy.Create<ILinkAdapter, DcsServices.NullLinkAdapter>(), services =>
-                services.AddSingleton<ILinkAdapter>(sp => new SpiAdapter(sp.GetRequiredService<EventLogger>(), sp.GetRequiredService<DuetControlServer.Model.ObjectModel>(),
-                    NullLogger<SpiAdapter>.Instance, sp.GetRequiredService<IOptions<Settings>>(), rrf, rrf, rrf.Clock)));
+                services.AddSingleton<ILinkAdapter>(sp => createAdapter?.Invoke(sp, rrf, sp.GetRequiredService<IOptions<Settings>>()) ??
+                    new SpiAdapter(sp.GetRequiredService<EventLogger>(), sp.GetRequiredService<DuetControlServer.Model.ObjectModel>(),
+                        NullLogger<SpiAdapter>.Instance, sp.GetRequiredService<IOptions<Settings>>(), rrf, rrf, rrf.Clock)));
             LinkService service = ActivatorUtilities.CreateInstance<LinkService>(provider);
             Host host = new(provider, rrf, service, baseDirectory);
             using CancellationTokenSource cts = new(Timeout);
             await service.StartAsync(cts.Token);
+            if (!answerCapabilities)
+            {
+                return host;
+            }
 
             // DCS asks for the capabilities of the link after every connect (LinkService.UpdateLinkCapabilities). RRF answers null for the key
             // if it has none, like every limit it does not know
@@ -626,6 +637,10 @@ public class LinkServiceOverSpi
         await link.SetLastCodeResultAsync(code).WaitAsync(Timeout);
         Assert.That(SbcPackets.SetLastCodeResult(host.WaitFor(SbcRequest.SetLastCodeResult)), Is.EqualTo((CodeChannel.Trigger, CodeResult.Warning)));
 
+        // The format of this packet does not match what RRF reads, see ObjectModelKeyChangedIsReadByRrf, so only check that the key goes out
+        link.ObjectModelKeyChanged("volumes");
+        Assert.That(Encoding.UTF8.GetString(host.WaitFor(SbcRequest.ObjectModelKeyChanged)), Does.Contain("volumes"));
+
         link.SendMessage(MessageTypeFlags.UsbMessage | MessageTypeFlags.WarningMessageFlag, "hello RRF");
         Assert.That(SbcPackets.Message(host.WaitFor(SbcRequest.Message)), Is.EqualTo((MessageTypeFlags.UsbMessage | MessageTypeFlags.WarningMessageFlag, "hello RRF")));
 
@@ -824,6 +839,239 @@ public class LinkServiceOverSpi
             }
         }, "the generic message");
         Assert.That(host.Fault, Is.Null);
+    }
+
+    /// <summary>
+    /// RRF asks for a packet again when it could not take it, in the transfer after the one that carried it (FirmwareRequest.ResendPacket,
+    /// PacketHeader.resendPacketId). DSF sends that packet again (LinkService.ProcessPacket, SPI.ResendPacket)
+    /// </summary>
+    [Test]
+    public async Task ResendPacket()
+    {
+        int resends = 0;
+        await using Host host = await Host.StartAsync(respond: (request, id, _) =>
+            (request == SbcRequest.Message && Interlocked.Increment(ref resends) == 1) ? [(FirmwareRequest.ResendPacket, [], id)] : []);
+        host.Link.SendMessage(MessageTypeFlags.UsbMessage, "twice");
+        Assert.That(SbcPackets.Message(host.WaitFor(SbcRequest.Message)).Text, Is.EqualTo("twice"));
+        Assert.That(SbcPackets.Message(host.WaitFor(SbcRequest.Message)).Text, Is.EqualTo("twice"));
+        Assert.That(host.Fault, Is.Null);
+    }
+
+    /// <summary>
+    /// A movement lock is granted once RRF reports it locked (DataTransfer::WriteLocked) and released with Unlock (SbcInterface.cpp:607, 637)
+    /// </summary>
+    [Test]
+    public async Task MovementLock()
+    {
+        await using Host host = await Host.StartAsync(respond: (request, _, payload) =>
+            (request == SbcRequest.LockAllMovementSystemsAndWaitForStandstill) ? [(FirmwareRequest.Locked, RrfPackets.Channel(SbcPackets.Channel(payload)), 0)] : []);
+        IAsyncDisposable movementLock = await host.Link.LockAllMovementSystemsAndWaitForStandstill(CodeChannel.SBC).WaitAsync(Timeout);
+        Assert.That(SbcPackets.Channel(host.WaitFor(SbcRequest.LockAllMovementSystemsAndWaitForStandstill)), Is.EqualTo(CodeChannel.SBC));
+        await movementLock.DisposeAsync().AsTask().WaitAsync(Timeout);
+        Assert.That(SbcPackets.Channel(host.WaitFor(SbcRequest.Unlock)), Is.EqualTo(CodeChannel.SBC));
+        Assert.That(host.Fault, Is.Null);
+    }
+
+    /// <summary>
+    /// The start of a print sends the information about its file, the end its reason (LinkService.Execute, SPI.WritePrintFileInfo and
+    /// WritePrintStopped). RRF reads PrintStartedHeader, whose time_t puts the size at offset 16 of the 40-byte header, then the filament
+    /// usages, the file name and the slicer (DataTransfer::ReadPrintStartedInfo), and PrintStoppedHeader (ReadPrintStoppedInfo)
+    /// </summary>
+    [Test]
+    public async Task PrintStartedAndStopped()
+    {
+        await using Host host = await Host.StartAsync();
+        using (await host.Model.AccessReadWriteAsync())
+        {
+            GCodeFileInfo file = host.Model.Job.File;
+            file.FileName = "0:/gcodes/print.gcode";
+            file.GeneratedBy = "fuzz slicer";
+            file.Size = 123456;
+            file.NumLayers = 7;
+            file.Filament.Add(1.5F);
+        }
+        await host.Link.SetPrintFileInfo().WaitAsync(Timeout);
+        byte[] info = host.WaitFor(SbcRequest.SetPrintFileInfo);
+        const int headerSize = 40;
+        int fileNameLength = BitConverter.ToUInt16(info, 0), generatedByLength = BitConverter.ToUInt16(info, 2), numFilaments = (int)BitConverter.ToUInt32(info, 4);
+        Assert.That(numFilaments, Is.EqualTo(1));
+        Assert.That(BitConverter.ToUInt32(info, 16), Is.EqualTo(123456));
+        Assert.That(BitConverter.ToUInt32(info, 20), Is.EqualTo(7));
+        Assert.That(BitConverter.ToSingle(info, headerSize), Is.EqualTo(1.5F));
+        Assert.That(Encoding.UTF8.GetString(info, headerSize + 4, fileNameLength), Is.EqualTo("0:/gcodes/print.gcode"));
+        Assert.That(Encoding.UTF8.GetString(info, headerSize + 4 + fileNameLength, generatedByLength), Is.EqualTo("fuzz slicer"));
+
+        await host.Link.StopPrintAsync(PrintStoppedReason.UserCancelled).WaitAsync(Timeout);
+        Assert.That(host.WaitFor(SbcRequest.PrintStopped)[0], Is.EqualTo((byte)PrintStoppedReason.UserCancelled));
+        Assert.That(host.Fault, Is.Null);
+    }
+
+    /// <summary>
+    /// A packet whose length runs past the data of the transfer cannot be read. DSF dumps the transfer to sys/transferDump.bin and stops the
+    /// transfer thread with the error (LinkService.Execute, SPI.DumpMalformedPacket), so that systemd starts DCS again
+    /// </summary>
+    [Test]
+    public async Task MalformedPacketStopsTheTransferThread()
+    {
+        await using Host host = await Host.StartAsync();
+        host.Rrf.SendPacket(FirmwareRequest.CodeBufferUpdate, RrfPackets.CodeBufferUpdate(100), declaredLength: 1000);
+        await host.Service.ExecuteTask!.ContinueWith(_ => { }).WaitAsync(Timeout);
+        Assert.That(host.Fault?.InnerException, Is.InstanceOf<ArgumentOutOfRangeException>());
+        Assert.That(System.IO.File.Exists(Path.Combine(host.BaseDirectory, "sys", "transferDump.bin")), Is.True);
+    }
+    #endregion
+
+    #region Firmware update and errors of the transfer thread
+    /// <summary>
+    /// SPI adapter whose firmware update steps after StartIap and whose protocol version and transfers can be scripted. The steps after StartIap
+    /// talk to the IAP program instead of RRF and wait for it in real time (SPI.VerifyFirmwareChecksum, WaitForIapReset), which the port does not emulate
+    /// </summary>
+    private sealed class ScriptedSpi(IServiceProvider services, FakeRrfSpi rrf, IOptions<Settings> settings) :
+        SpiAdapter(services.GetRequiredService<EventLogger>(), services.GetRequiredService<DuetControlServer.Model.ObjectModel>(), NullLogger<SpiAdapter>.Instance, settings, rrf, rrf, rrf.Clock), ILinkAdapter
+    {
+        public Queue<bool> ChecksumResults { get; } = new();
+
+        public MemoryStream Flashed { get; } = new();
+
+        public List<(long Length, ushort Crc16)> Verifications { get; } = [];
+
+        public bool IapReset { get; private set; }
+
+        public int? ReportedProtocolVersion { get; set; }
+
+        public Exception? ThrowInTransfer { get; set; }
+
+        int ILinkAdapter.ProtocolVersion => ReportedProtocolVersion ?? ProtocolVersion;
+
+        void ILinkAdapter.PerformFullTransfer(bool connecting, CancellationToken cancellationToken)
+        {
+            if (!connecting && ThrowInTransfer is Exception e)
+            {
+                throw e;
+            }
+            PerformFullTransfer(connecting, cancellationToken);
+        }
+
+        bool ILinkAdapter.FlashFirmwareSegment(Stream stream)
+        {
+            byte[] segment = new byte[Consts.FirmwareSegmentSize];
+            int bytesRead = stream.Read(segment);
+            if (bytesRead <= 0)
+            {
+                return false;
+            }
+            if (stream.Position == bytesRead)
+            {
+                // Every attempt starts at the beginning of the firmware
+                Flashed.SetLength(0);
+            }
+            Flashed.Write(segment, 0, bytesRead);
+            return true;
+        }
+
+        bool ILinkAdapter.VerifyFirmwareChecksum(long firmwareLength, ushort crc16)
+        {
+            Verifications.Add((firmwareLength, crc16));
+            return ChecksumResults.Dequeue();
+        }
+
+        void ILinkAdapter.WaitForIapReset() => IapReset = true;
+    }
+
+    /// <summary>
+    /// A firmware update sends the IAP binary to RRF in WriteIap packets of at most Consts.IapSegmentSize bytes and starts it with StartIap
+    /// (SbcInterface.cpp:667-672 and 1670-1676), then flashes the firmware through the IAP program and checks its CRC16, up to three times
+    /// (LinkService.PerformFirmwareUpdate). The transfer thread ends afterwards, because RRF restarts
+    /// </summary>
+    /// <param name="failedChecks">Number of checks of the CRC16 that fail before one succeeds</param>
+    [TestCase(0), TestCase(2)]
+    public async Task FirmwareUpdate(int failedChecks)
+    {
+        ScriptedSpi? adapter = null;
+        await using Host host = await Host.StartAsync(createAdapter: (services, rrf, settings) => adapter = new ScriptedSpi(services, rrf, settings));
+        for (int i = 0; i < failedChecks; i++)
+        {
+            adapter!.ChecksumResults.Enqueue(false);
+        }
+        adapter!.ChecksumResults.Enqueue(true);
+
+        Random random = new(failedChecks);
+        byte[] iap = new byte[2 * Consts.IapSegmentSize + 100], firmware = new byte[2 * Consts.FirmwareSegmentSize + 300];
+        random.NextBytes(iap);
+        random.NextBytes(firmware);
+        await host.Link.UpdateFirmware(new MemoryStream(iap), new MemoryStream(firmware)).WaitAsync(Timeout);
+
+        List<(SbcRequest Request, ushort Id, byte[] Payload)> packets = host.Rrf.GetReceivedPackets();
+        List<byte[]> segments = [.. packets.Where(p => p.Request == SbcRequest.WriteIap).Select(p => p.Payload)];
+        Assert.That(segments.Select(s => s.Length), Is.EqualTo(new[] { Consts.IapSegmentSize, Consts.IapSegmentSize, 100 }));
+        Assert.That(segments.SelectMany(s => s), Is.EqualTo(iap));
+        Assert.That(packets.FindIndex(p => p.Request == SbcRequest.StartIap), Is.GreaterThan(packets.FindLastIndex(p => p.Request == SbcRequest.WriteIap)));
+
+        Assert.That(adapter.Flashed.ToArray(), Is.EqualTo(firmware));
+        ushort crc16 = DuetControlServer.Utility.CRC16.Calculate(firmware);
+        Assert.That(adapter.Verifications, Is.EqualTo(Enumerable.Repeat(((long)firmware.Length, crc16), failedChecks + 1)));
+        Assert.That(adapter.IapReset, Is.True);
+        await host.Service.ExecuteTask!.WaitAsync(Timeout);
+        using (host.Model.AccessReadOnly())
+        {
+            Assert.That(host.Model.State.Status, Is.EqualTo(MachineStatus.Updating));
+        }
+    }
+
+    /// <summary>
+    /// After three failed checks of the CRC16 the update fails with an IOException for the M997 handler, which reports it, and the IAP program
+    /// is not waited for (LinkService.PerformFirmwareUpdate and Execute)
+    /// </summary>
+    [Test]
+    public async Task FirmwareUpdateFailsAfterThreeChecks()
+    {
+        ScriptedSpi? adapter = null;
+        await using Host host = await Host.StartAsync(createAdapter: (services, rrf, settings) => adapter = new ScriptedSpi(services, rrf, settings));
+        foreach (bool result in new[] { false, false, false })
+        {
+            adapter!.ChecksumResults.Enqueue(result);
+        }
+        await Assert.ThatAsync(() => host.Link.UpdateFirmware(new MemoryStream(new byte[10]), new MemoryStream(new byte[10])).WaitAsync(Timeout), Throws.InstanceOf<IOException>());
+        Assert.That(adapter!.Verifications, Has.Count.EqualTo(3));
+        Assert.That(adapter.IapReset, Is.False);
+    }
+
+    /// <summary>
+    /// Firmware of protocol version 1 is not supported, so the transfer thread stops with an error (LinkService.Execute)
+    /// </summary>
+    [Test]
+    public async Task ProtocolVersion1StopsTheTransferThread()
+    {
+        await using Host host = await Host.StartAsync(createAdapter: (services, rrf, settings) => new ScriptedSpi(services, rrf, settings) { ReportedProtocolVersion = 1 },
+            answerCapabilities: false);
+        await host.Service.ExecuteTask!.ContinueWith(_ => { }).WaitAsync(Timeout);
+        Assert.That(host.Fault?.InnerException?.Message, Is.EqualTo("Unsupported firmware version. Upgrade your firmware manually"));
+    }
+
+    private static IEnumerable<TestCaseData> TransferThreadErrors =>
+    [
+        new TestCaseData(new IOException("broken"), TaskStatus.Faulted).SetName("{m}(IOException)"),
+        new TestCaseData(new OperationCanceledException(), TaskStatus.Canceled).SetName("{m}(OperationCanceledException)"),
+        new TestCaseData(new AggregateException(new OperationCanceledException()), TaskStatus.Canceled).SetName("{m}(AggregateException of a cancellation)"),
+        new TestCaseData(new AggregateException(new IOException("broken")), TaskStatus.Faulted).SetName("{m}(AggregateException of an error)")
+    ];
+
+    /// <summary>
+    /// The task of the transfer thread reports an error of the thread as a fault and a cancellation that is not a stop of DCS as cancelled, also
+    /// when it comes wrapped in an AggregateException (LinkService.ExecuteAsync)
+    /// </summary>
+    [TestCaseSource(nameof(TransferThreadErrors))]
+    public async Task TransferThreadError(Exception error, TaskStatus status)
+    {
+        ScriptedSpi? adapter = null;
+        await using Host host = await Host.StartAsync(createAdapter: (services, rrf, settings) => adapter = new ScriptedSpi(services, rrf, settings));
+        adapter!.ThrowInTransfer = error;
+        await host.Service.ExecuteTask!.ContinueWith(_ => { }).WaitAsync(Timeout);
+        Assert.That(host.Service.ExecuteTask.Status, Is.EqualTo(status));
+        if (status == TaskStatus.Faulted)
+        {
+            Assert.That(host.Fault!.InnerException, Is.InstanceOf<IOException>());
+        }
     }
     #endregion
 }

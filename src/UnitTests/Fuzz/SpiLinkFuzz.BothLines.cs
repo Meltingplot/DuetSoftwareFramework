@@ -23,7 +23,8 @@ namespace UnitTests.Fuzz;
 /// answers bad data with BadDataChecksum and RRF sends the data again when either side reports it (DataTransfer.cpp ExchangingDataResponse,
 /// SPI.cs ExchangeData), and the extended response codes correct up to 3 bits in each direction on their own. One ESD event of the lab printer
 /// hit both lines of a header (LinkRecovery.EsdEvents, 16:09:14) and is repaired. So on the extended link these tests require the repair, and
-/// <see cref="ExploreBothLines"/> reports what does not hold
+/// <see cref="ExploreBothLines"/> reports what does not hold. These tests rest on the port of RRF; a check of single faults on both lines with the
+/// fault injection build of the lab printer (SpiFaultSpec direction Both) is pending
 /// </remarks>
 public partial class SpiLinkFuzz
 {

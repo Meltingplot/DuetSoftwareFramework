@@ -619,7 +619,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
 
     #region Packets of SbcInterface
     private readonly object _packetLock = new();
-    private readonly Queue<(FirmwareRequest Request, byte[] Payload, ushort ResendPacketId)> _packetsToSend = new();
+    private readonly Queue<(FirmwareRequest Request, byte[] Payload, ushort ResendPacketId, int? DeclaredLength)> _packetsToSend = new();
     private readonly List<(SbcRequest Request, ushort Id, byte[] Payload)> _receivedPackets = [];
 
     /// <summary>
@@ -628,16 +628,23 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     public bool RecordPackets { get; init; }
 
     /// <summary>
+    /// Answer of RRF to a packet from DSF, written into the next transfer like SbcInterface answers while it processes a transfer.
+    /// Packets passed to <see cref="SendPacket"/> after a transfer go out one transfer later, because RRF has set up the next one by then
+    /// </summary>
+    public Func<SbcRequest, ushort, byte[], IEnumerable<(FirmwareRequest Request, byte[] Payload, ushort ResendPacketId)>>? Respond { get; init; }
+
+    /// <summary>
     /// Send a packet to DSF with the next transfer, as SbcInterface does through the Write functions of DataTransfer. Thread-safe
     /// </summary>
     /// <param name="request">Request of the packet</param>
     /// <param name="payload">Packet data as RRF writes it, without the padding after it</param>
     /// <param name="resendPacketId">Packet DSF has to send again (FirmwareRequest.ResendPacket)</param>
-    public void SendPacket(FirmwareRequest request, byte[] payload, ushort resendPacketId = 0)
+    /// <param name="declaredLength">Length in the packet header instead of the length of the data, to make a malformed packet</param>
+    public void SendPacket(FirmwareRequest request, byte[] payload, ushort resendPacketId = 0, int? declaredLength = null)
     {
         lock (_packetLock)
         {
-            _packetsToSend.Enqueue((request, payload, resendPacketId));
+            _packetsToSend.Enqueue((request, payload, resendPacketId, declaredLength));
         }
     }
 
@@ -710,7 +717,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
 
                 // DataTransfer::WritePacketHeader pads before the next packet to stay aligned (DataTransfer.cpp:2288)
                 _txPointer = (_txPointer + 3) / 4 * 4;
-                PacketHeader header = new() { Request = (ushort)packet.Request, Id = _packetId++, Length = (ushort)packet.Payload.Length, ResendPacketId = packet.ResendPacketId };
+                PacketHeader header = new() { Request = (ushort)packet.Request, Id = _packetId++, Length = (ushort)(packet.DeclaredLength ?? packet.Payload.Length), ResendPacketId = packet.ResendPacketId };
                 MemoryMarshal.Write(_txBuffer.AsSpan(_txPointer), in header);
                 _txPointer += Marshal.SizeOf<PacketHeader>();
                 packet.Payload.CopyTo(_txBuffer, _txPointer);
@@ -1276,12 +1283,20 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         {
             PacketHeader packet = MemoryMarshal.Read<PacketHeader>(_rxBuffer.AsSpan(offset));
             offset += Marshal.SizeOf<PacketHeader>();
-            if (RecordPackets)
+            if (RecordPackets || Respond is not null)
             {
+                byte[] payload = _rxBuffer.AsSpan(offset, Math.Min(packet.Length, Math.Max(_rxHeader.DataLength - offset, 0))).ToArray();
                 lock (_packetLock)
                 {
-                    _receivedPackets.Add(((SbcRequest)packet.Request, packet.Id, _rxBuffer.AsSpan(offset, Math.Min(packet.Length, Math.Max(_rxHeader.DataLength - offset, 0))).ToArray()));
-                    Monitor.PulseAll(_packetLock);
+                    if (RecordPackets)
+                    {
+                        _receivedPackets.Add(((SbcRequest)packet.Request, packet.Id, payload));
+                        Monitor.PulseAll(_packetLock);
+                    }
+                    foreach (var answer in Respond?.Invoke((SbcRequest)packet.Request, packet.Id, payload) ?? [])
+                    {
+                        _packetsToSend.Enqueue((answer.Request, answer.Payload, answer.ResendPacketId, null));
+                    }
                 }
             }
             if (packet.Request == (ushort)SbcRequest.ActivateLinkCapabilities && packet.Length >= sizeof(uint))
