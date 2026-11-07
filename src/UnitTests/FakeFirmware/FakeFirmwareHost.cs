@@ -82,8 +82,9 @@ public sealed class FakeFirmwareHost : IAsyncDisposable
     /// <param name="configureFirmware">Optional callback to set up the fake firmware before DCS connects</param>
     /// <param name="configureSettings">Optional callback to change the settings</param>
     /// <param name="ipc">Whether to start the IPC server of DCS as well, listening on <see cref="SocketPath"/></param>
+    /// <param name="minimumLogLevel">Optional minimum level of the DCS log, e.g. Trace to run the code paths that log the IPC traffic</param>
     /// <returns>Started host</returns>
-    public static async Task<FakeFirmwareHost> StartAsync(Action<FakeFirmware>? configureFirmware = null, Action<Settings>? configureSettings = null, bool ipc = false)
+    public static async Task<FakeFirmwareHost> StartAsync(Action<FakeFirmware>? configureFirmware = null, Action<Settings>? configureSettings = null, bool ipc = false, LogLevel? minimumLogLevel = null)
     {
         string baseDirectory = Path.Combine(Path.GetTempPath(), "dsf-fake-firmware-" + Guid.NewGuid().ToString("N"));
         foreach (string directory in new[] { "sys", "macros", "gcodes", "filaments", "firmware", "menu", "www" })
@@ -110,6 +111,10 @@ public sealed class FakeFirmwareHost : IAsyncDisposable
                 if (Enum.TryParse(Environment.GetEnvironmentVariable("DSF_FAKE_FIRMWARE_LOG"), true, out LogLevel logLevel))
                 {
                     builder.SetMinimumLevel(logLevel).AddProvider(new TestContextLoggerProvider(Environment.GetEnvironmentVariable("DSF_FAKE_FIRMWARE_LOG_FILE")));
+                }
+                if (minimumLogLevel is not null)
+                {
+                    builder.SetMinimumLevel(minimumLogLevel.Value);
                 }
             });
             if (ipc)
