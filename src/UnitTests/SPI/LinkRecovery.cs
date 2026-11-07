@@ -234,7 +234,7 @@ public class LinkRecovery
     public sealed record RrfOptions(SequenceMismatchHandling SequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool PollWhileDisconnected = false,
         bool RrfFirstOnTie = true, byte UnderrunByte = 0, bool PhaseGuard = false, bool SequenceGuard = false,
         LinkCapabilities Capabilities = LinkCapabilities.None, int TargetTransfer = TargetTransfer, RrfRule DisabledRules = RrfRule.None, bool InjectThroughDsf = false,
-        bool DcsRestartAfterRecovery = false, double? BootArmDelay = null, byte BootWindowMiso = 0x00, int? SbcRestartTimeout = null);
+        bool DcsRestartAfterRecovery = false, double? BootArmDelay = null, byte BootWindowMiso = 0x00, int? SbcRestartTimeout = null, bool HarnessBootDelay = false);
 
     private static IEnumerable<TestCaseData> OtherOptions =>
     [
@@ -878,12 +878,39 @@ public class LinkRecovery
     /// <summary>
     /// Replay every single fault and every DCS restart against the real DataTransfer and SbcInterface of RRF, built as a host program whose path
     /// is in RRF_HOST_HARNESS, and compare its answers with those of the port. Inputs are replayed open-loop, so only the first difference of a case counts.
-    /// Restarts of RRF cannot be replayed, because the host program does not restart
+    /// The restarts before the next arm have a test of their own, because the host program needs -b for them
     /// </summary>
     /// <param name="capabilities">Capabilities DSF activates, which the host build must offer</param>
     /// <param name="target">Transfer with the fault</param>
     [TestCaseSource(nameof(HarnessOptions)), Explicit("Needs the host build of RRF's DataTransfer and SbcInterface")]
     public void PortMatchesRealFirmware(LinkCapabilities capabilities, int target)
+    {
+        RrfOptions options = new(PollWhileDisconnected: Environment.GetEnvironmentVariable("RRF_HOST_POLL") == "1", Capabilities: capabilities, TargetTransfer: target);
+        CompareWithHarness(string.Empty, capabilities.HasFlag(LinkCapabilities.ExtendedHeader),
+            Enum.GetValues<Variant>().Select(v => (v, (SpiFault?)null, $"{v} / clean", options))
+                .Concat(GetCases().Concat(GetDcsRestartCases()).Select(c => (c.Variant, (SpiFault?)c.Fault, c.ToString(), options))));
+    }
+
+    /// <summary>
+    /// Replay every restart before the next arm against the host build of RRF, started with -b so that the boot arm delay waits for T.
+    /// RRF_HOST_RULE=1 tells that the build reads an extended BadResponse in the first header while it is not connected
+    /// (<see cref="RrfRule.DecodeHeaderWordUnconnected"/>), otherwise the port runs without that rule
+    /// </summary>
+    [Test, Explicit("Needs the host build of RRF's DataTransfer and SbcInterface")]
+    public void PortMatchesRealFirmwareAfterRestartBeforeArm()
+    {
+        bool poll = Environment.GetEnvironmentVariable("RRF_HOST_POLL") == "1";
+        RrfRule disabledRules = (Environment.GetEnvironmentVariable("RRF_HOST_RULE") == "1") ? RrfRule.None : RrfRule.DecodeHeaderWordUnconnected;
+        CompareWithHarness("-b", true, GetRestartBeforeArmCases().Select(c => (c.Variant, (SpiFault?)c.Fault, c.ToString(), ExtendedRestartOptions(c, poll, disabledRules) with { HarnessBootDelay = true })));
+    }
+
+    /// <summary>
+    /// Replay the given cases against the host program in RRF_HOST_HARNESS and compare its answers with those of the port
+    /// </summary>
+    /// <param name="arguments">Arguments of the host program</param>
+    /// <param name="extended">Whether RRF must send extended codes in some case</param>
+    /// <param name="cases">Cases to replay</param>
+    private void CompareWithHarness(string arguments, bool extended, IEnumerable<(Variant Variant, SpiFault? Fault, string Name, RrfOptions Options)> cases)
     {
         string? harness = Environment.GetEnvironmentVariable("RRF_HOST_HARNESS");
         if (string.IsNullOrEmpty(harness))
@@ -891,7 +918,7 @@ public class LinkRecovery
             Assert.Ignore("RRF_HOST_HARNESS is not set");
         }
 
-        using System.Diagnostics.Process process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(harness!)
+        using System.Diagnostics.Process process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(harness!, arguments)
         {
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
@@ -899,13 +926,13 @@ public class LinkRecovery
         })!;
 
         List<string> differences = [];
-        int cases = 0, events = 0, extendedCases = 0;
+        int caseCount = 0, events = 0, extendedCases = 0;
         string extendedSuccess = Convert.ToHexStringLower(BitConverter.GetBytes(ExtendedLink.Success));
-        foreach ((Variant variant, SpiFault? fault, string name) in Enum.GetValues<Variant>().Select(v => (v, (SpiFault?)null, $"{v} / clean")).Concat(GetCases().Concat(GetDcsRestartCases()).Select(c => (c.Variant, (SpiFault?)c.Fault, c.ToString()))))
+        foreach ((Variant variant, SpiFault? fault, string name, RrfOptions options) in cases)
         {
             List<(string Input, string? Output)> replay = [];
-            Run(variant, fault, new(PollWhileDisconnected: Environment.GetEnvironmentVariable("RRF_HOST_POLL") == "1", Capabilities: capabilities, TargetTransfer: target), replay: replay);
-            cases++;
+            Run(variant, fault, options, replay: replay);
+            caseCount++;
             if (replay.Any(r => r.Output?.StartsWith($"R {extendedSuccess}", StringComparison.Ordinal) == true))
             {
                 extendedCases++;
@@ -931,9 +958,9 @@ public class LinkRecovery
         process.StandardInput.Close();
         process.WaitForExit();
 
-        TestContext.Out.WriteLine($"{cases} cases, {events} events compared, {differences.Count} cases differ, {extendedCases} cases with extended codes from RRF");
+        TestContext.Out.WriteLine($"{caseCount} cases, {events} events compared, {differences.Count} cases differ, {extendedCases} cases with extended codes from RRF");
         Assert.That(differences, Is.Empty, string.Join("\n", differences.Take(20)));
-        if (capabilities.HasFlag(LinkCapabilities.ExtendedHeader))
+        if (extended)
         {
             Assert.That(extendedCases, Is.GreaterThan(0), "RRF never sent an extended code");
         }
@@ -1312,6 +1339,11 @@ public class LinkRecovery
             BootArmDelay = options.BootArmDelay ?? ((options.Capabilities != LinkCapabilities.None) ? FakeRrfSpi.ForkBootArmDelay : 0),
             BootWindowMiso = options.BootWindowMiso
         };
+        if (options.HarnessBootDelay)
+        {
+            // A host program started with -b waits in the boot arm delay of every NEW until T, also at the start of a case
+            replay?.Add(("T", $"T {rrf.ReplayStatusNow}"));
+        }
 
         int dsfConnectionLosses = 0, dcsRestarts = 0, dsfId = 0, dsfResets = 0, restartTimeouts = 0;
         double? recoveredAt = null;

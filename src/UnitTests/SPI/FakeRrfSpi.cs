@@ -126,8 +126,8 @@ public enum RrfRule
 /// <param name="Mutation">Text form of the mutation for SpiFaultSpec, if it has one</param>
 /// <param name="DsfBeforeFirstArm">At the end of a restart, DSF reacts to the falling edge of DataTransfer::Init and exchanges before RRF raises TfrRdy
 /// for its first header, instead of after it. The DMA of that header is set up before the pin toggles, so the exchange reaches it either way</param>
-/// <param name="RestartBeforeArm">With <paramref name="RestartBootTime"/>, RRF completes the exchange and restarts before it sets up the next one,
-/// so TfrRdy keeps the level of the completed exchange</param>
+/// <param name="RestartBeforeArm">With <paramref name="RestartBootTime"/>, the exchange completes while the interrupts of RRF are off, as when
+/// SoftwareReset writes the reset data, and RRF restarts without processing it. Nothing is set up next, so TfrRdy keeps its level</param>
 public sealed record SpiFault(int Exchange, ExchangeDirection Direction, SpiMutation Mutate, double? RestartBootTime = null, bool RestartAgain = false, ushort RrfFirstSequenceNumber = 1,
     double? DcsRestartDelay = null, string? Mutation = null, bool DsfBeforeFirstArm = false, bool RestartBeforeArm = false);
 
@@ -337,9 +337,9 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     private bool? _heldEdge;
 
     /// <summary>
-    /// RRF processes the current exchange but does not set up the next one, see <see cref="SpiFault.RestartBeforeArm"/>
+    /// Disconnects and connection resets before the last boot, because the host program counts them per instance
     /// </summary>
-    private bool _restartBeforeArm;
+    private int _disconnectsBeforeBoot, _connectionResetsBeforeBoot;
 
     /// <summary>
     /// The processor hangs until its watchdog resets it: SPI and DMA stop, so DSF reads 0xFF, and the RAM content is gone. TfrRdy keeps its level
@@ -364,6 +364,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         _resending = false;
         _deadline = double.PositiveInfinity;
         _bootAt = Now + bootTime;
+        Replay?.Add(("RESET ff", null));
     }
 
     /// <summary>
@@ -373,6 +374,12 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     {
         _bootAt = null;
         Boots.Add(Now);
+
+        // The booted RRF counts and numbers from the start again
+        _disconnectsBeforeBoot = Disconnects;
+        _connectionResetsBeforeBoot = ConnectionResets;
+        _payloadId = 0;
+        Replay?.Add(($"NEW 0 {_underrunByte:x2}", null));
 
         // DataTransfer::Init makes TfrRdy an output driven low, and the SBC task arms the first header 20-30 us later
         _transferReadyHigh = false;
@@ -428,6 +435,11 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         WritePayload();
         StartNextTransfer();
         _deadline = _pollWhileDisconnected ? Now + SbcConnectionTimeout : double.PositiveInfinity;
+        if (BootArmDelay > 0)
+        {
+            // The host program ends the boot arm delay with T
+            Replay?.Add(("T", $"T {ReplayStatusNow}"));
+        }
     }
 
     /// <summary>
@@ -494,10 +506,20 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// </summary>
     private string ReplayStatus(int receivedBefore)
     {
-        string wait = (_state != InternalTransferState.ExchangingHeader) ? "partial" : (_isConnected || _pollWhileDisconnected) ? "full" : "unlimited";
+        if (_bootAt is not null)
+        {
+            return $"state=Boot pin={(_pinLevel ? 1 : 0)} conn=0 disc=0 resets=0 wait=boot got=-";
+        }
+        string wait = (_armAt is not null) ? "delay" : (_state != InternalTransferState.ExchangingHeader) ? "partial" : (_isConnected || _pollWhileDisconnected) ? "full" : "unlimited";
         string got = (ReceivedPayloads.Count > receivedBefore) ? string.Join(",", ReceivedPayloads.Skip(receivedBefore)) : "-";
-        return $"state={_state} pin={(_pinLevel ? 1 : 0)} conn={(_isConnected ? 1 : 0)} disc={Disconnects} resets={ConnectionResets} wait={wait} got={got}";
+        return $"state={_state} pin={(_pinLevel ? 1 : 0)} conn={(_isConnected ? 1 : 0)} disc={Disconnects - _disconnectsBeforeBoot} " +
+            $"resets={ConnectionResets - _connectionResetsBeforeBoot} wait={wait} got={got}";
     }
+
+    /// <summary>
+    /// State right now, in the format of the host program
+    /// </summary>
+    public string ReplayStatusNow => ReplayStatus(ReceivedPayloads.Count);
 
     /// <summary>
     /// Whether the fault has been applied
@@ -1000,11 +1022,6 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// </summary>
     private void SetupSpi(DmaTarget target, byte[] tx)
     {
-        if (_restartBeforeArm)
-        {
-            // RRF restarts before it gets here, see SpiFault.RestartBeforeArm
-            return;
-        }
         _dmaTarget = target;
         _dmaTx = tx;
         _dmaActive = true;
@@ -1210,6 +1227,8 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         {
             ArmFirstHeader();
         }
+        bool restartBeforeArm = fault is { RestartBeforeArm: true, RestartBootTime: not null };
+        string? statusBefore = restartBeforeArm ? ReplayStatusNow : null;
         if (fault?.DcsRestartDelay is double delay)
         {
             // The exchange does not take place
@@ -1257,20 +1276,18 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         Now += toRrf.Length * MsPerByte;
         ReleaseHeldEdge();
         InternalTransferState stateBefore = _state;
-        _restartBeforeArm = fault is { RestartBeforeArm: true, RestartBootTime: not null };
-        if (completed)
+        if (completed && !restartBeforeArm)
         {
             CompleteDma(toRrf.AsSpan(0, count));
             RunTask(DoTransfer(), false);
         }
-        if (_restartBeforeArm)
+        Replay?.Add(($"{(restartBeforeArm ? 'D' : 'X')} {Convert.ToHexStringLower(toRrf)}", $"R {rrfOutput} {statusBefore ?? ReplayStatus(receivedBefore)}"));
+        if (restartBeforeArm)
         {
-            _restartBeforeArm = false;
             _dsfBeforeFirstArm = fault!.DsfBeforeFirstArm;
             Restart(fault.RestartBootTime!.Value, Exchanges + 0.5);
             _restartAgainBootTime = fault.RestartAgain ? fault.RestartBootTime : null;
         }
-        Replay?.Add(($"X {Convert.ToHexStringLower(toRrf)}", $"R {rrfOutput} {ReplayStatus(receivedBefore)}"));
         Trace?.Add($"#{exchange} {Now,9:F3} ms{(fault is not null ? $" FAULT {fault.Direction}" : "")}: DSF {Convert.ToHexString(toRrf.AsSpan(0, Math.Min(toRrf.Length, 16)))} " +
             $"RRF {Convert.ToHexString(readBuffer[..Math.Min(readBuffer.Length, 16)])} | RRF {stateBefore} -> {_state}, pin {(_pinLevel ? 1 : 0)}, connected {_isConnected}");
     }
