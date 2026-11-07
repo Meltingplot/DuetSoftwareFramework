@@ -118,15 +118,30 @@ A partial line can only be a text line, because `GCodeBuffer::Put` clears `isBin
 - `0x1760` is the CRC16 of `05 00 00 00` and six zero bytes, computed offline with the table in `CRC16.cs`. That is the response `BadHeaderChecksum` (`TransferResponse.cs:34`), read where DSF expects the header.
 - The protocol version in that "header" is 0, so `SPI.cs:1848-1858` sets DSF's own version to 0 without a log line. The check then takes the CRC16 path (`SPI.cs:1882-1885`), which explains a CRC16 message on a link with protocol 7.
 
-**Not proven:**
-- What shifted the two sides by one exchange. The reset hits a running transfer, but this has not been reproduced.
-- Whether the silent change of the protocol version keeps the two sides apart.
-- Whether the same can happen without a restart. Only this one case was seen.
+**Cause, shown later on 2026-11-07** (census, real RRF code in the host harness, RRF review):
+1. RRF resets after an exchange has completed and before it sets up the next one, so TfrRdy keeps its level. `M122 P1001` resets go through `SoftwareReset`, which writes the reset data to flash with the interrupts off (reset code `0x80a3`), so an exchange can complete by DMA in that time. `M999` takes the same path.
+2. DSF takes the falling edge of `DataTransfer::Init` for its pending exchange and reads 0 from the disabled SPI. With data in the transfer, it answers with `BadResponse`, extended as `0xCCCCCCCC` (`SPI.cs:2008`, `:2027`).
+3. That word lands in the first header of the booted RRF, which decodes extended codes only while the extended link is active (RRF `DataTransfer.cpp:873`, `:1086`). It answers `BadHeaderChecksum`, and both sides stay one exchange apart.
 
-**Differs from the census:** `ExtendedLinkNoticesEveryRebootQuickly` (`LinkRecovery.cs:409`) expects DSF to notice every restart within 50 ms of the boot. It restarts the fake firmware at every exchange, but this case is not among its results.
+The census showed it once a restart between two exchanges was added (`SpiFault.RestartBeforeArm`): the same lines, `0x1760` and 99 x `Bad header CRC16`. 9 combinations of variant and phase lose the connection, all on the extended link. The regular link does not have it.
 
-**Related:** the same pattern of two sides out of step lasts 60 s in `StuckLinkRestartsDcs`, see the finding above. Here, the retry limit and the reconnect ended it after 23 ms and 500 ms.
+**Fix (not merged):** RRF decodes extended codes while it is not connected (Meltingplot/RepRapFirmware branch `fix/sbc-decode-header-unconnected`, one condition in `DecodeResponse`). DSF branch `feature/census-restart-before-arm` has the census cases and the harness check. Results:
+- In the host harness, the build with the condition matches the port with the rule and the build without it matches the port without it, 0 differences each, on usb0 and usb1.
+- On the lab printer (side-load RRF 3.7.0+1.mp.7-dev.1, 2026-11-07): suite 30 of 30, A-1/A-2/F-1, and 40 watchdog restarts without a lost connection (12 of them through the boot window). That is a hint, not a proof, at about 1 in 40.
 
-**Next steps:**
-1. Tim decides whether this is worth a fix, given that the link recovers by itself and it was seen once during a restart.
-2. If so, try to reproduce it in the census with a restart inside an exchange, as the lab test cannot force it.
+**Still open:** the duration of the flash write in `SoftwareReset` is unmeasured. Whether `M999` hits the same window has not been shown.
+
+**Next steps:** the PRs of both branches, then an RRF release with the condition. Remove this entry once that is on the printer.
+
+## DCS logs "Failed to process code in stage Executed" while it shuts down
+
+**Problem:** while DCS stopped for a restart, a code was still in the Executed stage and logged an error.
+
+**Observed** on the lab printer (DSF 3.7.0+mp.12):
+- 2026-11-07 11:24:14 UTC, during the DCS restart of `run-lab-tests.sh` that removes a side-load. Right after `Application is shutting down...`, `Failed to process code in stage Executed` with `TaskCanceledException` in `AsyncLock.LockAsync`, called from `EventLogger.LogAsync` and `Executed.ProcessCodeAsync`.
+- 2026-11-06 09:36:49 UTC, same message, but the stack does not have `EventLogger.LogAsync`. Context not checked yet.
+- These are the only two in the journal since 2026-10-25.
+
+**Likely cause, read from the stack and not proven:** the Executed stage writes to the event log with the token that is cancelled on shutdown, and the cancellation is reported as a failure of the code.
+
+**Next step:** check both occurrences in the code and decide whether a cancelled log write on shutdown should be quiet.

@@ -451,3 +451,27 @@ Testfehler, behoben in #114:
 Weitere Werte:
 - **`M98.n`:** in allen Läufen Parameter `5,2,5,true`, 1 Makro je Fall, Trigger-Läufe = Makro + Ablehnungen.
 - **RG-9:** 242 und 241 Trigger-Läufe.
+
+### 2026-11-07: RRF-Fix für den Neustart vor dem nächsten Austausch, Side-Load, bestanden
+
+Prüfung des RRF-Fixes aus `fix/sbc-decode-header-unconnected` (Befund „A firmware restart can leave DSF and RRF one exchange apart“, `design/open-findings.md`) vor dem PR, auf Tims Wunsch per Side-Load.
+
+```
+Datum, Zeit (UTC): 2026-11-07, 11:13:53 bis 11:40:25
+Anlass, PR, Commit: RRF-Fix vor dem PR. DSF aus tmp/lab-restart-fix (lokal, #114 4e28df23 + feature/census-restart-before-arm 1220f18d), Produktionscode wie v3.7-dev
+DSF: 3.7.0+mp.12, Side-Load je Schritt, für A-1/A-2/F-1 der Injektions-Build
+RRF: 3.7.0+1.mp.7-dev.1 (19de9c0e6, CI-Run 42365694522, sha256 9ff56cc0...00b4), Side-Load der RRF-Sitzung mit fw-sideload.sh
+Stufen und Freigabe durch: 1 und 2, Tim (RRF-Side-Load in der RRF-Sitzung freigegeben)
+IDs: Standardlauf 30 von 30 bestanden (11:13:53 bis 11:24:35). Injektions-Build 3 von 3 (11:24:36 bis 11:29:25): A-1, A-2, F-1. LinkRecoversAfterWatchdogReset mit LAB_WATCHDOG_RESTARTS=40, 1 von 1 (11:29:26 bis 11:40:25)
+RG-6, Erholzeit je Reboot: Standardlauf 12,5 / 12,1 / 12,2 / 12,0 / 12,0 s. 40 Neustarts: 12,0 bis 12,5 s, Median 12,1 s
+M122 DSF: nicht auswertbar, der Runner startet DCS beim Rückbau neu
+M122 RRF nach den 40 Neustarts: failed transfers 0, checksum errors 0, underruns 0, overruns 0, disconnects 0, timeouts 0
+Self-Test im Laufzeitraum: 11:20:57 bis 11:20:58, quick check passed. In den 40 Neustarts kein Lauf, sie folgen sich alle 17 s
+Journalbefunde 40 Neustarts: je Neustart genau 1 Reset, 1 "left the extended link" und 1 Neustart der Übertragung (28 x 0xff, 12 x 0x00000000). 0 x Lost connection, 0 x Bad header CRC16, 0 x Out-of-order, 0 x stop-sigterm
+Journalbefunde Standardlauf: 6 Resets, 20 x M291 P"never" (RG-3), 4 x "Machine is halted", 7 x "Aborting orphaned macro file daemon.g", 1 x "Failed to find query" (Abschnitt 9). Dazu 1 Fehlerbefund: "Failed to process code in stage Executed" um 11:24:14 beim Rückbau, siehe unten
+Journalbefunde Injektions-Build: A-1 wie erwartet (1 x Lost connection, Stopp 60,03 s nach der Injektion), A-2 TfrRdy LOW, verbunden nach 3,88 s, F-1 15 von 15 Retry, 0 Abweichungen
+Abweichungen und Folgeaufgabe: "Failed to process code in stage Executed" (TaskCanceledException in EventLogger.LogAsync) beim Herunterfahren von DCS, Befund in design/open-findings.md
+Rückbau geprüft: ja, 11:40:25 (kein DSF-Side-Load, /var/tmp/lab-tests weg, OTA-Timer aktiv, idle). Der RRF-Side-Load bleibt bis zum nächsten SBC-Boot oder fw-sideload.sh remove, Entscheidung bei Tim
+```
+
+Bewertung: Ohne den Fix traf die Schleife etwa einen von 40 Neustarts. 40 saubere Neustarts mit 12 Läufen über das Boot-Fenster sind ein Hinweis, kein Beweis. Den Fix zeigen der Census und der Abgleich mit dem echten RRF-Code (`PortMatchesRealFirmwareAfterRestartBeforeArm`).
