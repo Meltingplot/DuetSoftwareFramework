@@ -201,16 +201,28 @@ public sealed class FakeObjectModel
 
             bool wantArrayLength = key.StartsWith('#');
             string path = wantArrayLength ? key[1..] : key;
+            bool verbose = flags.Contains('v');
             if (string.IsNullOrEmpty(path))
             {
-                // The flags would select the fields RRF reports (e.g. live fields only), the fake always reports everything
-                builder.Append(GetRootWithSeqs().ToJsonString());
+                // The flags would select the fields RRF reports (e.g. live fields only), the fake reports everything but verbose fields
+                JsonObject root = GetRootWithSeqs();
+                if (!verbose && root["boards"] is JsonArray rootBoards)
+                {
+                    RemoveVerboseMainBoardFields(rootBoards);
+                }
+                builder.Append(root.ToJsonString());
             }
             else if (TryGetNode(path, out JsonNode? node))
             {
                 if (wantArrayLength)
                 {
                     builder.Append((node is JsonArray array) ? array.Count.ToString(CultureInfo.InvariantCulture) : "null");
+                }
+                else if (!verbose && path == "boards" && node is JsonArray boards)
+                {
+                    JsonArray copy = boards.DeepClone().AsArray();
+                    RemoveVerboseMainBoardFields(copy);
+                    builder.Append(copy.ToJsonString());
                 }
                 else
                 {
@@ -374,6 +386,25 @@ public sealed class FakeObjectModel
     /// Get the root object with the "seqs" key
     /// </summary>
     /// <returns>Copy of the root object</returns>
+    /// <summary>
+    /// Fields of the main board that RRF reports only in verbose responses (Platform.cpp:220-229, upstream 26fba8969e)
+    /// </summary>
+    private static readonly string[] VerboseMainBoardFields = ["firmwareDate", "firmwareFileName", "iapFileNameSBC", "iapFileNameSD"];
+
+    /// <summary>
+    /// Remove the verbose fields of the main board from a copy of the boards
+    /// </summary>
+    private static void RemoveVerboseMainBoardFields(JsonArray boards)
+    {
+        if (boards.Count > 0 && boards[0] is JsonObject mainBoard)
+        {
+            foreach (string field in VerboseMainBoardFields)
+            {
+                mainBoard.Remove(field);
+            }
+        }
+    }
+
     private JsonObject GetRootWithSeqs()
     {
         JsonObject result = _root.DeepClone().AsObject();
