@@ -99,12 +99,14 @@ public class SpiFaultRestarts : LabTest
               done
             fi
             $j | grep -F -m1 'SPI fault injected: {ActivationFault},'
-            $j | grep -F -m1 'No transfer with RepRapFirmware completed'
+            $j | sed -n '/SPI fault injected/,$p' | grep -F -m1 'Deactivated successfully'
             exit 0
             """);
         TestContext.Progress.WriteLine(report);
 
-        double? injectedAt = JournalTime(report, "SPI fault injected"), stoppedAt = JournalTime(report, "No transfer with RepRapFirmware completed");
+        // The stop comes from systemd's line and not from the message of DCS (SPI.cs). A stuck link logs so much that journald drops that message,
+        // see design/open-findings.md
+        double? injectedAt = JournalTime(report, "SPI fault injected"), stoppedAt = JournalTime(report, "Deactivated successfully");
         if (injectedAt is null || !report.Contains("RESTARTED"))
         {
             await Lab.RecoverAsync();
@@ -114,12 +116,12 @@ public class SpiFaultRestarts : LabTest
         await Lab.ResetHaltedFirmwareAsync();
         await ReconnectSessionAsync();
         string journal = await Lab.ReadJournalAsync(cursor);
-        TestContext.Progress.WriteLine($"Injected at {injectedAt:F3}, DCS gave up {stoppedAt - injectedAt:F1} s later");
+        TestContext.Progress.WriteLine($"Injected at {injectedAt:F3}, DCS stopped {stoppedAt - injectedAt:F2} s later");
 
         Assert.Multiple(() =>
         {
-            Assert.That(stoppedAt, Is.Not.Null, "No message that no transfer completed within SbcRestartTimeout");
-            Assert.That(stoppedAt - injectedAt, Is.InRange(55.0, 70.0), "DCS did not give up after 60 s");
+            Assert.That(stoppedAt, Is.Not.Null, "systemd did not report that DCS stopped");
+            Assert.That(stoppedAt - injectedAt, Is.InRange(55.0, 70.0), "DCS did not stop after SbcRestartTimeout (60 s)");
             Assert.That(Regex.Count(journal, "Link capabilities All are active"), Is.GreaterThanOrEqualTo(1), "The new DCS did not activate the link capabilities");
         });
     }
