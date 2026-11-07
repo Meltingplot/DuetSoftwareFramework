@@ -120,8 +120,10 @@ public enum RrfRule
 /// <param name="Mutation">Text form of the mutation for SpiFaultSpec, if it has one</param>
 /// <param name="DsfBeforeFirstArm">At the end of a restart, DSF reacts to the falling edge of DataTransfer::Init and exchanges before RRF raises TfrRdy
 /// for its first header, instead of after it. The DMA of that header is set up before the pin toggles, so the exchange reaches it either way</param>
+/// <param name="RestartBeforeArm">With <paramref name="RestartBootTime"/>, RRF completes the exchange and restarts before it sets up the next one,
+/// so TfrRdy keeps the level of the completed exchange</param>
 public sealed record SpiFault(int Exchange, ExchangeDirection Direction, SpiMutation Mutate, double? RestartBootTime = null, bool RestartAgain = false, ushort RrfFirstSequenceNumber = 1,
-    double? DcsRestartDelay = null, string? Mutation = null, bool DsfBeforeFirstArm = false);
+    double? DcsRestartDelay = null, string? Mutation = null, bool DsfBeforeFirstArm = false, bool RestartBeforeArm = false);
 
 /// <summary>
 /// DCS died right before an exchange, see <see cref="SpiFault.DcsRestartDelay"/>
@@ -327,6 +329,11 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// Edge that has happened on the pin but that DSF has not seen yet, see <see cref="_holdNextEdge"/>
     /// </summary>
     private bool? _heldEdge;
+
+    /// <summary>
+    /// RRF processes the current exchange but does not set up the next one, see <see cref="SpiFault.RestartBeforeArm"/>
+    /// </summary>
+    private bool _restartBeforeArm;
 
     /// <summary>
     /// The processor hangs until its watchdog resets it: SPI and DMA stop, so DSF reads 0xFF, and the RAM content is gone. TfrRdy keeps its level
@@ -982,6 +989,11 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// </summary>
     private void SetupSpi(DmaTarget target, byte[] tx)
     {
+        if (_restartBeforeArm)
+        {
+            // RRF restarts before it gets here, see SpiFault.RestartBeforeArm
+            return;
+        }
         _dmaTarget = target;
         _dmaTx = tx;
         _dmaActive = true;
@@ -1196,7 +1208,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             FaultTime = Now;
             throw new DcsRestartException(delay);
         }
-        if (fault?.RestartBootTime is double bootTime)
+        if (fault?.RestartBootTime is double bootTime && !fault.RestartBeforeArm)
         {
             _dsfBeforeFirstArm = fault.DsfBeforeFirstArm;
             Restart(bootTime, Exchanges - 0.5);
@@ -1234,10 +1246,18 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         Now += toRrf.Length * MsPerByte;
         ReleaseHeldEdge();
         InternalTransferState stateBefore = _state;
+        _restartBeforeArm = fault is { RestartBeforeArm: true, RestartBootTime: not null };
         if (completed)
         {
             CompleteDma(toRrf.AsSpan(0, count));
             RunTask(DoTransfer(), false);
+        }
+        if (_restartBeforeArm)
+        {
+            _restartBeforeArm = false;
+            _dsfBeforeFirstArm = fault!.DsfBeforeFirstArm;
+            Restart(fault.RestartBootTime!.Value, Exchanges + 0.5);
+            _restartAgainBootTime = fault.RestartAgain ? fault.RestartBootTime : null;
         }
         Replay?.Add(($"X {Convert.ToHexStringLower(toRrf)}", $"R {rrfOutput} {ReplayStatus(receivedBefore)}"));
         Trace?.Add($"#{exchange} {Now,9:F3} ms{(fault is not null ? $" FAULT {fault.Direction}" : "")}: DSF {Convert.ToHexString(toRrf.AsSpan(0, Math.Min(toRrf.Length, 16)))} " +

@@ -803,11 +803,13 @@ public class LinkRecovery
     [TestCase("BothData / Header / ToRrf / Restart / RRF restart, boot 100 ms", SequenceMismatchHandling.ConnectionReset, false, false, true)]
     [TestCase("NoData / Header / ToDsf / Exchange / BadResponse in first word", SequenceMismatchHandling.ConnectionReset, false, false, true, ActivationTransfer)]
     [TestCase("BothData / Data / ToRrf / DcsRestart / DCS restart after 100 ms")]
+    [TestCase("BothData / Header / ToRrf / Restart / RRF restart before the next arm, boot 100 ms", SequenceMismatchHandling.ConnectionReset, false, false, true)]
     [Explicit("Analysis")]
     public void TraceCase(string name, SequenceMismatchHandling sequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool guards = false, bool poll = false,
         bool extended = false, int target = ExtendedTransfer + 2)
     {
-        Case c = GetCases().Concat(GetRestartCases()).Concat(GetRestartCases(ExtendedTransfer + 2, true)).Concat(GetDcsRestartCases()).First(c => c.ToString() == name);
+        Case c = GetCases().Concat(GetRestartCases()).Concat(GetRestartCases(ExtendedTransfer + 2, true)).Concat(GetRestartBeforeArmCases()).Concat(GetDcsRestartCases())
+            .First(c => c.ToString() == name);
         List<string> trace = [];
         Result result = Run(c.Variant, c.Fault, new(sequenceMismatchHandling, PollWhileDisconnected: poll, PhaseGuard: guards, SequenceGuard: guards,
             Capabilities: extended ? LinkCapabilities.All : LinkCapabilities.None, TargetTransfer: extended ? target : TargetTransfer), trace);
@@ -815,6 +817,26 @@ public class LinkRecovery
         foreach (string line in trace.Take(200))
         {
             TestContext.Out.WriteLine(line);
+        }
+    }
+
+    /// <summary>
+    /// Restarts in which RRF completes an exchange and resets before it sets up the next one. Lists the cases in which DSF afterwards reads
+    /// responses of RRF as headers, as the lab printer did on 2026-11-07 (design/open-findings.md)
+    /// </summary>
+    [TestCase(false), TestCase(true)]
+    [Explicit("Analysis")]
+    public void RestartBeforeArmOutOfStep(bool poll)
+    {
+        foreach (Case c in GetRestartBeforeArmCases())
+        {
+            List<string> trace = [];
+            Result result = Run(c.Variant, c.Fault, ExtendedRestartOptions(c, poll, RrfRule.None), trace);
+            int responsesAsHeaders = trace.Count(line => line.Contains("Bad header CRC16"));
+            if (responsesAsHeaders > 0)
+            {
+                TestContext.Out.WriteLine($"{c}: {result.Label}, {responsesAsHeaders} x Bad header CRC16 | {result.Details}");
+            }
         }
     }
 
@@ -1209,6 +1231,15 @@ public class LinkRecovery
             }
         }
     }
+
+    /// <summary>
+    /// Get every restart of RRF that happens after RRF has completed an exchange of the target transfer and before it sets up the next one,
+    /// see <see cref="SpiFault.RestartBeforeArm"/>
+    /// </summary>
+    private static IEnumerable<Case> GetRestartBeforeArmCases() =>
+        GetExchanges().SelectMany(e => RestartBootTimes.Select(bootTime =>
+            new Case(e.Variant, e.Phase, ExchangeDirection.ToRrf, "Restart", $"RRF restart before the next arm, boot {bootTime} ms",
+                new SpiFault(e.Exchange, ExchangeDirection.ToRrf, _ => { }, bootTime, RestartBeforeArm: true))));
 
     /// <summary>
     /// Boot times of a restarting RRF
