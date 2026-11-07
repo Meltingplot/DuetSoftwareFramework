@@ -39,14 +39,14 @@ public class MacrosOnOtherChannels : LabTest
         }
 
         await Lab.UploadAsync(session, ResetMacro, """
-            if !exists(global.labTestTriggerRuns)
-              global labTestTriggerRuns = 0
+            if !exists(global.labTestChannelTriggerRuns)
+              global labTestChannelTriggerRuns = 0
               global labTestMacroRuns = 0
               global labTestRejected = 0
               global labTestParameters = ""
               global labTestInput = -1
             else
-              set global.labTestTriggerRuns = 0
+              set global.labTestChannelTriggerRuns = 0
               set global.labTestMacroRuns = 0
               set global.labTestRejected = 0
               set global.labTestParameters = ""
@@ -92,7 +92,7 @@ public class MacrosOnOtherChannels : LabTest
         Assert.That(await SendCodeAsync($"M581 T{TriggerNumber}"), Does.Contain("is not configured"), $"Trigger {TriggerNumber} is in use");
         await Lab.UploadAsync(Session, TriggerMacro, $$"""
             var x = 5
-            set global.labTestTriggerRuns = global.labTestTriggerRuns + 1
+            set global.labTestChannelTriggerRuns = global.labTestChannelTriggerRuns + 1
             M98.{{number}} P"{{BlockingMacro}}" S{var.x} A{1,2} B{"5"} D{true}
             if result == 1
               set global.labTestRejected = global.labTestRejected + 1
@@ -104,11 +104,20 @@ public class MacrosOnOtherChannels : LabTest
         // Turns true twice per second. No string literals, they hang RRF 3.7 in M581.1
         Assert.That(await SendCodeAsync($"M581.1 T{TriggerNumber} P\"mod(state.msUpTime, 500) < 250\" R0"), Does.Not.Contain("Error"));
         bool macroSeen, busySeen = false;
-        Stopwatch deleteTime = new();
+        MachineStatus? firstStatus = null;
+        Stopwatch busyTime = new(), deleteTime = new();
         try
         {
             macroSeen = await Lab.TryWaitForModelAsync(Session, model => model.Inputs[channel]?.StackDepth > 0, TimeSpan.FromSeconds(MacroSeconds / 2));
-            busySeen = macroSeen && Lab.Read(Session, model => model.State.Status) == MachineStatus.Busy;
+            if (macroSeen)
+            {
+                // DSF requests the status before the stack depth in each update (UpdateService.cs), so the first update that shows the macro
+                // may still have the status from before it started
+                firstStatus = Lab.Read(Session, model => model.State.Status);
+                busyTime.Start();
+                busySeen = await Lab.TryWaitForModelAsync(Session, model => model.State.Status == MachineStatus.Busy, TimeSpan.FromSeconds(2));
+                busyTime.Stop();
+            }
             await Task.Delay(TimeSpan.FromSeconds(MacroSeconds / 2));
         }
         finally
@@ -121,14 +130,14 @@ public class MacrosOnOtherChannels : LabTest
 
         bool finished = await Lab.TryWaitForModelAsync(Session, model => model.Inputs[channel]?.StackDepth == 0, TimeSpan.FromSeconds(MacroSeconds * 3));
         await Task.Delay(TimeSpan.FromSeconds(2));
-        int triggerRuns = (await QueryAsync("global.labTestTriggerRuns")).GetInt32();
+        int triggerRuns = (await QueryAsync("global.labTestChannelTriggerRuns")).GetInt32();
         int macroRuns = (await QueryAsync("global.labTestMacroRuns")).GetInt32();
         int rejected = (await QueryAsync("global.labTestRejected")).GetInt32();
         int input = (await QueryAsync("global.labTestInput")).GetInt32();
         string? parameters = (await QueryAsync("global.labTestParameters")).GetString();
         string journal = await Lab.ReadJournalAsync(cursor);
         TestContext.Progress.WriteLine($"M98.{number} ({channel}): trigger ran {triggerRuns} times, macro {macroRuns} times, {rejected} calls were refused, input {input}, parameters {parameters}, " +
-            $"seen in inputs[] {macroSeen}, busy {busySeen}, HTTP code took {deleteTime.Elapsed.TotalSeconds:F1} s, output in journal {journal.Contains("labTest output of the macro")}");
+            $"seen in inputs[] {macroSeen}, status then {firstStatus}, busy {busySeen} after {busyTime.ElapsedMilliseconds} ms, HTTP code took {deleteTime.Elapsed.TotalSeconds:F1} s, output in journal {journal.Contains("labTest output of the macro")}");
 
         Assert.Multiple(() =>
         {
