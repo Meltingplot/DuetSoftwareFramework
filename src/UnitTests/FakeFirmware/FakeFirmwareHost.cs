@@ -8,6 +8,7 @@ using DuetAPI;
 using DuetAPI.ObjectModel;
 using DuetControlServer;
 using DuetControlServer.Commands;
+using DuetControlServer.IPC;
 using DuetControlServer.Link;
 using DuetControlServer.Model;
 using Microsoft.Extensions.DependencyInjection;
@@ -71,12 +72,18 @@ public sealed class FakeFirmwareHost : IAsyncDisposable
     public string BaseDirectory { get; }
 
     /// <summary>
+    /// UNIX socket of the IPC server, or null if it was not started
+    /// </summary>
+    public string? SocketPath { get; private init; }
+
+    /// <summary>
     /// Build the services, start them and wait for the first object model update
     /// </summary>
     /// <param name="configureFirmware">Optional callback to set up the fake firmware before DCS connects</param>
     /// <param name="configureSettings">Optional callback to change the settings</param>
+    /// <param name="ipc">Whether to start the IPC server of DCS as well, listening on <see cref="SocketPath"/></param>
     /// <returns>Started host</returns>
-    public static async Task<FakeFirmwareHost> StartAsync(Action<FakeFirmware>? configureFirmware = null, Action<Settings>? configureSettings = null)
+    public static async Task<FakeFirmwareHost> StartAsync(Action<FakeFirmware>? configureFirmware = null, Action<Settings>? configureSettings = null, bool ipc = false)
     {
         string baseDirectory = Path.Combine(Path.GetTempPath(), "dsf-fake-firmware-" + Guid.NewGuid().ToString("N"));
         foreach (string directory in new[] { "sys", "macros", "gcodes", "filaments", "firmware", "menu", "www" })
@@ -87,24 +94,32 @@ public sealed class FakeFirmwareHost : IAsyncDisposable
         Settings settings = new()
         {
             BaseDirectory = baseDirectory,
-            ModelUpdateInterval = 20
+            ModelUpdateInterval = 20,
+            // The socket path must stay below the 108 characters of sockaddr_un, which the temporary directory leaves room for
+            SocketDirectory = Path.Combine(baseDirectory, "run")
         };
         configureSettings?.Invoke(settings);
 
         FakeFirmware firmware = new(Options.Create(settings));
         configureFirmware?.Invoke(firmware);
 
-        ServiceProvider provider = DcsServices.Build(settings, firmware, services => services
-            .AddLogging(builder =>
+        ServiceProvider provider = DcsServices.Build(settings, firmware, services =>
+        {
+            services.AddLogging(builder =>
             {
                 if (Enum.TryParse(Environment.GetEnvironmentVariable("DSF_FAKE_FIRMWARE_LOG"), true, out LogLevel logLevel))
                 {
                     builder.SetMinimumLevel(logLevel).AddProvider(new TestContextLoggerProvider(Environment.GetEnvironmentVariable("DSF_FAKE_FIRMWARE_LOG_FILE")));
                 }
-            })
-            .AddHostedService<LinkService>());
+            });
+            if (ipc)
+            {
+                services.AddIPC();
+            }
+            services.AddHostedService<LinkService>();
+        });
 
-        FakeFirmwareHost host = new(provider, firmware, baseDirectory);
+        FakeFirmwareHost host = new(provider, firmware, baseDirectory) { SocketPath = ipc ? settings.FullSocketPath : null };
         firmware.Logger = host._provider.GetRequiredService<ILoggerFactory>().CreateLogger<FakeFirmware>();
         try
         {
