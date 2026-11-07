@@ -31,14 +31,20 @@ public sealed class IpcLog : ILoggerProvider
     private readonly ConcurrentQueue<Entry> _entries = new();
 
     /// <summary>
-    /// Attach a new log to the logger factory of a host. The logger factory applies its default minimum level, so only
-    /// entries of level Information and above are recorded
+    /// Minimum level of the recorded entries
+    /// </summary>
+    private LogLevel _minimumLevel = LogLevel.Information;
+
+    /// <summary>
+    /// Attach a new log to the logger factory of a host. The logger factory applies its own minimum level as well, which is Information
+    /// unless the host was started with another one
     /// </summary>
     /// <param name="host">Host to attach to</param>
+    /// <param name="minimumLevel">Minimum level of the recorded entries</param>
     /// <returns>Attached log</returns>
-    public static IpcLog Attach(FakeFirmwareHost host)
+    public static IpcLog Attach(FakeFirmwareHost host, LogLevel minimumLevel = LogLevel.Information)
     {
-        IpcLog log = new();
+        IpcLog log = new() { _minimumLevel = minimumLevel };
         host.Services.GetRequiredService<ILoggerFactory>().AddProvider(log);
         return log;
     }
@@ -68,7 +74,7 @@ public sealed class IpcLog : ILoggerProvider
     {
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
-        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Information;
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= log._minimumLevel;
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
