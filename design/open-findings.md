@@ -125,3 +125,153 @@ The census showed it once a restart between two exchanges was added (`SpiFault.R
 **Likely cause, read from the stack and not proven:** the Executed stage writes to the event log with the token that is cancelled on shutdown, and the cancellation is reported as a failure of the code.
 
 **Next step:** check both occurrences in the code and decide whether a cancelled log write on shutdown should be quiet.
+
+## Findings of the fuzz and coverage tests (2026-11-07)
+
+The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations. None is fixed. Each has an `[Explicit]` test in `src/UnitTests` that reproduces it and fails today. Run one by its exact name, e.g. `dotnet test src/UnitTests/bin/Debug/net10.0/UnitTests.dll --filter "FullyQualifiedName=UnitTests.WebServer.SdRootDeletionTests.RootCannotBeDeleted"`. Once a finding is fixed, remove the `[Explicit]` of its test and this entry.
+
+- **Line numbers:** DSF `v3.7-dev` at c6d225f2. The production code there is the same as at d576ee9e, where the tests started. RRF `3.7-dev` at cde4e4fa1 (3.7.0+1.mp.8).
+- **Printer:** "printer" marks findings that were confirmed on the lab printer on 2026-11-07, with DSF 3.7.0+mp.13 and RRF 3.7.0+1.mp.8.
+- **Origin:** git blame puts all of them on upstream code, except the two DuetHttpClient findings in H14 and H15 and the fork's extended SPI link in S1.
+
+### Highest priority
+
+1. **H1** One request deletes the whole virtual SD card, `config.g` included.
+2. **G2** M98 with a path that DSF refuses stops DCS. Printer.
+3. **I1** DCS never refuses a missing permission.
+4. **I3** An Executed interceptor with filters blocks its channel for good. Printer.
+5. **O2** A value of the wrong type in a firmware response ends the object model update loop.
+6. **O3** and **O4** An out-of-range float or a global string with invalid UTF-8 makes the object model unserializable, so model queries, subscriptions and DWS fail.
+
+### SBC link (#122)
+
+- **S1. Two bit errors in the first transfer after the activation need a reconnect, which RRF follows with an emergency stop.**
+  - In that transfer DSF still answers with regular response codes. A second flip turns BadHeaderChecksum (5) into 4, and RRF answers BadResponse (`DataTransfer.cpp:1173`).
+  - DSF then gives up (`SPI.cs:1832-1836`) and leaves the extended link without telling RRF (`EndSession`, `SPI.cs:479-483`). RRF cannot notice, because DSF has not sent an extended sequence number yet (`DataTransfer.cpp:838-852`).
+  - Only transfers with data are affected. The design claims single faults only for this transfer.
+  - Tests: `Fuzz.SpiLinkFuzz.TwoBitErrorsInRrfSwitchTransfer`, `RrfSwitchTransferRepairsTwoBitErrors`.
+- **S2. An RRF that does not poll while disconnected can stay stuck for good after two bit errors.**
+  - RRF resets the connection without a full reset, so TfrRdy stays low (`DataTransfer.cpp:1258`, `1434-1438`).
+  - DSF then waits for TfrRdy high (`SPI.cs:1693-1711`), and the RRF waits without a timeout (`SbcInterface.cpp:171`).
+  - The MB6HC polls (`SUPPORTS_SBC_OVER_USB`, `Pins_Duet3_MB6HC.h:43`) and is not affected. Duet 2 SBC builds are (`Pins_DuetNG.h:45`).
+  - Test: `Fuzz.SpiLinkFuzz.StuckWithoutPolling`.
+- **S3. RRF never recognises `ObjectModelKeyChanged`.**
+  - DSF writes a `StringHeader` before the key (`SPI.cs:1655-1670`, `Writer.cs:729`). RRF reads the key from the start of the data (`SbcInterface.cpp:1298-1310`).
+  - As a result, `NetworkUpdated()` and `VolumesUpdated()` are never called from the SBC.
+  - Test: `SPI.LinkServiceOverSpi.ObjectModelKeyChangedIsReadByRrf`.
+
+### HTTP: DuetWebServer and DuetHttpClient (#123)
+
+- **H1. A recursive DELETE of the SD root deletes the whole virtual SD card.**
+  - `DELETE /machine/file/0%3A%2F?recursive=true` answers 204 and removes every file and the directory itself. The same works with `0:`, `0:/.`, `/` and `0:/sys/..`.
+  - Cause: `FilePathResolver.CombineContained` accepts the root itself (`FilePathResolver.cs:62-66`), and `DeleteFileOrDirectory` passes `recursive` on (`MachineEndpoints.cs:362-367`).
+  - RRF refuses this with "Delete root folder is not allowed" (`MassStorage.cpp:840-858`). In SBC mode RRF hands the delete to DSF before that check (`:822-836`), and `LinkService.HandleDeleteFileOrDirectory` has no check either (`LinkService.cs:1113-1137`).
+  - On the CHX, plugin directories are mounted below `/opt/dsf/sd`.
+  - Confirmed only in-process, not on the printer.
+  - Test: `WebServer.SdRootDeletionTests.RootCannotBeDeleted`.
+- **H2. Expired sessions stay in DCS for good when many expire at once.** Printer: 40 parallel logins left 4, each logged "Failed to unregister … (11) Resource temporarily unavailable".
+  - Each expiry opens its own IPC connection (`SessionStorage.cs:404, 420-422`). The DCS backlog is 4 (`Settings.cs:116`, also in the printer's `config.json`), and there is no retry.
+  - Test: `WebServer.WebServerFindings.ExpiredSessionsAreRemovedFromDcs`.
+- **H3. A failed `rr_upload` (wrong crc32) deletes the file it was meant to replace.** Printer.
+  - DWS writes into the target (`RepRapFirmwareEndpoints.cs:261-285`). RRF and DWS's own PUT use a `.part` file (`UploadingNetworkResponder.cpp:59-62, 106-128`, `MachineEndpoints.cs:269-291`).
+  - Test: `FailedUploadKeepsExistingFile`.
+- **H4. POST /machine/file/move with an invalid form gives an unhandled 500.** Printer. `ReadFormAsync` sits outside the try (`MachineEndpoints.cs:397`). Test: `MoveWithInvalidFormIsHandled`.
+- **H5. PUT /machine/directory or /machine/file with `?` plus a non-ASCII character gives an unhandled 500, but creates the item anyway.** Printer. `UrlPathEncode` stops at `?` (`MachineEndpoints.cs:294, 504`). Test: `CreatedLocationIsEncoded`.
+- **H6. DWS never answers a WebSocket close frame, so clients see 1006.** Printer. `WebSocketEndpoint.cs:283-287`, `CustomEndpointMiddleware.cs:156-160`. Test: `ClientCloseIsAnswered`.
+- **H7. No close message on the WebSocket when DWS stops.** A cancelled task is not faulted (`WebSocketEndpoint.cs:223-227, 240-243`). Test: `ShutdownClosesTheSocket`.
+- **H8. rr_ endpoints registered while DWS runs end up at /machine/rr_/{path}.** `ModelObserver.cs:120` vs `:178`. Test: `RrEndpointRegisteredAtRuntime`.
+- **H9. rr_connect always reports `sessionTimeout` 8000** instead of the setting (`RepRapFirmwareEndpoints.cs:112`). Test: `RrConnectReportsConfiguredSessionTimeout`.
+- **H10. rr_gcode returns `{"bufferSpace":255,"err":0}` instead of `{"buff":N}`.** Printer. RRF: `HttpResponder.cpp:566`. This is why the PollConnector cannot send codes to DWS. Test: `RrGcodeReportsBuff`.
+- **H11. rr_disconnect returns 204 instead of `{"err":0}`.** Printer. Test: `RrDisconnectReturnsErr`.
+- **H12. Every rr_connect adds another session for the same client.** Printer: 5 → 8. RRF keeps one per IP (`HttpResponder.cpp:803-808`). Test: `RrConnectKeepsOneIpSession`.
+- **H13. rr_delete ignores `recursive=yes`** (`RepRapFirmwareEndpoints.cs:354-383`). Fix it only together with H1, or rr_delete gets the same problem. Test: `RrDeleteDeletesRecursively`.
+- **H14. DuetHttpClient's RestConnector reconnects with a new session every PingInterval while the model is quiet.** Cancelling the receive for the PING aborts the WebSocket (`RestConnector.cs:294`). Test: `WebServer.DuetHttpClientTests.RestKeepsAQuietWebSocket`.
+- **H15. DuetHttpClient's PollConnector never loads keys whose sequence number is still 0** (`PollConnector.cs:320-330`). RRF starts every sequence number at 0 (`RepRap.cpp:450`). Test: `PollLoadsKeysWithSequenceZero`.
+
+Open questions:
+- A missing or invalid session key gives 401, in the code and on the printer. The REST API wiki says 403.
+- DWS session keys are not bound to the client's IP address, as RRF's are.
+- Requests to custom endpoints reach the plugin without a session (SessionId -1), which `ReceivedHttpRequest` documents.
+
+### G-code, macros and jobs (#124)
+
+- **G1. `M122 P{0}` never gets a reply, and the channel stays blocked.** Printer: DWS answered 503, and the next code on HTTP hung until a DCS restart and M999.
+  - `MCodeHandler.CodeExecutedAsync` reads P with `GetInt` while P is still an unevaluated expression (`MCodeHandler.cs:1432`). The exception in the Executed stage is only logged (`Executed.cs:76-97`, `PipelineStackItem.cs:85-88`).
+  - M122 is unbuffered (`CodeProcessor.cs:188-191`), so every later code waits in `Start.cs:224-232`.
+  - Test: `Codes.ExecutedHandlerErrors.DiagnosticsWithExpressionParameter`.
+- **G2. M98 with a path that `FilePathResolver` refuses stops DCS.** Affected are paths like `../../x.g`, `0:/../x.g`, or a drive that does not exist.
+  - Printer, with `M98 P"99:/macros/…"`:
+    - the journal logged `ArgumentException: Invalid drive index` and then `BackgroundServiceExceptionBehavior is configured to StopHost`;
+    - systemd killed DCS after the 15 s stop timeout and restarted it;
+    - RRF stayed halted until M999.
+  - Cause: `Processor.DoMacroFile` calls `ToPhysical` without a try (`Processor.cs:1334`), and nothing in LinkService catches the exception (`LinkService.cs:378-394, 781-796, 176-228`). RRF passes the name on unchanged (`GCodes.cpp:3697-3699`).
+  - Test: `Codes.MacroPaths.MacroPathRefusedByResolver`.
+- **G3. Drive numbers map to every mounted file system** (open question, upstream design).
+  - `PeriodicUpdateService` lists every mount as a volume (`PeriodicUpdateService.cs:526-583`), and `n:/` resolves to `volumes[n].path` (`FilePathResolver.cs:80-119`).
+  - On the CHX that gives 25 volumes, e.g. `0:` = `/`, `4:` = `/home`, `5:` = `/var`, `6:` = `/etc/ssh`.
+  - File codes can therefore reach any mount, as far as the rights of the dsf user allow.
+- **G4. A line feed after the drive prefix truncates the path.** The drive regex has no Singleline option (`FilePathResolver.cs:46`). Test: `File.PathResolution.LineFeedAfterDrive`.
+- **G5. `MetaExpressionParser` throws FormatException or OverflowException instead of `CodeParserException`.**
+  - Inputs: `1e`, `2E-`, or `0x` with more than 16 digits (`MetaExpressionParser.cs:1345, 1379`).
+  - The client then gets a raw exception.
+  - Tests: `Machine.MetaExpressionParserErrors.ExponentWithoutDigits`, `HexNumberTooLong`.
+- **G6. `FileInfoParser` throws on a single malformed line, so the file cannot be printed with M32, and M36 returns `err:1`.**
+  - Affected lines: an unterminated string, `0.5 E2`, or `G1 Z` without a value (`FileInfoParser.cs:149, 205, 221`). `JobProcessor.cs:311` has no catch.
+  - RRF scans for keys and catches errors (`FileInfoParser.cpp:425-455, 911-918`).
+  - Test: `File.InfoParserErrors.MalformedLine`.
+- **G7. The M37 simulation overwrites files shorter than 64 bytes.** The seek to the end is skipped (`FileInfoParser.cs:931-944`). Test: `Codes.JobFiles.SimulationOfShortFile`.
+- **G8. A read error in a job names the next line.** `readCode` is null, so `file.LineNumber` is used (`JobProcessor.cs:507`). Test: `ErrorInJobNamesTheFailingLine`.
+- **G9. M32 inside a job still runs the codes that were read ahead.** `JobProcessor.Cancel` (`JobProcessor.cs:315-326`). RRF chains to the new file directly (`GCodes2.cpp:1106`). Test: `SelectFileFromJobStopsFirstJob`.
+- **G10. `fileread` differs from RRF's `ReadArrayFromFile`.** RRF: `ExpressionParser.cpp:1192-1358`, `Configuration.h:281`.
+  - It allows 50 elements instead of 40.
+  - It refuses length 0.
+  - It reads no hex values.
+  - It accepts `'ab` without the closing quote.
+  - It does not check skipped elements.
+  - It joins `1 2` into 12.
+  - Tests: `Codes.MetaExpressions.FileRead*` (6).
+
+Open questions:
+- `fileread` and `echo` file errors reach the client as raw IOException (`Functions.cs:111`, `KeywordHandler.cs:149`).
+- `SimpleCode` returns at the first exception while later codes keep running (`SimpleCode.cs:173-201`).
+- `FunctionsInitializer` is never registered.
+- M36.1 and M36.2 copy file bytes into the JSON unescaped, as RRF does (`RepRap.cpp:1648, 1661`).
+
+### IPC server (#125)
+
+- **I1. `RequiredPermissionsAttribute.Check` grants every permission.**
+  - It loops over every value of `SbcPermissions`, including `None = 0`, and `HasFlag(None)` is always true (`RequiredPermissionsAttribute.cs:25-38`).
+  - So plugins get every command and the Intercept, Subscribe and CodeStream modes without the permission (`Server.cs:243-261`).
+  - Tests: `IPC.RequiredPermissions.RefusedWithoutRequiredFlag`, `IpcPluginPermissions.PluginIsRefusedModesItHasNoPermissionFor`, and in `IpcCommandMode`: `RefusesCommandsWithoutPermission`, `PluginIsRefusedCommandsItHasNoPermissionFor`, `PluginWithoutPermissionsIsRefusedTheCommandMode`.
+- **I2. A wildcard filter longer than the code breaks short codes.** Printer.
+  - With the filter `M10*`, comments and codes like `G4 P0` fail with `ArgumentOutOfRangeException` (`CodeInterception.cs:242-243`).
+  - The interceptor stayed registered after its client had exited, until a code matching the filter came along.
+  - Tests: `IpcInterceptionStages.WildcardFilterLongerThanAComment`, `WildcardFilterLongerThanTheCodeOutlivesTheClient`, `IpcInterception.WildcardFilterLongerThanTheCode`.
+- **I3. An Executed interceptor with filters and AutoFlush (the DuetAPIClient default) deadlocks its channel for good.**
+  - Printer: M115 on Telnet got no reply, even after the client had exited. Nothing was logged, and only a DCS restart helped.
+  - Cause: `CodeInterception.cs:263` flushes the channel, and `ChannelProcessor.cs:288` waits for the Executed stage, which is busy with this very code.
+  - Tests: `IpcInterceptionStages.ExecutedInterceptorWithAutoFlushBlocksTheChannelAfterTheClientHasGone`, `IpcInterception.ExecutedCodesWithAutoFlush`.
+- **I4. Code stream replies come out of order when BufferSize is above 1** (`CodeStream.cs:179-220`). Test: `IpcCodeStreamReplies.RepliesStayInTheOrderOfTheCodes`.
+- **I5. A failing code in a code stream cancels the next code, and its reply is lost.** The code object is reused (`CodeStream.cs:169, 212-219`, `CodeProcessor.cs:277-285`). Test: `FailedCodeKeepsTheReplyOfTheNextCode`.
+- **I6. `job.layers` still reaches subscribers with API version 10 or older.** `nameof(Layers)` is compared with the JSON name "layers" (`ModelSubscription.cs:495`). Test: `IpcSubscriptionConsistency.JobLayersAreNotSentToOutdatedClients`.
+- **I7. A DPS crash during a command closes the client's connection without a response** (`PluginService.cs:279`, `Command.cs:126-130`). Test: `IpcPluginServiceLifecycle.CommandFailsWithAnErrorWhenThePluginServiceDiesWhileRunningIt`.
+- **I8. `InvalidateChannel` is not in `Command.SupportedCommands`,** so the DuetAPIClient calls always fail. Test: `IpcClientApi.InvalidateChannel`.
+- **I9. A code stream that is refused for its buffer size stays registered.** The constructor registers it first. Test: `IpcCodeStream.RefusedStreamIsNotRegistered`.
+- **I10. A failing command while intercepting ends the connection** instead of returning an error response like the Command mode. Test: `IpcInterception.FailingCommandWhileInterceptingIsReported`.
+- **I11. An undefined interception mode is acknowledged and then ends with a KeyNotFoundException.** Test: `IpcInterception.RefusesUndefinedInterceptionMode`.
+- **I12. The plugins of a terminated plugin service keep Pid 0 (being shut down) instead of -1 (not started).** Test: `IpcPluginService.PluginsOfATerminatedServiceAreNotStarted`.
+- **I13. When a plugin service terminates, its remaining plugins are not stopped.** StopPlugins starts with the processor's token, which is already cancelled. Test: `IpcPluginService.RemainingPluginsAreStoppedWhenAServiceTerminates`.
+- **I14. A subscription stays registered if its success response cannot be sent.** Test: `IpcSubscription.SubscriptionIsUnregisteredWhenTheClientIsGoneBeforeTheResponse`.
+- **I15. Subscribers of the SBC, Daemon, Trigger and other non-generic channels never get the messages for their channel.** Test: `IpcSubscription.TargetedMessagesReachSubscribersOfOtherChannels`.
+
+Open questions:
+- A code stream sends no reply line for exceptions other than `CodeParserException` and `ArgumentException`, e.g. `if true` (`CodeStream.cs:195`).
+- An Executed-stage Cancel is logged as an error (`Executed.cs:235-238`).
+
+### Object model (#125)
+
+- **O1. With a deserialization handler, the two JSON update paths treat a scalar list item differently.** `UpdateFromJson` keeps it, `UpdateFromJsonReader` drops it and shifts the rest (`StaticModelCollection.cs:150-181` vs `220-267`). Test: `Fuzz.ObjectModelJsonFuzz.ScalarListItemIsSkippedTheSameWayByBothUpdateMethods`.
+- **O2. A value that does not fit the property type throws FormatException or IndexOutOfRangeException instead of `JsonException`.** `UpdateService.ExecuteAsync` catches only ArgumentException, InvalidOperationException and JsonException (`UpdateService.cs:365-373`), so such a firmware response ends its update loop. Test: `OutOfRangeNumberFailsWithJsonException`.
+- **O3. A number beyond the float range is stored as infinity, after which the model cannot be serialized.** GetObjectModel, the subscriptions and DWS then fail. RRF itself reports NaN and infinity as null (`ObjectModel::ReportFloat`). Test: `InfiniteNumberKeepsTheModelSerializable`.
+- **O4. A global string with invalid UTF-8 is stored, after which the model cannot be serialized.** RRF copies string bytes as they are (`OutputBuffer::EncodeChar`). Test: `InvalidUtf8KeepsTheModelSerializable`.
+- **O5. `UpdateFromJsonReader` stores "[" for an array in a property of type object** and reads the array items as members of the parent (`DuetAPI.SourceGenerators/ObjectModel/ModelObject/UpdateFromJsonReader.cs`). Test: `ObjectPropertyWithArrayIsReadLikeUpdateFromJson`.
