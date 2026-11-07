@@ -617,11 +617,115 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         }
     }
 
+    #region Packets of SbcInterface
+    private readonly object _packetLock = new();
+    private readonly Queue<(FirmwareRequest Request, byte[] Payload, ushort ResendPacketId)> _packetsToSend = new();
+    private readonly List<(SbcRequest Request, ushort Id, byte[] Payload)> _receivedPackets = [];
+
+    /// <summary>
+    /// Whether RRF records the packets DSF sends, see <see cref="WaitForPacket"/>
+    /// </summary>
+    public bool RecordPackets { get; init; }
+
+    /// <summary>
+    /// Send a packet to DSF with the next transfer, as SbcInterface does through the Write functions of DataTransfer. Thread-safe
+    /// </summary>
+    /// <param name="request">Request of the packet</param>
+    /// <param name="payload">Packet data as RRF writes it, without the padding after it</param>
+    /// <param name="resendPacketId">Packet DSF has to send again (FirmwareRequest.ResendPacket)</param>
+    public void SendPacket(FirmwareRequest request, byte[] payload, ushort resendPacketId = 0)
+    {
+        lock (_packetLock)
+        {
+            _packetsToSend.Enqueue((request, payload, resendPacketId));
+        }
+    }
+
+    /// <summary>
+    /// Whether every packet passed to <see cref="SendPacket"/> has gone out
+    /// </summary>
+    public bool AllPacketsSent
+    {
+        get
+        {
+            lock (_packetLock)
+            {
+                return _packetsToSend.Count == 0;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Packets that DSF sent and RRF processed so far, in order, if <see cref="RecordPackets"/> is set. Thread-safe
+    /// </summary>
+    public List<(SbcRequest Request, ushort Id, byte[] Payload)> GetReceivedPackets()
+    {
+        lock (_packetLock)
+        {
+            return [.. _receivedPackets];
+        }
+    }
+
+    /// <summary>
+    /// Wait until RRF has processed a packet from DSF that has not been taken yet and matches, and take it. Thread-safe
+    /// </summary>
+    /// <param name="match">Condition for the packet</param>
+    /// <param name="timeout">Maximum time to wait in real time</param>
+    /// <returns>Data of the packet, or null if none arrived in time</returns>
+    public byte[]? WaitForPacket(Func<SbcRequest, byte[], bool> match, TimeSpan timeout)
+    {
+        DateTime end = DateTime.UtcNow + timeout;
+        lock (_packetLock)
+        {
+            while (true)
+            {
+                // Packets before the one taken stay available for later waits
+                int index = _receivedPackets.FindIndex(p => match(p.Request, p.Payload));
+                if (index >= 0)
+                {
+                    byte[] payload = _receivedPackets[index].Payload;
+                    _receivedPackets.RemoveAt(index);
+                    return payload;
+                }
+                TimeSpan left = end - DateTime.UtcNow;
+                if (left <= TimeSpan.Zero)
+                {
+                    return null;
+                }
+                Monitor.Wait(_packetLock, left);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Write the queued packets into the transfer like DataTransfer::WritePacketHeader does, as long as they fit
+    /// </summary>
+    private void WriteQueuedPackets()
+    {
+        lock (_packetLock)
+        {
+            while (_packetsToSend.TryPeek(out var packet) && (_txPointer + 3) / 4 * 4 + Marshal.SizeOf<PacketHeader>() + packet.Payload.Length <= SbcTransferBufferSize)
+            {
+                _packetsToSend.Dequeue();
+
+                // DataTransfer::WritePacketHeader pads before the next packet to stay aligned (DataTransfer.cpp:2288)
+                _txPointer = (_txPointer + 3) / 4 * 4;
+                PacketHeader header = new() { Request = (ushort)packet.Request, Id = _packetId++, Length = (ushort)packet.Payload.Length, ResendPacketId = packet.ResendPacketId };
+                MemoryMarshal.Write(_txBuffer.AsSpan(_txPointer), in header);
+                _txPointer += Marshal.SizeOf<PacketHeader>();
+                packet.Payload.CopyTo(_txBuffer, _txPointer);
+                _txPointer += packet.Payload.Length;
+            }
+        }
+    }
+    #endregion
+
     #region DataTransfer
     private void WritePayload()
     {
         if (!_sendData(++_transfersStarted))
         {
+            WriteQueuedPackets();
             return;
         }
 
@@ -640,6 +744,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         text.CopyTo(_txBuffer, _txPointer);
         _txPointer += text.Length;
         SentPayloads.Add(payload);
+        WriteQueuedPackets();
     }
 
     private void StartNextTransfer()
@@ -1171,6 +1276,14 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         {
             PacketHeader packet = MemoryMarshal.Read<PacketHeader>(_rxBuffer.AsSpan(offset));
             offset += Marshal.SizeOf<PacketHeader>();
+            if (RecordPackets)
+            {
+                lock (_packetLock)
+                {
+                    _receivedPackets.Add(((SbcRequest)packet.Request, packet.Id, _rxBuffer.AsSpan(offset, Math.Min(packet.Length, Math.Max(_rxHeader.DataLength - offset, 0))).ToArray()));
+                    Monitor.PulseAll(_packetLock);
+                }
+            }
             if (packet.Request == (ushort)SbcRequest.ActivateLinkCapabilities && packet.Length >= sizeof(uint))
             {
                 LinkCapabilities capabilities = (LinkCapabilities)MemoryMarshal.Read<uint>(_rxBuffer.AsSpan(offset)) & _offeredCapabilities;
