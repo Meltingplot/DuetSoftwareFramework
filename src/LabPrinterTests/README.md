@@ -8,8 +8,17 @@ Hardware tests that run against the CHX 350 lab printer (Pi 5 + Duet 3 MB6HC, si
 src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection]] [dotnet test arguments]
 ```
 
+- `run-lab-tests.sh` starts `run-lab-tests.py`, which does the work.
 - Needs Tim's hardware token (plink uses gpg-agent as Pageant), PuTTY's `plink.exe` and the `mpadmin` account on the SBC (passwordless sudo).
-- The script stops `mp-ota-gate.timer`, so that no update starts, and starts it again at the end.
+- **Output:** each test shows as `PASS`, `FAIL` (with its message) or `SKIP` when it ends, in color on a terminal, unless `NO_COLOR` is set.
+- **Evaluation at the end** (sections 9 and 10 of `design/lab-test-plan.md`):
+  - the test results and the watchdog recovery times,
+  - the journal lines of DCS since the start, counted by the categories of section 9, and messages journald suppressed,
+  - the self-test runs and the M122 counters before and after,
+  - the restore check of section 10.
+  - The journal findings do not change the exit code, which is that of `dotnet test`.
+- **Files:** the raw test output, the TRX file and the journal of the run are kept in `src/LabPrinterTests/TestResults/<UTC time>`, or in `LAB_RESULTS_DIR`.
+- The script stops `mp-ota-gate.timer`, so that no update starts, and starts it again at the end, also after Ctrl+C.
 - `tunnel.py` forwards `127.0.0.1:18080` in WSL to the SBC's HTTP API, with one `plink -nc` per connection. A plink listener on Windows does not work reliably, because Windows may drop connections from WSL to it.
 - `--side-load` publishes DCS from this tree and bind-mounts `DuetAPI.dll`, `DuetControlServer.dll` and `DuetSharedLibrary.dll` over the image's copies for the run. It removes them again at the end. Both steps restart DCS and send M999.
 - `--fault-injection` side-loads the test-only build that corrupts a single SPI exchange when one is written to `/var/tmp/lab-tests/spi-fault` (`DuetControlServer/Link/Adapter/SpiFaultInjection.cs`). Only `SpiFaultInjection` uses it; see below.

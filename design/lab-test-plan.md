@@ -313,7 +313,7 @@ Sofort stoppen, wenn:
 - `Lab.RecoverAsync` (`Lab.cs:221-228`) den Drucker nicht zurückbringt. Der Link braucht dann Tim vor Ort, eine Board-Wiederherstellung sogar USB-Kabel und ERASE-Jumper,
 - ein Testfall fehlschlägt. Erst das Journal sichern und analysieren, dann wiederholen. Einen Fehler nicht ohne Beleg als sporadisch abtun.
 
-Rückbau prüfen, auch wenn `run-lab-tests.sh` ihn erledigt (`:69-91`):
+Rückbau prüfen, auch wenn `run-lab-tests.sh` ihn erledigt. Die Auswertung am Ende des Laufs prüft die folgenden Punkte bis auf `M581 T30`, die Testdateien und die Schleifen:
 - `findmnt` zeigt keinen Side-Load, `/var/tmp/lab-tests` ist weg.
 - `mp-ota-gate.timer` ist aktiv.
 - `sys/trigger30.g` und `0:/macros/lab-tests` sind weg, `M581 T30` antwortet `is not configured`.
