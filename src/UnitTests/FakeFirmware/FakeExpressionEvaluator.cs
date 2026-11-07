@@ -192,8 +192,9 @@ internal sealed class FakeExpressionEvaluator(Func<string, object?> resolve, Fun
                     }
                     return operand switch
                     {
-                        int intValue => (c == '-') ? -intValue : intValue,
-                        float floatValue => (c == '-') ? -floatValue : floatValue,
+                        // The casts keep the int an int, else the switch expression converts every arm to float. RRF keeps the type (ExpressionParser.cpp:207-215)
+                        int intValue => (object)((c == '-') ? -intValue : intValue),
+                        float floatValue => (object)((c == '-') ? -floatValue : floatValue),
                         _ => throw new FakeExpressionException("expected numeric operand")
                     };
                 }
