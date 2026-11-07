@@ -22,8 +22,8 @@ public class FuzzFailure(string property, string message) : Exception($"{propert
 }
 
 /// <summary>
-/// Mutation-based fuzzer for parsers of untrusted input.
-/// Every run is reproducible: DSF_FUZZ_SEED selects the random seed (default 1) and DSF_FUZZ_ITERATIONS the number of mutated inputs per test
+/// Mutation-based fuzzer for parsers of untrusted input, and generator-based fuzzer for structured inputs.
+/// Every run is reproducible: DSF_FUZZ_SEED selects the random seed (default 1) and DSF_FUZZ_ITERATIONS the number of inputs per test
 /// </summary>
 public static class Fuzzer
 {
@@ -132,6 +132,114 @@ public static class Fuzzer
 
             string origin = (iteration < 0) ? "corpus entry" : $"seed {seed}, iteration {iteration}";
             Assert.Fail($"{failure.GetType().Name}: {failure.Message} ({origin})\nMinimized input:\n{Format(minimized, binary)}\nOriginal input:\n{Format(failingInput!, binary)}\n{failure}");
+        }
+    }
+
+    /// <summary>
+    /// Scale a number of inputs to <see cref="Iterations"/>, for checks that are too slow for the default number of iterations
+    /// </summary>
+    /// <param name="atDefault">Number of inputs at the default of 5000 iterations</param>
+    /// <returns>Number of inputs to check, at least one</returns>
+    public static int Scale(int atDefault) => (int)Math.Clamp((long)atDefault * Iterations / 5000, 1, int.MaxValue);
+
+    /// <summary>
+    /// Maximum number of checks to spend on shrinking a failing generated input
+    /// </summary>
+    private const int ShrinkBudget = 1000;
+
+    /// <summary>
+    /// Check inputs drawn by a generator, then fail with a shrunk input if a check throws. Use this for structured inputs such as
+    /// sequences of faults or requests, which byte mutations would mostly turn into invalid ones.
+    /// Each input gets its own random generator derived from the seed and its index, so a failure names the iteration that reproduces it
+    /// </summary>
+    /// <typeparam name="T">Type of the input</typeparam>
+    /// <param name="generate">Draw an input from the given random generator</param>
+    /// <param name="check">Check that throws if the input reveals a bug</param>
+    /// <param name="format">Describe an input so that it can be copied into a regression test</param>
+    /// <param name="shrink">Smaller variants of a failing input to try, simplest first, or null to report the input as drawn</param>
+    /// <param name="iterations">Number of inputs to check, or null for <see cref="Iterations"/></param>
+    /// <param name="hangTimeout">Maximum time a single input may take, or null for the default of 10 s</param>
+    public static void Run<T>(Func<Random, T> generate, Action<T> check, Func<T, string> format, Func<T, IEnumerable<T>>? shrink = null,
+        int? iterations = null, TimeSpan? hangTimeout = null)
+    {
+        int seed = Seed, count = iterations ?? Iterations;
+        TimeSpan timeout = hangTimeout ?? HangTimeout;
+
+        T? current = default, failingInput = default;
+        Exception? failure = null;
+        long startedAt = Stopwatch.GetTimestamp();
+        int iteration = -1;
+
+        Thread worker = new(() =>
+        {
+            for (int i = 0; i < count; i++)
+            {
+                T input = generate(new Random(unchecked(seed * 1_000_003 + i)));
+                current = input;
+                Volatile.Write(ref iteration, i);
+                Interlocked.Exchange(ref startedAt, Stopwatch.GetTimestamp());
+                try
+                {
+                    check(input);
+                }
+                catch (Exception e)
+                {
+                    failure = e;
+                    failingInput = input;
+                    return;
+                }
+            }
+        })
+        {
+            // A hanging check cannot be aborted, so make sure it does not keep the test host alive
+            IsBackground = true
+        };
+        worker.Start();
+
+        while (!worker.Join(100))
+        {
+            if (Stopwatch.GetElapsedTime(Interlocked.Read(ref startedAt)) > timeout)
+            {
+                Assert.Fail($"Input did not finish within {timeout.TotalSeconds} s (seed {seed}, iteration {Volatile.Read(ref iteration)}):\n{format(current!)}");
+            }
+        }
+
+        if (failure is not null)
+        {
+            string signature = GetSignature(failure);
+            T shrunk = failingInput!;
+            if (shrink is not null)
+            {
+                // Take the first smaller variant that still fails the same way and start over from it
+                int budget = ShrinkBudget;
+                bool progress = true;
+                while (progress && budget > 0)
+                {
+                    progress = false;
+                    foreach (T candidate in shrink(shrunk))
+                    {
+                        if (budget-- <= 0)
+                        {
+                            break;
+                        }
+                        try
+                        {
+                            check(candidate);
+                        }
+                        catch (Exception e) when (GetSignature(e) == signature)
+                        {
+                            shrunk = candidate;
+                            progress = true;
+                            break;
+                        }
+                        catch
+                        {
+                            // Fails differently, so it is another bug
+                        }
+                    }
+                }
+            }
+            Assert.Fail($"{failure.GetType().Name}: {failure.Message} (seed {seed}, iteration {iteration})\nShrunk input:\n{format(shrunk)}\nOriginal input:\n{format(failingInput!)}\n{failure}");
         }
     }
 

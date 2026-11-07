@@ -14,9 +14,15 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<ProjectReference Include="..\DuetAPI\DuetAPI.csproj" />
+		<ProjectReference Include="..\DuetAPIClient\DuetAPIClient.csproj" />
 		<ProjectReference Include="..\DuetControlServer\DuetControlServer.csproj" />
 		<ProjectReference Include="..\DuetHttpClient\DuetHttpClient.csproj" />
+		<ProjectReference Include="..\DuetWebServer\DuetWebServer.csproj" />
 	</ItemGroup>
 
 	<ItemGroup>
