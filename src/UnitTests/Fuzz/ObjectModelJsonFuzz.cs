@@ -1,0 +1,577 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using DuetAPI.ObjectModel;
+using NUnit.Framework;
+
+namespace UnitTests.Fuzz;
+
+/// <summary>
+/// Fuzz tests for the JSON update paths of the DuetAPI object model (DuetAPI/ObjectModel/Base and the generated UpdateFromJson methods).
+/// Clients apply patches from the IPC server with them and DCS applies the object model responses of the firmware.
+/// Properties: a model update either succeeds or fails with an exception that the callers expect (see <see cref="IsExpected"/>),
+/// the model stays serializable afterwards, and a serialized model updates a fresh model to the same JSON again
+/// </summary>
+[TestFixture]
+public class ObjectModelJsonFuzz
+{
+    /// <summary>
+    /// Exceptions an update may throw.
+    /// JsonException is the documented one (exception cref of IStaticModelObject.UpdateFromJson and the generated methods);
+    /// UpdateService, which applies the firmware responses, also handles ArgumentException (setters that validate the value, e.g.
+    /// PluginManifest.Id) and InvalidOperationException (System.Text.Json getters called on another token type), see UpdateService.ExecuteAsync
+    /// </summary>
+    private static bool IsExpected(Exception e) => e is JsonException or ArgumentException or InvalidOperationException || IsKnownBug(e);
+
+    /// <summary>
+    /// The generated update methods read numbers with the getters of JsonElement and Utf8JsonReader, which throw a FormatException for a number
+    /// that does not fit the property type, and JsonShortDateTimeConverter uses DateTime.Parse, which throws a FormatException for an invalid date,
+    /// instead of the documented JsonException. A char property reads the first character of the string, which throws an IndexOutOfRangeException
+    /// for an empty string. UpdateService does not catch either.
+    /// Reproduced by <see cref="OutOfRangeNumberFailsWithJsonException"/>; let through here so that the fuzzer can find other problems
+    /// </summary>
+    private static bool IsKnownBug(Exception e) => e is FormatException || (e is IndexOutOfRangeException && e.TargetSite?.Name == "get_Chars");
+
+    private static List<byte[]>? _corpus;
+
+    private static ObjectModel? _populated;
+
+    /// <summary>
+    /// A model with an item in every collection, so that mutations reach every model class
+    /// </summary>
+    private static ObjectModel PopulatedModel()
+    {
+        if (_populated is not null)
+        {
+            return (ObjectModel)_populated.Clone();
+        }
+
+        ObjectModel model = new();
+        using (JsonDocument json = JsonDocument.Parse(System.IO.File.ReadAllText(Path.Combine(Directory.GetCurrentDirectory(), "../../../Machine/JSON/model.json"))))
+        {
+            model.UpdateFromJson(json.RootElement, false);
+        }
+        using JsonDocument extra = JsonDocument.Parse("""
+            {
+                "boards": [
+                    { "canAddress": 0, "firmwareName": "RepRapFirmware for Duet 3 MB6HC", "firmwareVersion": "3.7.0", "mcuTemp": { "current": 40.5, "min": 20, "max": 50 }, "v12": { "current": 12.1 } },
+                    { "canAddress": 1, "state": "running", "drivers": [ { "status": 0 } ] }
+                ],
+                "fans": [ { "actualValue": 0.5, "name": "Part fan", "requestedValue": 0.5, "rpm": 1200, "thermostatic": { "heaters": [ 1 ], "highTemperature": 50 } }, null ],
+                "global": { "number": 1, "text": "a", "list": [ 1, 2, 3 ], "nested": { "a": [ { "b": null } ] } },
+                "ledStrips": [ { "type": "NeoPixel_RGB", "board": 0 } ],
+                "messages": [ { "time": "2026-11-07T12:00:00", "type": 1, "content": "warning" } ],
+                "plugins": { "Plugin": { "id": "Plugin", "name": "A plugin", "version": "1.0", "sbcPermissions": [ "commandExecution", "objectModelRead" ], "data": { "key": [ 1, "two" ] }, "pid": 12 } },
+                "sbc": { "cpu": { "avgFrequency": 1500, "cores": 4 }, "dsf": { "version": "3.7.0", "httpEndpoints": [ { "endpointType": "GET", "namespace": "ns", "path": "x", "unixSocket": "/run/x.sock" } ], "userSessions": [ { "accessLevel": "readWrite", "id": 1, "origin": "1.2.3.4", "sessionType": "http" } ] }, "memory": { "available": 1000, "total": 2000 } },
+                "spindles": [ { "current": 0, "max": 10000, "state": "unconfigured" } ],
+                "tools": [ { "number": 0, "name": "Tool", "heaters": [ 1 ], "extruders": [ 0 ], "offsets": [ 0, 0, 0 ], "active": [ 200 ], "standby": [ 150 ], "retraction": { "length": 1.5 } } ]
+            }
+            """);
+        model.UpdateFromJson(extra.RootElement, false);
+        _populated = (ObjectModel)model.Clone();
+        return model;
+    }
+
+    /// <summary>
+    /// Every top-level key of the populated model as its own object, short enough for the mutations of <see cref="Fuzzer"/>
+    /// </summary>
+    private static List<byte[]> Corpus
+    {
+        get
+        {
+            if (_corpus is null)
+            {
+                JsonObject model = JsonSerializer.SerializeToNode(PopulatedModel(), ObjectModelContext.Default.ObjectModel)!.AsObject();
+                _corpus = [];
+                foreach ((string key, JsonNode? value) in model)
+                {
+                    byte[] entry = Encoding.UTF8.GetBytes(new JsonObject { [key] = value?.DeepClone() }.ToJsonString());
+                    if (entry.Length > 3800 && value is JsonObject valueObject)
+                    {
+                        // Split large keys such as inputs and move into one entry per member
+                        foreach ((string subKey, JsonNode? subValue) in valueObject)
+                        {
+                            _corpus.Add(Encoding.UTF8.GetBytes(new JsonObject { [key] = new JsonObject { [subKey] = subValue?.DeepClone() } }.ToJsonString()));
+                        }
+                    }
+                    else
+                    {
+                        _corpus.Add(entry);
+                    }
+                }
+                _corpus.Add(System.IO.File.ReadAllBytes(Path.Combine(Directory.GetCurrentDirectory(), "../../../Machine/JSON/patch.json")));
+            }
+            return _corpus;
+        }
+    }
+
+    /// <summary>
+    /// Tokens of the object model JSON
+    /// </summary>
+    private static IReadOnlyList<byte[]> Dictionary => [.. new[]
+    {
+        "null", "true", "false", "0", "-1", "1.5", "1e308", "-1e308", "1e400", "99999999999", "2147483648", "-2147483649", "18446744073709551616",
+        "\"\"", "\"x\"", "[]", "{}", "[null]", "[{}]", "{\"a\":1}", ",", ":", "\"\\u0000\"", "\"\\ud800\"", "\"2026-13-45T25:61:61\"",
+        "\"boards\"", "\"heaters\"", "\"axes\"", "\"kinematics\"", "\"name\"", "\"type\"", "\"status\"", "\"id\"", "\"plugins\"", "\"global\"",
+        "\"messageBox\"", "\"sbcPermissions\"", "\"filamentMonitors\"", "\"driverId\"", "\"letter\"", "\"seq\"", "\"time\""
+    }.Select(Encoding.UTF8.GetBytes)];
+
+    /// <summary>
+    /// Apply JSON to a model the way clients apply patches and DCS applies firmware responses, and check the properties
+    /// </summary>
+    /// <param name="input">UTF-8 JSON to apply</param>
+    /// <param name="startFromPopulated">Whether to patch a populated model instead of a fresh one</param>
+    private static void Check(byte[] input, bool startFromPopulated)
+    {
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(input);
+        }
+        catch (JsonException)
+        {
+            // Not JSON, only the reader variant gets it
+            CheckReader(input, startFromPopulated);
+            return;
+        }
+
+        using (document)
+        {
+            // JsonElement variant, as used by clients for patches (ObjectModel.UpdateFromJson)
+            ObjectModel model = startFromPopulated ? PopulatedModel() : new ObjectModel();
+            bool elementApplied = Apply(() => model.UpdateFromJson(document.RootElement, false), "UpdateFromJson");
+            string? elementJson = SerializeChecked(model, "UpdateFromJson");
+
+            // Utf8JsonReader variant, as used by the IPC clients for the first message (SubscribeConnection.GetObjectModel)
+            ObjectModel readerModel = startFromPopulated ? PopulatedModel() : new ObjectModel();
+            bool readerApplied = Apply(() =>
+            {
+                Utf8JsonReader reader = new(input);
+                reader.Read();
+                readerModel.UpdateFromJsonReader(ref reader, false);
+            }, "UpdateFromJsonReader");
+            string? readerJson = SerializeChecked(readerModel, "UpdateFromJsonReader");
+            if (elementJson is null || readerJson is null)
+            {
+                return;
+            }
+
+            // Both variants implement the same update, so a successful one must give the same model
+            if (elementApplied && readerApplied && elementJson != readerJson)
+            {
+                string? difference = IPC.IpcSubscription.FirstDifference(JsonNode.Parse(elementJson), JsonNode.Parse(readerJson), string.Empty);
+                if (difference is not null && (difference.EndsWith("got \"[\"") || difference.EndsWith("got \"{\"")))
+                {
+                    // Known bug, see ObjectPropertyWithArrayIsReadLikeUpdateFromJson
+                    return;
+                }
+                throw new FuzzFailure("element vs reader", $"UpdateFromJson and UpdateFromJsonReader give different models at {difference} (UpdateFromJson first)");
+            }
+
+            // Firmware variant, as UpdateService applies the response of a key (UpdateFromFirmwareJsonReader)
+            if (document.RootElement.ValueKind == JsonValueKind.Object && HasValidPropertyNames(document.RootElement))
+            {
+                foreach (JsonProperty property in document.RootElement.EnumerateObject())
+                {
+                    ObjectModel firmwareModel = startFromPopulated ? PopulatedModel() : new ObjectModel();
+                    byte[] value = JsonMarshal.GetRawUtf8Value(property.Value).ToArray();
+                    Apply(() =>
+                    {
+                        Utf8JsonReader reader = new(value);
+                        reader.Read();
+                        firmwareModel.UpdateFromFirmwareJsonReader(property.Name, ref reader, 0, true, ModelUpdateScope.Full);
+                    }, "UpdateFromFirmwareJsonReader");
+                    SerializeChecked(firmwareModel, "UpdateFromFirmwareJsonReader");
+                }
+            }
+
+            // Whatever the model looks like now, its JSON must build the same model again
+            CheckRoundTrip(elementJson);
+        }
+    }
+
+    /// <summary>
+    /// Check if the top-level property names can be read as strings. JsonDocument accepts invalid UTF-8 in them, but reading the name
+    /// then throws an InvalidOperationException, which is one of the expected exceptions of the reader variants anyway
+    /// </summary>
+    private static bool HasValidPropertyNames(JsonElement element)
+    {
+        try
+        {
+            foreach (JsonProperty property in element.EnumerateObject())
+            {
+                _ = property.Name;
+            }
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Feed bytes that are not valid JSON to the reader variant, which must fail with a JsonException
+    /// </summary>
+    private static void CheckReader(byte[] input, bool startFromPopulated)
+    {
+        ObjectModel model = startFromPopulated ? PopulatedModel() : new ObjectModel();
+        Apply(() =>
+        {
+            Utf8JsonReader reader = new(input);
+            if (reader.Read())
+            {
+                model.UpdateFromJsonReader(ref reader, false);
+            }
+        }, "UpdateFromJsonReader");
+        SerializeChecked(model, "UpdateFromJsonReader");
+    }
+
+    /// <summary>
+    /// Run an update and check the exception it throws
+    /// </summary>
+    /// <returns>True if the update succeeded</returns>
+    private static bool Apply(Action update, string name)
+    {
+        try
+        {
+            update();
+            return true;
+        }
+        catch (Exception e) when (IsExpected(e))
+        {
+            return false;
+        }
+        catch (Exception e)
+        {
+            throw new FuzzFailure($"{name} exception", $"{name} threw {e.GetType().Name}: {e.Message}\n{e.StackTrace}");
+        }
+    }
+
+    /// <summary>
+    /// Serialize a model, which must always work
+    /// </summary>
+    private static string? SerializeChecked(ObjectModel model, string after)
+    {
+        try
+        {
+            return JsonSerializer.Serialize(model, ObjectModelContext.Default.ObjectModel);
+        }
+        catch (ArgumentException e) when (e.TargetSite?.DeclaringType?.FullName == "System.Text.Json.ThrowHelper" && e.Message.Contains("infinity"))
+        {
+            // Known bug, see InfiniteNumberKeepsTheModelSerializable
+            return null;
+        }
+        catch (JsonException e) when (e.InnerException is InvalidOperationException { InnerException: DecoderFallbackException })
+        {
+            // Known bug, see InvalidUtf8KeepsTheModelSerializable
+            return null;
+        }
+        catch (Exception e)
+        {
+            throw new FuzzFailure("serialize", $"Model cannot be serialized after {after}: {e.GetType().Name}: {e.Message}\n{e.StackTrace}");
+        }
+    }
+
+    /// <summary>
+    /// A serialized model must update a fresh model to the same JSON
+    /// </summary>
+    private static void CheckRoundTrip(string json)
+    {
+        ObjectModel copy = new();
+        using (JsonDocument document = JsonDocument.Parse(json))
+        {
+            try
+            {
+                copy.UpdateFromJson(document.RootElement, false);
+            }
+            catch (Exception e)
+            {
+                throw new FuzzFailure("round trip exception", $"Serialized model cannot be applied again: {e.GetType().Name}: {e.Message}\n{json}");
+            }
+        }
+        string? copyJson = SerializeChecked(copy, "round trip");
+        if (copyJson is not null && copyJson != json)
+        {
+            string? difference = IPC.IpcSubscription.FirstDifference(JsonNode.Parse(json), JsonNode.Parse(copyJson), string.Empty);
+            throw new FuzzFailure("round trip", $"Serialize, update and serialize again differs at {difference}");
+        }
+    }
+
+    [Test]
+    public void CorpusRoundTrips()
+    {
+        // Every corpus entry is a serialized model part, so it must apply without exception and round-trip
+        foreach (byte[] entry in Corpus)
+        {
+            Check(entry, false);
+            Check(entry, true);
+        }
+        CheckRoundTrip(JsonSerializer.Serialize(PopulatedModel(), ObjectModelContext.Default.ObjectModel));
+    }
+
+    /// <summary>
+    /// A number that does not fit the type of a property is invalid data, which the update methods document as JsonException
+    /// ("Failed to deserialize data") and which UpdateService handles. The generated code calls JsonElement.GetInt32 and Utf8JsonReader.GetInt32,
+    /// which throw FormatException; UpdateService.ExecuteAsync catches only ArgumentException, InvalidOperationException and JsonException, so a
+    /// firmware response like this ends its update loop
+    /// </summary>
+    [Test]
+    [Explicit("Bug: values that do not fit the property type make the object model update throw FormatException or IndexOutOfRangeException")]
+    public void OutOfRangeNumberFailsWithJsonException()
+    {
+        byte[] json = "{\"spindles\":[{\"current\":9223372036854775807}]}"u8.ToArray();
+        using JsonDocument document = JsonDocument.Parse(json);
+        Assert.Throws(Is.InstanceOf<JsonException>(), () => new ObjectModel().UpdateFromJson(document.RootElement, false));
+        Assert.Throws(Is.InstanceOf<JsonException>(), () =>
+        {
+            Utf8JsonReader reader = new(json);
+            reader.Read();
+            new ObjectModel().UpdateFromJsonReader(ref reader, false);
+        });
+        Assert.Throws(Is.InstanceOf<JsonException>(), () =>
+        {
+            Utf8JsonReader reader = new("[{\"current\":9223372036854775807}]"u8);
+            reader.Read();
+            new ObjectModel().UpdateFromFirmwareJsonReader("spindles", ref reader);
+        });
+
+        // Same for an empty string in a char property (generated code: GetString()![0])
+        using JsonDocument letter = JsonDocument.Parse("{\"move\":{\"axes\":[{\"letter\":\"\"}]}}");
+        Assert.Throws(Is.InstanceOf<JsonException>(), () => new ObjectModel().UpdateFromJson(letter.RootElement, false));
+
+        // Same for an invalid date, which JsonShortDateTimeConverter parses with DateTime.Parse
+        using JsonDocument message = JsonDocument.Parse("{\"messages\":[{\"time\":\"2026-11-07T012:00:00\",\"type\":0,\"content\":\"x\"}]}");
+        Assert.Throws(Is.InstanceOf<JsonException>(), () => new ObjectModel().UpdateFromJson(message.RootElement, false));
+    }
+
+    /// <summary>
+    /// RRF reports NaN and infinity as null (ObjectModel::ReportFloat), so DCS never sends them either. A JSON number beyond the float range is
+    /// read as infinity by JsonElement.GetSingle and Utf8JsonReader.GetSingle, the update accepts it and the model cannot be serialized any more:
+    /// Utf8JsonWriter throws an ArgumentException for infinity, so GetObjectModel, the subscriptions and DWS would fail on every request
+    /// </summary>
+    [Test]
+    [Explicit("Bug: an out-of-range float is stored as infinity, after which the object model cannot be serialized")]
+    public void InfiniteNumberKeepsTheModelSerializable()
+    {
+        using JsonDocument document = JsonDocument.Parse("{\"heat\":{\"heaters\":[{\"current\":1e39}]}}");
+        ObjectModel model = new();
+        try
+        {
+            model.UpdateFromJson(document.RootElement, false);
+        }
+        catch (JsonException)
+        {
+            // Refusing the value is fine as well
+        }
+        Assert.DoesNotThrow(() => JsonSerializer.Serialize(model, ObjectModelContext.Default.ObjectModel));
+    }
+
+    /// <summary>
+    /// RRF copies the bytes of strings into its JSON as they are (OutputBuffer::EncodeChar escapes only control characters, quotes and
+    /// backslashes), so a global string set from a host that does not send UTF-8 reaches DCS as invalid UTF-8. UpdateService applies the
+    /// response with UpdateFromFirmwareJsonReader, which stores the value without checking it, and afterwards the model cannot be serialized
+    /// </summary>
+    [Test]
+    [Explicit("Bug: a global value with invalid UTF-8 is stored, after which the object model cannot be serialized")]
+    public void InvalidUtf8KeepsTheModelSerializable()
+    {
+        byte[] global = [.. "{\"text\":\""u8, 0xE9, .. "\"}"u8];
+        ObjectModel model = new();
+        try
+        {
+            Utf8JsonReader reader = new(global);
+            reader.Read();
+            model.UpdateFromFirmwareJsonReader("global", ref reader, 0, true, ModelUpdateScope.Full);
+        }
+        catch (Exception e) when (e is JsonException or InvalidOperationException or ArgumentException)
+        {
+            // Refusing the value is fine as well (UpdateService logs these)
+        }
+        Assert.DoesNotThrow(() => JsonSerializer.Serialize(model, ObjectModelContext.Default.ObjectModel));
+    }
+
+    /// <summary>
+    /// For a property of type object (such as MessageBox.Default) the generated UpdateFromJson stores the raw JSON of an array or object, but the
+    /// generated UpdateFromJsonReader stores the text of the start token ("[" or "{") and does not skip the value, so the reader goes on with the
+    /// tokens inside it as if they were members of the parent object (DuetAPI.SourceGenerators/ObjectModel/ModelObject/UpdateFromJsonReader.cs)
+    /// </summary>
+    [Test]
+    [Explicit("Bug: UpdateFromJsonReader stores \"[\" for an array in a property of type object and reads the array items as members of the parent")]
+    public void ObjectPropertyWithArrayIsReadLikeUpdateFromJson()
+    {
+        byte[] json = "{\"state\":{\"messageBox\":{\"default\":[{\"title\":\"inner\"}],\"title\":\"outer\"}}}"u8.ToArray();
+        ObjectModel elementModel = new(), readerModel = new();
+        using (JsonDocument document = JsonDocument.Parse(json))
+        {
+            elementModel.UpdateFromJson(document.RootElement, false);
+        }
+        Utf8JsonReader reader = new(json);
+        reader.Read();
+        readerModel.UpdateFromJsonReader(ref reader, false);
+        Assert.That(readerModel.State.MessageBox!.Title, Is.EqualTo("outer"));
+        Assert.That(JsonSerializer.Serialize(readerModel, ObjectModelContext.Default.ObjectModel), Is.EqualTo(JsonSerializer.Serialize(elementModel, ObjectModelContext.Default.ObjectModel)));
+    }
+
+    [Test]
+    public void MutatedJson() => Fuzzer.Run(Corpus, input => Check(input, false), Dictionary);
+
+    /// <summary>
+    /// Number of inputs of the generated tests, which apply each input several times
+    /// </summary>
+    private static int GeneratedIterations => Fuzzer.Scale(700);
+
+    /// <summary>
+    /// Structural mutation of a model part
+    /// </summary>
+    /// <param name="Json">Mutated JSON</param>
+    /// <param name="Mutations">Description of the applied mutations</param>
+    /// <param name="FromPopulated">Whether to patch a populated model</param>
+    public sealed record StructuredInput(string Json, string Mutations, bool FromPopulated);
+
+    /// <summary>
+    /// Values that are valid JSON but of every type and range
+    /// </summary>
+    private static readonly string[] ReplacementValues =
+    [
+        "null", "true", "false", "0", "-1", "1", "0.5", "-0.5", "1e308", "-1e308", "2147483647", "2147483648", "-2147483649", "4294967296",
+        "9223372036854775807", "18446744073709551616", "1e-320", "\"\"", "\"x\"", "\"0\"", "\"2026-11-07T12:00:00\"", "\"idle\"", "\"\\u0000\"",
+        "[]", "[null]", "[1,2,3]", "[\"a\"]", "[{}]", "[[1]]", "{}", "{\"x\":1}", "{\"name\":null}", "{\"type\":\"rotatingMagnet\"}"
+    ];
+
+    /// <summary>
+    /// Draw a corpus entry and change its structure: replace values with values of other types, drop and add keys, resize arrays and nest values
+    /// </summary>
+    private static StructuredInput Generate(Random random)
+    {
+        JsonNode root = JsonNode.Parse(Corpus[random.Next(Corpus.Count)])!;
+        List<string> mutations = [];
+        for (int count = 1 + random.Next(4); count > 0; count--)
+        {
+            List<(JsonNode? parent, object key, JsonNode? node)> nodes = [];
+            Collect(root, null, string.Empty, nodes);
+            (JsonNode? parent, object key, JsonNode? node) = nodes[random.Next(nodes.Count)];
+            if (parent is null)
+            {
+                continue;
+            }
+
+            string path = NodePath(parent, key);
+            switch (random.Next(6))
+            {
+                case 0:
+                case 1:
+                    {
+                        string value = ReplacementValues[random.Next(ReplacementValues.Length)];
+                        Set(parent, key, JsonNode.Parse(value));
+                        mutations.Add($"{path} = {value}");
+                    }
+                    break;
+                case 2:
+                    if (parent is JsonObject parentObject)
+                    {
+                        parentObject.Remove((string)key);
+                        mutations.Add($"remove {path}");
+                    }
+                    else if (parent is JsonArray parentArray)
+                    {
+                        parentArray.RemoveAt((int)key);
+                        mutations.Add($"remove {path}");
+                    }
+                    break;
+                case 3:
+                    if (node is JsonArray array)
+                    {
+                        int copies = 1 + random.Next(random.Next(2) == 0 ? 3 : 40);
+                        JsonNode? template = (array.Count > 0) ? array[random.Next(array.Count)] : JsonNode.Parse(ReplacementValues[random.Next(ReplacementValues.Length)]);
+                        for (int i = 0; i < copies; i++)
+                        {
+                            array.Add(template?.DeepClone());
+                        }
+                        mutations.Add($"append {copies} items to {path}");
+                    }
+                    else if (node is JsonObject obj)
+                    {
+                        string newKey = random.Next(2) == 0 ? "unknownKey" : (obj.Count > 0 ? obj.ElementAt(random.Next(obj.Count)).Key.ToUpperInvariant() : "X");
+                        obj[newKey] = JsonNode.Parse(ReplacementValues[random.Next(ReplacementValues.Length)]);
+                        mutations.Add($"add {path}/{newKey}");
+                    }
+                    break;
+                case 4:
+                    {
+                        // Wrap the value in an array or an object
+                        JsonNode? wrapped = random.Next(2) == 0 ? new JsonArray(node?.DeepClone()) : new JsonObject { ["value"] = node?.DeepClone() };
+                        Set(parent, key, wrapped);
+                        mutations.Add($"wrap {path}");
+                    }
+                    break;
+                case 5:
+                    {
+                        // Copy a value of another key here, so that values of a plausible but wrong type appear
+                        (_, _, JsonNode? other) = nodes[random.Next(nodes.Count)];
+                        if (!ReferenceEquals(other, node) && !IsAncestor(node, other))
+                        {
+                            Set(parent, key, other?.DeepClone());
+                            mutations.Add($"{path} = copy of {other?.GetPath()}");
+                        }
+                    }
+                    break;
+            }
+        }
+        return new StructuredInput(root.ToJsonString(), string.Join("; ", mutations), random.Next(2) == 0);
+    }
+
+    private static string NodePath(JsonNode parent, object key) => (key is int index) ? $"{parent.GetPath()}[{index}]" : $"{parent.GetPath()}.{key}";
+
+    private static bool IsAncestor(JsonNode? ancestor, JsonNode? node)
+    {
+        for (JsonNode? current = node?.Parent; current is not null; current = current.Parent)
+        {
+            if (ReferenceEquals(current, ancestor))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void Set(JsonNode parent, object key, JsonNode? value)
+    {
+        if (parent is JsonObject obj)
+        {
+            obj[(string)key] = value;
+        }
+        else if (parent is JsonArray array)
+        {
+            array[(int)key] = value;
+        }
+    }
+
+    private static void Collect(JsonNode? node, JsonNode? parent, object key, List<(JsonNode?, object, JsonNode?)> nodes)
+    {
+        nodes.Add((parent, key, node));
+        if (node is JsonObject obj)
+        {
+            foreach ((string childKey, JsonNode? child) in obj.ToList())
+            {
+                Collect(child, node, childKey, nodes);
+            }
+        }
+        else if (node is JsonArray array)
+        {
+            for (int i = 0; i < array.Count; i++)
+            {
+                Collect(array[i], node, i, nodes);
+            }
+        }
+    }
+
+    [Test]
+    public void StructurallyMutatedJson() => Fuzzer.Run(Generate, input => Check(Encoding.UTF8.GetBytes(input.Json), input.FromPopulated),
+        input => $"{input.Mutations} (from populated model: {input.FromPopulated})\n{input.Json}", iterations: GeneratedIterations);
+}
