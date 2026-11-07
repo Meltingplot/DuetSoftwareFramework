@@ -237,8 +237,9 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     private byte _pendingPacketId;
     private bool _resending;
     private readonly byte _underrunByte;
-    private SpiFault? _fault;
+    private List<SpiFault> _faults = [];
     private int _faultArmedAt;
+    private bool _faultTimeTaken;
     private int _transfersStarted, _payloadId;
 
     /// <summary>
@@ -522,12 +523,12 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     public string ReplayStatusNow => ReplayStatus(ReceivedPayloads.Count);
 
     /// <summary>
-    /// Whether the fault has been applied
+    /// Whether every armed fault has been applied
     /// </summary>
     public bool FaultApplied { get; private set; }
 
     /// <summary>
-    /// Virtual time at which the fault was applied
+    /// Virtual time at which the first armed fault was applied
     /// </summary>
     public double FaultTime { get; private set; }
 
@@ -535,11 +536,35 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// Corrupt a single exchange, counted from now
     /// </summary>
     /// <param name="fault">Fault to inject</param>
-    public void Arm(SpiFault fault)
+    public void Arm(SpiFault fault) => Arm([fault]);
+
+    /// <summary>
+    /// Corrupt several exchanges, each counted from now. Faults of the same exchange are applied in order. Only the first fault
+    /// of an exchange may restart RRF or DCS, the others only mutate the bytes
+    /// </summary>
+    /// <param name="faults">Faults to inject</param>
+    public void Arm(IReadOnlyList<SpiFault> faults)
     {
-        _fault = fault;
+        _faults = [.. faults];
         _faultArmedAt = Exchanges;
+        _faultTimeTaken = false;
     }
+
+    /// <summary>
+    /// Check every transfer RRF processes against the data DSF clocked out before any corruption, see <see cref="CorruptedTransfers"/>
+    /// </summary>
+    public bool CheckIntegrity { get; init; }
+
+    /// <summary>
+    /// Data exchanges as DSF clocked them out, before any corruption, if <see cref="CheckIntegrity"/> is set
+    /// </summary>
+    private readonly List<byte[]> _cleanDsfData = [];
+
+    /// <summary>
+    /// Number of transfers whose data RRF processed although DSF never clocked out that data, counted if <see cref="CheckIntegrity"/> is set.
+    /// Every data exchange is kept, so do not use this for long runs
+    /// </summary>
+    public int CorruptedTransfers { get; private set; }
 
     /// <summary>
     /// Probability with which each bit of every exchange flips, independently and in both directions
@@ -592,11 +617,122 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         }
     }
 
+    #region Packets of SbcInterface
+    private readonly object _packetLock = new();
+    private readonly Queue<(FirmwareRequest Request, byte[] Payload, ushort ResendPacketId, int? DeclaredLength)> _packetsToSend = new();
+    private readonly List<(SbcRequest Request, ushort Id, byte[] Payload)> _receivedPackets = [];
+
+    /// <summary>
+    /// Whether RRF records the packets DSF sends, see <see cref="WaitForPacket"/>
+    /// </summary>
+    public bool RecordPackets { get; init; }
+
+    /// <summary>
+    /// Answer of RRF to a packet from DSF, written into the next transfer like SbcInterface answers while it processes a transfer.
+    /// Packets passed to <see cref="SendPacket"/> after a transfer go out one transfer later, because RRF has set up the next one by then
+    /// </summary>
+    public Func<SbcRequest, ushort, byte[], IEnumerable<(FirmwareRequest Request, byte[] Payload, ushort ResendPacketId)>>? Respond { get; init; }
+
+    /// <summary>
+    /// Send a packet to DSF with the next transfer, as SbcInterface does through the Write functions of DataTransfer. Thread-safe
+    /// </summary>
+    /// <param name="request">Request of the packet</param>
+    /// <param name="payload">Packet data as RRF writes it, without the padding after it</param>
+    /// <param name="resendPacketId">Packet DSF has to send again (FirmwareRequest.ResendPacket)</param>
+    /// <param name="declaredLength">Length in the packet header instead of the length of the data, to make a malformed packet</param>
+    public void SendPacket(FirmwareRequest request, byte[] payload, ushort resendPacketId = 0, int? declaredLength = null)
+    {
+        lock (_packetLock)
+        {
+            _packetsToSend.Enqueue((request, payload, resendPacketId, declaredLength));
+        }
+    }
+
+    /// <summary>
+    /// Whether every packet passed to <see cref="SendPacket"/> has gone out
+    /// </summary>
+    public bool AllPacketsSent
+    {
+        get
+        {
+            lock (_packetLock)
+            {
+                return _packetsToSend.Count == 0;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Packets that DSF sent and RRF processed so far, in order, if <see cref="RecordPackets"/> is set. Thread-safe
+    /// </summary>
+    public List<(SbcRequest Request, ushort Id, byte[] Payload)> GetReceivedPackets()
+    {
+        lock (_packetLock)
+        {
+            return [.. _receivedPackets];
+        }
+    }
+
+    /// <summary>
+    /// Wait until RRF has processed a packet from DSF that has not been taken yet and matches, and take it. Thread-safe
+    /// </summary>
+    /// <param name="match">Condition for the packet</param>
+    /// <param name="timeout">Maximum time to wait in real time</param>
+    /// <returns>Data of the packet, or null if none arrived in time</returns>
+    public byte[]? WaitForPacket(Func<SbcRequest, byte[], bool> match, TimeSpan timeout)
+    {
+        DateTime end = DateTime.UtcNow + timeout;
+        lock (_packetLock)
+        {
+            while (true)
+            {
+                // Packets before the one taken stay available for later waits
+                int index = _receivedPackets.FindIndex(p => match(p.Request, p.Payload));
+                if (index >= 0)
+                {
+                    byte[] payload = _receivedPackets[index].Payload;
+                    _receivedPackets.RemoveAt(index);
+                    return payload;
+                }
+                TimeSpan left = end - DateTime.UtcNow;
+                if (left <= TimeSpan.Zero)
+                {
+                    return null;
+                }
+                Monitor.Wait(_packetLock, left);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Write the queued packets into the transfer like DataTransfer::WritePacketHeader does, as long as they fit
+    /// </summary>
+    private void WriteQueuedPackets()
+    {
+        lock (_packetLock)
+        {
+            while (_packetsToSend.TryPeek(out var packet) && (_txPointer + 3) / 4 * 4 + Marshal.SizeOf<PacketHeader>() + packet.Payload.Length <= SbcTransferBufferSize)
+            {
+                _packetsToSend.Dequeue();
+
+                // DataTransfer::WritePacketHeader pads before the next packet to stay aligned (DataTransfer.cpp:2288)
+                _txPointer = (_txPointer + 3) / 4 * 4;
+                PacketHeader header = new() { Request = (ushort)packet.Request, Id = _packetId++, Length = (ushort)(packet.DeclaredLength ?? packet.Payload.Length), ResendPacketId = packet.ResendPacketId };
+                MemoryMarshal.Write(_txBuffer.AsSpan(_txPointer), in header);
+                _txPointer += Marshal.SizeOf<PacketHeader>();
+                packet.Payload.CopyTo(_txBuffer, _txPointer);
+                _txPointer += packet.Payload.Length;
+            }
+        }
+    }
+    #endregion
+
     #region DataTransfer
     private void WritePayload()
     {
         if (!_sendData(++_transfersStarted))
         {
+            WriteQueuedPackets();
             return;
         }
 
@@ -615,6 +751,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         text.CopyTo(_txBuffer, _txPointer);
         _txPointer += text.Length;
         SentPayloads.Add(payload);
+        WriteQueuedPackets();
     }
 
     private void StartNextTransfer()
@@ -1133,11 +1270,35 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// </summary>
     private void ProcessData()
     {
+        // RRF must only process data that DSF sent
+        if (CheckIntegrity && _rxHeader.DataLength > 0 &&
+            !_cleanDsfData.Any(data => data.Length >= _rxHeader.DataLength && data.AsSpan(0, _rxHeader.DataLength).SequenceEqual(_rxBuffer.AsSpan(0, _rxHeader.DataLength))))
+        {
+            CorruptedTransfers++;
+            Trace?.Add($"   {Now,9:F3} ms: RRF processes data DSF never sent");
+        }
+
         // Proposed change: activate the requested capabilities that RRF offers, from the next transfer on
         for (int offset = 0; offset + Marshal.SizeOf<PacketHeader>() <= _rxHeader.DataLength;)
         {
             PacketHeader packet = MemoryMarshal.Read<PacketHeader>(_rxBuffer.AsSpan(offset));
             offset += Marshal.SizeOf<PacketHeader>();
+            if (RecordPackets || Respond is not null)
+            {
+                byte[] payload = _rxBuffer.AsSpan(offset, Math.Min(packet.Length, Math.Max(_rxHeader.DataLength - offset, 0))).ToArray();
+                lock (_packetLock)
+                {
+                    if (RecordPackets)
+                    {
+                        _receivedPackets.Add(((SbcRequest)packet.Request, packet.Id, payload));
+                        Monitor.PulseAll(_packetLock);
+                    }
+                    foreach (var answer in Respond?.Invoke((SbcRequest)packet.Request, packet.Id, payload) ?? [])
+                    {
+                        _packetsToSend.Enqueue((answer.Request, answer.Payload, answer.ResendPacketId, null));
+                    }
+                }
+            }
             if (packet.Request == (ushort)SbcRequest.ActivateLinkCapabilities && packet.Length >= sizeof(uint))
             {
                 LinkCapabilities capabilities = (LinkCapabilities)MemoryMarshal.Read<uint>(_rxBuffer.AsSpan(offset)) & _offeredCapabilities;
@@ -1218,7 +1379,8 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         CheckBudget();
         int exchange = Exchanges++;
         byte[] toRrf = writeBuffer.ToArray();
-        SpiFault? fault = (_fault is not null && exchange - _faultArmedAt == _fault.Exchange) ? _fault : null;
+        List<SpiFault> due = _faults.FindAll(f => exchange - _faultArmedAt == f.Exchange);
+        SpiFault? fault = due.FirstOrDefault();
         if (_bootAt is double bootAt && Now >= bootAt)
         {
             Boot();
@@ -1233,10 +1395,14 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         {
             // The exchange does not take place
             Trace?.Add($"   {Now,9:F3} ms: DCS dies, a new instance starts after {delay} ms");
-            _fault = null;
+            _faults.Clear();
             FaultApplied = true;
             FaultTime = Now;
             throw new DcsRestartException(delay);
+        }
+        if (CheckIntegrity && _dmaActive && _dmaTarget == DmaTarget.Data)
+        {
+            _cleanDsfData.Add(toRrf.ToArray());
         }
         if (fault?.RestartBootTime is double bootTime && !fault.RestartBeforeArm)
         {
@@ -1244,9 +1410,12 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             Restart(bootTime, Exchanges - 0.5);
             _restartAgainBootTime = fault.RestartAgain ? bootTime : null;
         }
-        else if (fault?.Direction is ExchangeDirection.ToRrf or ExchangeDirection.Both)
+        else
         {
-            fault.Mutate(toRrf);
+            foreach (SpiFault mutation in due.Where(f => f.Direction is ExchangeDirection.ToRrf or ExchangeDirection.Both))
+            {
+                mutation.Mutate(toRrf);
+            }
         }
         AddBitErrors(toRrf);
 
@@ -1261,16 +1430,20 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         string rrfOutput = Convert.ToHexStringLower(readBuffer);
         int receivedBefore = ReceivedPayloads.Count;
 
-        if ((fault?.Direction is ExchangeDirection.ToDsf or ExchangeDirection.Both) && fault.RestartBootTime is null)
+        foreach (SpiFault mutation in due.Where(f => (f.Direction is ExchangeDirection.ToDsf or ExchangeDirection.Both) && f.RestartBootTime is null))
         {
-            fault.Mutate(readBuffer);
+            mutation.Mutate(readBuffer);
         }
         AddBitErrors(readBuffer);
-        if (fault is not null)
+        if (due.Count > 0)
         {
-            _fault = null;
-            FaultApplied = true;
-            FaultTime = Now;
+            if (!_faultTimeTaken)
+            {
+                _faultTimeTaken = true;
+                FaultTime = Now;
+            }
+            _faults.RemoveAll(due.Contains);
+            FaultApplied = _faults.Count == 0;
         }
 
         Now += toRrf.Length * MsPerByte;
@@ -1288,7 +1461,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             Restart(fault.RestartBootTime!.Value, Exchanges + 0.5);
             _restartAgainBootTime = fault.RestartAgain ? fault.RestartBootTime : null;
         }
-        Trace?.Add($"#{exchange} {Now,9:F3} ms{(fault is not null ? $" FAULT {fault.Direction}" : "")}: DSF {Convert.ToHexString(toRrf.AsSpan(0, Math.Min(toRrf.Length, 16)))} " +
+        Trace?.Add($"#{exchange} {Now,9:F3} ms{(fault is not null ? $" FAULT {string.Join("+", due.Select(f => f.Direction))}" : "")}: DSF {Convert.ToHexString(toRrf.AsSpan(0, Math.Min(toRrf.Length, 16)))} " +
             $"RRF {Convert.ToHexString(readBuffer[..Math.Min(readBuffer.Length, 16)])} | RRF {stateBefore} -> {_state}, pin {(_pinLevel ? 1 : 0)}, connected {_isConnected}");
     }
 
