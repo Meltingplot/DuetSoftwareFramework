@@ -188,6 +188,58 @@ public class WebServerFindings : WebServerFixture
     }
 
     /// <summary>
+    /// RFC 6455 section 5.5.1: "If an endpoint receives a Close frame and did not previously send a Close frame, the endpoint MUST send a
+    /// Close frame in response". When the client closes WS /machine, ReadFromClient only leaves its loop (WebSocketEndpoint.cs:283-287) and
+    /// the socket is disposed without a close frame, so the client sees an abnormal closure instead of the end of the closing handshake.
+    /// The custom WebSocket endpoints do the same (CustomEndpointMiddleware.cs:156-160)
+    /// </summary>
+    [Test]
+    [Explicit("Bug: DWS does not answer the close frame of a WebSocket client")]
+    public async Task ClientCloseIsAnswered()
+    {
+        (System.Net.WebSockets.ClientWebSocket? webSocket, HttpStatusCode status) = await TryConnectWebSocketAsync(0, "machine");
+        Assert.That(status, Is.EqualTo(HttpStatusCode.SwitchingProtocols));
+        using (webSocket)
+        {
+            await ReceiveTextAsync(webSocket!);
+            using System.Threading.CancellationTokenSource cts = new(TimeSpan.FromSeconds(5));
+            Assert.That(async () => await webSocket!.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, null, cts.Token), Throws.Nothing);
+            Assert.That(webSocket!.State, Is.EqualTo(System.Net.WebSockets.WebSocketState.Closed));
+        }
+    }
+
+    /// <summary>
+    /// When DWS stops, WS /machine is meant to close with 1001 "DWS is shutting down" (WebSocketEndpoint.cs:205 and 240-243). But a stop
+    /// cancels both tasks of the connection, a cancelled task is not faulted, so Process does not rethrow (lines 223-227) and the socket is
+    /// disposed without a close frame
+    /// </summary>
+    [Test]
+    [Explicit("Bug: WS /machine is not closed with 'DWS is shutting down' when DWS stops")]
+    public async Task ShutdownClosesTheSocket()
+    {
+        DwsHost dws = await DwsHost.StartAsync(Dcs.SocketPath!, Path.Combine(Dcs.BaseDirectory, "www"));
+        try
+        {
+            using System.Net.WebSockets.ClientWebSocket webSocket = new();
+            await webSocket.ConnectAsync(new Uri($"ws://{dws.BaseUri.Host}:{dws.BaseUri.Port}/machine"), default);
+            await ReceiveTextAsync(webSocket);
+            await webSocket.SendAsync(Encoding.UTF8.GetBytes("OK\n"), System.Net.WebSockets.WebSocketMessageType.Text, true, default);
+
+            Task stop = dws.DisposeAsync().AsTask();
+            using System.Threading.CancellationTokenSource cts = new(TimeSpan.FromSeconds(10));
+            System.Net.WebSockets.WebSocketReceiveResult result = await webSocket.ReceiveAsync(new byte[1024], cts.Token);
+            Assert.That(result.MessageType, Is.EqualTo(System.Net.WebSockets.WebSocketMessageType.Close));
+            Assert.That(result.CloseStatus, Is.EqualTo(System.Net.WebSockets.WebSocketCloseStatus.EndpointUnavailable));
+            Assert.That(result.CloseStatusDescription, Is.EqualTo("DWS is shutting down"));
+            await stop;
+        }
+        finally
+        {
+            await dws.DisposeAsync();
+        }
+    }
+
+    /// <summary>
     /// A custom endpoint in the rr_ namespace is served as /rr_{path} (HttpEndpoint.cs:29, ModelObserver.cs:120) if it exists when DWS
     /// connects to DCS, but when the endpoints change later, ModelObserver rebuilds all of them as /machine/{namespace}/{path}
     /// (ModelObserver.cs:176-181), so an rr_ endpoint that a plugin registers while DWS runs is not reachable via /rr_{path}
