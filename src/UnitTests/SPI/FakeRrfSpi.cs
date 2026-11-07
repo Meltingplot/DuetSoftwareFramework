@@ -104,7 +104,13 @@ public enum RrfRule
     /// <summary>
     /// RRF leaves the extended link at once when a valid header from DSF has no session status, so that a new DCS understands the responses
     /// </summary>
-    LeaveWhenDsfLeft = 256
+    LeaveWhenDsfLeft = 256,
+
+    /// <summary>
+    /// Proposed change: until a transfer has completed since the boot or the last connection reset, RRF also reads an extended BadResponse
+    /// as the first word of a header, because DSF may still use the extended link of a connection that RRF has lost by a restart
+    /// </summary>
+    DecodeHeaderWordUnconnected = 512
 }
 
 /// <summary>
@@ -827,7 +833,12 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             case InternalTransferState.ExchangingHeader:
             {
                 // (1) Exchanged transfer headers
-                uint headerResponse = DecodeResponse(MemoryMarshal.Read<uint>(_rxHeaderBytes), RrfRule.DecodeHeaderWord);
+                uint headerWord = MemoryMarshal.Read<uint>(_rxHeaderBytes), headerResponse = DecodeResponse(headerWord, RrfRule.DecodeHeaderWord);
+                if (!_isConnected && !Extended && Enabled(RrfRule.DecodeHeaderWordUnconnected) &&
+                    ExtendedLink.DecodeResponse(headerWord) == TransferResponse.BadResponse && headerWord != TransferResponse.BadResponse && Hit(RrfRule.DecodeHeaderWordUnconnected))
+                {
+                    headerResponse = TransferResponse.BadResponse;
+                }
                 if (headerResponse == TransferResponse.BadResponse)
                 {
                     // SBC received a bad response code. We must have been happy if we got here, else RRF would have complained

@@ -401,6 +401,47 @@ public class LinkRecovery
     }
 
     /// <summary>
+    /// RRF restarts after it has completed an exchange and before it sets up the next one. DSF takes the falling edge of DataTransfer::Init for
+    /// its next exchange, reads 0 from the disabled SPI and, with data in the transfer, answers with an extended BadResponse. That reaches the first
+    /// header of the booted RRF 10 ms later (SbcBootArmDelay). The restart must be noticed without losing the connection, except when RRF boots for
+    /// longer than the transfer timeout of DSF
+    /// </summary>
+    [TestCase(false, true), TestCase(true, true), TestCase(false, false), TestCase(true, false)]
+    public void RestartBeforeArmKeepsTheConnection(bool poll, bool extended)
+    {
+        List<string> failures = [.. GetRestartBeforeArmCases()
+            .Select(c => (Case: c, Result: Run(c.Variant, c.Fault, extended ? ExtendedRestartOptions(c, poll, RrfRule.None) : new(PollWhileDisconnected: poll))))
+            .Where(r => !KeepsConnectionThroughRestart(r.Case, r.Result))
+            .Select(r => $"- {r.Case}: {r.Result.Label}, {r.Result.Details}")];
+        Assert.That(failures, Is.Empty, string.Join("\n", failures.Take(20)));
+    }
+
+    /// <summary>
+    /// The restart of the lab printer on 2026-11-07 (design/open-findings.md). Without DecodeHeaderWordUnconnected, RRF answers the extended
+    /// BadResponse in its first header with BadHeaderChecksum, DSF reads that as a header and both sides stay one exchange apart until DSF has
+    /// used up its retries. DSF logs the same lines as the printer did
+    /// </summary>
+    [Test]
+    public void RestartBeforeArmMatchesLabPrinter()
+    {
+        Case c = GetRestartBeforeArmCases().Single(c => c.ToString() == "BothData / Header / ToRrf / Restart / RRF restart before the next arm, boot 100 ms");
+        List<string> trace = [];
+        Result result = Run(c.Variant, c.Fault, ExtendedRestartOptions(c, false, RrfRule.DecodeHeaderWordUnconnected), trace);
+        Assert.Multiple(() =>
+        {
+            Assert.That(trace, Has.One.Contains("Restarting full transfer because a bad header response was received (0x00000000)"));
+            Assert.That(trace.Count(line => line.Contains("Bad header CRC16 (expected 0x0000, got 0x1760)")), Is.EqualTo(99));
+            Assert.That(result.Details, Does.Contain("DSF lost connection 1x"));
+        });
+    }
+
+    /// <summary>
+    /// Whether DSF noticed a restart before the next arm without losing the connection, which it cannot keep if RRF boots for longer than its transfer timeout
+    /// </summary>
+    private static bool KeepsConnectionThroughRestart(Case c, Result result) =>
+        result.Outcome == Outcome.ResetDetected && (c.Fault.RestartBootTime >= new Settings().SbcTransferTimeout || result.Details.Contains("DSF lost connection 0x"));
+
+    /// <summary>
     /// With the fork's RRF, DSF notices a restart within 50 ms of the boot. Without the delay before the first header, DSF and the booted RRF
     /// waited for each other until a timeout of RRF after 500 ms or 4 s (lab printer, 2026-11-02). Restarts in the connect transfer have no
     /// connection to notice, and for a second restart the time is taken from the first boot, so both are left out
@@ -591,7 +632,7 @@ public class LinkRecovery
         }
         foreach (bool poll in new[] { false, true })
         {
-            foreach (Case c in GetExtendedRestartCases())
+            foreach (Case c in GetExtendedRestartCases().Concat(GetRestartBeforeArmCases()))
             {
                 Run(c.Variant, c.Fault, ExtendedRestartOptions(c, poll, RrfRule.None), ruleHits: hits);
             }
@@ -619,6 +660,10 @@ public class LinkRecovery
                     .Select(c => (Case: c, Result: Run(c.Variant, c.Fault, ExtendedRestartOptions(c, poll, rule))))
                     .Where(r => r.Result.Outcome != Outcome.ResetDetected)
                     .Select(r => $"restart{(poll ? ", polling" : "")}: {r.Case}: {r.Result.Label}"));
+                failures.AddRange(GetRestartBeforeArmCases()
+                    .Select(c => (Case: c, Result: Run(c.Variant, c.Fault, ExtendedRestartOptions(c, poll, rule))))
+                    .Where(r => !KeepsConnectionThroughRestart(r.Case, r.Result))
+                    .Select(r => $"restart before the next arm{(poll ? ", polling" : "")}: {r.Case}: {r.Result.Label}"));
                 RrfOptions dcsOptions = new(PollWhileDisconnected: poll, Capabilities: LinkCapabilities.All, TargetTransfer: ExtendedTransfer + 2, DisabledRules: rule);
                 failures.AddRange(GetDcsRestartCases()
                     .Select(c => (Case: c, Result: Run(c.Variant, c.Fault, dcsOptions)))
@@ -804,6 +849,7 @@ public class LinkRecovery
     [TestCase("NoData / Header / ToDsf / Exchange / BadResponse in first word", SequenceMismatchHandling.ConnectionReset, false, false, true, ActivationTransfer)]
     [TestCase("BothData / Data / ToRrf / DcsRestart / DCS restart after 100 ms")]
     [TestCase("BothData / Header / ToRrf / Restart / RRF restart before the next arm, boot 100 ms", SequenceMismatchHandling.ConnectionReset, false, false, true)]
+    [TestCase("BothData / Data / ToRrf / Restart / RRF restart before the next arm, boot 100 ms", SequenceMismatchHandling.ConnectionReset, false, false, true)]
     [Explicit("Analysis")]
     public void TraceCase(string name, SequenceMismatchHandling sequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset, bool guards = false, bool poll = false,
         bool extended = false, int target = ExtendedTransfer + 2)
@@ -817,26 +863,6 @@ public class LinkRecovery
         foreach (string line in trace.Take(200))
         {
             TestContext.Out.WriteLine(line);
-        }
-    }
-
-    /// <summary>
-    /// Restarts in which RRF completes an exchange and resets before it sets up the next one. Lists the cases in which DSF afterwards reads
-    /// responses of RRF as headers, as the lab printer did on 2026-11-07 (design/open-findings.md)
-    /// </summary>
-    [TestCase(false), TestCase(true)]
-    [Explicit("Analysis")]
-    public void RestartBeforeArmOutOfStep(bool poll)
-    {
-        foreach (Case c in GetRestartBeforeArmCases())
-        {
-            List<string> trace = [];
-            Result result = Run(c.Variant, c.Fault, ExtendedRestartOptions(c, poll, RrfRule.None), trace);
-            int responsesAsHeaders = trace.Count(line => line.Contains("Bad header CRC16"));
-            if (responsesAsHeaders > 0)
-            {
-                TestContext.Out.WriteLine($"{c}: {result.Label}, {responsesAsHeaders} x Bad header CRC16 | {result.Details}");
-            }
         }
     }
 
