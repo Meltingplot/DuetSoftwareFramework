@@ -1259,25 +1259,34 @@ public class MCodeHandler(
                             physicalFirmwareFile = fallbackFirmwareFile;
                         }
 
+                        // Get the firmware image before anything is stopped, because the IAP program erases the flash before it gets the
+                        // image. Like RRF, refuse an image whose first word, the initial stack pointer, cannot be read (RepRap.cpp:2063-2083).
+                        // RRF also compares it with the top of the RAM and the size with the flash, which DCS does not know for the board
+                        Stream openedFirmwareStream;
+                        try
+                        {
+                            openedFirmwareStream = await Firmware.OpenFirmwareAsync(physicalFirmwareFile, settings.Value.FileBufferSize);
+                        }
+                        catch (IOException e)
+                        {
+                            return new Message(MessageType.Error, $"Failed to read firmware file {firmwareFile}: {e.Message}");
+                        }
+                        await using Stream firmwareStream = openedFirmwareStream;
+                        if (firmwareStream.Length < sizeof(uint))
+                        {
+                            return new Message(MessageType.Error, $"Firmware binary \"{firmwareFile}\" is not valid for this electronics");
+                        }
+
                         // Stop all the plugins
                         Commands.StopPlugins stopCommand = commandFactory.Create<Commands.StopPlugins>();
                         await stopCommand.ExecuteAsync(cancellationToken);
 
                         // Update the firmware
                         await using FileStream iapStream = new(physicalIapFile, FileMode.Open, FileAccess.Read, FileShare.Read, settings.Value.FileBufferSize);
-                        await using FileStream firmwareStream = new(physicalFirmwareFile, FileMode.Open, FileAccess.Read, FileShare.Read, settings.Value.FileBufferSize);
                         Message result = new();
                         try
                         {
-                            if (string.Equals(Path.GetExtension(firmwareFile), ".uf2", StringComparison.OrdinalIgnoreCase))
-                            {
-                                await using MemoryStream unpackedFirmwareStream = await Firmware.UnpackUF2Async(firmwareStream);
-                                await linkInterface.UpdateFirmware(iapStream, unpackedFirmwareStream, lifetime.ApplicationStopped);
-                            }
-                            else
-                            {
-                                await linkInterface.UpdateFirmware(iapStream, firmwareStream, lifetime.ApplicationStopped);
-                            }
+                            await linkInterface.UpdateFirmware(iapStream, firmwareStream, lifetime.ApplicationStopped);
                         }
                         catch (InvalidOperationException e)
                         {
