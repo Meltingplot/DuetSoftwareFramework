@@ -27,8 +27,9 @@ namespace UnitTests.Startup;
 /// The intermittent 15 s shutdown hang: systemd kills DCS when it has not exited 15 s after it began to stop (TimeoutStopSec=15,
 /// duetcontrolserver.service:8). DCS tells systemd that it stops when ApplicationStopping fires (SystemdLifetime.cs:104-109 of
 /// Microsoft.Extensions.Hosting.Systemd, the "Application is shutting down..." line), also when it stops on its own after M999. The host then waits up to
-/// HostOptions.ShutdownTimeout, 30 s by default (HostOptions.cs:24), for each service, see <see cref="HostLifecycle.HostOptionsAreTheDefaults"/>.
-/// So every service that does not stop until the shutdown timeout ends in SIGKILL. These tests show three ways to get there, the first two offline only:
+/// HostOptions.ShutdownTimeout for its services, 30 s by default (HostOptions.cs:24), so every service that did not stop until then ended in SIGKILL.
+/// Program.cs sets 10 s now, see <see cref="ShutdownTimeoutIsShorterThanTheStopTimeoutOfSystemd"/>. These tests show three ways to get there, the first two
+/// offline only, the third also on the lab printer:
 /// <list type="number">
 /// <item>A code of a client that is still pending was never completed: the stages of the code pipeline stopped reading their queues on ApplicationStopping,
 /// and LinkService.StopAsync cancels the codes of the link into the Executed queue afterwards (LinkService.cs:241, LinkInterface.cs:707-713,
@@ -286,11 +287,10 @@ public class ShutdownHang
     }
 
     /// <summary>
-    /// DCS has 30 s to stop its services (HostOptions.cs:24), but systemd kills it after TimeoutStopSec. With a shorter shutdown timeout the cases above would
-    /// still be slow, but DCS would exit on its own before SIGKILL
+    /// The host gave its services 30 s to stop by default (HostOptions.cs:24), but systemd kills DCS after TimeoutStopSec. With the shorter shutdown timeout
+    /// of Program.cs:180 a service that does not stop still makes the stop slow, but DCS exits on its own before SIGKILL
     /// </summary>
     [Test]
-    [Explicit("Bug: the shutdown timeout of the host (30 s) is longer than TimeoutStopSec of duetcontrolserver.service (15 s)")]
     public async Task ShutdownTimeoutIsShorterThanTheStopTimeoutOfSystemd()
     {
         string unitFile = Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "..", "..", "pkg", "common", "duetcontrolserver", "usr", "lib", "systemd", "system", "duetcontrolserver.service");

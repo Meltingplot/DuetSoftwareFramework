@@ -64,7 +64,7 @@ public sealed class CodeProcessor(Expressions expressions, Model.ObjectModel mod
 
     /// <summary>
     /// Cancelled when the code processor service stops. The pipelines read their codes until then, so that the codes the services stopped before
-    /// cancel are completed, e.g. by the LinkService and the IPC server (the host stops its services in the reverse order of Program.cs:179-188)
+    /// cancel are completed, e.g. by the LinkService and the IPC server (the host stops its services in the reverse order of their registration in Program.cs)
     /// </summary>
     private readonly CancellationTokenSource _stopCts = new();
 

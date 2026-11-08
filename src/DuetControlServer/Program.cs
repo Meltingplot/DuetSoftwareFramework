@@ -176,6 +176,9 @@ rootCommand.SetAction(async (parserResult) =>
                     options.FormatterName = nameof(CommonLogFormatter);
                 });
 
+                // Stop waiting for the services in time to exit before systemd kills DCS (TimeoutStopSec=15 in duetcontrolserver.service)
+                services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromSeconds(10));
+
                 services
                     .AddSettings(context.Configuration, updateOnlyValue, logLevelValue, configFileValue, socketDirectoryValue, socketFileValue, baseDirectoryValue, out startErrorFile)
                     .AddCodes()
