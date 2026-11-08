@@ -4,9 +4,11 @@ The fork has no issue tracker, so findings to solve later are kept here. Remove 
 
 Status: 2026-11-07. Line numbers refer to the Meltingplot fork: DSF `v3.7-dev` at 4c8b3fec and RRF `3.7-dev` at fc939b3.
 
-## G and M cannot be macro parameters
+## Codes after a macro call on the same line still run
 
-**Problem:** `M98 P"x.g" G7` does not pass `param.G` to the macro. The parser ends the M98 at `G` and runs `G7` as a separate code after the macro. A value the caller meant as a parameter is executed, so `M98 P"x.g" M3` would run an `M3`. `M98.n` behaves the same, except that the separated code runs on the calling channel while the macro starts on the other one.
+**Documented, not a bug:** G and M cannot be macro parameters. Wiki `Gcode_meta_commands.md:374-376`: P and R cannot be used as macro parameters. A custom G-code macro must not get G, M, N or T, and a custom M-code macro not G, M or N, because "RRF will treat the parameter as being the start of the next command". This entry first said the wiki has no such exception; Tim pointed out these lines on 2026-11-08.
+
+So `M98 P"x.g" G7` passes no `param.G`, and the `G7` becomes a code of its own, as documented. What stays open is that DSF then runs this code, and that DSF and RRF split differently after `'`.
 
 **Observed** with the DSF parser against the fake firmware, not on hardware:
 
@@ -23,21 +25,23 @@ Status: 2026-11-07. Line numbers refer to the Meltingplot fork: DSF `v3.7-dev` a
 | `M98 P"t.g" T7 T8` | `M98 P"t.g" T7`, then `T8` |
 | `M98.3 P"t.g" G7` in a trigger macro | `M98 P"t.g"` on HTTP, `G7` on Trigger |
 
-The separated code runs after the macro has finished (`M98 P"t.g"`, the codes of the macro, then `G7`).
+The separated code runs after the macro has finished (`M98 P"t.g"`, the codes of the macro, then `G7`). `M98.n` splits the same way; the separated code runs on the calling channel while the macro starts on the other one.
 
 **Code and documentation:**
 - DSF: `StartsNextCode` ends a code at G, M or a second T (`src/DuetAPI/Commands/Code/Parser.cs:727-730`). The same rule is in upstream `v3.7-dev`. For `'G` it keeps the uppercase letter, so that escape does not prevent the split.
-- RRF: `StringParser::FindParameters` also ends a command at an unquoted G or M, but not after `'` (`StringParser.cpp:1118`). So `'G` differs between DSF and RRF's text parser.
+- RRF: `StringParser::FindParameters` also ends a command at an unquoted G or M, but not after `'` (`StringParser.cpp:1118-1166`).
 - Wiki `Gcodes.md:233`: each G or M preceded by a space starts a new command, so the split itself is documented.
-- Wiki `Gcodes.md:235`: a command that invokes a macro must be the last on its line, "because any following commands on the same line will not be executed". DSF does send them, after the macro.
-- Wiki `Gcodes.md:2398` and `Gcode_meta_commands.md:355`: additional parameters go to the macro as `param.<letter>`, with no exception for G and M.
+- Wiki `Gcodes.md:235`: a command that invokes a macro must be the last on its line, "because any following commands on the same line will not be executed". DSF does send them, after the macro. What RRF does without an SBC is not checked.
+- The other letters that the wiki rules out still reach the macro in both parsers. That needs no change, as far as the parsers go:
+  - RRF leaves only `P` out of M98's parameters (`StringParser.cpp:2115`, `BinaryParser.cpp:980`). So `R` arrives as `param.R` when `P` is present; without `P`, `M98 R` marks the macro restartable (`GCodes2.cpp:1724-1732`).
+  - `N` is a line number only at the start of a line (DSF `Parser.cs:441-443`, RRF `StringParser.cpp:135-142`). Later in the line it is a parameter.
+  - `T` in a custom G-code is a parameter in both, unless the code already has a `T` (`Parser.cs:730`).
 
 **Open questions:**
-1. Should G and M be parameters of M98 and M98.n when `P` is present? That contradicts `Gcodes.md:233` and differs from upstream, unless upstream changes as well.
-2. If not, should DSF refuse a G or M after a macro call on the same line instead of running it? That would match `Gcodes.md:235` and catch the mistake.
-3. Should this go to Duet3D, given that the wiki contradicts itself here and DSF and RRF differ for `'G`?
+1. Should DSF refuse a G or M after a macro call on the same line instead of running it? That would match `Gcodes.md:235` and catch the mistake.
+2. Should the `'G` difference between DSF and RRF go to Duet3D?
 
-**Workaround:** use another letter. chx350-config passes neither G nor M through M98 today, as counted by its session on 2026-11-06. The same count shows macros reading `param.M` with no M98 call passing it, which is worth a look in that repository.
+**Note for chx350-config:** a session there counted on 2026-11-06 that no M98 call passes G or M. The same count found macros that read `param.M`. By `Gcode_meta_commands.md:376` such a macro cannot get `param.M`, neither through M98 nor as a custom M-code, so those branches never run.
 
 ## Macros do not start on the USB channels without a USB host
 
