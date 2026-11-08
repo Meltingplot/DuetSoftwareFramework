@@ -217,8 +217,27 @@ public partial class LinkRecovery
         }
     }
 
-    [Test, Explicit("35 of 4142 single faults still break the link with the RRF of today")]
+    [Test, Explicit("27 of 4142 single faults still break the link with the RRF of today")]
     public void SingleCorruptedExchange() => RunCensus(new());
+
+    private static IEnumerable<TestCaseData> HeaderResponseWithDsfDataCases => GetCases()
+        .Where(c => c.Variant is Variant.BothData or Variant.DsfData && c.Phase == "HeaderResponse" && c.Direction == ExchangeDirection.ToDsf)
+        .Select(c => new TestCaseData(c.ToString()).SetName($"HeaderResponseOfRrfWithDsfData({c.Variant}, {c.Field}, {c.Mutation})"));
+
+    /// <summary>
+    /// Every single fault in the response of RRF to the header, in a transfer with data from DSF, is repaired by retries. When DSF reads another code than the
+    /// Success of RRF, RRF goes on with the data while DSF exchanges its header again. RRF takes that header for the data and answers BadDataChecksum, after which
+    /// it exchanges the data again whatever DSF answers (DataTransfer.cpp:1194, 1218-1222). DSF then goes on with the data as well (SPI.IsExchangingData).
+    /// Before, DSF kept exchanging its header, so neither side timed out (F3 in design/sbc-link-findings-upstream.md) and 8 of these faults left the link stuck
+    /// </summary>
+    /// <param name="name">Case</param>
+    [TestCaseSource(nameof(HeaderResponseWithDsfDataCases))]
+    public void HeaderResponseOfRrfWithDsfData(string name)
+    {
+        Case c = GetCases().Single(c => c.ToString() == name);
+        Result result = Run(c.Variant, c.Fault, new());
+        Assert.That(result.Outcome, Is.EqualTo(Outcome.Retry), result.Details);
+    }
 
     private static IEnumerable<TestCaseData> RefusalCases => GetCases()
         .Where(c => c.Phase == "HeaderResponse" && c.Direction == ExchangeDirection.ToDsf && c.Mutation is "flip bit 1" or "plus one" or "BadFormat" or "BadProtocolVersion" or "BadDataLength")

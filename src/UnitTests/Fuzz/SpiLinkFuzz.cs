@@ -249,7 +249,7 @@ public partial class SpiLinkFuzz
     }
 
     /// <summary>
-    /// Property of the link without the extended capabilities: two bit errors may need a reconnect, as single ones do (35 of 4142 in the census,
+    /// Property of the link without the extended capabilities: two bit errors may need a reconnect, as single ones do (27 of 4142 in the census,
     /// design/sbc-link-requirements.md R1/R2), but they must never corrupt, lose or duplicate a message unnoticed, nor stop DCS with an error.
     /// A link that does not recover within the budget of the scenario is stuck in a way no timeout of RRF ends. DCS then stops after
     /// Settings.SbcRestartTimeout (SPI.PerformFullTransfer) and systemd starts it again, and that must bring the link back.
