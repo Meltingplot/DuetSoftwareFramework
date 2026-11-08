@@ -225,8 +225,9 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task RootPluginIsStartedAndStoppedByTheRootService()
     {
-        // StartPlugin.cs:57-72: the root service starts the plugins with SuperUser, without AppArmor profile
+        // StartPlugin.cs: the root service starts the plugins with SuperUser, without AppArmor profile, if DCS has root plugin support
         await StartDpsAsync(register: false, privileged: true);
+        await EnableRootPluginSupportAsync();
         Plugin plugin = new() { Id = "Root", Name = "Root", SbcExecutable = "plugin.sh", SbcPermissions = SbcPermissions.SuperUser, Pid = -1 };
         Dps!.WritePlugin(plugin, "echo root\nexec sleep 30", profile: false);
         await Dps.AddToStoreAsync(plugin);
@@ -240,6 +241,44 @@ public class DpsRootService : DpsTestBase
         await StopAsync("Root");
         Assert.That(Dps.Log.Contains("Process stopped by SIGTERM"), Is.True);
         Assert.That(await DpsHost.WaitForAsync(async () => (await GetFromDcsAsync("Root"))!.Pid == -1), Is.True);
+    }
+
+    [Test]
+    public async Task RootPluginIsNotStartedWithoutRootPluginSupportInDcs()
+    {
+        // DCS refuses to send StartPlugin then, the root service asks DCS for sbc.dsf.rootPluginSupport again before it starts a root plugin
+        await StartDpsAsync(register: false, privileged: true);
+        Plugin plugin = new() { Id = "Root", Name = "Root", SbcExecutable = "plugin.sh", SbcPermissions = SbcPermissions.SuperUser, Pid = -1 };
+        Dps!.WritePlugin(plugin, "exec sleep 30", profile: false);
+        await Dps.AddToStoreAsync(plugin);
+        await AddToDcsAsync(plugin);
+
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("Root")))!;
+        Assert.That(e.Message, Is.EqualTo("Plugins with super-user permissions are not allowed"));
+        Assert.That(Dps.Store.Processes, Is.Empty);
+        Assert.That(plugin.Pid, Is.EqualTo(-1));
+    }
+
+    [Test]
+    public async Task DuetPiManagementPluginIsStartedWithRootPluginSupport()
+    {
+        // The manifest that the duetpimanagementplugin package ships, the root service loads it at start like DCS
+        string manifest = File.ReadAllText(DpsHost.ShippedFile("pkg/common/duetpimanagementplugin/opt/dsf/plugins/DuetPiManagementPlugin.json"))
+            .Replace("DSFVER", DuetSharedLibrary.VersionHelper.GetVersion());
+        File.WriteAllText(Path.Combine(PluginDirectory, "DuetPiManagementPlugin.json"), manifest);
+        string executable = Path.Combine(PluginDirectory, "DuetPiManagementPlugin", "dsf", "DuetPiManagementPlugin");
+        Directory.CreateDirectory(Path.GetDirectoryName(executable)!);
+        File.WriteAllText(executable, "#!/bin/sh\nexec sleep 30\n");
+        File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        await StartDpsAsync(register: false, privileged: true);
+        await EnableRootPluginSupportAsync();
+        Plugin plugin = (await Dps!.GetPluginAsync("DuetPiManagementPlugin"))!;
+        await AddToDcsAsync(plugin);
+
+        await StartAsync("DuetPiManagementPlugin");
+        Assert.That((await GetFromDcsAsync("DuetPiManagementPlugin"))!.Pid, Is.EqualTo(Dps.Store.Processes["DuetPiManagementPlugin"].Id));
+        await StopAsync("DuetPiManagementPlugin");
+        Assert.That(await DpsHost.WaitForAsync(async () => (await GetFromDcsAsync("DuetPiManagementPlugin"))!.Pid == -1), Is.True);
     }
 
     [Test]

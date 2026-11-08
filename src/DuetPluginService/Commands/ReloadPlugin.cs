@@ -49,7 +49,7 @@ public sealed class ReloadPlugin(PluginStore pluginStore, IOptions<Settings> set
                 // Check the manifest like an installation does before anything is changed
                 Plugin manifest = new();
                 manifest.UpdateFromJson(manifestJson.RootElement, false);
-                PluginManifestCheck.Check(manifest);
+                PluginManifestCheck.Check(manifest, null);
 
                 if (plugin is null)
                 {

@@ -51,7 +51,7 @@ public sealed class PluginService(CommandFactory commandFactory, IPermissionMana
                     // Do not load manifests that could not be installed either
                     try
                     {
-                        PluginManifestCheck.Check(plugin);
+                        PluginManifestCheck.Check(plugin, null);
                     }
                     catch (ArgumentException e)
                     {

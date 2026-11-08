@@ -48,7 +48,7 @@ public sealed class ReloadPlugin(Model.ObjectModel model, IOptions<Settings> set
                 // Check the manifest like an installation does before anything is changed
                 Plugin manifest = new();
                 manifest.UpdateFromJson(manifestJson.RootElement, false);
-                PluginManifestCheck.Check(manifest);
+                PluginManifestCheck.Check(manifest, settings.Value.RootPluginSupport);
 
                 if (plugin is null)
                 {

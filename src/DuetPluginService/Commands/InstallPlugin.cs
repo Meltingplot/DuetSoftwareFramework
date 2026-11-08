@@ -291,7 +291,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
             plugin.UpdateFromJson(manifestJson.RootElement, false);
         }
         plugin.Pid = -1;
-        PluginManifestCheck.Check(plugin);
+        PluginManifestCheck.Check(plugin, null);
 
         // Plugins with Python dependencies are launched via bash -c with the arguments interpolated into the
         // double-quoted command string. Reject any char that could break out of that quoting and execute arbitrary code

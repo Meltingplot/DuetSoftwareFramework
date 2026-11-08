@@ -112,6 +112,7 @@ public abstract class DpsTestBase
             {
                 Dcs.Model.Plugins.Clear();
                 Dcs.Model.State.PluginsStarted = false;
+                Dcs.Model.SBC!.DSF.RootPluginSupport = false;
             }
             DcsSettings.RootPluginSupport = false;
             File.Delete(DcsSettings.PluginsFilename);
@@ -147,6 +148,35 @@ public abstract class DpsTestBase
     {
         Dps = await DpsHost.StartAsync(Dcs, PluginDirectory, configure, register, asRoot, privileged);
         return Dps;
+    }
+
+    /// <summary>
+    /// Wait until DCS has started the plugins, which it does once both plugin services are registered (DuetControlServer/IPC/Processors/PluginService.cs:217-225).
+    /// The processor of the second service waits for a full model update before, outside the try/finally block that unregisters the service again, so a
+    /// service that is closed before that wait is over stays registered
+    /// </summary>
+    protected async Task WaitForPluginsStartedAsync()
+    {
+        Assert.That(await DpsHost.WaitForAsync(async () =>
+        {
+            using (await Dcs.Model.AccessReadOnlyAsync())
+            {
+                return Dcs.Model.State.PluginsStarted;
+            }
+        }), Is.True, "DCS did not start the plugins");
+    }
+
+    /// <summary>
+    /// Enable root plugin support in DCS like RootPluginSupport in config.json does: the setting and sbc.dsf.rootPluginSupport, which DCS sets from it
+    /// when the object model is created (DuetControlServer/Model/ObjectModel.cs)
+    /// </summary>
+    protected async Task EnableRootPluginSupportAsync()
+    {
+        DcsSettings.RootPluginSupport = true;
+        using (await Dcs.Model.AccessReadWriteAsync())
+        {
+            Dcs.Model.SBC!.DSF.RootPluginSupport = true;
+        }
     }
 
     /// <summary>

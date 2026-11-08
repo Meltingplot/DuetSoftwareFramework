@@ -421,7 +421,7 @@ public class IpcPluginService
     [TestCase("{\"id\":\"Evil\",\"name\":\"Evil\"}", new[] { "sd/../../etc/passwd" }, "Illegal filename")]
     [TestCase("{\"id\":\"Evil\",\"name\":\"Evil\"}", new[] { "sd/firmware/Duet3Firmware_MB6HC.bin" }, "Illegal filename")]
     [TestCase("{\"id\":\"Evil\",\"name\":\"Evil\",\"sbcPermissions\":[\"servicePlugins\"]}", new string[0], "ServicePlugins permission is reserved")]
-    [TestCase("{\"id\":\"Root\",\"name\":\"Root\",\"sbcPermissions\":[\"superUser\"]}", new string[0], "super-user permissions is not allowed")]
+    [TestCase("{\"id\":\"Root\",\"name\":\"Root\",\"sbcPermissions\":[\"superUser\"]}", new string[0], "Plugins with super-user permissions are not allowed")]
     [TestCase("{\"id\":\"Old\",\"name\":\"Old\",\"sbcDsfVersion\":\"1.0\"}", new string[0], "Incompatible DSF version")]
     [TestCase("{\"id\":\"OldRrf\",\"name\":\"OldRrf\",\"rrfVersion\":\"2.0\"}", new string[0], "Incompatible RRF version")]
     [TestCase("{\"id\":\"Needy\",\"name\":\"Needy\",\"sbcPluginDependencies\":[\"Missing\"]}", new string[0], "Missing plugin dependency Missing")]

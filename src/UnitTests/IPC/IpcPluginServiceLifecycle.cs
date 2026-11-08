@@ -10,6 +10,8 @@ using DuetAPI.Utility;
 using DuetAPIClient;
 using DuetControlServer.IPC;
 using DuetControlServer.IPC.Processors;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using NUnit.Framework;
 using UnitTests.FakeFirmware;
 
@@ -76,13 +78,23 @@ public class IpcPluginServiceLifecycle
     [Test]
     public async Task RootPluginNeedsTheRootService()
     {
-        // A plugin with SuperUser is started by the root plugin service (StartPlugin.cs: rootPlugin), which refuses while it is not there (PluginService.cs:109-116)
-        using CommandConnection connection = await ConnectAsync();
-        await AddPluginAsync("RootOnly", permissions: SbcPermissions.SuperUser);
-        await using FakePluginService service = await FakePluginService.StartAsync(_host);
-        InternalServerException e = (await Assert.ThrowsAsync<InternalServerException>(async () => await connection.StartPluginAsync("RootOnly")))!;
-        Assert.That(e.Message, Does.Contain("Cannot perform command because the plugin service (root) is not started"));
-        Assert.That(service.GetCommandNames(), Does.Not.Contain("StartPlugin"));
+        // A plugin with SuperUser is started by the root plugin service (StartPlugin.cs: rootPlugin), which refuses while it is not there (PluginService.cs:109-116).
+        // Root plugins need root plugin support for that
+        DuetControlServer.Settings settings = _host.Services.GetRequiredService<IOptions<DuetControlServer.Settings>>().Value;
+        settings.RootPluginSupport = true;
+        try
+        {
+            using CommandConnection connection = await ConnectAsync();
+            await AddPluginAsync("RootOnly", permissions: SbcPermissions.SuperUser);
+            await using FakePluginService service = await FakePluginService.StartAsync(_host);
+            InternalServerException e = (await Assert.ThrowsAsync<InternalServerException>(async () => await connection.StartPluginAsync("RootOnly")))!;
+            Assert.That(e.Message, Does.Contain("Cannot perform command because the plugin service (root) is not started"));
+            Assert.That(service.GetCommandNames(), Does.Not.Contain("StartPlugin"));
+        }
+        finally
+        {
+            settings.RootPluginSupport = false;
+        }
     }
 
     [Test]

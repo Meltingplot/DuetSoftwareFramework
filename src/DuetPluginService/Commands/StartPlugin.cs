@@ -61,6 +61,17 @@ public sealed class StartPlugin(PluginStore pluginStore, ServicePrivileges privi
             throw new InvalidOperationException("Wrong plugin service to start this plugin");
         }
 
+        // Check the manifest again like its installation. Root plugins may run only if root plugin support is enabled in DCS, which owns that setting
+        bool? rootPluginSupport = null;
+        if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser))
+        {
+            using InternalCommandConnection connection = new();
+            await connection.ConnectAsync(_settings.SocketPath, cancellationToken);
+            ObjectModel model = await connection.GetObjectModelAsync("sbc/dsf/rootPluginSupport", cancellationToken);
+            rootPluginSupport = model.SBC?.DSF.RootPluginSupport ?? false;
+        }
+        PluginManifestCheck.Check(plugin, rootPluginSupport);
+
         // Refuse to launch a non-SuperUser plugin if AppArmor is enabled but its profile is missing on disk - this
         // prevents a regen failure (or any other reason the profile is absent) from letting the plugin run unconfined
         if (!_settings.DisableAppArmor && !plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser))

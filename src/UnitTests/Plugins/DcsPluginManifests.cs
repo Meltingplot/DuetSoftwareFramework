@@ -50,6 +50,7 @@ public class DcsPluginManifests : DpsTestBase
     [TestCase("{\"name\":\"No id\"}", "Plugin manifest must provide an id and a name")]
     [TestCase("{\"id\":\"Invalid\"}", "Plugin manifest must provide an id and a name")]
     [TestCase("{\"id\":\"Invalid\",\"name\":\"Invalid\",\"sbcPermissions\":[\"servicePlugins\"]}", "ServicePlugins permission is reserved for internal purposes")]
+    [TestCase("{\"id\":\"Invalid\",\"name\":\"Invalid\",\"sbcPermissions\":[\"superUser\"]}", "Plugins with super-user permissions are not allowed")]
     public async Task ReloadRefusesInvalidManifests(string manifest, string error)
     {
         File.WriteAllText(Path.Combine(PluginDirectory, "Invalid.json"), manifest);
@@ -67,6 +68,7 @@ public class DcsPluginManifests : DpsTestBase
     [TestCase("{\"name\":\"No id\"}", "Plugin manifest must provide an id and a name")]
     [TestCase("{\"id\":\"Invalid\"}", "Plugin manifest must provide an id and a name")]
     [TestCase("{\"id\":\"Invalid\",\"name\":\"Invalid\",\"sbcPermissions\":[\"servicePlugins\"]}", "ServicePlugins permission is reserved for internal purposes")]
+    [TestCase("{\"id\":\"Invalid\",\"name\":\"Invalid\",\"sbcPermissions\":[\"superUser\"]}", "Plugins with super-user permissions are not allowed")]
     public async Task InvalidManifestsAreSkippedAtStart(string manifest, string error)
     {
         File.WriteAllText(Path.Combine(PluginDirectory, "Invalid.json"), manifest);
@@ -74,5 +76,24 @@ public class DcsPluginManifests : DpsTestBase
         await LoadAtStartAsync();
         Assert.That(await DcsPluginIdsAsync(), Is.EqualTo(new[] { "Valid" }));
         Assert.That(DcsLog.Entries.Any(entry => entry.Message == $"Skipping plugin manifest Invalid.json: {error}"), Is.True);
+    }
+
+    [Test]
+    public async Task RootPluginsAreLoadedWithRootPluginSupport()
+    {
+        await EnableRootPluginSupportAsync();
+        File.WriteAllText(Path.Combine(PluginDirectory, "Root.json"), "{\"id\":\"Root\",\"name\":\"Root\",\"sbcPermissions\":[\"superUser\"]}");
+        await LoadAtStartAsync();
+        Assert.That(await DcsPluginIdsAsync(), Is.EqualTo(new[] { "Root" }));
+
+        // ReloadPlugin is forwarded to both plugin services
+        File.WriteAllText(Path.Combine(PluginDirectory, "Reloaded.json"), "{\"id\":\"Reloaded\",\"name\":\"Reloaded\",\"sbcPermissions\":[\"superUser\"]}");
+        await using (UnitTests.IPC.FakePluginService service = await UnitTests.IPC.FakePluginService.StartAsync(Dcs))
+        await using (UnitTests.IPC.FakePluginService root = await UnitTests.IPC.FakePluginService.StartAsync(Dcs, asRoot: true))
+        {
+            await WaitForPluginsStartedAsync();
+            await ReloadAsync("Reloaded");
+        }
+        Assert.That(await DcsPluginIdsAsync(), Is.EqualTo(new[] { "Reloaded", "Root" }));
     }
 }
