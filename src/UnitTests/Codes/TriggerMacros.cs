@@ -535,14 +535,14 @@ public class TriggerMacros
         Assert.That(latencies.Select(latency => latency.Started.transfers), Is.All.EqualTo(1));
     }
 
-    [Test, Explicit("A job and daemon.g that wait can fill RRF's whole code buffer, the spare room of LinkInterface.GetMaxBufferSpacePerChannel " +
-        "(LinkInterface.cs:40-46) is not kept for other channels, so trigger2.g does not get its M98 and M112 out")]
+    [Test]
     public async Task TriggerMacroGetsSpareCodeBufferRoom()
     {
         // The job waits (e.g. M116 at its start) and daemon.g waits (e.g. G4 in its loop) while the codes they have read ahead fill RRF's code
-        // buffer, which all channels share (SbcInterface.cpp, FakeFirmware.StoreCode). DSF limits each channel to the reported buffer size less
-        // two codes of MaxCodeBufferSize "keeping spare room for time-critical codes on other channels" (LinkInterface.cs:40-46, Processor.cs:1036-1046),
-        // but the limit applies to every channel, so daemon.g can take that room
+        // buffer, which all channels share (SbcInterface.cpp:76, 404-412, FakeFirmware.StoreCode). DSF keeps room for two codes of maximum size
+        // "for time-critical codes on other channels" (LinkInterface.SpareBufferSpace): codes read ahead must leave it free, only the next code
+        // of a channel without buffered codes may use it (LinkInterface.SendCode, Processor.BufferCode). Before, the share of the job streams
+        // applied to every channel, so daemon.g could take that room
         await SeedMachineStateAsync();
         WriteEmergencyStopMacros();
         Hold(CodeChannel.File, CodeChannel.Daemon);
