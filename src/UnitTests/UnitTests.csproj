@@ -22,6 +22,7 @@
 		<ProjectReference Include="..\DuetAPIClient\DuetAPIClient.csproj" />
 		<ProjectReference Include="..\DuetControlServer\DuetControlServer.csproj" />
 		<ProjectReference Include="..\DuetHttpClient\DuetHttpClient.csproj" />
+		<ProjectReference Include="..\DuetPluginService\DuetPluginService.csproj" />
 		<ProjectReference Include="..\DuetWebServer\DuetWebServer.csproj" />
 	</ItemGroup>
 
