@@ -499,3 +499,30 @@ Rückbau geprüft: ja, 11:40:25 (kein DSF-Side-Load, /var/tmp/lab-tests weg, OTA
 ```
 
 Bewertung: Ohne den Fix traf die Schleife etwa einen von 40 Neustarts. 40 saubere Neustarts mit 12 Läufen über das Boot-Fenster sind ein Hinweis, kein Beweis. Den Fix zeigen der Census und der Abgleich mit dem echten RRF-Code (`PortMatchesRealFirmwareAfterRestartBeforeArm`).
+
+### 2026-11-08: Fixes #132 bis #138 und F-3/F-4, Side-Load, bestanden
+
+Prüfung der Fixes der Fuzz-Befunde vor dem Merge, auf Tims Wunsch auf dem Kombi-Stand. Neue Tests aus #139 (G2, T3, I1) und #140 (F-3, F-4), jeweils mit und ohne Fix.
+
+```
+Datum, Zeit (UTC): 2026-11-08, 11:38:00 bis 12:56:36
+Anlass, PR, Commit: #131 bis #138 vor dem Merge. Kombi-Stand bdab8815 (v3.7-dev 9eef94b6 + #131 bis #138, ohne Konflikte), dazu #139 (f17fe3a3, Wiederholung 607d9875) und #140 (mit Fix 407ca63b = #140 + #137 + #138, ohne Fix 540f360c, Wiederholung 8481db06)
+DSF: 3.7.0+mp.13 im Image, Side-Load je Lauf, für F-3/F-4 der Injektions-Build, für F-3 mit --plain-link
+RRF: 3.7.0+1.mp.8 (Image), kein RRF-Side-Load
+Stufen und Freigabe durch: 2, Tim (Side-Load und Fehlerinjektion "jetzt, Kombi-Stand"; Stock-Gegenprobe für G2 und T3)
+Lauf 1, Standardlauf mit Kombi-Stand (11:38:00 bis 11:50:54): 30 von 30 bestanden
+RG-6, Erholzeit je Reboot: 12,9 / 12,0 / 12,0 / 12,1 / 12,1 s
+M122 DSF und RRF: nicht auswertbar, der Rückbau startet DCS neu und setzt RRF mit M999 zurück (letzter Reset 20 s vor dem Auslesen)
+Self-Test im Laufzeitraum: 2 gestartet, 2 bestanden
+Journalbefunde Lauf 1: 6 Resets, 6 x "left the extended link", 5 Neustarts der Übertragung, 20 x M291 P"never" (RG-3), 6 x "Machine is halted", 7 x "Aborting orphaned macro file daemon.g", 1 x "Failed to find query", 2 x "Daemon: Out-of-order reply" je innerhalb 300 ms nach einem DCS-Start (bekanntes Muster, auch mit dem Image-DCS). Keine Rechte-Ablehnung im Journal von DCS und DPS. DPS: 16 x "Failed to send console message to DCS", nur während DCS nach M999 gestoppt war (StartPlugin.cs:220-228)
+F-3 mit #137 (12:17:13 bis 12:21:06): 12 Fälle, Retry 10, Reconnect 2 (die zwei Kontrollen, die in beiden Ständen brechen), 0 Abweichungen vom Census
+F-3 ohne #137 (12:21:10 bis 12:31:28): Reconnect 8, Retry 4, 0 Abweichungen. Die 6 P1-Fälle (BothData/DsfData HeaderResponse ToDsf flip 2, word 0x00000005, word 0xfefefefe) brechen ohne Fix und laufen mit Fix per Retry weiter
+F-4 mit #138 (12:31:42 bis 12:34:44): Zähler 0 und 16 bestanden, RRF hält an, Trigger 30 läuft nach M999 wieder
+F-4 ohne #138 (12:34:48 bis 12:38:48, Wiederholung 12:52:11 bis 12:56:36): Zähler 0 durchgefallen wie vorhergesagt: "RRF did not stop after DSF lost the connection: DSF aborted the trigger macro, M409 of the trigger's globals got no answer, trigger30.g started 0x since the reconnect, status Idle". Zähler 16 bestanden
+#139 mit Kombi-Stand (12:39:16 bis 12:43:05, Wiederholung G2 12:49:36 bis 12:52:07): T3 bestanden (Trigger 10 x in 5 s, 496 / 468 Bytes frei), I1 2 von 2 (CHX350, Vigil, QualityAssurance wieder gestartet, 36 von 36 Endpunkten, 0 Ablehnungen; DELETE /machine/systemPackage: 500 "Root plugin support has been disabled"), G2 3 von 3 in der Wiederholung
+#139 gegen das Image (12:43:09 bis 12:46:57): G2 3 von 3 durchgefallen (DCS gestoppt, PID 0 danach), T3 durchgefallen (Trigger 0 x in 5 s, 324 Bytes frei)
+Abweichungen und Folgeaufgabe: zwei Testfehler, beide behoben und wiederholt: RefusedPathInMacroEndsLikeMissingFile erwartete den Fehler des inneren M98 in der HTTP-Antwort (c149ac9b liest ihn aus dem Journal), F-4 endete ohne Fix mit dem HTTP-Timeout statt mit dem Befund (8481db06). Neu und offen: ohne #138 beantwortete RRF auch kein M409 auf HTTP, solange es das verworfene Triggermakro hielt (design/open-findings.md, P4)
+Rückbau geprüft: ja, nach jedem Lauf (kein Side-Load, /var/tmp/lab-tests weg, OTA-Timer aktiv, sys/trigger30.g und 0:/macros/lab-tests weg, idle, Versionen wie vorher)
+```
+
+Bewertung: Jeder Fix zeigt sich auf der Hardware, und jede Gegenprobe ohne Fix zeigt den Fehler. T2 (#134) lief nicht: RRF mp.8 hat T1 noch, dessen Fenster direkt vor dem von T2 liegt. Tim: erst nach dem T1-Fix in RRF. Dass bei T3 mit Fix weniger Platz frei war als geschätzt, passt dazu, dass RRF den größten zusammenhängenden freien Block meldet (SbcInterface.cpp:1376); gemessen ist das nicht.
