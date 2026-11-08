@@ -233,10 +233,14 @@ Measured in the fake firmware without link faults:
 - DSF starts a trigger macro one transfer after the request.
 - trigger2.g's M112 reaches RRF 22-24 transfers after the request. That is 18-22 ms on the WSL VM, with a three-code stand-in for set-led-color.g.
 
-- **T11. Two cases that the fix of T1 (Meltingplot/RepRapFirmware#43) does not cover.** From reading the RRF code, not tested.
+- **T11. A case that the fix of T1 (Meltingplot/RepRapFirmware#43) does not cover.** From reading the RRF code, not tested.
   - daemon.g: at the base level of the Daemon channel, RRF requests daemon.g without waiting (`GCodeBuffer.cpp:1258-1260`). If InvalidateChannel arrives before that request has gone out, RRF closes the file but still sends the request.
-  - A resent InvalidateChannel: if RRF does not get the mutex for it (`SbcInterface.cpp:888-900` at RRF fd4324368), it asks DSF to resend it. The resent copy could end a wait that started after the first one. The same holds for the closal of T12.
-  - The lab test of the T2 fix, `AbortsCrossingMacroRequests` (#139), ran on 2026-11-08 with RRF 3.7.0+1.mp.9-dev.1 (#43) and stopped DCS after about one second through T12 (fixed with RRF #45, see `design/dsf-findings-upstream.md`). It needs a run with RRF #45.
+  - The second case, a resent InvalidateChannel, was seen on the printer and is fixed by #161 (`design/dsf-findings-upstream.md`, T11 resend).
+  - The lab test `AbortsCrossingMacroRequests` (#139) ran again on 2026-11-08 22:37 UTC with RRF 3.7.0+1.mp.9-dev.2 (#43, #45): T12 did not occur in 165 aborts, the run stopped at the resend case. It needs a run with #161 and the RRF fix for T10.
+- **T13. On the USB link the abort window of #134 also covers data that RRF wrote after it read the InvalidateChannel.** From reading the code, not tested.
+  - The window assumes the order of the SPI link: RRF writes the data of a transfer before it reads DSF's packets of that transfer (`Processor.cs`, doc of `_allFilesAbortedSent`). Over USB the firmware sees DSF's data before it composes its response, says the comment of `USB.ResendPacket` (`USB.cs:717-720`); not checked against the USB transport of RRF.
+  - So over USB DSF discards a macro request that RRF makes after the abort in the same exchange, e.g. for a trigger. RRF gives it up after `SbcMaxRequestTime` (3 s, `SbcMessageFormats.h:42`), and the trigger macro does not run.
+  - The CHX uses the SPI link ("Connected to controller over SPI" in the lab journal).
 - **T4. A missing trigger macro is not shown after DSF has run a code on the Trigger channel.** RRF reports it as a pushed code reply (`GCodes.cpp:3703-3706`), DSF takes it as an out-of-order reply and holds it back (`Processor.cs:1122-1127`, `LinkService.cs:727-733, 762-776`). This fits the field journal line "Trigger: Out-of-order reply: 'Macro file trigger8.g not found'", not proven to be the same event. Test: `Codes.TriggerMacros.MissingTriggerMacroAfterCodeOfDsfOnTriggerChannel`.
 - **T5. M581.1 with SBC fields succeeds and creates the trigger although its expression fails** (upstream 4229f552). RRF returns an error and creates nothing (`TriggerItem.cpp:328-339`, wiki M581.1). Test: `Codes.SbcTriggerEvaluation.ErrorInExpressionIsReported`.
 - **T6. A later evaluation error of such a trigger is only logged, and the trigger stays enabled.** RRF disables it and reports it (`TriggerItem.cpp:133-149`). Test: `ErrorInLaterEvaluationDisablesTheTrigger`.
