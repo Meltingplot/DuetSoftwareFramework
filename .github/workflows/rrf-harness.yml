@@ -44,11 +44,11 @@ jobs:
           dotnet-version: 10
 
       - name: Install gcovr
-        # gcovr and its dependencies, pinned as pip installed them on 2026-11-08
+        # gcovr and its dependencies, pinned by version and wheel hash, see the requirements file for where the hashes come from
         run: |
           python3 -m venv "$RUNNER_TEMP/gcovr"
-          "$RUNNER_TEMP/gcovr/bin/pip" install --disable-pip-version-check --only-binary :all: \
-            gcovr==8.6 colorlog==6.12.0 Jinja2==3.1.6 lxml==6.1.3 MarkupSafe==3.0.4 Pygments==2.21.0
+          "$RUNNER_TEMP/gcovr/bin/pip" install --disable-pip-version-check --only-binary :all: --require-hashes \
+            -r .github/workflows/rrf-harness-requirements.txt
 
       - name: Build the harness with gcov
         id: harness
