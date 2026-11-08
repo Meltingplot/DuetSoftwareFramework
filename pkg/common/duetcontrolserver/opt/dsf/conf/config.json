@@ -22,6 +22,7 @@
   "SbcConnectTimeout": 500,
   "SbcTransferTimeout": 500,
   "SbcConnectionTimeout": 4000,
+  "SbcRestartTimeout": 60000,
   "MaxSbcRetries": 10,
   "GpioChipDevice": "/dev/gpiochip0",
   "TransferReadyPin": 25,

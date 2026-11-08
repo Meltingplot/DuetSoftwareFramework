@@ -290,10 +290,9 @@ public class SettingsParsing
 
     /// <summary>
     /// The config.json of the package holds the defaults of <see cref="Settings"/>, so that a new installation behaves like a restored config file.
-    /// SbcRestartTimeout (Settings.cs:185-188, fork commit f5595e28) is missing there; DCS then uses the default, so only the file differs
+    /// SbcRestartTimeout (Settings.cs:185-188, fork commit f5595e28) was missing there; DCS used the default then, so only the file differed
     /// </summary>
     [Test]
-    [Explicit("Bug: the packaged config.json (pkg/common/duetcontrolserver/opt/dsf/conf/config.json) lacks SbcRestartTimeout")]
     public void PackagedConfigFileHoldsTheDefaults()
     {
         string packaged = Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "..", "..", "pkg", "common", "duetcontrolserver", "opt", "dsf", "conf", "config.json");
