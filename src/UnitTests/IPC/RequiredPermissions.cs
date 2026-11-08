@@ -101,9 +101,9 @@ public class RequiredPermissions
         [typeof(SetWifiCountry)] = SbcPermissions.ObjectModelReadWrite,
         [typeof(SyncObjectModel)] = SbcPermissions.CommandExecution | SbcPermissions.ObjectModelRead | SbcPermissions.ObjectModelReadWrite,
 
-        // System packages
-        [typeof(InstallSystemPackage)] = SbcPermissions.SuperUser,
-        [typeof(UninstallSystemPackage)] = SbcPermissions.SuperUser,
+        // System packages. ServicePlugins lets the DSF services run them without SuperUser (see DsfServicesAreRefusedOnlySetNetworkProtocol)
+        [typeof(InstallSystemPackage)] = SbcPermissions.SuperUser | SbcPermissions.ServicePlugins,
+        [typeof(UninstallSystemPackage)] = SbcPermissions.SuperUser | SbcPermissions.ServicePlugins,
 
         // Plugins. NotifyPluginStarted has no attribute (see EveryClientCommandRequiresPermissions), SetPluginData needs ManagePlugins in
         // addition for the data of another plugin (DuetControlServer/Commands/Plugins/SetPluginData.cs)
@@ -141,9 +141,8 @@ public class RequiredPermissions
     [Test]
     public void ConnectionsWithEveryPermissionMayRunEveryCommand()
     {
-        // Root processes (DuetControlServer/IPC/Connection.cs, AssignPermissionsAsync: SuperUser, ServicePlugins and GrantExternalPermissions) and
-        // the DSF services DWS, DPS and DCS (the same, from IsDsfService) hold every permission, so the check refuses them nothing.
-        // A connection without permissions is refused every command
+        // Root processes (DuetControlServer/IPC/Connection.cs, AssignPermissionsAsync: SuperUser, ServicePlugins and GrantExternalPermissions)
+        // hold every permission, so the check refuses them nothing. A connection without permissions is refused every command
         SbcPermissions all = Enum.GetValues<SbcPermissions>().Aggregate(SbcPermissions.None, (granted, permission) => granted | permission);
         foreach (Type command in _requiredPermissions.Keys)
         {
@@ -154,5 +153,19 @@ public class RequiredPermissions
                 Assert.That(attribute.Check(SbcPermissions.None), Is.False, command.Name);
             }
         }
+    }
+
+    [Test]
+    public void DsfServicesAreRefusedOnlySetNetworkProtocol()
+    {
+        // The DSF services DWS, DPS and DCS get ServicePlugins and GrantExternalPermissions, but not SuperUser (DuetControlServer/IPC/Connection.cs,
+        // AssignPermissionsAsync after IsDsfService). DWS still installs and uninstalls system packages for PUT and DELETE /machine/systemPackage,
+        // which DWC uses for dsf-update*.zip. SetNetworkProtocol is sent only by DuetPiManagementPlugin, a superUser plugin that runs as root
+        // (pkg/common/duetpimanagementplugin/opt/dsf/plugins/DuetPiManagementPlugin.json)
+        SbcPermissions dsfService = Enum.GetValues<SbcPermissions>().Aggregate(SbcPermissions.None, (granted, permission) => granted | permission) & ~SbcPermissions.SuperUser;
+        string[] refused = [.. _requiredPermissions.Keys
+            .Where(command => command.GetCustomAttribute<RequiredPermissionsAttribute>()?.Check(dsfService) == false)
+            .Select(command => command.Name).Order()];
+        Assert.That(refused, Is.EqualTo(new[] { nameof(SetNetworkProtocol) }));
     }
 }

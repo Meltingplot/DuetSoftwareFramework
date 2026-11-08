@@ -238,7 +238,7 @@ public class IpcClientApi
         _connection.ReloadPlugin("NoSuchPlugin");
         await _connection.ReloadPluginAsync("NoSuchPlugin");
 
-        // An external program has no SuperUser permission (Connection.GrantExternalPermissions), so system packages are refused
+        // An external program has neither SuperUser nor ServicePlugins (Connection.GrantExternalPermissions), so system packages are refused
         // (and root plugin support is off by default as well)
         Assert.Throws<InternalServerException>(() => _connection.InstallSystemPackage("/tmp/does-not-exist.deb"));
         await Assert.ThrowsAsync<InternalServerException>(() => _connection.InstallSystemPackageAsync("/tmp/does-not-exist.deb"));

@@ -192,8 +192,8 @@ public class IpcCommandMode
     /// An external program gets every permission except SuperUser and ServicePlugins (Connection.GrantExternalPermissions), so commands
     /// that require one of them must be refused with an UnauthorizedAccessException before they are executed (Connection.CheckPermissions)
     /// </summary>
-    [TestCase("{\"command\":\"UninstallSystemPackage\",\"package\":\"nano\"}", Description = "SuperUser")]
-    [TestCase("{\"command\":\"InstallSystemPackage\",\"packageFile\":\"/tmp/does-not-exist.deb\"}", Description = "SuperUser")]
+    [TestCase("{\"command\":\"UninstallSystemPackage\",\"package\":\"nano\"}", Description = "SuperUser or ServicePlugins")]
+    [TestCase("{\"command\":\"InstallSystemPackage\",\"packageFile\":\"/tmp/does-not-exist.deb\"}", Description = "SuperUser or ServicePlugins")]
     [TestCase("{\"command\":\"SetPluginProcess\",\"plugin\":\"NoSuchPlugin\",\"pid\":1}", Description = "ServicePlugins")]
     [TestCase("{\"command\":\"SetNetworkProtocol\",\"protocol\":\"ftp\",\"enabled\":true}", Description = "SuperUser")]
     public async Task RefusesCommandsWithoutPermission(string json)

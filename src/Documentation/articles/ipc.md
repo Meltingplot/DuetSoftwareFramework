@@ -28,10 +28,10 @@ sequenceDiagram
 ```
 
 1. The client opens the socket. The server creates a `Connection` with a unique id and works out the
-   client's [permissions](plugins.md#permissions) from its PID/UID/GID: root processes and the DSF
-   services (DWS, DPS) get everything; a plugin process is matched against the `Plugins` model (walking
-   the parent-process tree) to inherit its manifest permissions; other external programs get everything
-   except `SuperUser` and `ServicePlugins`.
+   client's [permissions](plugins.md#permissions) from its PID/UID/GID: root processes get everything;
+   the DSF services (DWS, DPS) get everything except `SuperUser`; a plugin process is matched against the
+   `Plugins` model (walking the parent-process tree) to inherit its manifest permissions; other external
+   programs get everything except `SuperUser` and `ServicePlugins`.
 2. The server sends a `ServerInitMessage`; the client replies with a `ClientInitMessage` naming the
    desired [connection mode](#connection-modes) and protocol version.
 3. The server validates the version and instantiates the matching processor
@@ -85,7 +85,7 @@ under `src/DuetControlServer/Commands/`:
 | Plugins | `InstallPlugin`, `StartPlugin(s)`, `StopPlugin(s)`, `ReloadPlugin`, `UninstallPlugin`, `SetPluginData`, `SetPluginProcess`, `NotifyPluginStarted` | `ManagePlugins` |
 | HttpEndpoints | `AddHttpEndpoint`, `RemoveHttpEndpoint` | `RegisterHttpEndpoints` |
 | UserSessions | `AddUserSession`, `RemoveUserSession` | `ManageUserSessions` |
-| Packages | `InstallSystemPackage`, `UninstallSystemPackage` | `ManagePlugins` |
+| Packages | `InstallSystemPackage`, `UninstallSystemPackage` | `SuperUser` / `ServicePlugins` |
 
 A `Code` command runs a full [`Code`](gcode-flow.md#the-code-object) object; `SimpleCode` parses one
 or more codes from a text string. Both enter the [code pipeline](gcode-flow.md).

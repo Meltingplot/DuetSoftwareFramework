@@ -402,6 +402,7 @@ public abstract class BaseCommandConnection(ConnectionMode mode) : BaseConnectio
     /// <param name="packageFile">Absolute file path to the package file</param>
     /// <exception cref="SocketException">Command could not be processed</exception>
     /// <seealso cref="SbcPermissions.SuperUser"/>
+    /// <seealso cref="SbcPermissions.ServicePlugins"/>
     public void InstallSystemPackage(string packageFile) => PerformCommand(new InstallSystemPackage { PackageFile = packageFile });
 
     /// <summary>
@@ -413,6 +414,7 @@ public abstract class BaseCommandConnection(ConnectionMode mode) : BaseConnectio
     /// <exception cref="OperationCanceledException">Operation has been cancelled</exception>
     /// <exception cref="SocketException">Command could not be processed</exception>
     /// <seealso cref="SbcPermissions.SuperUser"/>
+    /// <seealso cref="SbcPermissions.ServicePlugins"/>
     public async Task InstallSystemPackageAsync(string packageFile, CancellationToken cancellationToken = default)
     {
         await PerformCommandAsync(new InstallSystemPackage { PackageFile = packageFile }, cancellationToken).ConfigureAwait(false);
@@ -939,6 +941,7 @@ public abstract class BaseCommandConnection(ConnectionMode mode) : BaseConnectio
     /// <param name="package">Identifier of the package</param>
     /// <exception cref="SocketException">Command could not be processed</exception>
     /// <seealso cref="SbcPermissions.SuperUser"/>
+    /// <seealso cref="SbcPermissions.ServicePlugins"/>
     public void UninstallSystemPackage(string package) => PerformCommand(new UninstallSystemPackage { Package = package });
 
     /// <summary>
@@ -950,6 +953,7 @@ public abstract class BaseCommandConnection(ConnectionMode mode) : BaseConnectio
     /// <exception cref="OperationCanceledException">Operation has been cancelled</exception>
     /// <exception cref="SocketException">Command could not be processed</exception>
     /// <seealso cref="SbcPermissions.SuperUser"/>
+    /// <seealso cref="SbcPermissions.ServicePlugins"/>
     public async Task UninstallSystemPackageAsync(string package, CancellationToken cancellationToken = default)
     {
         await PerformCommandAsync(new UninstallSystemPackage { Package = package }, cancellationToken).ConfigureAwait(false);
