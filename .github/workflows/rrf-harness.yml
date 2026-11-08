@@ -1,0 +1,162 @@
+name: RRF harness
+
+# Checks DSF's C# port of RRF's SBC link against the real RRF code (firmware/README.md): LinkRecovery.PortMatchesRealFirmware*
+# replays the census of the unit tests through the SBC link host harness of the RepRapFirmware submodule and compares every
+# exchange, against both harness variants. The harness is built here with g++ and gcov, and the step summary shows how many
+# lines and branches of DataTransfer.cpp, CRC32.cpp and SbcInterface::TaskLoop the comparison reached. There is no coverage
+# goal yet
+on:
+  pull_request:
+    branches: [v3.7-dev]
+  push:
+    branches: [v3.7-dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rrf-harness-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HARNESS: firmware/RepRapFirmware/Tools/sbc-harness
+
+defaults:
+  run:
+    # bash -eo pipefail, so that a failing command before "| tee" fails the step
+    shell: bash
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Fetch the RepRapFirmware submodule
+        # Only this one and without history: the harness reads RepRapFirmware/src and nothing of the other submodules
+        run: git submodule update --init --depth 1 firmware/RepRapFirmware
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10
+
+      - name: Install gcovr
+        # gcovr and its dependencies, pinned by version and wheel hash, see the requirements file for where the hashes come from
+        run: |
+          python3 -m venv "$RUNNER_TEMP/gcovr"
+          "$RUNNER_TEMP/gcovr/bin/pip" install --disable-pip-version-check --only-binary :all: --require-hashes \
+            -r .github/workflows/rrf-harness-requirements.txt
+
+      - name: Build the harness with gcov
+        id: harness
+        # The harness Makefile compiles with $(CXX) $(BASEFLAGS) $(CXXFLAGS) and links with $(CXX) $(LDFLAGS), so --coverage in
+        # CXX reaches both and its own flags stay as they are. -O0 instead of its default -O1 keeps every line in the report
+        run: |
+          g++-13 --version | head -n 1
+          make -C "$HARNESS" -j"$(nproc)" CXX="g++-13 --coverage" CXXFLAGS="-O0 -g"
+
+      - name: Build the unit tests
+        id: tests
+        run: dotnet build src/UnitTests/UnitTests.csproj
+
+      - name: Compare with usb1 (MB6HC release build, SUPPORTS_SBC_OVER_USB=1)
+        if: ${{ !cancelled() && steps.harness.outcome == 'success' && steps.tests.outcome == 'success' }}
+        env:
+          RRF_HOST_HARNESS: ${{ github.workspace }}/firmware/RepRapFirmware/Tools/sbc-harness/build/sbc-harness-usb1
+          RRF_HOST_POLL: "1"
+          RRF_HOST_RULE: "1"
+        run: >-
+          dotnet test src/UnitTests/UnitTests.csproj --no-build --filter "FullyQualifiedName~PortMatchesRealFirmware"
+          --logger "trx;LogFileName=usb1.trx" --results-directory "$RUNNER_TEMP/rrf-harness"
+
+      - name: Compare with usb0 (SUPPORTS_SBC_OVER_USB=0)
+        if: ${{ !cancelled() && steps.harness.outcome == 'success' && steps.tests.outcome == 'success' }}
+        env:
+          RRF_HOST_HARNESS: ${{ github.workspace }}/firmware/RepRapFirmware/Tools/sbc-harness/build/sbc-harness-usb0
+          RRF_HOST_RULE: "1"
+        run: >-
+          dotnet test src/UnitTests/UnitTests.csproj --no-build --filter "FullyQualifiedName~PortMatchesRealFirmware"
+          --logger "trx;LogFileName=usb0.trx" --results-directory "$RUNNER_TEMP/rrf-harness"
+
+      - name: Check that every comparison ran
+        # Without RRF_HOST_HARNESS the tests are ignored, and dotnet test also passes when the filter finds nothing
+        if: ${{ !cancelled() }}
+        run: |
+          python3 -I - "$RUNNER_TEMP/rrf-harness" <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
+          import os, re, sys
+          import xml.etree.ElementTree as ET  # TRX files written by dotnet test in this job
+          ns = {"t": "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"}
+          failed = False
+          print("### Comparison with the real RRF code\n")
+          print("| Harness | Settings | Tests passed | Cases replayed | Exchanges compared |\n|---|---|---|---|---|")
+          for variant, settings in (("usb1", "RRF_HOST_POLL=1 RRF_HOST_RULE=1"), ("usb0", "RRF_HOST_RULE=1")):
+              path = os.path.join(sys.argv[1], variant + ".trx")
+              if not os.path.exists(path):
+                  print(f"| {variant} | {settings} | no results | | |")
+                  failed = True
+                  continue
+              run = ET.parse(path).getroot()
+              counters = run.find("t:ResultSummary/t:Counters", ns).attrib
+              total, passed = int(counters["total"]), int(counters["passed"])
+              cases = events = 0
+              for output in run.iterfind(".//t:UnitTestResult/t:Output/t:StdOut", ns):
+                  match = re.search(r"(\d+) cases, (\d+) events compared", output.text or "")
+                  if match:
+                      cases += int(match[1])
+                      events += int(match[2])
+              print(f"| {variant} | {settings} | {passed} of {total} | {cases} | {events} |")
+              failed |= total == 0 or passed != total
+          sys.exit(1 if failed else 0)
+          EOF
+
+      - name: Report the coverage
+        if: ${{ !cancelled() && steps.harness.outcome == 'success' }}
+        working-directory: firmware/RepRapFirmware
+        # SbcInterface.cpp has only the lines of TaskLoop, which harness.cpp compiles with #line directives. --merge-lines counts a
+        # line of a template (ReadDataHeader<T>, WriteDataHeader<T>) once instead of once per instance
+        run: |
+          out="$RUNNER_TEMP/rrf-harness/coverage"
+          mkdir -p "$out/html"
+          gcovr=("$RUNNER_TEMP/gcovr/bin/gcovr" --root . --gcov-executable gcov-13 --merge-lines
+            --filter 'src/SBC/DataTransfer\.cpp$' --filter 'src/Storage/CRC32\.cpp$' --filter 'src/SBC/SbcInterface\.cpp$')
+          "${gcovr[@]}" --json-summary "$out/summary.json" --cobertura "$out/cobertura.xml" --html-details "$out/html/index.html" \
+            Tools/sbc-harness/build
+          for variant in usb1 usb0; do
+            "${gcovr[@]}" --json-summary "$out/summary-$variant.json" "Tools/sbc-harness/build/$variant"
+          done
+          python3 -I - "$out" <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json, os, sys
+          def load(name):
+              with open(os.path.join(sys.argv[1], name)) as f:
+                  summary = json.load(f)
+              return {f["filename"]: f for f in summary["files"]} | {"Total": summary}
+          def ratio(s, kind):
+              total = s[kind + "_total"]
+              return 100 * s[kind + "_covered"] / total if total else 0
+          both = load("summary.json")
+          alone = [load(f"summary-{variant}.json") for variant in ("usb1", "usb0")]
+          print("\n### RRF coverage of the comparison\n")
+          print("Lines and branches of both harness builds together, then of each build alone (lines / branches)\n")
+          print("| File | Lines | Branches | usb1 | usb0 |\n|---|---|---|---|---|")
+          for name, s in both.items():
+              label = name + " (TaskLoop)" if name.endswith("SbcInterface.cpp") else name
+              cells = [f"{s[kind + '_covered']} of {s[kind + '_total']} ({ratio(s, kind):.1f} %)" for kind in ("line", "branch")]
+              cells += [f"{ratio(v[name], 'line'):.1f} % / {ratio(v[name], 'branch'):.1f} %" if name in v else "-" for v in alone]
+              print(f"| {label} | {' | '.join(cells)} |")
+          EOF
+
+      - name: Run the harness's own tests
+        # After the report, so that their counts stay out of it
+        if: ${{ !cancelled() && steps.harness.outcome == 'success' }}
+        run: make -C "$HARNESS" CXX="g++-13 --coverage" CXXFLAGS="-O0 -g" check
+
+      - name: Upload the test results and the coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rrf-harness-results
+          path: ${{ runner.temp }}/rrf-harness
+          if-no-files-found: ignore

@@ -60,6 +60,17 @@ RRF_HOST_HARNESS=$H/sbc-harness-usb0 RRF_HOST_RULE=1 dotnet test src/UnitTests -
 - `RRF_HOST_RULE=1` means the RRF has the rule of Meltingplot/RepRapFirmware#41, which `3.7.0+1.mp.8` has.
 - On 2026-11-08 both passed, 6 of 6 each, against DSF `v3.7-dev` 9e6449d1.
 
+### In CI
+
+`.github/workflows/rrf-harness.yml` runs this comparison for every pull request and push to `v3.7-dev`:
+
+- **Checkout:** only `firmware/RepRapFirmware`, without history. The harness needs nothing of the other submodules.
+- **Build:** g++ 13 on the runner instead of the Docker image, which would fetch the Arm toolchain for nothing. gcov comes in through the make variables, so the submodule stays unchanged: `make CXX="g++-13 --coverage" CXXFLAGS="-O0 -g"`. The harness Makefile compiles and links with `$(CXX)`, and `-O0` replaces its default `-O1 -g`.
+- **Tests:** the two `dotnet test` commands above. The job fails when a test fails, and also when one does not run: without `RRF_HOST_HARNESS` the tests are ignored, and `dotnet test` still exits with 0.
+- **Coverage:** gcovr 8.6 reads the counts of both variants. It and its dependencies are pinned by version and wheel hash in `.github/workflows/rrf-harness-requirements.txt`, which says where each hash comes from. The step summary lists the lines and branches of `DataTransfer.cpp`, `CRC32.cpp` and `SbcInterface::TaskLoop` that the comparison reached, for both builds together and for each alone. There is no coverage goal yet.
+- **Own tests:** the harness's `make check` runs last, so that its counts stay out of the report.
+- **Artifact:** `rrf-harness-results` holds the TRX files and the gcovr reports (HTML, Cobertura, JSON).
+
 ## Test builds on the lab printer
 
 - **Version:** a test build needs a version string of its own, because `DuetControlServer -u` flashes a board only when its version differs from the file's. Set it in `RepRapFirmware/src/Version.h` (`MAIN_VERSION`) or `Duet3Expansion/src/Version.h` (`VERSION`), e.g. `3.7.0+1.mp.9-dev.1`.
