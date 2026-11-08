@@ -532,7 +532,7 @@ Bewertung: Jeder Fix zeigt sich auf der Hardware, und jede Gegenprobe ohne Fix z
 Ursache des 15-s-Hängers beim Stoppen von DCS (#147) auf der Hardware gesucht, dann den Fix (#149) geprüft. Probe `ShutdownHangProbe`: ein temporärer Labortest, nicht eingecheckt. Er lässt DCS über eine bind-gemountete Kopie von `config.json` mit `LogLevel` debug laufen und misst jeden Stopp von DCS.
 
 ```
-Datum, Zeit (UTC): 2026-11-08, 17:15:36 bis 17:17:28 (Lauf 1, abgebrochen), 17:22 bis 17:30 (Lauf 2), etwa 21:00 (Lauf 3, mit #149)
+Datum, Zeit (UTC): 2026-11-08, 17:15:36 bis 17:17:28 (Lauf 1, abgebrochen), 17:20:15 bis 17:29:36 (Lauf 2), 19:56:29 bis 20:05:45 (Lauf 3, mit #149)
 Anlass, PR, Commit: Ursache des Hängers (#147), dann #149. Lauf 1 und 2: Injektions-Build von v3.7-dev 9e6449d1. Lauf 3: Injektions-Build von fix/shutdown b2a6affd
 DSF: 3.7.0+mp.13 im Image, Side-Load je Lauf
 RRF: 3.7.0+1.mp.8 (Image)
