@@ -232,17 +232,39 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     }
 
     /// <summary>
-    /// DCS skips manifests without id or name at start, "a plugin without id or name cannot be addressed properly" (DuetControlServer/Model/PeriodicUpdateService.cs:99-104).
-    /// DPS adds them to its store (PluginService.cs:43-53). The root service would then regenerate the missing profile "dsf." for it (PluginService.cs:64-111),
-    /// whose attachment is the whole plugin directory, Path.Combine(pluginDirectory, "") (AppArmorPermissionManager.cs:34); that part runs only as root
+    /// DCS skips manifests without id or name at start (DuetControlServer/Model/PeriodicUpdateService.cs), DPS does the same with the same check
+    /// (DuetSharedLibrary/PluginManifestCheck.cs). Otherwise the root service would regenerate the missing profile "dsf." for it (PluginService.cs:62-112),
+    /// whose attachment is the whole plugin directory, Path.Combine(pluginDirectory, "") (AppArmorPermissionManager.cs:34)
     /// </summary>
     [Test]
-    [Explicit("Bug: DPS loads a manifest without id at start, DCS skips it")]
     public async Task ManifestWithoutIdIsNotLoadedAtStart()
     {
         File.WriteAllText(Path.Combine(PluginDirectory, "Anonymous.json"), "{\"name\":\"Anonymous\",\"sbcPermissions\":[\"fileSystemAccess\"]}");
+        File.WriteAllText(Path.Combine(PluginDirectory, "Valid.json"), "{\"id\":\"Valid\",\"name\":\"Valid\"}");
+        await StartDpsAsync(register: false, privileged: true);
+        Assert.That(Dps!.Store.Plugins.ConvertAll(plugin => plugin.Id), Is.EqualTo(new[] { "Valid" }));
+        Assert.That(Dps.Log.Contains("Skipping plugin manifest Anonymous.json: Plugin manifest must provide an id and a name"), Is.True);
+        Assert.That(File.Exists(Dps.ProfilePath("")), Is.False, "A profile for the whole plugin directory was generated");
+        Assert.That(File.Exists(Dps.ProfilePath("Valid")), Is.True);
+    }
+
+    [Test]
+    public async Task ReloadRefusesAManifestWithoutId()
+    {
+        // ReloadPlugin makes the check of the installation before it changes anything
         await StartDpsAsync(register: false);
-        Assert.That(Dps!.Store.Plugins, Is.Empty);
+        string file = Path.Combine(PluginDirectory, "Changed.json");
+        File.WriteAllText(file, "{\"id\":\"Changed\",\"name\":\"Changed\",\"version\":\"1.0\"}");
+        await ReloadAsync("Changed");
+
+        File.WriteAllText(file, "{\"name\":\"Changed\",\"version\":\"2.0\"}");
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await ReloadAsync("Changed")))!;
+        Assert.That(e.Message, Is.EqualTo("Plugin manifest must provide an id and a name"));
+        Assert.That((await Dps!.GetPluginAsync("Changed"))!.Version, Is.EqualTo("1.0"), "The plugin was changed");
+
+        File.WriteAllText(Path.Combine(PluginDirectory, "New.json"), "{\"name\":\"New\"}");
+        Assert.ThrowsAsync<ArgumentException>(async () => await ReloadAsync("New"));
+        Assert.That(Dps.Store.Plugins.ConvertAll(item => item.Id), Is.EqualTo(new[] { "Changed" }), "An empty plugin was added");
     }
 
     /// <summary>

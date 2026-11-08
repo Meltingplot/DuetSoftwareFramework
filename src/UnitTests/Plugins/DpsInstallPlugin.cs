@@ -127,6 +127,8 @@ public class DpsInstallPlugin : DpsTestBase
     }
 
     [TestCase(null, "plugin.json not found in the ZIP file")]
+    [TestCase("{\"name\":\"No id\"}", "Plugin manifest must provide an id and a name")]
+    [TestCase("{\"id\":\"NoName\"}", "Plugin manifest must provide an id and a name")]
     [TestCase("{\"id\":\"Reserved\",\"name\":\"Reserved\",\"sbcPermissions\":[\"servicePlugins\"]}", "ServicePlugins permission is reserved for internal purposes")]
     [TestCase("{\"id\":\"Reserved\",\"name\":\"Reserved\",\"sbcPermissions\":[\"superUser\",\"servicePlugins\"]}", "ServicePlugins permission is reserved for internal purposes")]
     [TestCase("{\"id\":\"Quote\",\"name\":\"Quote\",\"sbcExecutableArguments\":\"a\\\"b\"}", "SbcExecutableArguments must not contain shell metacharacters")]
@@ -349,13 +351,11 @@ public class DpsInstallPlugin : DpsTestBase
     }
 
     /// <summary>
-    /// The id is optional in PluginManifest (PluginManifest.cs:25-26), DCS refuses a manifest without it (DuetControlServer/Commands/Plugins/InstallPlugin.cs:193-196)
-    /// before it forwards InstallPlugin, DPS does not check it (InstallPlugin.cs:282-310). With an empty id the plugin base is the plugin directory itself
-    /// (InstallPlugin.cs:83), which is deleted with all installed plugins (InstallPlugin.cs:84-96). DPS only gets commands from DCS, so this is
-    /// defence in depth like the ServicePlugins check that both make (InstallPlugin.cs:294-298 and DCS InstallPlugin.cs:198-202)
+    /// The id is optional in PluginManifest (PluginManifest.cs:25-26). With an empty id the plugin base would be the plugin directory itself
+    /// (InstallPlugin.cs:83), which would be deleted with all installed plugins (InstallPlugin.cs:84-96). DPS refuses such a manifest with the check that
+    /// DCS makes before it forwards InstallPlugin (DuetSharedLibrary/PluginManifestCheck.cs, DuetControlServer/Commands/Plugins/InstallPlugin.cs)
     /// </summary>
     [Test]
-    [Explicit("Bug: DPS accepts a manifest without id and deletes the whole plugin directory (DCS refuses it before)")]
     public async Task ManifestWithoutIdIsRefused()
     {
         await StartDpsAsync(register: false);

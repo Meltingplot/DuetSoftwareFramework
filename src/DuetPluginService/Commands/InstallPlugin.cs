@@ -291,6 +291,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
             plugin.UpdateFromJson(manifestJson.RootElement, false);
         }
         plugin.Pid = -1;
+        PluginManifestCheck.Check(plugin);
 
         // Check for reserved permissions
         if (plugin.SbcPermissions.HasFlag(SbcPermissions.ServicePlugins))

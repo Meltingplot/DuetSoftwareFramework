@@ -10,6 +10,7 @@ using DuetAPIClient;
 using DuetPluginService.Commands;
 using DuetPluginService.IPC;
 using DuetPluginService.PermissionManagers;
+using DuetSharedLibrary;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -46,6 +47,18 @@ public sealed class PluginService(CommandFactory commandFactory, IPermissionMana
                     Plugin plugin = new();
                     plugin.UpdateFromJson(manifestJson.RootElement, false);
                     plugin.Pid = -1;
+
+                    // Do not load manifests that could not be installed either
+                    try
+                    {
+                        PluginManifestCheck.Check(plugin);
+                    }
+                    catch (ArgumentException e)
+                    {
+                        logger.LogError("Skipping plugin manifest {File}: {Message}", Path.GetFileName(file), e.Message);
+                        continue;
+                    }
+
                     using (await pluginStore.LockAsync(cancellationToken))
                     {
                         pluginStore.Plugins.Add(plugin);
