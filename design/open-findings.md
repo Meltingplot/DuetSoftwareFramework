@@ -128,7 +128,7 @@ The census showed it once a restart between two exchanges was added (`SpiFault.R
 
 ## Findings of the fuzz and coverage tests (2026-11-07)
 
-The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, and the trigger tests of #129 found 9 more. None is fixed. Each has an `[Explicit]` test in `src/UnitTests` that reproduces it and fails today. Run one by its exact name, e.g. `dotnet test src/UnitTests/bin/Debug/net10.0/UnitTests.dll --filter "FullyQualifiedName=UnitTests.WebServer.SdRootDeletionTests.RootCannotBeDeleted"`. Once a finding is fixed, remove the `[Explicit]` of its test and this entry.
+The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the trigger tests of #129 found 9 more, and the stop path tests of #130 another 4. None is fixed. Each has an `[Explicit]` test in `src/UnitTests` that reproduces it and fails today. Run one by its exact name, e.g. `dotnet test src/UnitTests/bin/Debug/net10.0/UnitTests.dll --filter "FullyQualifiedName=UnitTests.WebServer.SdRootDeletionTests.RootCannotBeDeleted"`. Once a finding is fixed, remove the `[Explicit]` of its test and this entry.
 
 - **Line numbers:** DSF `v3.7-dev` at c6d225f2. The production code there is the same as at d576ee9e, where the tests started. RRF `3.7-dev` at cde4e4fa1 (3.7.0+1.mp.8).
 - **Printer:** "printer" marks findings that were confirmed on the lab printer on 2026-11-07, with DSF 3.7.0+mp.13 and RRF 3.7.0+1.mp.8.
@@ -144,6 +144,7 @@ The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, and th
 6. **O3** and **O4** An out-of-range float or a global string with invalid UTF-8 makes the object model unserializable, so model queries, subscriptions and DWS fail.
 7. **T1** and **T2** An invalidation or abort at the wrong moment leaves the Trigger channel or another channel blocked until DCS restarts. The door and E-stop macros run on the Trigger channel.
 8. **T3** A full code buffer can hold back the M98 and the M112 of trigger2.g.
+9. **P1** and **P4** One bit error can leave the plain link stuck for 60 s, and a trigger macro can get lost after a reconnect while RRF keeps running.
 
 ### SBC link (#122)
 
@@ -312,3 +313,54 @@ Measured in the fake firmware without link faults:
 - **T9. R1 and R2 of SBC triggers count simulating and cancelling as not printing** (`SbcTriggerService.cs:341-344`). RRF's `IsPrinting` counts both as printing (`GCodes.cpp:3993`, `RepRap.cpp:1961-1968`). Test: `EnableConditionWhilePrinting` with Simulating and Cancelling.
 
 Open question: the wiki for M581 says polling for further triggers is suspended while a trigger macro runs. RRF keeps checking and marks the trigger as pending (`GCodes.cpp:983-989`).
+
+### Stop path under SPI faults (#130)
+
+R10 of `design/sbc-link-requirements.md` asks that a software stop reaches RRF within 100 ms while the link is disturbed. The table there marks R10 as not implemented.
+
+**How it was measured:**
+- The real path: M112 through MCodeHandler, `EmergencyStopAsync` and LinkService, against the SPI port of RRF (`FakeRrfSpi`).
+- The fault models of the SBC link fuzzers: two bit flips, errors on both lines, and noise.
+- Times are virtual and count the link's share only.
+
+**Results:**
+
+| Case | Median | Max | Stops over 100 ms |
+|---|---|---|---|
+| Extended link | 0.05 ms | 0.25 ms (noise) | none |
+| RRF idle, pausing 25 ms between transfers (M576 S default) | 38 ms | 50 ms | none |
+| Plain link with noise | 0.05 ms | 502 ms | 5 of 1000, plus 2 stuck |
+
+- **Trigger macros:** the first code of a trigger macro reaches RRF within 2.5 ms on the extended link.
+- **RRF restart just before the stop:** the restarted RRF gets the stop in only about half of the cases, because it drops its first transfer by a connection reset. The restart is a stop itself (R6), but the restarted RRF is not halted. Whether that matters is open.
+- **What R10 does not hold yet:** a stop waits behind a long code transfer that noise keeps failing. The worst case was about 503 ms, on both links.
+
+Findings:
+
+- **P1. One bit error can leave the plain link stuck until DCS gives up after 60 s.**
+  - Input: `Stop None | Stop 3 ToDsf 130`.
+  - The flip turns RRF's Success after the header into BadHeaderChecksum at DSF, and DSF sends its 16-byte header again.
+  - RRF takes that as the 8 bytes of stop data and answers BadDataChecksum. RRF prefers this over DSF's BadResponse and repeats the data without a limit (`DataTransfer.cpp:1218-1223`).
+  - Exchanges keep coming, so RRF never times out. Only `SbcRestartTimeout` (60 s) ends it.
+  - The census does not cover this, because its DSF data is longer than a header.
+  - Rests on the SPI port; not replayed against the RRF host build.
+  - Test: `SPI.StopPath.EmergencyStopReachesRrfWithin100Ms`.
+- **P2. Two bit errors on the plain link delay the stop to about 500 ms,** through RRF's transfer timeout and disconnect. Input: `Stop None | Stop 3 ToDsf 0 | Stop 6 ToDsf 2`. Same test.
+- **P3. M112 can reply before RRF has processed the stop.**
+  - LinkService completes the halt on RRF's Success for the data, and DSF's own last Success is never acknowledged.
+  - Inputs:
+    - plain link: one flip, `Stop None | Stop 5 ToRrf 0`;
+    - extended link: four bits in one response.
+  - The lead was at most 0.05 ms in every case found. This affects the meaning of the reply as #88 intended it, not the delivery of the stop.
+  - Test: `M112RepliesOnlyOnceRrfIsStopped`.
+- **P4. A trigger macro can get lost after a reconnect while RRF keeps running.**
+  - **Extended link** (fork code):
+    - Ten data errors make DSF lose the connection. It leaves the extended link with sequence number 0x0000, which follows RRF's last 0xFFFF as a regular number.
+    - So RRF does not reset (`SequenceDistance`, `DataTransfer.cpp:838-852`), although its comment at `:1125-1131` expects a reset.
+    - RRF has processed the codes and waits for a MacroCompleted that DSF dropped with its reset.
+    - This happens only when that transfer has counter value 0; with other counters RRF disconnects and stops. 6 of 223 random reconnects lost the macro.
+  - **Plain link:** two flips, `Trigger None | Code 0 ToDsf 0 | Code 1 ToRrf 0`.
+  - **Effect, read from the RRF source and not modelled:** the open trigger file would keep `IsTriggerBusy` true (`GCodes.cpp:423-431`) and hold back later triggers, trigger2.g included (`GCodes.cpp:999`).
+  - Rests on the SPI port; not replayed against the RRF host build.
+  - Test: `TriggerMacroRunsOrRrfStops`.
+- **Observation:** a trigger request that crosses an emergency stop starts its macro after the stop, but its codes are held back, because the buffer space is 0 after `InvalidateCodes` (`LinkInterface.cs:615`).
