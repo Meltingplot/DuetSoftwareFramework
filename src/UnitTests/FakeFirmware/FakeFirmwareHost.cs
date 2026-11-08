@@ -83,8 +83,10 @@ public sealed class FakeFirmwareHost : IAsyncDisposable
     /// <param name="configureSettings">Optional callback to change the settings</param>
     /// <param name="ipc">Whether to start the IPC server of DCS as well, listening on <see cref="SocketPath"/></param>
     /// <param name="minimumLogLevel">Optional minimum level of the DCS log, e.g. Trace to run the code paths that log the IPC traffic</param>
+    /// <param name="configureServices">Optional callback to add or replace services after the DCS ones, e.g. a code handler that holds a code</param>
     /// <returns>Started host</returns>
-    public static async Task<FakeFirmwareHost> StartAsync(Action<FakeFirmware>? configureFirmware = null, Action<Settings>? configureSettings = null, bool ipc = false, LogLevel? minimumLogLevel = null)
+    public static async Task<FakeFirmwareHost> StartAsync(Action<FakeFirmware>? configureFirmware = null, Action<Settings>? configureSettings = null, bool ipc = false, LogLevel? minimumLogLevel = null,
+        Action<IServiceCollection>? configureServices = null)
     {
         string baseDirectory = Path.Combine(Path.GetTempPath(), "dsf-fake-firmware-" + Guid.NewGuid().ToString("N"));
         foreach (string directory in new[] { "sys", "macros", "gcodes", "filaments", "firmware", "menu", "www" })
@@ -122,6 +124,7 @@ public sealed class FakeFirmwareHost : IAsyncDisposable
                 services.AddIPC();
             }
             services.AddHostedService<LinkService>();
+            configureServices?.Invoke(services);
         });
 
         FakeFirmwareHost host = new(provider, firmware, baseDirectory) { SocketPath = ipc ? settings.FullSocketPath : null };

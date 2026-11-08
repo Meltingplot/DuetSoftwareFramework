@@ -42,10 +42,18 @@ public sealed class IpcLog : ILoggerProvider
     /// <param name="host">Host to attach to</param>
     /// <param name="minimumLevel">Minimum level of the recorded entries</param>
     /// <returns>Attached log</returns>
-    public static IpcLog Attach(FakeFirmwareHost host, LogLevel minimumLevel = LogLevel.Information)
+    public static IpcLog Attach(FakeFirmwareHost host, LogLevel minimumLevel = LogLevel.Information) => Attach(host.Services, minimumLevel);
+
+    /// <summary>
+    /// Attach a new log to the logger factory of the given services, see <see cref="Attach(FakeFirmwareHost, LogLevel)"/>
+    /// </summary>
+    /// <param name="services">Services holding the logger factory</param>
+    /// <param name="minimumLevel">Minimum level of the recorded entries</param>
+    /// <returns>Attached log</returns>
+    public static IpcLog Attach(IServiceProvider services, LogLevel minimumLevel = LogLevel.Information)
     {
         IpcLog log = new() { _minimumLevel = minimumLevel };
-        host.Services.GetRequiredService<ILoggerFactory>().AddProvider(log);
+        services.GetRequiredService<ILoggerFactory>().AddProvider(log);
         return log;
     }
 
