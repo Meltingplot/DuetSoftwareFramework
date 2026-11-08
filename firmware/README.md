@@ -4,7 +4,7 @@ This folder builds the Duet firmware of the CHX 350 next to DSF, so that a DSF c
 
 ## Contents
 
-The projects are git submodules of the Meltingplot forks. Each one was pinned to the commit that the firmware of the lab printer was built from: RRF `3.7.0+1.mp.8` and Duet3Expansion `3.7.0+1.mp.4`, with the library commits listed in their release notes. RRF has moved on since to `3.7-dev` fd4324368, which adds Meltingplot/RepRapFirmware#43 (macro request after InvalidateChannel) and #44 (root check before the SBC hand-off) to `3.7.0+1.mp.8`.
+The projects are git submodules of the Meltingplot forks. Each one was pinned to the commit that the firmware of the lab printer was built from: RRF `3.7.0+1.mp.8` and Duet3Expansion `3.7.0+1.mp.4`, with the library commits listed in their release notes. RRF has moved on since to `3.7-dev` 9678339c8, which adds Meltingplot/RepRapFirmware#43 (macro request after InvalidateChannel), #44 (root check before the SBC hand-off) and #45 (macro closal after InvalidateChannel) to `3.7.0+1.mp.8`.
 
 | Submodule | Branch | Used by |
 |---|---|---|
