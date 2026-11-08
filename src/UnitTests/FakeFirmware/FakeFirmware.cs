@@ -786,6 +786,8 @@ public sealed class FakeFirmware : ILinkAdapter
                 case SbcRequest.InvalidateChannel:
                     if (gb!.IsWaitingForMacro)
                     {
+                        // A request that has not gone out yet is void as well (RRF Meltingplot/RepRapFirmware#43, as GCodeBuffer::Reset)
+                        gb.MacroRequestSent();
                         gb.ResolveMacroRequest(true, false);
                     }
                     if (TryLockBuffer(gb))
