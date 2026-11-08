@@ -9,8 +9,8 @@ namespace UnitTests.Utility;
 using File = System.IO.File;
 
 /// <summary>
-/// FileExtensions.GetOwner and IsProtected (DuetSharedLibrary/FileExtensions.cs), which the root plugin service uses for the files of plugins with super-user
-/// permissions. GetOwner calls statx(2) with the structure of DuetSharedLibrary/Interop/Libc/Interop.stat.cs
+/// FileExtensions.GetOwner and IsProtected (DuetSharedLibrary/FileExtensions.cs) and PluginManifestCheck.IsInstalledByPackage, which the root plugin service and DCS
+/// use for the files of plugins with super-user permissions. GetOwner calls statx(2) with the structure of DuetSharedLibrary/Interop/Libc/Interop.stat.cs
 /// </summary>
 [TestFixture]
 public class FileOwnership
@@ -104,5 +104,23 @@ public class FileOwnership
         File.CreateSymbolicLink(link, file);
         Assert.That(FileExtensions.IsProtected(link, me), Is.False, "A symlink");
         Assert.That(FileExtensions.IsProtected(Path.Combine(_directory, "missing"), me), Is.False);
+    }
+
+    [Test]
+    public void ManifestOfASystemPackageIsRecognized()
+    {
+        // A system package leaves a manifest without write permission (pkg/deb/duetpimanagementplugin/DEBIAN/postinst: root:dsf 440)
+        int me = ProcessHelpers.GetEffectiveUserID();
+        string manifest = Path.Combine(_directory, "Packaged.json");
+        File.WriteAllText(manifest, "{}");
+        File.SetUnixFileMode(manifest, UnixFileMode.UserRead | UnixFileMode.GroupRead);
+        Assert.That(PluginManifestCheck.IsInstalledByPackage(manifest, me), Is.True);
+        Assert.That(PluginManifestCheck.IsInstalledByPackage(manifest, PluginManifestCheck.RootUserId), Is.EqualTo(me == 0));
+
+        // A manifest that its owner may write was installed via API
+        File.SetUnixFileMode(manifest, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
+        Assert.That(PluginManifestCheck.IsInstalledByPackage(manifest, me), Is.False);
+        File.SetUnixFileMode(manifest, UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.GroupWrite);
+        Assert.That(PluginManifestCheck.IsInstalledByPackage(manifest, me), Is.False);
     }
 }

@@ -61,14 +61,19 @@ public sealed class StartPlugin(PluginStore pluginStore, ServicePrivileges privi
             throw new InvalidOperationException("Wrong plugin service to start this plugin");
         }
 
-        // Check the manifest again like its installation. Root plugins may run only if root plugin support is enabled in DCS, which owns that setting
+        // Check the manifest again like its installation. Root plugins may run only if they come from a system package or if root plugin support
+        // is enabled in DCS, which owns that setting
         bool? rootPluginSupport = null;
         if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser))
         {
-            using InternalCommandConnection connection = new();
-            await connection.ConnectAsync(_settings.SocketPath, cancellationToken);
-            ObjectModel model = await connection.GetObjectModelAsync("sbc/dsf/rootPluginSupport", cancellationToken);
-            rootPluginSupport = model.SBC?.DSF.RootPluginSupport ?? false;
+            rootPluginSupport = PluginManifestCheck.IsInstalledByPackage(Path.Combine(settings.Value.PluginDirectory, plugin.Id + ".json"), privileges.UserId);
+            if (rootPluginSupport == false)
+            {
+                using InternalCommandConnection connection = new();
+                await connection.ConnectAsync(_settings.SocketPath, cancellationToken);
+                ObjectModel model = await connection.GetObjectModelAsync("sbc/dsf/rootPluginSupport", cancellationToken);
+                rootPluginSupport = model.SBC?.DSF.RootPluginSupport ?? false;
+            }
         }
         PluginManifestCheck.Check(plugin, rootPluginSupport);
 

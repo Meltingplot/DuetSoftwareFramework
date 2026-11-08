@@ -197,16 +197,19 @@ public class DpsThroughDcs : DpsTestBase
     /// <summary>
     /// DuetPiManagementPlugin is a root plugin that its package puts into the plugin directory (pkg/common/duetpimanagementplugin/opt/dsf/plugins), DCS
     /// loads it at start (Model/PeriodicUpdateService.cs) and the postinst script reloads and starts it with PluginManager
-    /// (pkg/deb/duetpimanagementplugin/DEBIAN/postinst). It needs root plugin support like any other root plugin
+    /// (pkg/deb/duetpimanagementplugin/DEBIAN/postinst). Its manifest is read-only and belongs to root, which marks it as plugin of a system package that may run
+    /// without root plugin support (PluginManifestCheck.IsInstalledByPackage). A test cannot create a file of root, so the read-only manifest here belongs to
+    /// the user of the test, and DCS needs root plugin support for it like for any other root plugin
     /// </summary>
     [TestCase(true)]
     [TestCase(false)]
-    public async Task DuetPiManagementPluginNeedsRootPluginSupport(bool rootPluginSupport)
+    public async Task DuetPiManagementPluginNotOwnedByRootNeedsRootPluginSupport(bool rootPluginSupport)
     {
         // pkg/deb/build.sh replaces DSFVER by the version of DSF
         string manifest = File.ReadAllText(DpsHost.ShippedFile("pkg/common/duetpimanagementplugin/opt/dsf/plugins/DuetPiManagementPlugin.json"))
             .Replace("DSFVER", DuetSharedLibrary.VersionHelper.GetVersion());
         File.WriteAllText(Path.Combine(PluginDirectory, "DuetPiManagementPlugin.json"), manifest);
+        File.SetUnixFileMode(Path.Combine(PluginDirectory, "DuetPiManagementPlugin.json"), UnixFileMode.UserRead | UnixFileMode.GroupRead);
         if (rootPluginSupport)
         {
             await EnableRootPluginSupportAsync();

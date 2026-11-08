@@ -422,18 +422,48 @@ public class DpsRootService : DpsTestBase
     }
 
     [Test]
-    public async Task DuetPiManagementPluginIsStartedWithRootPluginSupport()
+    public async Task DuetPiManagementPluginIsStartedWithRootPluginSupport() => await StartDuetPiManagementPluginAsync(asPackage: false);
+
+    [Test]
+    public async Task DuetPiManagementPluginOfItsPackageIsStartedWithoutRootPluginSupport() => await StartDuetPiManagementPluginAsync(asPackage: true);
+
+    [Test]
+    public async Task RootPluginInstalledViaApiNeedsRootPluginSupport()
     {
-        // The manifest that the duetpimanagementplugin package ships, the root service loads it at start like DCS
+        // The manifest that the root service writes at installation has write permission for its owner, so it is no manifest of a system package
+        await StartRootDpsAsync();
+        await InstallAsync(Package(Manifest("ViaApi", manifest =>
+        {
+            manifest["sbcExecutable"] = "root";
+            manifest["sbcPermissions"] = new JsonArray("superUser");
+        }), ("dsf/root", "#!/bin/sh\nexec sleep 30\n")));
+        await AddToDcsAsync((await Dps!.GetPluginAsync("ViaApi"))!);
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("ViaApi")))!;
+        Assert.That(e.Message, Is.EqualTo("Plugins with super-user permissions are not allowed"));
+    }
+
+    /// <summary>
+    /// Start DuetPiManagementPlugin with the manifest that its package ships. Its postinst script makes the manifest root:dsf 440 and the plugin directory
+    /// root:root without write permission for group and others (pkg/deb/duetpimanagementplugin/DEBIAN/postinst), here with the user of the test as owner.
+    /// A read-only manifest that nobody else may change marks a plugin of a system package (PluginManifestCheck.IsInstalledByPackage), which may run without
+    /// root plugin support
+    /// </summary>
+    private async Task StartDuetPiManagementPluginAsync(bool asPackage)
+    {
         string manifest = File.ReadAllText(DpsHost.ShippedFile("pkg/common/duetpimanagementplugin/opt/dsf/plugins/DuetPiManagementPlugin.json"))
             .Replace("DSFVER", DuetSharedLibrary.VersionHelper.GetVersion());
-        File.WriteAllText(Path.Combine(PluginDirectory, "DuetPiManagementPlugin.json"), manifest);
+        string manifestFile = Path.Combine(PluginDirectory, "DuetPiManagementPlugin.json");
+        File.WriteAllText(manifestFile, manifest);
+        File.SetUnixFileMode(manifestFile, asPackage ? UnixFileMode.UserRead | UnixFileMode.GroupRead : RootFile);
         string executable = Path.Combine(PluginDirectory, "DuetPiManagementPlugin", "dsf", "DuetPiManagementPlugin");
-        Directory.CreateDirectory(Path.GetDirectoryName(executable)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(executable)!, RootDirectory);
         File.WriteAllText(executable, "#!/bin/sh\nexec sleep 30\n");
-        File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        File.SetUnixFileMode(executable, RootDirectory);
         await StartDpsAsync(register: false, privileged: true);
-        await EnableRootPluginSupportAsync();
+        if (!asPackage)
+        {
+            await EnableRootPluginSupportAsync();
+        }
         Plugin plugin = (await Dps!.GetPluginAsync("DuetPiManagementPlugin"))!;
         await AddToDcsAsync(plugin);
 

@@ -101,7 +101,7 @@ public partial class PeriodicUpdateService(CodeFactory codeFactory, LinkInterfac
                         // Do not add manifests to the object model that could not be installed either
                         try
                         {
-                            PluginManifestCheck.Check(plugin, settings.Value.RootPluginSupport);
+                            PluginManifestCheck.Check(plugin, settings.Value.RootPluginSupport || PluginManifestCheck.IsInstalledByPackage(file, PluginManifestCheck.RootUserId));
                         }
                         catch (ArgumentException e)
                         {
