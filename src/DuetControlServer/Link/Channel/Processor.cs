@@ -118,7 +118,8 @@ public sealed class Processor
 
     /// <summary>
     /// This is set to true if the notification about aborted files went out with the last transfer. RRF wrote the data of that transfer
-    /// before it read the notification, which ends a pending macro request with an error, so macro requests in that data are void
+    /// before it read the notification, which ends a pending macro request with an error, so macro requests in that data are void.
+    /// So are closals of macro files, because the abort has removed all macro files from the stack
     /// </summary>
     private bool _allFilesAbortedSent;
 
@@ -1252,6 +1253,13 @@ public sealed class Processor
     /// </summary>
     public void MacroFileClosed()
     {
+        // The abort of all files has removed the macro from the stack already, and RRF does not report the files it closes for the abort
+        if (_allFilesAborted || _allFilesAbortedSent)
+        {
+            _logger.LogDebug("Macro file was closed before RRF got the abort of all files. Discarding closal.");
+            return;
+        }
+
         Code? startCode = CurrentState.StartCode;
         if (startCode is not null)
         {

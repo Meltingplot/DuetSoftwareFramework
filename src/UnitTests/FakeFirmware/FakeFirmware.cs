@@ -794,6 +794,8 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     {
                         gb.AbortFile(true);
                         gb.FileAbortSent();
+                        // DSF has removed all its macro files, so a closal that has not gone out yet is void (RRF Meltingplot/RepRapFirmware#45, as GCodeBuffer::Reset)
+                        gb.MacroFileClosedSent();
                         InvalidateBufferedCodes(request.Channel);
                     }
                     else
