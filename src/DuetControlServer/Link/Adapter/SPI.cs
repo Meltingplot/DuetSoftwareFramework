@@ -429,8 +429,17 @@ public class SPI : IDiagnostics, ILinkAdapter
 
                 _logger.LogDebug(e, "Lost connection to Duet");
 
-                // The TX header buffer may still hold a protocol version adopted from a bad header, so rewrite it as well
+                // The transfer is exchanged again in a new session. When DSF leaves the extended link with it, it gets the number after the counter, as the transfer
+                // after a reset does (HadReset) and as RRF numbers its next transfer when it resets the connection (DataTransfer::ResetConnection). The counter
+                // alone would be 0 after the 0xFFFF RRF may have got last, which RRF takes for the next regular number once it has left the extended link as well
+                bool leavingExtendedLink = _extendedTx;
                 EndSession(true);
+                if (leavingExtendedLink)
+                {
+                    _txHeader.SequenceNumber = ExtendedLink.Next(_txHeader.SequenceNumber, false);
+                }
+
+                // The TX header buffer may still hold a protocol version adopted from a bad header, so rewrite it as well
                 _txHeader.ProtocolVersion = Consts.ProtocolVersion;
                 WriteCRC();
                 _waitingForFirstTransfer = true;
