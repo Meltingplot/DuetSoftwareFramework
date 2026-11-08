@@ -133,14 +133,27 @@ public class SpiFaultLostConnection : LabTest
             halted = await Lab.TryWaitForModelAsync(Session, model => model.State.Status == MachineStatus.Halted, TimeSpan.FromSeconds(15));
             if (!halted)
             {
-                // RRF kept the session. A trigger macro that is still open in RRF holds back the next ones, so neither global changes any more
-                (int runs, int loop) = ((await QueryAsync("global.labTestTriggerRuns")).GetInt32(), (await QueryAsync("global.labTestTriggerLoop")).GetInt32());
-                await Task.Delay(TimeSpan.FromSeconds(10));
-                (int laterRuns, int laterLoop) = ((await QueryAsync("global.labTestTriggerRuns")).GetInt32(), (await QueryAsync("global.labTestTriggerLoop")).GetInt32());
+                // RRF kept the session. A trigger macro that is still open in RRF holds back the next ones, so neither global changes any more.
+                // In that state M409 from HTTP may not be answered either (seen on the lab printer on 2026-11-08 without the fix), which is
+                // reported instead of ending the test with the timeout
+                string globals;
+                try
+                {
+                    (int runs, int loop) = ((await QueryAsync("global.labTestTriggerRuns")).GetInt32(), (await QueryAsync("global.labTestTriggerLoop")).GetInt32());
+                    await Task.Delay(TimeSpan.FromSeconds(10));
+                    (int laterRuns, int laterLoop) = ((await QueryAsync("global.labTestTriggerRuns")).GetInt32(), (await QueryAsync("global.labTestTriggerLoop")).GetInt32());
+                    globals = $"trigger {TriggerNumber} started {laterRuns - runs}x in the 10 s after it and its loop {(laterLoop == loop ? "stood still" : "went on")} " +
+                        "(the trigger fires twice per second unless its macro is still open in RRF)";
+                }
+                catch (Exception e) when (e is OperationCanceledException or System.Net.Http.HttpRequestException)
+                {
+                    globals = $"M409 of the trigger's globals got no answer ({e.GetType().Name})";
+                }
                 string journal = await Lab.ReadJournalAsync(cursor);
+                int startsAfterReset = journal[(journal.LastIndexOf("Connection to controller has been reset", StringComparison.Ordinal) + 1)..]
+                    .Split('\n').Count(line => line.Contains("Starting macro file trigger30.g"));
                 Assert.Fail($"RRF did not stop after DSF lost the connection: DSF {(journal.Contains("Aborted macro file trigger30.g") ? "aborted" : "did not abort")} the trigger macro, " +
-                    $"trigger {TriggerNumber} started {laterRuns - runs}x in the 10 s after it and its loop {(laterLoop == loop ? "stood still" : "went on")} " +
-                    $"(the trigger fires twice per second unless its macro is still open in RRF), status {Lab.Read(Session, model => model.State.Status)}");
+                    $"{globals}, trigger30.g started {startsAfterReset}x since the reconnect, status {Lab.Read(Session, model => model.State.Status)}");
             }
             TestContext.Progress.WriteLine($"RRF stopped, DSF {(Regex.IsMatch(report, "Aborted macro file trigger30\\.g") ? "aborted" : "did not abort")} the trigger macro");
         }
