@@ -205,7 +205,7 @@ public class TriggerMacros
         _host.Firmware.FireTrigger(6);
         await WaitForTriggerChannelIdleAsync();
 
-        // DSF cannot open the file and reports an error instead of a start (Processor.cs:1333-1353, 910-935)
+        // DSF cannot open the file and reports an error instead of a start (Processor.cs:1333-1361, 910-935)
         Assert.That(Requests(SbcRequest.MacroStarted, CodeChannel.Trigger), Is.Empty);
         Assert.That(Requests(SbcRequest.MacroCompleted, CodeChannel.Trigger).Single().Flag, Is.True);
 

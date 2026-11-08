@@ -806,6 +806,27 @@ public partial class LinkServiceOverSpi
     }
 
     /// <summary>
+    /// A macro file that does not exist and one whose path FilePathResolver refuses (it leaves its volume or names an unknown drive) are both
+    /// answered with MacroCompleted and the error flag (Processor.DoMacroFile), which makes RRF report "Macro file ... not found"
+    /// (SbcInterface.cpp:545-560, GCodeBuffer::RequestMacroFile), and the transfer thread goes on
+    /// </summary>
+    [TestCase("missing.g")]
+    [TestCase("../../escape.g")]
+    [TestCase("0:/../escape.g")]
+    [TestCase("9:/macros/escape.g")]
+    public async Task MacroRequestForAFileThatCannotBeOpened(string fileName)
+    {
+        await using Host host = await Host.StartAsync();
+        FakeRrfSpi rrf = host.Rrf;
+        rrf.SendPacket(FirmwareRequest.ExecuteMacro, RrfPackets.ExecuteMacro(CodeChannel.Trigger, false, fileName));
+        Assert.That(SbcPackets.MacroCompleted(host.WaitFor(SbcRequest.MacroCompleted)), Is.EqualTo((CodeChannel.Trigger, true)));
+
+        rrf.SendPacket(FirmwareRequest.CheckFileExists, RrfPackets.String("0:/sys/none.g"));
+        Assert.That(SbcPackets.Boolean(host.WaitFor(SbcRequest.CheckFileExistsResult)), Is.False);
+        Assert.That(host.Fault, Is.Null);
+    }
+
+    /// <summary>
     /// Number of bytes RRF has for buffered codes (SbcMessageFormats.h, SbcCodeBufferSize)
     /// </summary>
     private const int SbcCodeBufferSize = 4096;
