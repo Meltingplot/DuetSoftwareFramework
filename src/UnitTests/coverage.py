@@ -26,7 +26,7 @@ import xml.etree.ElementTree as ET  # the report is written locally by dotnet-co
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Assemblies that make up DSF for the overall goal
-ASSEMBLIES = ["DuetAPI", "DuetAPIClient", "DuetControlServer", "DuetHttpClient", "DuetSharedLibrary", "DuetWebServer"]
+ASSEMBLIES = ["DuetAPI", "DuetAPIClient", "DuetControlServer", "DuetHttpClient", "DuetPluginService", "DuetSharedLibrary", "DuetWebServer"]
 
 OVERALL_GOAL = 50.0
 CRITICAL_GOAL = 80.0
@@ -45,6 +45,10 @@ CRITICAL = [
     ("SBC triggers", ["DuetControlServer/Model/SbcTriggerService.cs"], []),
     ("HTTP sessions and API", ["DuetWebServer/Authorization/", "DuetWebServer/Endpoints/", "DuetWebServer/Services/SessionExpiry.cs",
                                "DuetWebServer/Singletons/SessionStorage.cs"], []),
+    # Installs plugin packages, writes the AppArmor profiles and starts the plugins, once as dsf user and once as root. The tests run as a regular user,
+    # so the code that runs only as root (Environment.IsPrivilegedProcess: package installation, system packages, profiles at installation and start)
+    # counts as uncovered, about a sixth of the lines
+    ("Plugin service", ["DuetPluginService/"], []),
 ]
 
 
