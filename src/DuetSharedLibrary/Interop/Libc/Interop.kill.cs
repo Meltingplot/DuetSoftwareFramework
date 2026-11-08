@@ -2,6 +2,7 @@
 
 internal static partial class Interop
 {
+    internal const int SIGKILL = 9;
     internal const int SIGTERM = 15;
 
     [DllImport(LibcLibrary, SetLastError = true)]

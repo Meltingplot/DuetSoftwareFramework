@@ -313,14 +313,12 @@ public class DpsStartStopPlugin : DpsTestBase
     }
 
     /// <summary>
-    /// StopPlugin sends SIGTERM to the plugin process only (StopPlugin.cs:63, ProcessHelpers.Terminate) and kills "any potentially left-over child processes"
-    /// only when the plugin does not exit in time (StopPlugin.cs:72-77). A shell plugin that waits for a child exits on SIGTERM, its child is re-parented and
-    /// keeps running. With redirected output the child also holds the pipes, so WaitForExitAsync does not return before StopTimeout and "Process killed" is
-    /// logged, but Kill(true) no longer finds the child below the exited plugin. DCS refuses IPC connections of the orphan afterwards (it is no longer below
-    /// a plugin PID, DuetControlServer/IPC/Connection.cs:144-168), it just keeps running
+    /// StopPlugin sends SIGTERM to the plugin process only (ProcessHelpers.Terminate), so the plugin can stop its children itself. A shell plugin that waits for
+    /// a child exits on SIGTERM and its child is re-parented, so Kill(true) no longer finds it below the exited plugin. StopPlugin looks the children up before
+    /// SIGTERM and kills the ones that are still left afterwards (StopPlugin.cs). With redirected output the child holds the pipes, so WaitForExitAsync returns
+    /// only after StopTimeout
     /// </summary>
     [Test]
-    [Explicit("Bug: StopPlugin leaves the child processes of a plugin running when the plugin exits on SIGTERM")]
     public async Task ChildProcessesAreStoppedWithThePlugin()
     {
         await StartDpsAsync(settings => settings.StopTimeout = 500, register: false);
@@ -332,6 +330,7 @@ public class DpsStartStopPlugin : DpsTestBase
         {
             await StopAsync("Parent");
             Assert.That(await WaitForAsync(() => !File.Exists($"/proc/{child}/stat"), TimeSpan.FromSeconds(2)), Is.True, $"Child process {child} still runs");
+            Assert.That(Dps!.Log.Contains($"Left-over child process {child} killed"), Is.True);
         }
         finally
         {

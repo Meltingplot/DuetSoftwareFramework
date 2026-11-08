@@ -4,6 +4,7 @@ using DuetSharedLibrary;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -58,6 +59,8 @@ public sealed class StopPlugin(PluginStore pluginStore, ServicePrivileges privil
             // Try to stop the process
             if (pluginStore.Processes.TryGetValue(plugin.Id, out Process? process) && !process.HasExited)
             {
+                // The child processes are re-parented when the plugin exits, so look them up before it is asked to terminate
+                List<(int Pid, ulong StartTime)> childProcesses = ProcessHelpers.GetDescendants(process.Id);
                 try
                 {
                     // Ask process to terminate
@@ -76,6 +79,15 @@ public sealed class StopPlugin(PluginStore pluginStore, ServicePrivileges privil
                     // Kill it and any potentially left-over child processes
                     process.Kill(true);
                     logger.LogInformation("Process killed");
+                }
+
+                // Kill the child processes that are still left. Kill(true) does not find them once the plugin has exited
+                foreach ((int pid, ulong startTime) in childProcesses)
+                {
+                    if (ProcessHelpers.Kill(pid, startTime))
+                    {
+                        logger.LogInformation("Left-over child process {Pid} killed", pid);
+                    }
                 }
             }
         }
