@@ -258,7 +258,7 @@ public class DpsInstallPlugin : DpsTestBase
     {
         // InstallPythonPackages (InstallPlugin.cs:357-388) runs the installer as regular user after the manifest has been written (InstallPlugin.cs:258-263),
         // with the variables of InstallPackageEnvironment added to its environment (DEBIAN_FRONTEND=noninteractive by default, Settings.cs:84-87). A test
-        // variable is used here, the test process may have DEBIAN_FRONTEND already, which EnvironmentVariables.Add (InstallPlugin.cs:373-376) refuses
+        // variable is used here, so that the check does not depend on the environment of the test process (see VariableOfTheServiceIsOverridden)
         string installer = "";
         await StartDpsAsync(settings =>
         {
@@ -277,6 +277,37 @@ public class DpsInstallPlugin : DpsTestBase
             "noninteractive"
         }));
         Assert.That(await Dps!.GetPluginAsync("Python"), Is.Not.Null);
+    }
+
+    /// <summary>
+    /// A variable of InstallPackageEnvironment that DPS already has in its own environment is set for the installer instead of refused. Before,
+    /// EnvironmentVariables.Add threw "Value does not fall within the expected range" (InstallPlugin.cs:338, :375), e.g. on GitHub's runners, which
+    /// have DEBIAN_FRONTEND, the default variable (Settings.cs:84-87), and the Python installation of a plugin failed
+    /// </summary>
+    [Test]
+    public async Task VariableOfTheServiceIsOverridden()
+    {
+        string? previous = Environment.GetEnvironmentVariable("DSF_TEST_FRONTEND");
+        Environment.SetEnvironmentVariable("DSF_TEST_FRONTEND", "inherited");
+        try
+        {
+            string installer = "";
+            await StartDpsAsync(settings =>
+            {
+                installer = Path.Combine(Path.GetDirectoryName(settings.InstallPythonPackageCommand)!, "pip-env");
+                File.WriteAllText(installer, "#!/bin/sh\necho \"$DSF_TEST_FRONTEND\" >> \"$0.calls\"\n");
+                File.SetUnixFileMode(installer, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                settings.InstallPythonPackageCommand = installer;
+                settings.InstallPackageEnvironment = new() { ["DSF_TEST_FRONTEND"] = "noninteractive" };
+            }, register: false);
+            await InstallAsync(Package(Manifest("PythonEnv", manifest => manifest["sbcPythonDependencies"] = new JsonArray("requests")), ("dsf/main.py", "print()")));
+            Assert.That(FakeTool.Calls(installer), Is.EqualTo(new[] { "noninteractive" }));
+            Assert.That(await Dps!.GetPluginAsync("PythonEnv"), Is.Not.Null);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DSF_TEST_FRONTEND", previous);
+        }
     }
 
     [Test]

@@ -335,7 +335,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
             };
             foreach (var kv in _settings.InstallPackageEnvironment)
             {
-                startInfo.EnvironmentVariables.Add(kv.Key, kv.Value);
+                startInfo.EnvironmentVariables[kv.Key] = kv.Value;
             }
 
             using Process? process = Process.Start(startInfo);
@@ -372,7 +372,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
             };
             foreach (var kv in _settings.InstallPackageEnvironment)
             {
-                startInfo.EnvironmentVariables.Add(kv.Key, kv.Value);
+                startInfo.EnvironmentVariables[kv.Key] = kv.Value;
             }
 
             using Process? process = Process.Start(startInfo);
