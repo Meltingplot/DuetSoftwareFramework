@@ -181,7 +181,7 @@ public class JobFiles
     }
 
     /// <summary>
-    /// Pause the job like LinkService.HandlePrintPaused does when RRF reports a pause (LinkService.cs:831-849).
+    /// Pause the job like LinkService.HandlePrintPaused does when RRF reports a pause (LinkService.cs:886-904).
     /// The fake firmware does not pause prints itself (FakeFirmware.ReadPrintPaused)
     /// </summary>
     private void Pause(long? filePosition, PrintPausedReason reason)
@@ -217,7 +217,7 @@ public class JobFiles
         Assert.That(WaitUntilExecuted("G4 P1"), Is.True);
 
         // RRF reports the position of the next code to execute. A pause requested by a code of the job comes without one,
-        // then JobProcessor resumes after the last code it executed (LinkService.cs:846-848, JobProcessor.cs:636-641)
+        // then JobProcessor resumes after the last code it executed (LinkService.cs:901-903, JobProcessor.cs:636-641)
         long afterDwell = content.IndexOf("G1 X2", StringComparison.Ordinal);
         Pause(withPosition ? afterDwell : null, withPosition ? PrintPausedReason.User : PrintPausedReason.GCode);
         release.Set();

@@ -98,7 +98,7 @@ public class HostLifecycle
 
     /// <summary>
     /// M999 resets RRF and stops DCS a second after its reply (MCodeHandler.cs:1342-1373). The transfer thread ends right after the reset
-    /// (LinkService.cs:284-298), and systemd starts a new DCS (Restart=always, duetcontrolserver.service:9). Nothing else is going on here, so DCS stops at once
+    /// (LinkService.cs:338-352), and systemd starts a new DCS (Restart=always, duetcontrolserver.service:9). Nothing else is going on here, so DCS stops at once
     /// </summary>
     [Test]
     public async Task M999StopsDcsAfterItsReply()

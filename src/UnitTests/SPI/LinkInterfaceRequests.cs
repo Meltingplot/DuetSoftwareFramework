@@ -140,7 +140,6 @@ public class LinkInterfaceRequests
         await Assert.ThatAsync(() => first, Throws.InstanceOf<OperationCanceledException>());
 
         // Nothing holds the update lock meanwhile
-        link.WaitForUpdate();
         await link.WaitForUpdateAsync().WaitAsync(Timeout);
     }
 

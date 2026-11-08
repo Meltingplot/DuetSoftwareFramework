@@ -183,7 +183,7 @@ public class TriggerMacros
         FakePacket request = MacroRequests($"trigger{trigger}.g").Single();
         Assert.That(request.IsFromCode, Is.False);
 
-        // DSF tells RRF that the macro has started in the next transfer (LinkService.cs:377-405 and 541, Processor.cs:900-907),
+        // DSF tells RRF that the macro has started in the next transfer (LinkService.cs:431-459 and 541, Processor.cs:900-907),
         // which lets RRF's main task go on (GCodeBuffer::RequestMacroFile waits for it, SbcInterface.cpp:827-845)
         FakeSbcRequest started = Requests(SbcRequest.MacroStarted, CodeChannel.Trigger).Single();
         Assert.That(started.Transfer, Is.EqualTo(request.Transfer + 1));
@@ -210,7 +210,7 @@ public class TriggerMacros
         Assert.That(Requests(SbcRequest.MacroCompleted, CodeChannel.Trigger).Single().Flag, Is.True);
 
         // RRF reports the missing trigger file as a warning, because CheckTriggers asks for it with reportMissing (GCodes.cpp:1052, 3701-3707).
-        // The trigger channel has not run a code from DSF at its base level, so it is a generic message that DSF shows (LinkService.cs:735-738)
+        // The trigger channel has not run a code from DSF at its base level, so it is a generic message that DSF shows (LinkService.cs:790-793)
         using CancellationTokenSource cts = new(FakeFirmwareHost.DefaultTimeout);
         while (true)
         {
@@ -232,7 +232,7 @@ public class TriggerMacros
     }
 
     [Test, Explicit("After a code of DSF on the trigger channel RRF reports a missing trigger macro as a code reply with the push flag and nothing " +
-        "follows (GCodes.cpp:3703-3706), so DSF logs an out-of-order reply and holds the message back (Processor.cs:1122-1127, LinkService.cs:727-733, 762-776)")]
+        "follows (GCodes.cpp:3703-3706), so DSF logs an out-of-order reply and holds the message back (Processor.cs:1122-1127, LinkService.cs:782-788, 817-831)")]
     public async Task MissingTriggerMacroAfterCodeOfDsfOnTriggerChannel()
     {
         // DSF sends codes of its own on the trigger channel outside a macro: M552 with a new IP address, M905 after a change of the system time
@@ -534,7 +534,7 @@ public class TriggerMacros
             TestContext.Progress.WriteLine(latency);
         }
 
-        // DSF answers the macro request in the next transfer whatever the other channels do (LinkService.cs:377-405, Manager.cs:72-91,
+        // DSF answers the macro request in the next transfer whatever the other channels do (LinkService.cs:431-459, Manager.cs:72-91,
         // Processor.cs:900-907). How long the codes take depends on the thread pool and is only reported
         Assert.That(latencies.Select(latency => latency.Started.transfers), Is.All.EqualTo(1));
     }
