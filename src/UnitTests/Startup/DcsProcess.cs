@@ -207,11 +207,11 @@ public class DcsProcess
 
     /// <summary>
     /// Upstream 9ca5be78 "Pass unmatched params in DCS to host builder" hands the tokens that are no option to the configuration
-    /// (Program.cs:160), so that a setting can be given as --Key=value. System.CommandLine rejects them first ("Unrecognized command or argument"),
-    /// because the root command treats unmatched tokens as errors, so the action of Program.cs:84 never runs
+    /// (Program.cs:160), so that a setting can be given as --Key=value, as DWS takes them (DuetWebServer/Program.cs:46). System.CommandLine rejected
+    /// them first ("Unrecognized command or argument"), because a command treats unmatched tokens as errors by default, so the action of Program.cs:84
+    /// never ran. The root command no longer does (Program.cs:253-254)
     /// </summary>
     [Test]
-    [Explicit("Bug: settings given on the command line (e.g. --GpioChipDevice=...) are rejected as unrecognized arguments")]
     public async Task SettingsCanBeGivenOnTheCommandLine()
     {
         string otherDevice = Path.Combine(_directory, "other-gpiochip");
@@ -220,6 +220,20 @@ public class DcsProcess
         Assert.That(output, Does.Not.Contain("Unrecognized command or argument"));
         Assert.That(exitCode, Is.EqualTo(ExitCode.OsError), output);
         Assert.That(System.IO.File.ReadAllText(StartErrorFile), Does.Contain(otherDevice));
+    }
+
+    /// <summary>
+    /// The other side of <see cref="SettingsCanBeGivenOnTheCommandLine"/>: an argument that is neither an option nor a setting is no longer refused, the
+    /// configuration binder ignores the unknown key, and DCS starts as without it
+    /// </summary>
+    [Test]
+    public async Task UnknownArgumentIsIgnored()
+    {
+        (int exitCode, string output) = await RunAsync("-c", WriteConfig(), "--NoSuchSetting=1");
+
+        Assert.That(output, Does.Not.Contain("Unrecognized command or argument"));
+        Assert.That(exitCode, Is.EqualTo(ExitCode.OsError), output);
+        Assert.That(System.IO.File.ReadAllText(StartErrorFile), Does.Contain(GpioChipDevice));
     }
 
     /// <summary>

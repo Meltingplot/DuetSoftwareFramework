@@ -250,4 +250,6 @@ rootCommand.SetAction(async (parserResult) =>
     }
 });
 
+// Tokens that are no option are settings for the configuration, e.g. --SpiDevice=/dev/spidev1.0 (AddCommandLine above)
+rootCommand.TreatUnmatchedTokensAsErrors = false;
 return rootCommand.Parse(args).Invoke();
