@@ -44,16 +44,13 @@ public class CommandService(PluginServiceConnection connection, IHostApplication
     /// <returns>Asynchronous task</returns>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        DuetAPI.Commands.BaseCommand? command = null;
-        Type commandType;
-
         while (!stoppingToken.IsCancellationRequested)
         {
+            DuetAPI.Commands.BaseCommand? command = null;
             try
             {
                 // Read another command from the IPC connection
                 command = await connection.ReceiveCommandAsync(stoppingToken);
-                commandType = command.GetType();
 
                 // Execute it and send back the result
                 object? result = await command.InvokeAsync(stoppingToken);

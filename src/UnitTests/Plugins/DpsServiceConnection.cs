@@ -206,17 +206,17 @@ public class DpsServiceConnection : DpsTestBase
     }
 
     /// <summary>
-    /// CommandService.cs:47 declares the received command outside the loop and never resets it, so when receiving the next command fails, the error is logged
-    /// as failure of the previous command (CommandService.cs:79-88)
+    /// The received command belongs to one pass of the command loop, so when receiving the next command fails, the error is not logged as failure of the
+    /// previous command (CommandService.cs)
     /// </summary>
     [Test]
-    [Explicit("Bug: an invalid command after a valid one is logged as failure of the valid one")]
     public async Task InvalidCommandIsNotLoggedAsThePreviousOne()
     {
         await StartDpsAsync();
         await DcsPluginService.PerformCommandAsync(new ReloadPlugin { Plugin = "Previous" }, false).WaitAsync(FakeFirmwareHost.DefaultTimeout);
         await SendMalformedAsync("{\"command\":5}");
         Assert.That(Dps!.Log.Contains("Failed to execute ReloadPlugin"), Is.False);
+        Assert.That(Dps.Log.Entries.Any(entry => entry.Message == "Failed to execute command" && entry.Exception?.Message == "Command type must be a string"), Is.True);
     }
 
     [Test]
