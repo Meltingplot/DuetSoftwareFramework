@@ -28,8 +28,8 @@ namespace UnitTests.SPI;
 /// <remarks>
 /// The emergency stop takes the path of M112: SimpleCode marks M112 as prioritized (SimpleCode.cs:110-116), MCodeHandler calls
 /// LinkInterface.EmergencyStopAsync (MCodeHandler.cs:749-772), which sets FirmwareHaltRequest (LinkInterface.cs:339-350), the transfer thread
-/// writes the EmergencyStop request into its next transfer (LinkService.cs:270-281) and completes the request once the transfer that carried it is
-/// done and the data RRF sent with it is processed (LinkService.cs:398-400, 542). RRF performs the emergency stop as soon as it reads the
+/// writes the EmergencyStop request into its next transfer (LinkService.cs:324-335) and completes the request once the transfer that carried it is
+/// done and the data RRF sent with it is processed (LinkService.cs:452-454, 597). RRF performs the emergency stop as soon as it reads the
 /// request (SbcInterface.cpp:336-338), and also whenever it loses an established connection (SbcInterface.cpp:194-230).
 /// A trigger macro starts in RRF with DoFileMacro(..., AsyncSystemMacroCode) for trigger&lt;N&gt;.g (GCodes.cpp:1050-1052), which asks the SBC for
 /// the file with fromCode false (GCodes.cpp:3699, GCodeBuffer.cpp:1243-1283) through WriteMacroRequest (DataTransfer.cpp:1543-1564). DSF starts the
@@ -600,7 +600,7 @@ public partial class StopPath
                     HaltSeenAt = Rrf.Now;
                     if (Stopped.Time is null)
                     {
-                        // DSF completes the request once it has the Success of RRF for the data response (LinkService.cs:398-400, 542). RRF processes the
+                        // DSF completes the request once it has the Success of RRF for the data response (LinkService.cs:452-454, 597). RRF processes the
                         // data only once it has the Success of DSF for it (DataTransfer.cpp ExchangingDataResponse), which nothing confirms to DSF
                         HaltBeforeStop = true;
                         HaltBeforeData = StopDataAcceptedAt is null;
@@ -1092,7 +1092,7 @@ public partial class StopPath
     #region Tests
     /// <summary>
     /// On a clean link the emergency stop reaches RRF once, in the transfer after the one DSF had set up, and M112 replies only after RRF has processed it,
-    /// with the machine halted (MCodeHandler.cs:749-772, LinkService.cs:398-400 and 542)
+    /// with the machine halted (MCodeHandler.cs:749-772, LinkService.cs:452-454 and 542)
     /// </summary>
     /// <param name="capabilities">Extended or plain link</param>
     [TestCase(LinkCapabilities.All), TestCase(LinkCapabilities.None)]
@@ -1187,7 +1187,7 @@ public partial class StopPath
     }
 
     /// <summary>
-    /// M112 replies once DSF has completed the transfer that carried the stop (LinkService.cs:398-400, 542, PR #88), which tells only that DSF got the Success of RRF
+    /// M112 replies once DSF has completed the transfer that carried the stop (LinkService.cs:452-454, 597, PR #88), which tells only that DSF got the Success of RRF
     /// for its data. RRF processes the data once it has the Success of DSF for it (DataTransfer.cpp:1202-1216), and nothing confirms that one to DSF. A lost Success
     /// of DSF (one bit error on the plain link, four on the extended one, whose codes correct three) makes M112 reply one exchange before RRF stops. A single bit error
     /// in the Success of DSF for the header (read as BadHeaderChecksum) shifts the phases: DSF completes the transfer on the data response RRF repeats for the transfer
@@ -1228,7 +1228,7 @@ public partial class StopPath
     /// kept running. On RRF the trigger file then stays open, so IsTriggerBusy (GCodes.cpp:423-431) would hold back the next trigger macros (GCodes.cpp:999);
     /// the port does not model that part of RRF. On the plain link two bit errors around the header of the transfer of the codes are enough: DSF loses the
     /// connection (SPI.ExchangeHeader, "SPI data transfer failed"), counts a reset (SPI.PerformFullTransfer sets _hadReset after every lost connection) and drops
-    /// the macro (LinkService.cs:333-340), while RRF had not completed the transfer, so it takes the same transfer with the same number in sequence, processes
+    /// the macro (LinkService.cs:387-394), while RRF had not completed the transfer, so it takes the same transfer with the same number in sequence, processes
     /// the codes and counts neither a disconnect nor a reset. That is case 2 of fork PR #57, which waits for upstream
     /// </summary>
     /// <param name="text">Input as the tests print it</param>

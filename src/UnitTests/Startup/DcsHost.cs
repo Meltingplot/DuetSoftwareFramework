@@ -106,8 +106,10 @@ internal sealed class DcsHost : IAsyncDisposable
     /// <param name="configureFirmware">Set up the fake firmware before DCS connects</param>
     /// <param name="configure">Change the config file</param>
     /// <param name="createSpi">Create the SPI adapter on a fake device instead of using the fake firmware</param>
+    /// <param name="configureServices">Add or replace services after the DCS ones</param>
     /// <returns>Host that is not started yet</returns>
-    public static DcsHost Create(Action<FakeFirmware.FakeFirmware>? configureFirmware = null, Action<JsonObject>? configure = null, Func<IServiceProvider, SpiAdapter>? createSpi = null)
+    public static DcsHost Create(Action<FakeFirmware.FakeFirmware>? configureFirmware = null, Action<JsonObject>? configure = null, Func<IServiceProvider, SpiAdapter>? createSpi = null,
+        Action<IServiceCollection>? configureServices = null)
     {
         string directory = Path.Combine(Path.GetTempPath(), "dsf-host-" + Guid.NewGuid().ToString("N"));
         foreach (string subDirectory in new[] { "sd/sys", "sd/macros", "sd/gcodes", "sd/filaments", "sd/firmware", "sd/menu", "sd/www", "plugins", "run" })
@@ -166,6 +168,7 @@ internal sealed class DcsHost : IAsyncDisposable
                 ReplaceLinkAdapter(services, adapterIndex, firmware, createSpi);
                 services.AddUtility();
                 services.AddSingleton<IHostLifetime, TestLifetime>();
+                configureServices?.Invoke(services);
             })
             .Build();
         if (firmware is not null)

@@ -13,7 +13,9 @@ using DuetControlServer.Link.Adapter;
 using DuetControlServer.Link.Protocol.FirmwareRequests;
 using DuetControlServer.Link.Protocol.Shared;
 using DuetControlServer.Utility;
+using DuetSharedLibrary;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Hosting.Systemd;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -32,6 +34,7 @@ namespace DuetControlServer.Link;
 /// <param name="lifetime">Host application lifetime</param>
 /// <param name="logger">Logger</param>
 /// <param name="settings">Settings</param>
+/// <param name="systemdNotifier">Notifier of systemd, registered by UseSystemd only when DCS runs as a systemd service</param>
 public sealed class LinkService(
     Channel.Manager channels,
     EventLogger eventLogger,
@@ -42,7 +45,8 @@ public sealed class LinkService(
     Model.ObjectModel model,
     IHostApplicationLifetime lifetime,
     ILogger<LinkService> logger,
-    IOptions<Settings> settings) : BackgroundService
+    IOptions<Settings> settings,
+    ISystemdNotifier? systemdNotifier = null) : BackgroundService
 {
     /// <summary>
     /// Open files requested by the firmware
@@ -231,18 +235,23 @@ public sealed class LinkService(
     /// <inheritdoc />
     public override async Task StopAsync(CancellationToken stoppingToken)
     {
-        // Cancel the file being printed
-        using (await jobProcessor.LockAsync(stoppingToken))
+        // A firmware update must not be cut off, else the board may be left without firmware. Let a running one finish first, regardless of the
+        // shutdown timeout of the host, and keep the lock until the transfer thread has ended, so that no update starts meanwhile
+        using (await WaitForFirmwareUpdateAsync())
         {
-            jobProcessor.Abort();
+            // Cancel the file being printed
+            using (await jobProcessor.LockAsync(stoppingToken))
+            {
+                jobProcessor.Abort();
+            }
+
+            // Shut down the link subsystem
+            await linkInterface.InvalidateAsync(stoppingToken);
+
+            // Shut down this service. This terminates the transfer thread, which may still be serving file
+            // requests, so the open files must not be closed before this call
+            await base.StopAsync(stoppingToken);
         }
-
-        // Shut down the link subsystem
-        await linkInterface.InvalidateAsync(stoppingToken);
-
-        // Shut down this service. This terminates the transfer thread, which may still be serving file
-        // requests, so the open files must not be closed before this call
-        await base.StopAsync(stoppingToken);
 
         // Close all the files
         foreach (var kv in _openFiles)
@@ -250,6 +259,51 @@ public sealed class LinkService(
             await kv.Value.DisposeAsync();
         }
         _openFiles.Clear();
+    }
+
+    /// <summary>
+    /// Maximum time a stop waits for a firmware update to finish. A flash of the main board took 11 s on the lab printer, and an IAP program
+    /// that stops answering ends the update after Consts.IapTimeout, so this is only reached if the update hangs in DCS itself.
+    /// Internal because no user has to change it and a setting would add a config.json key for a test
+    /// </summary>
+    internal TimeSpan FirmwareUpdateStopTimeout { get; set; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// Interval in which DCS asks systemd for more time while a stop waits for a firmware update, and the time it asks for each time.
+    /// systemd kills DCS TimeoutStopSec (15 s) after the stop began unless it gets EXTEND_TIMEOUT_USEC within the interval it asked for
+    /// (sd_notify(3) since systemd 236, Debian bookworm has 252 and trixie 257; Type=notify makes NotifyAccess=main)
+    /// </summary>
+    private static readonly TimeSpan SystemdExtendInterval = TimeSpan.FromSeconds(5), SystemdExtendTimeout = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// Wait for a firmware update to finish, at most <see cref="FirmwareUpdateStopTimeout"/>, and ask systemd for more time while it runs.
+    /// The transfer thread holds the lock while it updates the firmware and otherwise only to check for an update request (see <see cref="Execute"/>)
+    /// </summary>
+    /// <returns>Lock of the firmware updates, or null if the update did not finish in time</returns>
+    private async Task<AsyncLock.Releaser?> WaitForFirmwareUpdateAsync()
+    {
+        using CancellationTokenSource timeoutCts = new(FirmwareUpdateStopTimeout);
+        Task<AsyncLock.Releaser> lockTask = linkInterface.FirmwareUpdateLock.LockAsync(timeoutCts.Token).AsTask();
+        bool waiting = false;
+        while (!lockTask.IsCompleted && await Task.WhenAny(lockTask, Task.Delay(SystemdExtendInterval)) != lockTask)
+        {
+            if (!waiting)
+            {
+                logger.LogWarning("Waiting for the firmware update to finish before stopping");
+                waiting = true;
+            }
+            systemdNotifier?.Notify(new ServiceState($"EXTEND_TIMEOUT_USEC={(long)SystemdExtendTimeout.TotalMicroseconds}"));
+        }
+
+        try
+        {
+            return await lockTask;
+        }
+        catch (OperationCanceledException)
+        {
+            logger.LogError("The firmware update did not finish within {Timeout}, stopping anyway", FirmwareUpdateStopTimeout);
+            return null;
+        }
     }
 
     /// <summary>

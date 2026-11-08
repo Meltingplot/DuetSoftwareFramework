@@ -137,7 +137,7 @@ public partial class LinkRecovery
     /// RRF has not completed that transfer, so it got 0xFFE0 | (counter - 1) from DSF last. DSF exchanges the same transfer again in a new session
     /// (SPI.PerformFullTransfer), numbered from its counter on (SPI.EndSession), which RRF must not take for the next transfer of the session:
     /// it leaves the extended link (DataTransfer.cpp:1125-1131), resets the connection (IsConnectionReset, DataTransfer.h:212-215) and performs an
-    /// emergency stop (SbcInterface.cpp:194-230). DSF drops what was running meanwhile, e.g. a trigger macro (LinkService.cs:333-340)
+    /// emergency stop (SbcInterface.cpp:194-230). DSF drops what was running meanwhile, e.g. a trigger macro (LinkService.cs:387-394)
     /// </summary>
     /// <param name="variant">Kind of the transfer that gets the fault</param>
     /// <param name="counter">Counter value of that transfer</param>

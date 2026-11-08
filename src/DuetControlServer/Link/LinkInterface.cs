@@ -486,17 +486,6 @@ public sealed partial class LinkInterface(
     /// <summary>
     /// Wait for potential firmware update to finish
     /// </summary>
-    public void WaitForUpdate()
-    {
-        using (FirmwareUpdateLock.Lock())
-        {
-            // This lock is acquired as long as a firmware update is in progress; no need to do anything else
-        }
-    }
-
-    /// <summary>
-    /// Wait for potential firmware update to finish
-    /// </summary>
     /// <param name="cancellationToken">Optional cancellation token</param>
     /// <returns>Asynchronous task</returns>
     public async Task WaitForUpdateAsync(CancellationToken cancellationToken = default)

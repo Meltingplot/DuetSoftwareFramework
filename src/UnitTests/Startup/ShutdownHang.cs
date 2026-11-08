@@ -32,20 +32,20 @@ namespace UnitTests.Startup;
 /// offline only, the third also on the lab printer:
 /// <list type="number">
 /// <item>A code of a client that is still pending was never completed: the stages of the code pipeline stopped reading their queues on ApplicationStopping,
-/// and LinkService.StopAsync cancels the codes of the link into the Executed queue afterwards (LinkService.cs:241, LinkInterface.cs:707-713,
+/// and LinkService.StopAsync cancels the codes of the link into the Executed queue afterwards (LinkService.cs:249, LinkInterface.cs:696-702,
 /// Channel/Processor.cs:1444-1484, CodeProcessor.cs:277-285). The IPC connection waits for the code (SimpleCode.ExecuteAsync awaits it without a token),
 /// and the IPC server waits for its connections until ApplicationStopped (IPC/Server.cs:123), which the host signals only after all services have stopped
 /// (Host.cs:272 of Microsoft.Extensions.Hosting).
 /// Fixed: the stages read until the CodeProcessorService stops (PipelineStackItem.cs:63, CodeProcessorService.cs), which the host does after the LinkService,
 /// the IPC server and the JobProcessor, so the codes they cancel are completed. In v3.6 the link was shut down before the token of the pipelines was cancelled
 /// as well (Program.ShutdownAsync there)</item>
-/// <item>After M999 the transfer thread has ended (LinkService.cs:297), so a code that a client sends in the second before DCS stops
+/// <item>After M999 the transfer thread has ended (LinkService.cs:351), so a code that a client sends in the second before DCS stops
 /// (MCodeHandler.cs:1363-1368) waits in the Firmware stage until LinkService.StopAsync cancels it (Channel/Processor.cs:1459-1463), and hung the same way.
 /// This fits "after the boot-time M999", when clients are busy. Fixed with case 1</item>
 /// <item>A transfer that does not complete keeps the transfer thread inside PerformFullTransfer until its token is cancelled (SPI.cs:324). It got
 /// ApplicationStopped, which the host signals only after all services have stopped, so LinkService.StopAsync waited for the stop token (BackgroundService.cs:73
 /// of Microsoft.Extensions.Hosting.Abstractions). This fits "systemctl restart while the SPI link is stuck", once DCS has reported the lost connection.
-/// Fixed: the transfer gets the stop token of the LinkService (LinkService.cs:290, 542), like the loop around it, as before 2cbc04ae and in v3.6
+/// Fixed: the transfer gets the stop token of the LinkService (LinkService.cs:344, 596), like the loop around it, as before 2cbc04ae and in v3.6
 /// (DataTransfer.cs:210 there)</item>
 /// </list>
 /// Each test stops with a limit of <see cref="StopLimit"/> instead of the 30 s of the host. Where DCS stopped in time, it would stop in well under a second
@@ -157,7 +157,7 @@ public class ShutdownHang
 
     /// <summary>
     /// Case 3 with the fake firmware: its transfer is held, and like PerformFullTransfer of the SPI adapter it ends the wait only for the cancellation
-    /// token, which LinkService passes as its stop token (FakeFirmware.cs:566-577, LinkService.cs:542)
+    /// token, which LinkService passes as its stop token (FakeFirmware.cs:566-577, LinkService.cs:596)
     /// </summary>
     [Test]
     public async Task StopsWhileTheLinkIsStuck()
@@ -179,7 +179,7 @@ public class ShutdownHang
     /// <summary>
     /// Case 3 on the SPI adapter of DCS: RRF stops answering after the connection is up, e.g. because it hangs, and DCS has reported the lost connection
     /// before it is stopped. TfrRdy keeps its level, so every wait for the pin ends with its timeout (IInputGpioPin.cs:23-29) and PerformFullTransfer starts
-    /// over until SbcRestartTimeout (60 s, SPI.cs:324-331) or until its token is cancelled. That is the stop token of the LinkService (LinkService.cs:542),
+    /// over until SbcRestartTimeout (60 s, SPI.cs:324-331) or until its token is cancelled. That is the stop token of the LinkService (LinkService.cs:596),
     /// so the thread ends after the wait that is running when the service stops, at most SbcConnectionTimeout + SbcTransferTimeout (4.5 s, SPI.cs:1741)
     /// </summary>
     [Test]

@@ -63,7 +63,7 @@ public class ForkedJobs
         await WaitForJobEndAsync();
 
         // RRF never forked, so it sends no abort request for File2 (SbcInterface.cpp:1511). JobProcessor discards the copied state when the job ends,
-        // like RRF closes File2 in StopPrint (GCodes.cpp:4886). Before, only a reset cleared it (LinkService.cs:1427)
+        // like RRF closes File2 in StopPrint (GCodes.cpp:4886). Before, only a reset cleared it (LinkService.cs:1482)
         Assert.That(StackDepth(CodeChannel.File2), Is.EqualTo(1));
 
         // The next job must be able to fork. With the copied stack left over, Processor.CopyState threw "Cannot copy state because the stack is not empty".

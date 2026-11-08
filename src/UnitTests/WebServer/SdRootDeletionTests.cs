@@ -23,7 +23,7 @@ using HttpClient = System.Net.Http.HttpClient;
 /// (MachineEndpoints.cs:362-367). RRF refuses to delete the root recursively: MassStorage::Delete strips the drive and slashes and stops
 /// with "Delete root folder is not allowed" if nothing is left (MassStorage.cpp:839-858); rr_delete passes recursive=yes to it
 /// (HttpResponder.cpp:612-617). In SBC mode MassStorage::Delete hands the request to DSF before that check (MassStorage.cpp:822-836), and
-/// DCS deletes what the firmware asks for without a root check either (LinkService.HandleDeleteFileOrDirectory, LinkService.cs:1113-1137);
+/// DCS deletes what the firmware asks for without a root check either (LinkService.HandleDeleteFileOrDirectory, LinkService.cs:1168-1192);
 /// that path is not tested here
 /// </remarks>
 [TestFixture]
