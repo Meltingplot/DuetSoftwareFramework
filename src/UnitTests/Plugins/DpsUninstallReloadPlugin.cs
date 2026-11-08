@@ -153,34 +153,33 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     }
 
     /// <summary>
-    /// InstallPlugin keeps every installed file inside its directory (zip-slip guard, InstallPlugin.cs:160-167), UninstallPlugin deletes the files that the
-    /// manifest lists without that check (UninstallPlugin.cs:113-153: Path.Combine(sdPath, sdFile), same for the dsf and dwc files on upgrade). The manifest is
-    /// a file of the dsf user that plugins with ManagePlugins or FileSystemAccess may write (AppArmorPermissionManager.cs:55-64). For a plugin with SuperUser
-    /// the root service runs this code (UninstallPlugin.cs:67), so it deletes as root whatever such a manifest lists
+    /// InstallPlugin keeps every installed file inside its directory (zip-slip guard), UninstallPlugin deletes the files that the manifest lists with the same
+    /// check (Path.IsInside, DuetSharedLibrary/PathExtensions.cs). The manifest is a file of the dsf user that plugins with ManagePlugins or FileSystemAccess
+    /// may write (AppArmorPermissionManager.cs:55-64). For a plugin with SuperUser the root service runs this code, so it would delete as root whatever such a
+    /// manifest lists. A listed file outside its directory is skipped with a warning, the rest of the plugin is uninstalled
     /// </summary>
-    [Test]
-    [Explicit("Bug: UninstallPlugin deletes files outside 0:/ that the manifest lists, as root for root plugins")]
-    public async Task UninstallDeletesOnlyFilesInsideTheSdDirectory()
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task UninstallDeletesOnlyFilesInsideTheSdDirectory(bool forUpgrade)
     {
         await StartDpsAsync(register: false);
         string outside = OutsidePath("precious.txt");
         File.WriteAllText(outside, "keep me");
-        Plugin plugin = await InstallAsync("Tampered", null, ("dsf/tampered", "x"));
+        Plugin plugin = await InstallAsync("Tampered", null, ("dsf/tampered", "x"), ("sd/macros/tampered.g", "M117"));
 
-        // The manifest lists a file outside 0:/
+        // The manifest lists a file outside 0:/, outside 0:/www and outside the plugin directory
         plugin.SdFiles.Add(Path.GetRelativePath(SdDirectory, outside));
+        plugin.DwcFiles.Add(Path.GetRelativePath(Path.Combine(SdDirectory, "www"), outside));
+        plugin.DsfFiles.Add(Path.GetRelativePath(Path.Combine(PluginDirectory, "Tampered", "dsf"), outside));
         File.WriteAllText(Path.Combine(PluginDirectory, "Tampered.json"), JsonSerializer.Serialize(plugin, ObjectModelContext.Default.Plugin));
         await ReloadAsync("Tampered");
 
-        try
-        {
-            await UninstallAsync("Tampered");
-        }
-        catch (ArgumentException)
-        {
-            // Refusing the manifest is fine too
-        }
-        Assert.That(File.Exists(outside), Is.True, "A file outside 0:/ was deleted");
+        await UninstallAsync("Tampered", forUpgrade);
+        Assert.That(File.Exists(outside), Is.True, "A file outside its directory was deleted");
+        Assert.That(Dps!.Log.Contains($"Not deleting {Path.Combine(SdDirectory, Path.GetRelativePath(SdDirectory, outside))}, it is outside of {SdDirectory}"), Is.True);
+        Assert.That(File.Exists(Sd("macros/tampered.g")), Is.False, "The files inside 0:/ are still uninstalled");
+        Assert.That(File.Exists(Path.Combine(PluginDirectory, "Tampered/dsf/tampered")), Is.False);
+        Assert.That(await Dps.GetPluginAsync("Tampered"), Is.Null);
     }
 
     [Test]

@@ -29,5 +29,19 @@ public static class PathExtensions
             Marshal.FreeHGlobal(result);
             return resolved;
         }
+
+        /// <summary>
+        /// Check if a path stays inside a directory, e.g. when it is made of a base directory and a file name from a plugin manifest or package,
+        /// which may contain '..' segments or be absolute
+        /// </summary>
+        /// <param name="path">Path to check</param>
+        /// <param name="directory">Directory the path must not leave</param>
+        /// <returns>Whether the path is the directory or below it</returns>
+        public static bool IsInside(string path, string directory)
+        {
+            string fullPath = Path.GetFullPath(path);
+            string fullDirectory = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar);
+            return fullPath == fullDirectory || fullPath.StartsWith(fullDirectory + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+        }
     }
 }

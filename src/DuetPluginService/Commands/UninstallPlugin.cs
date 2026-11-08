@@ -2,6 +2,7 @@
 using DuetAPI.Utility;
 using DuetAPIClient;
 using DuetPluginService.PermissionManagers;
+using DuetSharedLibrary;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System;
@@ -91,10 +92,27 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
                 File.Delete(manifestFile);
             }
 
+            // The file lists come from the manifest, so delete only files inside the directory that the installation put them into
+            bool IsInside(string file, string directory)
+            {
+                if (Path.IsInside(file, directory))
+                {
+                    return true;
+                }
+                logger.LogWarning("Not deleting {File}, it is outside of {Directory}", file, directory);
+                return false;
+            }
+
             // Remove installed files and directories from the dwc and www directories
+            string wwwDirectory = Path.Combine(sdPath, "www");
             foreach (string dwcFile in plugin.DwcFiles)
             {
-                string installWwwPath = Path.Combine(sdPath, "www", dwcFile);
+                string installWwwPath = Path.Combine(wwwDirectory, dwcFile);
+                if (!IsInside(installWwwPath, wwwDirectory))
+                {
+                    continue;
+                }
+
                 if (Path.Exists(installWwwPath))
                 {
                     logger.LogDebug("Removing {File}", installWwwPath);
@@ -113,7 +131,7 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
             foreach (string sdFile in plugin.SdFiles)
             {
                 string fileName = Path.Combine(sdPath, sdFile);
-                if (File.Exists(fileName) && !(ForUpgrade && plugin.SbcConfigFiles.Any(file => fileName == Path.Combine(sdPath, "sys", file) || fileName == Path.Combine(sdPath, file))))
+                if (IsInside(fileName, sdPath) && File.Exists(fileName) && !(ForUpgrade && plugin.SbcConfigFiles.Any(file => fileName == Path.Combine(sdPath, "sys", file) || fileName == Path.Combine(sdPath, file))))
                 {
                     if (Path.GetFileName(sdFile).Equals("daemon.g"))
                     {
@@ -129,13 +147,14 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
                 }
             }
 
+            string pluginBase = Path.Combine(settings.Value.PluginDirectory, Plugin);
             if (ForUpgrade)
             {
                 // Remove only installed files so custom plugin files survive the upgrade
                 foreach (string dsfFile in plugin.DsfFiles)
                 {
-                    string file = Path.Combine(settings.Value.PluginDirectory, Plugin, "dsf", dsfFile);
-                    if (File.Exists(file))
+                    string file = Path.Combine(pluginBase, "dsf", dsfFile);
+                    if (IsInside(file, pluginBase) && File.Exists(file))
                     {
                         logger.LogDebug("Deleting file {File}", file);
                         File.Delete(file);
@@ -144,8 +163,8 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
 
                 foreach (string dwcFile in plugin.DwcFiles)
                 {
-                    string file = Path.Combine(settings.Value.PluginDirectory, Plugin, "dwc", dwcFile);
-                    if (File.Exists(file))
+                    string file = Path.Combine(pluginBase, "dwc", dwcFile);
+                    if (IsInside(file, pluginBase) && File.Exists(file))
                     {
                         logger.LogDebug("Deleting file {File}", file);
                         File.Delete(file);
@@ -155,11 +174,10 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
             else
             {
                 // Remove the full plugin directory
-                string pluginDirectory = Path.Combine(settings.Value.PluginDirectory, Plugin);
-                if (Directory.Exists(pluginDirectory))
+                if (Directory.Exists(pluginBase))
                 {
-                    logger.LogDebug("Removing plugin directory {Directory}", pluginDirectory);
-                    Directory.Delete(pluginDirectory, true);
+                    logger.LogDebug("Removing plugin directory {Directory}", pluginBase);
+                    Directory.Delete(pluginBase, true);
                 }
             }
         }

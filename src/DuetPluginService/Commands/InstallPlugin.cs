@@ -160,9 +160,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
 
                 // Guard against zip-slip: a malicious archive could use '..' segments or absolute paths in entry names
                 // to escape the plugin directory and overwrite files elsewhere
-                string resolvedFileName = Path.GetFullPath(fileName);
-                string resolvedBase = Path.GetFullPath(allowedBase);
-                if (!resolvedFileName.StartsWith(resolvedBase + Path.DirectorySeparatorChar, StringComparison.Ordinal) && resolvedFileName != resolvedBase)
+                if (!Path.IsInside(fileName, allowedBase))
                 {
                     throw new ArgumentException($"Refusing to install entry {entry.FullName}: path escapes plugin directory");
                 }
