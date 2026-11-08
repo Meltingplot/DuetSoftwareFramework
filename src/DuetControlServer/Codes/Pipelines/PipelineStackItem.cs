@@ -60,7 +60,7 @@ public sealed class PipelineStackItem
         {
             ProcessorTask = Task.Factory.StartNew(async delegate
             {
-                await foreach (Code code in PendingCodes.Reader.ReadAllAsync(_lifetime.ApplicationStopping))
+                await foreach (Code code in PendingCodes.Reader.ReadAllAsync(codeProcessor.StoppingToken))
                 {
                     // Set it up
                     lock (this)
@@ -84,7 +84,12 @@ public sealed class PipelineStackItem
                     }
                     catch (Exception e)
                     {
-                        pipeline.ChannelProcessor.Logger.LogError(e, "Failed to process code in stage {0}", pipeline.Stage);
+                        // Complete the code, else whoever waits for it waits for good. A cancellation while DCS stops is expected
+                        if (e is not OperationCanceledException || !_lifetime.ApplicationStopping.IsCancellationRequested)
+                        {
+                            pipeline.ChannelProcessor.Logger.LogError(e, "Failed to process code in stage {0}", pipeline.Stage);
+                        }
+                        code.SetException(e);
                     }
 
                     // Code processed, see if there is more to do

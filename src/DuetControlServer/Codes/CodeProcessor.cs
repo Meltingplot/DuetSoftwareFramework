@@ -63,6 +63,22 @@ public sealed class CodeProcessor(Expressions expressions, Model.ObjectModel mod
     public Pipelines.PipelineStackItem GetFirmwareState(CodeChannel channel) => Processors.Value[(int)channel].FirmwareStackItem;
 
     /// <summary>
+    /// Cancelled when the code processor service stops. The pipelines read their codes until then, so that the codes the services stopped before
+    /// cancel are completed, e.g. by the LinkService and the IPC server (the host stops its services in the reverse order of their registration in Program.cs)
+    /// </summary>
+    private readonly CancellationTokenSource _stopCts = new();
+
+    /// <summary>
+    /// Token that ends the pipelines
+    /// </summary>
+    public CancellationToken StoppingToken => _stopCts.Token;
+
+    /// <summary>
+    /// Let the pipelines stop once they have processed the codes they have
+    /// </summary>
+    public void Stop() => _stopCts.Cancel();
+
+    /// <summary>
     /// Push a new state on the stack of a given channel procesor. Only to be used by the SPI channel processor!
     /// </summary>
     /// <param name="channel">Code channel</param>

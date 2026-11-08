@@ -14,7 +14,7 @@ namespace UnitTests.Startup;
 
 /// <summary>
 /// DuetControlServer as a process, for what Program.cs does around the host: the options (Program.cs:50-83), the start error file and the exit codes
-/// (Program.cs:24-48, 197-201, 238-247) and the update-only mode (Program.cs:94-98, 203-220). There is no hardware, so a normal start always ends with the
+/// (Program.cs:24-48, 200-204, 241-250) and the update-only mode (Program.cs:94-98, 206-223). There is no hardware, so a normal start always ends with the
 /// link adapter failing; every config file points the devices to paths that do not exist, so the process never reaches real hardware either
 /// </summary>
 [TestFixture]
@@ -134,7 +134,7 @@ public class DcsProcess
     /// <summary>
     /// The host resolves every hosted service before it starts the first one, so the SPI adapter fails in its constructor (SPI.cs:108-110) before the IPC
     /// server has created its socket. host.Run() has disposed the logger factory by then, so Terminate writes the reason to stderr (Program.cs:35-45),
-    /// saves it in the start error file and exits with OsError (Program.cs:240-247)
+    /// saves it in the start error file and exits with OsError (Program.cs:243-250)
     /// </summary>
     [Test]
     public async Task StartFailureIsSavedInTheStartErrorFile()
@@ -164,7 +164,7 @@ public class DcsProcess
 
     /// <summary>
     /// -u asks a running DCS for the object model and updates the boards through it (FirmwareUpdater.TryRemoteFirmwareUpdateAsync), then exits
-    /// (Program.cs:204-214). The config file points to another socket, so the update reaches the running instance only through -s
+    /// (Program.cs:207-217). The config file points to another socket, so the update reaches the running instance only through -s
     /// </summary>
     [Test]
     public async Task UpdateOnlyGoesThroughTheRunningInstance()
@@ -193,7 +193,7 @@ public class DcsProcess
     }
 
     /// <summary>
-    /// Without a running instance, -u starts DCS in update-only mode to update the firmware itself (Program.cs:203-220 falls through to host.Run)
+    /// Without a running instance, -u starts DCS in update-only mode to update the firmware itself (Program.cs:206-223 falls through to host.Run)
     /// </summary>
     [Test]
     public async Task UpdateOnlyWithoutRunningInstanceStartsItself()
@@ -240,8 +240,8 @@ public class DcsProcess
 
     /// <summary>
     /// Program.cs:156-169 means to report an invalid config file as "Failed to load settings" with ExitCode.Configuration. AddJsonFile only adds the
-    /// source though; the file is parsed in HostBuilder.Build (Program.cs:190), which throws InvalidDataException (FileConfigurationProvider.cs:107-108
-    /// of Microsoft.Extensions.Configuration.FileExtensions), so Program.cs:197-201 reports "Failed to initialize environment" with OsError. At that point
+    /// source though; the file is parsed in HostBuilder.Build (Program.cs:193), which throws InvalidDataException (FileConfigurationProvider.cs:107-108
+    /// of Microsoft.Extensions.Configuration.FileExtensions), so Program.cs:200-204 reports "Failed to initialize environment" with OsError. At that point
     /// the start error file is still /run/dsf/dcs.err (Program.cs:22), because AddSettings has not run; where /run/dsf does not exist, Terminate itself throws
     /// (Program.cs:46) and the process ends with an unhandled exception. The test does not run where /run/dsf exists, so that it never writes there
     /// </summary>

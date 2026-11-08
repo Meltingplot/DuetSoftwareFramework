@@ -1,4 +1,3 @@
-
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,4 +13,11 @@ public class CodeProcessorService(CodeProcessor codeProcessor) : BackgroundServi
 {
     /// <inheritdoc />
     protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.WhenAll(codeProcessor.Processors.Value.Select(processor => processor.ExecuteAsync()));
+
+    /// <inheritdoc />
+    public override Task StopAsync(CancellationToken cancellationToken)
+    {
+        codeProcessor.Stop();
+        return base.StopAsync(cancellationToken);
+    }
 }

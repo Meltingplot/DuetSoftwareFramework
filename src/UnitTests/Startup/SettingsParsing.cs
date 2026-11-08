@@ -18,7 +18,7 @@ namespace UnitTests.Startup;
 
 /// <summary>
 /// How DCS turns config.json and the command line into its settings: Program.cs adds the config file as a JSON configuration source
-/// (Program.cs:158-160) and passes the options to <see cref="ServiceCollectionExtensions.AddSettings"/> (Program.cs:180, Settings.cs:481-570)
+/// (Program.cs:158-160) and passes the options to <see cref="ServiceCollectionExtensions.AddSettings"/> (Program.cs:183, Settings.cs:481-570)
 /// </summary>
 [TestFixture]
 public class SettingsParsing
@@ -311,7 +311,7 @@ public class SettingsParsing
     /// <summary>
     /// Configuration keys are case-insensitive, and DCS reads the log level case-insensitively (Settings.cs:488). The key is taken out of the binding with
     /// a case-sensitive comparison though (Settings.cs:497), so "logLevel" goes to the binder as well, which cannot convert "info" to <see cref="LogLevel"/>.
-    /// DCS then does not start: "Failed to initialize environment" (Program.cs:194, 197-199)
+    /// DCS then does not start: "Failed to initialize environment" (Program.cs:197, 200-202)
     /// </summary>
     [Test]
     [Explicit("Bug: a config.json with \"logLevel\": \"info\" (lower-case key) stops DCS from starting")]

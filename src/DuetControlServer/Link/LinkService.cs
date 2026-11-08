@@ -287,7 +287,7 @@ public sealed class LinkService(
                     if (linkAdapter.WriteReset())
                     {
                         logger.LogWarning("Resetting controller");
-                        linkAdapter.PerformFullTransfer(cancellationToken: lifetime.ApplicationStopped);
+                        linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken);
                         linkInterface.FirmwareResetRequest.SetResult();
                         linkInterface.FirmwareResetRequest = null;
 
@@ -539,8 +539,9 @@ public sealed class LinkService(
                 }
             }
 
-            // Do another full SPI transfer
-            linkAdapter.PerformFullTransfer(cancellationToken: lifetime.ApplicationStopped);
+            // Do another full SPI transfer. It ends with this service, like the loop around it, else a transfer that does not complete keeps the
+            // service from stopping until the shutdown timeout
+            linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken);
             transferredHaltRequest = writtenHaltRequest;
         }
         while (!stoppingToken.IsCancellationRequested);
