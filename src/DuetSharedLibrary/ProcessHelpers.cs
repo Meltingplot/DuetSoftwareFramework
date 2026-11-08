@@ -25,7 +25,7 @@ public static class ProcessHelpers
     public static int GetEffectiveUserID() => Interop.geteuid();
 
     /// <summary>
-    /// Ask the process to terminate by sending SIGTERM to it
+    /// Ask the process to terminate by sending SIGTERM to it. Nothing happens if it has gone already
     /// </summary>
     /// <param name="process">Process</param>
     /// <exception cref="IOException">Failed to kill process</exception>
@@ -34,7 +34,11 @@ public static class ProcessHelpers
         int error = Interop.kill(process.Id, Interop.SIGTERM);
         if (error < 0)
         {
-            throw new IOException($"Failed to kill process (error {Marshal.GetLastWin32Error()})");
+            int errno = Marshal.GetLastWin32Error();
+            if (errno != Interop.ESRCH)
+            {
+                throw new IOException($"Failed to kill process (error {errno})");
+            }
         }
     }
 

@@ -43,6 +43,15 @@ public class ProcessTree
     }
 
     [Test]
+    public void ProcessThatHasGoneIsTerminatedWithoutError()
+    {
+        // StopPlugin checks HasExited and sends SIGTERM afterwards, the plugin may exit in between
+        using Process process = Process.Start(new ProcessStartInfo("/bin/true"))!;
+        process.WaitForExit();
+        Assert.DoesNotThrow(process.Terminate);
+    }
+
+    [Test]
     public void ProcessThatDoesNotExistHasNoDescendants()
     {
         Assert.That(ProcessHelpers.GetDescendants(int.MaxValue), Is.Empty);
