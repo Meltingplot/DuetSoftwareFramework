@@ -96,13 +96,14 @@ public class RefusedMacroPaths : LabTest
     }
 
     /// <summary>
-    /// A refused path in a macro ends like a missing file: the reply and what the calling macro does after it are the same
-    /// (MacroPaths.RefusedPathInMacroEndsLikeMissingFile in the unit tests)
+    /// A refused path in a macro ends like a missing file: the reply, the error in the log and what the calling macro does after it are the same
+    /// (MacroPaths.RefusedPathInMacroEndsLikeMissingFile in the unit tests). The error of the inner M98 does not reach the HTTP reply of the
+    /// outer one (both replies were empty on the lab printer on 2026-11-08), so the test reads it from the journal
     /// </summary>
     [Test]
     public async Task RefusedPathInMacroEndsLikeMissingFile()
     {
-        string pid = await Lab.GetControlServerPidAsync();
+        string cursor = await Lab.GetJournalCursorAsync(), pid = await Lab.GetControlServerPidAsync();
         const string refusedMacro = "99:/macros/lab-tests/refused/missing.g";
 
         async Task<(string Reply, int Step)> RunCallingMacroAsync(string fileName)
@@ -123,10 +124,12 @@ public class RefusedMacroPaths : LabTest
         (string refusedReply, int refusedStep) = await RunCallingMacroAsync(refusedMacro);
         await AssertDcsGoesOnAsync(pid, "the refused M98 in a macro");
 
+        string journal = await Lab.ReadJournalAsync(cursor);
         TestContext.Progress.WriteLine($"Missing file: step {missingStep}, reply '{missingReply}'; refused path: step {refusedStep}, reply '{refusedReply}'");
         Assert.Multiple(() =>
         {
-            Assert.That(missingReply, Does.Contain($"Macro file {MissingMacro} not found"), "The reply to the missing file changed, so the comparison shows nothing");
+            Assert.That(journal, Does.Contain($"Macro file {MissingMacro} not found"), "The missing file was not reported, so the comparison shows nothing");
+            Assert.That(journal, Does.Contain($"Macro file {refusedMacro} not found"), "The refused path was not reported like a missing file");
             Assert.That(refusedReply, Is.EqualTo(missingReply.Replace(MissingMacro, refusedMacro)));
             Assert.That(refusedStep, Is.EqualTo(missingStep), "The calling macro went on differently");
         });
