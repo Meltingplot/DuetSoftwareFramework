@@ -1172,13 +1172,13 @@ public partial class StopPath
     /// error in the Success of RRF for the header of the transfer that carries the stop (Success 1 read as BadHeaderChecksum 5) leaves both sides answering each
     /// other: DSF exchanges its header again while RRF takes it as the 8 bytes of data and answers BadDataChecksum, which it gives priority over the BadResponse of
     /// DSF and repeats without a limit (DataTransfer.cpp:1218-1223). DSF keeps exchanging, so no timeout of RRF ends it, and only DCS stops after
-    /// Settings.SbcRestartTimeout (60 s, SPI.PerformFullTransfer). Three bit errors make RRF time out after 500 ms and stop because it lost the connection
+    /// Settings.SbcRestartTimeout (60 s, SPI.PerformFullTransfer). Two bit errors make RRF time out after 500 ms (SbcTransferTimeout) and stop because it lost the connection
     /// </summary>
     /// <param name="text">Input as the tests print it</param>
     [TestCase("Stop None | Stop 3 ToDsf 130")]
     [TestCase("Stop None | Stop 1 ToRrf 0 | Stop 7 ToDsf 130")]
-    [TestCase("Stop None | Stop 3 ToDsf 0 | Stop 5 ToDsf 0 | Stop 6 ToRrf 0")]
-    [Explicit("R10 is not implemented: on the plain link one bit error leaves the link stuck until DCS restarts after 60 s, three make RRF stop only after its 500 ms timeout")]
+    [TestCase("Stop None | Stop 3 ToDsf 0 | Stop 6 ToDsf 2")]
+    [Explicit("R10 is not implemented: on the plain link one bit error leaves the link stuck until DCS restarts after 60 s, two make RRF stop only after its 500 ms timeout")]
     public async Task EmergencyStopReachesRrfWithin100Ms(string text)
     {
         StopResult result = await RunAsync(StopCase.Parse(text));
@@ -1188,13 +1188,13 @@ public partial class StopPath
     /// <summary>
     /// M112 replies once DSF has completed the transfer that carried the stop (LinkService.cs:398-400, 542, PR #88), which tells only that DSF got the Success of RRF
     /// for its data. RRF processes the data once it has the Success of DSF for it (DataTransfer.cpp:1202-1216), and nothing confirms that one to DSF. A lost Success
-    /// of DSF (two bit errors on the plain link, four on the extended one, whose codes correct three) makes M112 reply one exchange before RRF stops. A single bit error
+    /// of DSF (one bit error on the plain link, four on the extended one, whose codes correct three) makes M112 reply one exchange before RRF stops. A single bit error
     /// in the Success of DSF for the header (read as BadHeaderChecksum) shifts the phases: DSF completes the transfer on the data response RRF repeats for the transfer
     /// before, and its sequence guard sends the stop again in the next transfer (SPI.cs, _resending), so M112 replies even before RRF has the request
     /// </summary>
     /// <param name="text">Input as the tests print it</param>
     [TestCase("Stop None | Stop 3 ToRrf 2")]
-    [TestCase("Stop None | Stop 4 ToRrf 0 | Stop 7 ToRrf 0")]
+    [TestCase("Stop None | Stop 5 ToRrf 0")]
     [TestCase("Stop All | Stop 5 ToRrf 0 | Stop 5 ToRrf 1 | Stop 5 ToRrf 2 | Stop 5 ToRrf 3")]
     [Explicit("M112 replies up to one exchange before RRF has processed the stop when the last response of DSF is lost or the phases shift")]
     public async Task M112RepliesOnlyOnceRrfIsStopped(string text)
@@ -1223,12 +1223,17 @@ public partial class StopPath
     /// with sequence number 0x0000, which follows the 0xFFFF RRF saw last as a regular number, so SequenceDistance is 1 once RRF has left the extended link
     /// as well (DataTransfer.cpp:852) and RRF does not reset the connection. RRF has processed the codes and waits for the end of the macro that DSF has
     /// dropped, and it keeps running. On RRF the trigger file then stays open, so IsTriggerBusy (GCodes.cpp:423-431) would hold back the next trigger
-    /// macros (GCodes.cpp:999); the port does not model that part of RRF
+    /// macros (GCodes.cpp:999); the port does not model that part of RRF. On the plain link two bit errors around the header of the transfer of the codes are
+    /// enough: the phases of both sides shift, DSF counts a lost connection and a reset (M122 of DSF, SPI.PrintDiagnostics) and drops the macro
+    /// (LinkService.cs:333-340), while RRF completes the transfer, processes the codes and counts neither a disconnect nor a reset
     /// </summary>
-    [Test, Explicit("DSF leaving the extended link at counter 0 goes unnoticed by RRF: the trigger macro is lost and RRF does not stop")]
-    public async Task TriggerMacroRunsOrRrfStops()
+    /// <param name="text">Input as the tests print it</param>
+    [TestCase("Trigger All | Code 2 ToRrf 0 | Code 4 ToRrf 0 | Code 6 ToRrf 0 | Code 8 ToRrf 0 | Code 10 ToRrf 0 | Code 12 ToRrf 0 | Code 14 ToRrf 0 | Code 16 ToRrf 0 | Code 18 ToRrf 0 | Code 20 ToRrf 0")]
+    [TestCase("Trigger None | Code 0 ToDsf 0 | Code 1 ToRrf 0")]
+    [Explicit("DSF drops a trigger macro after a reset RRF does not see: the macro is lost and RRF does not stop")]
+    public async Task TriggerMacroRunsOrRrfStops(string text)
     {
-        StopResult result = await RunAsync(StopCase.Parse("Trigger All | Code 2 ToRrf 0 | Code 4 ToRrf 0 | Code 6 ToRrf 0 | Code 8 ToRrf 0 | Code 10 ToRrf 0 | Code 12 ToRrf 0 | Code 14 ToRrf 0 | Code 16 ToRrf 0 | Code 18 ToRrf 0 | Code 20 ToRrf 0"));
+        StopResult result = await RunAsync(StopCase.Parse(text));
         Assert.That(result.TriggerOutcome, Is.Not.EqualTo("lost"), result.Details);
     }
     #endregion
@@ -1237,7 +1242,7 @@ public partial class StopPath
     /// Print the exchanges of a single input, for analysing a finding
     /// </summary>
     /// <param name="text">Input as the tests print it</param>
-    [TestCase("Stop All"), TestCase("Trigger All macro=trigger4.g"), TestCase("Both All macro=trigger4.g at=FirstCode"), Explicit("Analysis")]
+    [TestCase("Stop All"), TestCase("Trigger All macro=trigger4.g"), TestCase("Both All macro=trigger4.g at=FirstCode"), TestCase("Trigger None | Code 0 ToDsf 0 | Code 1 ToRrf 0"), Explicit("Analysis")]
     public async Task TraceInput(string text)
     {
         List<string> trace = [];
