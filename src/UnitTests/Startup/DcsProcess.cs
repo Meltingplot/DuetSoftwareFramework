@@ -13,8 +13,8 @@ using UnitTests.FakeFirmware;
 namespace UnitTests.Startup;
 
 /// <summary>
-/// DuetControlServer as a process, for what Program.cs does around the host: the options (Program.cs:50-83), the start error file and the exit codes
-/// (Program.cs:24-48, 200-204, 241-250) and the update-only mode (Program.cs:94-98, 206-223). There is no hardware, so a normal start always ends with the
+/// DuetControlServer as a process, for what Program.cs does around the host: the options (Program.cs:58-91), the start error file and the exit codes
+/// (Program.cs:24-56, 208-212, 249-258) and the update-only mode (Program.cs:102-106, 214-231). There is no hardware, so a normal start always ends with the
 /// link adapter failing; every config file points the devices to paths that do not exist, so the process never reaches real hardware either
 /// </summary>
 [TestFixture]
@@ -134,7 +134,7 @@ public class DcsProcess
     /// <summary>
     /// The host resolves every hosted service before it starts the first one, so the SPI adapter fails in its constructor (SPI.cs:108-110) before the IPC
     /// server has created its socket. host.Run() has disposed the logger factory by then, so Terminate writes the reason to stderr (Program.cs:35-45),
-    /// saves it in the start error file and exits with OsError (Program.cs:243-250)
+    /// saves it in the start error file and exits with OsError (Program.cs:251-258)
     /// </summary>
     [Test]
     public async Task StartFailureIsSavedInTheStartErrorFile()
@@ -142,7 +142,7 @@ public class DcsProcess
         (int exitCode, string output) = await RunAsync("-c", WriteConfig());
 
         Assert.That(exitCode, Is.EqualTo(ExitCode.OsError), output);
-        Assert.That(output, Does.Contain("Duet Control Server v"), "Banner of the regular mode (Program.cs:105-109)");
+        Assert.That(output, Does.Contain("Duet Control Server v"), "Banner of the regular mode (Program.cs:113-117)");
         Assert.That(output, Does.Contain("Hosting failed to start"), "Error of the host at the default log level");
         Assert.That(output, Does.Contain("[fatal] Failed to start: "));
         Assert.That(System.IO.File.ReadAllText(StartErrorFile), Does.StartWith("Failed to start: ").And.Contain(GpioChipDevice));
@@ -150,7 +150,24 @@ public class DcsProcess
     }
 
     /// <summary>
-    /// -l sets the level of the log (Program.cs:89, 127-151); the reason of a start failure still goes to stderr
+    /// A start error file in a directory that does not exist, as /run/dsf/dcs.err without the tmpfiles.d entry of the package
+    /// (pkg/common/duetcontrolserver/usr/lib/tmpfiles.d/duetcontrolserver.conf): Terminate cannot save the reason, says so on stderr and still exits with
+    /// the exit code of the failure (Program.cs:46-55). Before, the exception of File.WriteAllText left Terminate, and the process ended with its own exit code
+    /// </summary>
+    [Test]
+    public async Task StartFailureIsReportedWithoutTheDirectoryOfTheStartErrorFile()
+    {
+        string startErrorFile = Path.Combine(_directory, "missing", "dcs.err");
+        (int exitCode, string output) = await RunAsync("-c", WriteConfig(config => config[nameof(Settings.StartErrorFile)] = startErrorFile));
+
+        Assert.That(exitCode, Is.EqualTo(ExitCode.OsError), output);
+        Assert.That(output, Does.Contain("[fatal] Failed to start: "));
+        Assert.That(output, Does.Contain($"Failed to write the start error file {startErrorFile}"));
+        Assert.That(System.IO.File.Exists(startErrorFile), Is.False);
+    }
+
+    /// <summary>
+    /// -l sets the level of the log (Program.cs:97, 135-159); the reason of a start failure still goes to stderr
     /// </summary>
     [Test]
     public async Task LogLevelOptionFiltersTheLog()
@@ -164,7 +181,7 @@ public class DcsProcess
 
     /// <summary>
     /// -u asks a running DCS for the object model and updates the boards through it (FirmwareUpdater.TryRemoteFirmwareUpdateAsync), then exits
-    /// (Program.cs:207-217). The config file points to another socket, so the update reaches the running instance only through -s
+    /// (Program.cs:215-225). The config file points to another socket, so the update reaches the running instance only through -s
     /// </summary>
     [Test]
     public async Task UpdateOnlyGoesThroughTheRunningInstance()
@@ -174,7 +191,7 @@ public class DcsProcess
 
         Assert.That(exitCode, Is.EqualTo(ExitCode.Success), output);
         Assert.That(output, Does.Contain("All boards are up-to-date!"));
-        Assert.That(output, Does.Not.Contain("Duet Control Server v"), "No banner in update-only mode (Program.cs:94-98)");
+        Assert.That(output, Does.Not.Contain("Duet Control Server v"), "No banner in update-only mode (Program.cs:102-106)");
         Assert.That(System.IO.File.Exists(StartErrorFile), Is.False);
     }
 
@@ -193,7 +210,7 @@ public class DcsProcess
     }
 
     /// <summary>
-    /// Without a running instance, -u starts DCS in update-only mode to update the firmware itself (Program.cs:206-223 falls through to host.Run)
+    /// Without a running instance, -u starts DCS in update-only mode to update the firmware itself (Program.cs:214-231 falls through to host.Run)
     /// </summary>
     [Test]
     public async Task UpdateOnlyWithoutRunningInstanceStartsItself()
@@ -207,9 +224,9 @@ public class DcsProcess
 
     /// <summary>
     /// Upstream 9ca5be78 "Pass unmatched params in DCS to host builder" hands the tokens that are no option to the configuration
-    /// (Program.cs:160), so that a setting can be given as --Key=value, as DWS takes them (DuetWebServer/Program.cs:46). System.CommandLine rejected
-    /// them first ("Unrecognized command or argument"), because a command treats unmatched tokens as errors by default, so the action of Program.cs:84
-    /// never ran. The root command no longer does (Program.cs:253-254)
+    /// (Program.cs:168), so that a setting can be given as --Key=value, as DWS takes them (DuetWebServer/Program.cs:46). System.CommandLine rejected
+    /// them first ("Unrecognized command or argument"), because a command treats unmatched tokens as errors by default, so the action of Program.cs:92
+    /// never ran. The root command no longer does (Program.cs:261-262)
     /// </summary>
     [Test]
     public async Task SettingsCanBeGivenOnTheCommandLine()
@@ -253,14 +270,15 @@ public class DcsProcess
     }
 
     /// <summary>
-    /// Program.cs:156-169 means to report an invalid config file as "Failed to load settings" with ExitCode.Configuration. AddJsonFile only adds the
-    /// source though; the file is parsed in HostBuilder.Build (Program.cs:193), which throws InvalidDataException (FileConfigurationProvider.cs:107-108
-    /// of Microsoft.Extensions.Configuration.FileExtensions), so Program.cs:200-204 reports "Failed to initialize environment" with OsError. At that point
-    /// the start error file is still /run/dsf/dcs.err (Program.cs:22), because AddSettings has not run; where /run/dsf does not exist, Terminate itself throws
-    /// (Program.cs:46) and the process ends with an unhandled exception. The test does not run where /run/dsf exists, so that it never writes there
+    /// Program.cs:164-177 means to report an invalid config file as "Failed to load settings" with ExitCode.Configuration. AddJsonFile only adds the
+    /// source though; the file is parsed in HostBuilder.Build (Program.cs:201), which throws InvalidDataException (FileConfigurationProvider.cs:107-108
+    /// of Microsoft.Extensions.Configuration.FileExtensions), so Program.cs:208-212 reports "Failed to initialize environment" with OsError. At that point
+    /// the start error file is still /run/dsf/dcs.err (Program.cs:22), because AddSettings has not run; where /run/dsf does not exist, Terminate reports
+    /// that it cannot write it (<see cref="StartFailureIsReportedWithoutTheDirectoryOfTheStartErrorFile"/>). The test does not run where /run/dsf exists,
+    /// so that it never writes there
     /// </summary>
     [Test]
-    [Explicit("Bug: an invalid config.json ends DCS with OsError (or an unhandled exception without /run/dsf) instead of ExitCode.Configuration")]
+    [Explicit("Bug: an invalid config.json ends DCS with OsError instead of ExitCode.Configuration")]
     public async Task InvalidConfigFileIsAConfigurationError()
     {
         Assume.That(Directory.Exists("/run/dsf"), Is.False, "Would write /run/dsf/dcs.err");

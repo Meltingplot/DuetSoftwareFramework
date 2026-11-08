@@ -43,7 +43,15 @@ void Terminate(Exception e, string reason, int exitCode, ILoggerFactory? loggerF
         Console.Error.WriteLine($"[fatal] {reason}");
         Console.Error.WriteLine($"   {e}");
     }
-    File.WriteAllText(startErrorFile, reason);
+    try
+    {
+        File.WriteAllText(startErrorFile, reason);
+    }
+    catch (Exception fe) when (fe is IOException or UnauthorizedAccessException)
+    {
+        // The directory may not exist, e.g. /run/dsf, which only the tmpfiles.d entry of the package creates, but the exit code must still be reported
+        Console.Error.WriteLine($"[error] Failed to write the start error file {startErrorFile}: {fe.Message}");
+    }
     Environment.Exit(exitCode);
 }
 

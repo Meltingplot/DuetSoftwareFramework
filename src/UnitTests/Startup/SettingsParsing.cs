@@ -18,7 +18,7 @@ namespace UnitTests.Startup;
 
 /// <summary>
 /// How DCS turns config.json and the command line into its settings: Program.cs adds the config file as a JSON configuration source
-/// (Program.cs:158-160) and passes the options to <see cref="ServiceCollectionExtensions.AddSettings"/> (Program.cs:183, Settings.cs:481-570)
+/// (Program.cs:166-168) and passes the options to <see cref="ServiceCollectionExtensions.AddSettings"/> (Program.cs:191, Settings.cs:481-570)
 /// </summary>
 [TestFixture]
 public class SettingsParsing
@@ -310,7 +310,7 @@ public class SettingsParsing
     /// <summary>
     /// Configuration keys are case-insensitive, and DCS reads the log level case-insensitively (Settings.cs:488). The key was taken out of the binding with
     /// a case-sensitive comparison though, so "logLevel" went to the binder as well, which cannot convert "info" to <see cref="LogLevel"/>, and DCS did not
-    /// start: "Failed to initialize environment" (Program.cs:197, 200-202). Now it is compared case-insensitively (Settings.cs:497), like the other keys
+    /// start: "Failed to initialize environment" (Program.cs:205, 208-210). Now it is compared case-insensitively (Settings.cs:497), like the other keys
     /// (Settings.cs:459, 493-494)
     /// </summary>
     [Test]
@@ -325,7 +325,7 @@ public class SettingsParsing
     /// The wiki says DCS restores the factory defaults when config.json is deleted (User_manual/Machine_configuration/DSF_Other.md:204).
     /// The file was written from the settings after the command-line options are applied (Settings.cs:539-568), so the first start after the
     /// deletion decided what was saved. `DuetControlServer -u`, which the postinst of the reprapfirmware package runs
-    /// (pkg/deb/reprapfirmware/DEBIAN/postinst:11), sets the log level to error (Program.cs:94-98), and every later start then logged only errors.
+    /// (pkg/deb/reprapfirmware/DEBIAN/postinst:11), sets the log level to error (Program.cs:102-106), and every later start then logged only errors.
     /// Now the defaults of <see cref="Settings"/> are written (Settings.cs:431-435)
     /// </summary>
     [Test]

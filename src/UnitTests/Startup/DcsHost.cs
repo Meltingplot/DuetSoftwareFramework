@@ -27,11 +27,11 @@ namespace UnitTests.Startup;
 
 /// <summary>
 /// DCS as Program.cs builds it: the generic host of Host.CreateDefaultBuilder with UseSystemd, the config file as JSON source, the shutdown timeout of
-/// Program.cs:180 and the same service registrations in the same order (Program.cs:121-193), so that all hosted services run and the host starts and stops
+/// Program.cs:188 and the same service registrations in the same order (Program.cs:129-201), so that all hosted services run and the host starts and stops
 /// them. Differences to Program.cs:
 /// <list type="bullet">
 /// <item>The link adapter is the <see cref="FakeFirmware.FakeFirmware"/> or an SPI adapter on a fake device instead of the hardware</item>
-/// <item>The log goes to an <see cref="IpcLog"/> instead of the console, without the dynamic level filter of Program.cs:145-151</item>
+/// <item>The log goes to an <see cref="IpcLog"/> instead of the console, without the dynamic level filter of Program.cs:153-159</item>
 /// <item>The host lifetime does nothing, so the test process keeps its own signal handlers (Program.cs gets the console or systemd lifetime)</item>
 /// <item>The content root is the temporary directory, so no appsettings.json of the test directory is read</item>
 /// <item>Program.cs's handlers around the host (start error file, Terminate, update-only mode) are not run, see <see cref="DcsProcess"/> for those</item>
