@@ -598,6 +598,109 @@ public class TriggerFuzz
     }
 
     /// <summary>
+    /// Run M98 on HTTP with held transfers until the given condition holds
+    /// </summary>
+    private static Task<string> StartMacroUntil(FakeFirmwareHost host, Func<bool> condition, string description)
+    {
+        host.WriteMacro("http-close.g", "G4 P90003\n");
+        host.Firmware.HoldTransfers();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, Timeout), Is.True, "The transfers were not held");
+
+        Task<string> m98 = host.StartCode("M98 P\"http-close.g\"");
+        for (int i = 0; i < 100 && !condition(); i++)
+        {
+            Step(host);
+        }
+        Assert.That(condition(), Is.True, description);
+        Assert.That(DsfStackDepth(host, CodeChannel.HTTP), Is.EqualTo(2), "DSF got the closal already");
+        return m98;
+    }
+
+    /// <summary>
+    /// Whether RRF has closed the macro of <see cref="StartMacroUntil"/> (GCodes.cpp:770-776). It writes the closal with the next exchange (SbcInterface.cpp:1489-1493)
+    /// </summary>
+    private static bool RrfClosedTheMacro(FakeFirmwareHost host) =>
+        host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Any(code => code.Text == "G4 P90003") && host.Firmware.GetStackDepth(CodeChannel.HTTP) == 0;
+
+    /// <summary>
+    /// Transfers in which RRF reported a closed macro file on a channel
+    /// </summary>
+    private static int[] MacroFileClosedTransfers(FakeFirmwareHost host, CodeChannel channel) =>
+        [.. host.Firmware.GetSentPackets().Where(packet => packet.Request == Request.MacroFileClosed && packet.Channel == channel).Select(packet => packet.Transfer)];
+
+    /// <summary>
+    /// Abort HTTP with the held transfers, let them go and check that DCS is still running and the channel works
+    /// </summary>
+    private static async Task AbortAndCheckChannelAsync(FakeFirmwareHost host, Task<string> m98)
+    {
+        await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
+        Assert.That(DsfStackDepth(host, CodeChannel.HTTP), Is.EqualTo(1), "The abort left the macro on the stack of DSF");
+        host.Firmware.ReleaseTransfers();
+        try
+        {
+            await m98.WaitAsync(Timeout);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled by the abort
+        }
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetReceivedRequests().Any(request => request.Request == SbcRequest.InvalidateChannel) &&
+            firmware.IsIdle(CodeChannel.HTTP), Timeout), Is.True, "RRF did not get the abort");
+
+        // Before, DSF popped its stack a second time for the closal, Processor.Pop threw "Stack underrun on channel HTTP" and the exception stopped DCS
+        int closals = MacroFileClosedTransfers(host, CodeChannel.HTTP).Length;
+        await host.ExecuteAsync("M98 P\"http-close.g\"").WaitAsync(Timeout);
+        Assert.That(host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Count(code => code.Text == "G4 P90003"), Is.EqualTo(2));
+        Assert.That(MacroFileClosedTransfers(host, CodeChannel.HTTP), Has.Length.EqualTo(closals + 1));
+        Assert.That(DsfStackDepth(host, CodeChannel.HTTP), Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task DcsKeepsRunningWhenAMacroFileClosalArrivesBeforeTheAbortGoesOut()
+    {
+        // Found by the lab test AbortsCrossingMacroRequests once InvalidateChannel worked over IPC. RRF has written the closal, and DSF aborts
+        // the channel before the transfer that brings it. The abort has removed the macro from the stack of DSF already (Processor.AbortAllFilesAsync),
+        // and RRF does not report the files it closes for InvalidateChannel (SbcInterface.cpp:893-894), so this closal is void
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        Task<string> m98 = StartMacroUntil(host, () => RrfClosedTheMacro(host), "RRF did not close the macro");
+        Step(host);
+        Assert.That(MacroFileClosedTransfers(host, CodeChannel.HTTP), Is.Empty, "RRF delivered the closal already");
+
+        await AbortAndCheckChannelAsync(host, m98);
+        Assert.That(InvalidateChannelTransfer(host, CodeChannel.HTTP), Is.EqualTo(MacroFileClosedTransfers(host, CodeChannel.HTTP)[0] + 1));
+    }
+
+    [Test]
+    public async Task DcsKeepsRunningWhenAnAbortCrossesAMacroFileClosal()
+    {
+        // As DcsKeepsRunningWhenAMacroFileClosalArrivesBeforeTheAbortGoesOut, but InvalidateChannel goes out with the transfer that brings the closal.
+        // RRF wrote the closal before it read InvalidateChannel (SbcInterface.cpp:310-313 and :1489), as for the macro requests of
+        // ChannelWorksAfterAbortCrossingMacroRequest
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        Task<string> m98 = StartMacroUntil(host, () => RrfClosedTheMacro(host), "RRF did not close the macro");
+
+        await AbortAndCheckChannelAsync(host, m98);
+        Assert.That(InvalidateChannelTransfer(host, CodeChannel.HTTP), Is.EqualTo(MacroFileClosedTransfers(host, CodeChannel.HTTP)[0]));
+    }
+
+    [Test]
+    public async Task DcsKeepsRunningWhenAnAbortArrivesBeforeAMacroFileClosalIsSent()
+    {
+        // RRF closes the macro after it got the end of the file from DSF, and InvalidateChannel reaches it with the next transfer, before it
+        // has written the closal. It reads the packets of DSF first (SbcInterface.cpp:310-313), so it must drop the closal then, as
+        // GCodeBuffer::Reset does (GCodeBuffer.cpp:142). Otherwise DSF gets the closal one transfer after the abort went out, when the window
+        // of the abort is over
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        Task<string> m98 = StartMacroUntil(host, () => host.Firmware.GetPendingRequests().Any(request => request.Request == SbcRequest.MacroCompleted && request.Channel == CodeChannel.HTTP),
+            "DSF did not end the macro");
+        Assert.That(host.Firmware.GetStackDepth(CodeChannel.HTTP), Is.EqualTo(1), "RRF closed the macro already");
+
+        await AbortAndCheckChannelAsync(host, m98);
+        Assert.That(MacroFileClosedTransfers(host, CodeChannel.HTTP), Has.Length.EqualTo(1), "RRF reported the aborted macro as closed");
+        Assert.That(MacroFileClosedTransfers(host, CodeChannel.HTTP)[0], Is.GreaterThan(InvalidateChannelTransfer(host, CodeChannel.HTTP)));
+    }
+
+    /// <summary>
     /// Transfers in which RRF asked for a macro on a channel
     /// </summary>
     private static int[] MacroRequestTransfers(FakeFirmwareHost host, CodeChannel channel) =>

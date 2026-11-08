@@ -37,7 +37,9 @@ Line numbers refer to these commits. PR numbers are those of Meltingplot/DuetSof
 | T3 | Codes buffered ahead on all channels can fill RRF's whole code buffer, so the codes of a trigger macro (trigger2.g: M112) wait. Printer. | 82d581d1 | #133 |
 | T2 | A macro request that crosses an InvalidateChannel is started by DSF. The channel stays blocked until DCS restarts. | 4a576390 | #134 |
 | T1 | **RRF:** InvalidateChannel ends a macro wait but still sends the request. DSF runs a macro that RRF does not, and every later trigger is discarded until DCS restarts. | RRF 8207b22cc | RRF #43 |
+| T12 | An abort that crosses the closal of a macro underruns DSF's stack, and the exception stops DCS. Printer. | 4a576390, RRF 8207b22cc | #158, RRF #45 |
 | I1 | `RequiredPermissionsAttribute.Check` is true for every command, so plugins get every IPC command and connection mode. | c42f948b | #135 |
+| I8 | The IPC command `InvalidateChannel` is refused as unsupported, so the DuetAPIClient calls for it always fail. | 6dd3b8a3 | #158 |
 | H1 | A delete that names the SD root deletes the whole virtual SD card. | 75eb6536, RRF 600857f87 | #136, RRF #44 |
 | F3 | One bit error in RRF's header response leaves the plain link stuck until DCS restarts. A case of F3 in the SBC link findings. Printer. | 4a576390, ed7c3ab4 | #137 |
 | U1 | M997 flashes a `.UF2` file without unpacking it. | 5810dfde | #148 |
@@ -110,20 +112,36 @@ H13 (`rr_delete` ignored `recursive=yes`) was fixed upstream in 5130ca43 and is 
   - DSF clears `_allFilesAborted` as soon as InvalidateChannel is written (`Processor.cs:870`), and `DoMacroFile` (`:1270-1310`) does not look at it.
 - **Fork fix (#134):** a new flag `_allFilesAbortedSent` lasts until the data of that transfer has been processed. `DoMacroFile` discards a request while it is set, without a reply.
   - A `MacroCompleted(error)` would be wrong here: when InvalidateChannel came first, RRF would close a file and pop a state (`SbcInterface.cpp:557-588`).
-- **Test:** `TriggerFuzz.ChannelWorksAfterAbortWhileMacroRequestIsUnderway`, `TriggerFuzz.ChannelWorksAfterAbortCrossingMacroRequest`. Not on hardware yet: T1 opens its window just before the one of T2.
+- **Test:** `TriggerFuzz.ChannelWorksAfterAbortWhileMacroRequestIsUnderway`, `TriggerFuzz.ChannelWorksAfterAbortCrossingMacroRequest`.
+- **Printer (2026-11-08, RRF with #43, DSF with I8 fixed):** DCS discarded a crossing request ("was requested before RRF got the abort of all files"), and RRF never warned "none was requested". The run ended after about one second at T12.
 
 ### T1 (RRF). InvalidateChannel ends a macro wait but still sends the request
 
 - **What happens:** an InvalidateChannel while RRF has a macro request pending blocks the channel until DCS restarts.
   - On the Trigger channel DSF runs a triggerN.g that RRF does not run and never pops it.
   - Every later trigger is discarded with "System macro … is requested but the stack is not empty" (DSF `Processor.cs:1301-1306`), and RRF reports "Macro file triggerN.g not found".
-  - It can be reached through the IPC command `InvalidateChannel`, or `abort` on the Trigger channel outside a macro.
+  - It can be reached through `abort` on the Trigger channel outside a macro. The IPC command `InvalidateChannel` reaches it too once I8 is fixed.
 - **Cause (RRF, 8207b22cc):**
   - `InvalidateChannel` calls `ResolveMacroRequest(true, false)` but leaves `requestedMacroFile` set (`SbcInterface.cpp:855-858`).
   - Since the buffer no longer waits, the blocking path is skipped (`:1457`). The non-blocking path (`:1473`, `:1540-1553`) sends the request in the same exchange.
 - **Fork fix (RRF #43):** `gb->MacroRequestSent()` before `ResolveMacroRequest`, as `GCodeBuffer::Reset` clears the request (`GCodeBuffer.cpp:128-140`). DSF needs no change; DSF #144 only adapts the fake firmware.
 - **Not covered:** daemon.g, which is requested without waiting. An InvalidateChannel that RRF asks DSF to resend could end a wait that started after the first one.
 - **Test:** `TriggerMacros.TriggerChannelWorksAfterInvalidationDuringTriggerRequest` (fake firmware). RRF #43 has only been built, not run on hardware.
+
+### T12. An abort that crosses the closal of a macro stops DCS
+
+- **What happens:** DCS logs `InvalidOperationException: Stack underrun on channel Telnet` in `Processor.Pop()` ← `MacroFileClosed()` ← `LinkService.HandleMacroFileClosed()`. The exception stops the host, systemd restarts DCS. Printer, 2026-11-08: the lab test `AbortsCrossingMacroRequests` (aborts of Telnet during M98 of a one-line macro), about one second after it started.
+- **Cause:**
+  - The abort removes all macro files of the channel from DSF's stack at once (`Processor.AbortAllFilesAsync`, `Processor.cs:722`, pop at `:770`). RRF does not report the files it closes for the InvalidateChannel (RRF `SbcInterface.cpp:865-866`, `FileAbortSent`).
+  - RRF does report a macro that it closed just before (RRF `GCodes.cpp:722`, `SbcInterface.cpp:1450`). DSF pops for that closal as well (`Processor.cs:1218-1232`), which underruns the stack.
+  - That closal reaches DSF in two ways. RRF wrote it before it read InvalidateChannel, in the same transfer or earlier. Or RRF wrote it after it read InvalidateChannel in the same exchange, because `ExchangeData` reads DSF's packets first (`SbcInterface.cpp:301`) and writes the closals later (`:1450`).
+  - Origin: DSF 4a576390 (from v3.6 `SPI/Channel/Processor.cs:684`, `:1125-1140`), RRF 8207b22cc and f522904f5.
+- **Reachable upstream:** through the abort keyword (`KeywordHandler.cs:168-171`) while RRF closes a macro on the same channel, e.g. from a second client of HTTP. Not shown. The IPC command does not reach it because of I8.
+- **Fork fix:** both windows, as for T2 and T1.
+  - DSF (#158): `MacroFileClosed` discards a closal while `_allFilesAborted` or `_allFilesAbortedSent` is set, the window of #134.
+  - RRF (#45): InvalidateChannel clears a closal that has not gone out (`gb->MacroFileClosedSent()`), as `GCodeBuffer::Reset` does (`GCodeBuffer.cpp:142`). The main task sets it under the same buffer mutex (`GCodes.cpp:540`).
+- **Not covered:** an InvalidateChannel that RRF asks DSF to resend, as in T11.
+- **Test:** `TriggerFuzz.DcsKeepsRunningWhenAMacroFileClosalArrivesBeforeTheAbortGoesOut`, `DcsKeepsRunningWhenAnAbortCrossesAMacroFileClosal` (DSF side), `DcsKeepsRunningWhenAnAbortArrivesBeforeAMacroFileClosalIsSent` (RRF side in the fake firmware). RRF #45 has only been built, not run on hardware.
 
 ## Permissions and files
 
@@ -142,6 +160,15 @@ H13 (`rr_delete` ignored `recursive=yes`) was fixed upstream in 5130ca43 and is 
 - **Doc errors, not changed:** the table in `ipc.md:87` gives `ManagePlugins` for the package commands. `ipc.md:81` lists `CheckPassword` under `CommandExecution`, but the code requires `ObjectModelRead | ObjectModelReadWrite` (`CheckPassword.cs:9`).
 - **Printer (2026-11-08, with the fix):** the three installed plugins started, 36 of 36 endpoints answered, and there was no refusal in the journal.
 - **Tests:** `IPC/RequiredPermissions.cs`, `IPC/IpcPluginPermissions.cs`.
+
+### I8. The IPC command `InvalidateChannel` is refused as unsupported
+
+- **What happens:** `InvalidateChannel` and `InvalidateChannelAsync` of the DuetAPIClient (`DuetAPIClient/Commands/BaseCommandConnection.cs:430`, `:443-446`) always fail. DCS answers "unsupported command InvalidateChannel" (`IPC/Connection.cs:655`), in the Command and in the Intercept mode.
+- **Cause (6dd3b8a3, "Version 3.4-b3"):** that commit added the command to DuetAPI, DuetAPIClient and DCS (`Commands/Generic/InvalidateChannel.cs`), but not to `Command.SupportedCommands` (`IPC/Processors/Command.cs:23-56`). The Intercept mode takes its commands from that list (`CodeInterception.cs:42`). v3.6-dev and v3.7-dev do not list it either.
+- **Fork fix (#158):** `InvalidateChannel` is in `Command.SupportedCommands`. It keeps its permission `CodeInterceptionReadWrite` (`DuetAPI/Commands/Generic/InvalidateChannel.cs:8`).
+  - Behaviour change: a plugin whose manifest grants only `CodeInterceptionReadWrite` may now open a Command connection (`IPC/Server.cs:237`). Every other command of that mode needs another permission.
+  - The client documentation names `SuperUser` (`<seealso>` in `BaseCommandConnection.cs:429`, `:442`), the attribute requires `CodeInterceptionReadWrite`. The fork keeps the attribute and leaves the documentation unchanged.
+- **Tests:** `IpcClientApi.InvalidateChannel`, `IpcPluginPermissions.InvalidateChannelNeedsCodeInterceptionReadWrite`. The lab test `AbortsCrossingMacroRequests` needs it to abort Telnet.
 
 ### H1. A delete that names the SD root deletes the whole virtual SD card
 

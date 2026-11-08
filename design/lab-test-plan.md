@@ -547,3 +547,23 @@ Rückbau geprüft: ja, nach Lauf 2 und 3 (config.json nicht gemountet, LogLevel 
 ```
 
 Bewertung: Auf der Hardware zeigt sich von den drei offline gezeigten Mechanismen des Hängers nur der festhängende Link: Die Übertragung wartete auf `ApplicationStopped` statt auf das Stopp-Token. Mit #149 endet der Stopp sofort. Die beiden anderen Mechanismen (ein Code eines anderen Clients beim Stopp, ein Code in der Sekunde nach M999) traten in diesen Läufen nicht auf. Das Warten auf ein laufendes Firmware-Update beim Stoppen (#154) ist nicht auf der Hardware geprüft, dazu bräuchte es einen Flash.
+
+### 2026-11-08 nachts: T2 nach dem I8-Fix, nicht bestanden (Fund T12)
+
+Wiederholung des T2-Labortests `AbortsCrossingMacroRequests` mit dem RRF-Testbuild, der T1 enthält. Der erste Lauf mit diesem RRF hatte nichts abgebrochen, weil DCS `InvalidateChannel` über IPC ablehnte (I8).
+
+```
+Datum, Zeit (UTC): 2026-11-08, 22:00:01 bis 22:02:36
+Anlass, PR, Commit: I8-Fix und T2 (#134), fix/ipc-invalidate-channel 701bc21d
+DSF: 3.7.0+mp.13 im Image, Side-Load von 701bc21d
+RRF: 3.7.0+1.mp.9-dev.1 (3.7-dev fd4324368 mit RRF #43 und #44), Firmware-Side-Load
+Stufen und Freigabe durch: 2 und 3 (M111 P-1 des Tests), Tim ("I8 fixen, T2 jetzt wiederholen")
+Ablauf: run-lab-tests.sh --side-load, Filter ChannelWorksAfterAbortsCrossingMacroRequests, Telnet, short.g = G4 P1
+Ergebnis: FAIL nach 47 s. Das Skript brach mit BrokenPipeError ab, weil DCS um 22:01:21.49 stoppte: "BackgroundService failed, System.InvalidOperationException: Stack underrun on channel Telnet" in Processor.Pop ← MacroFileClosed ← LinkService.HandleMacroFileClosed. systemd startete DCS neu, der Test erholte sich mit Neustart und M999
+Vorher im Journal: mindestens ein verworfener Makro-Request des T2-Fixes ("was requested before RRF got the abort of all files"), kein "none was requested", G4 P0 nach einem Abbruch endete mit "Error: M98: Macro file 0:/macros/lab-tests/abort/short.g not found" (T10), 15 Out-of-order replies, 2 x "Failed to find suitable stack level for flush request"
+Journal: ab 22:01:19.36 fehlen die Debug-Zeilen von DCS, nur Info und Warnungen sind da (vermutlich die Ratenbegrenzung von journald), die Zählungen sind daher untere Grenzen
+M122: alle Link-Zähler 0 -> 0
+Rückbau geprüft: ja (kein Side-Load, /var/tmp/lab-tests weg, OTA-Timer aktiv, sys/trigger30.g und 0:/macros/lab-tests weg, idle, Versionen wie vorher)
+```
+
+Bewertung: Der T2-Fix wirkt auf der Hardware, und T1 trat nicht auf. Der Lauf fand T12: Die Meldung einer geschlossenen Makrodatei (`MacroFileClosed`), die einen Abbruch kreuzt, lässt den Stack von DSF unterlaufen, und die Ausnahme stoppt DCS (`design/dsf-findings-upstream.md`, T12). Fix in DSF (Fenster von #134) und RRF #45. Der Test muss mit einem RRF mit #45 wiederholt werden. T10 ist nicht nur kosmetisch: Die Antwort des abgebrochenen M98 ging an den nächsten Code.
