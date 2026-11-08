@@ -430,8 +430,8 @@ public sealed class Settings
     {
         if (!File.Exists(ConfigFile) && Directory.Exists(Path.GetDirectoryName(ConfigFile)))
         {
-            // Save default settings to the config file
-            SaveToFile(ConfigFile);
+            // Save default settings to the config file, not the ones of this start, which may come from the command line
+            new Settings().SaveToFile(ConfigFile);
         }
     }
 

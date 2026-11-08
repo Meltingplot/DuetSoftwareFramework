@@ -324,22 +324,28 @@ public class SettingsParsing
 
     /// <summary>
     /// The wiki says DCS restores the factory defaults when config.json is deleted (User_manual/Machine_configuration/DSF_Other.md:204).
-    /// The file is written from the settings after the command-line options are applied (Settings.cs:539-568), so the first start after the
-    /// deletion decides what is saved. `DuetControlServer -u`, which the postinst of the reprapfirmware package runs
-    /// (pkg/deb/reprapfirmware/DEBIAN/postinst:11), sets the log level to error (Program.cs:94-98), and every later start then logs only errors
+    /// The file was written from the settings after the command-line options are applied (Settings.cs:539-568), so the first start after the
+    /// deletion decided what was saved. `DuetControlServer -u`, which the postinst of the reprapfirmware package runs
+    /// (pkg/deb/reprapfirmware/DEBIAN/postinst:11), sets the log level to error (Program.cs:94-98), and every later start then logged only errors.
+    /// Now the defaults of <see cref="Settings"/> are written (Settings.cs:431-435)
     /// </summary>
     [Test]
-    [Explicit("Bug: a config.json restored by DuetControlServer -u or -l/-b/-S/-s holds the command-line values instead of the defaults")]
     public void RestoredConfigFileHoldsTheDefaults()
     {
         FileInfo configFile = new(Path.Combine(_directory, "config.json"));
-        Bind(configFile: configFile, updateOnly: true, logLevel: LogLevel.Error, baseDirectory: new DirectoryInfo(Path.Combine(_directory, "sd")));
+        (Settings settings, _) = Bind(configFile: configFile, updateOnly: true, logLevel: LogLevel.Error, baseDirectory: new DirectoryInfo(Path.Combine(_directory, "sd")));
 
         JsonObject json = JsonNode.Parse(System.IO.File.ReadAllText(configFile.FullName))!.AsObject();
         Assert.Multiple(() =>
         {
             Assert.That((string?)json["LogLevel"], Is.EqualTo("info"));
             Assert.That((string?)json["BaseDirectory"], Is.EqualTo(new Settings().BaseDirectory));
+            JsonNode expected = JsonNode.Parse(JsonSerializer.Serialize(new Settings(), SettingsContext.Default.Settings))!;
+            Assert.That(JsonNode.DeepEquals(json, expected), Is.True, $"Differences: {string.Join(", ", Differences(json, expected.AsObject()))}");
         });
+
+        // The options still apply to this start
+        Assert.That(settings.LogLevel, Is.EqualTo(LogLevel.Error));
+        Assert.That(settings.BaseDirectory, Is.EqualTo(Path.Combine(_directory, "sd")));
     }
 }
