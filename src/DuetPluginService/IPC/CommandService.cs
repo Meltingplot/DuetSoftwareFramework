@@ -68,7 +68,9 @@ public class CommandService(PluginServiceConnection connection, IHostApplication
             }
             catch (SocketException)
             {
-                // Connection has been terminated
+                // Connection has been terminated. Stop like at start-up and let systemd restart us to register with DCS again
+                logger.LogWarning("Connection to DCS has been closed");
+                lifetime.StopApplication();
                 break;
             }
             catch (Exception e)

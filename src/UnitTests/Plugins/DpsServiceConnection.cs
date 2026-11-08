@@ -192,18 +192,17 @@ public class DpsServiceConnection : DpsTestBase
     }
 
     /// <summary>
-    /// When DCS is not there at start-up, CommandService stops the application "and let systemd restart us to retry" (CommandService.cs:26-33). When DCS closes
-    /// the connection later, the command loop ends (CommandService.cs:69-73) but the application keeps running without connection, so DPS does not register
-    /// with the next DCS on its own. Whether systemd restarts it anyway (PartOf=duetcontrolserver.service in
-    /// pkg/common/duetpluginservice/usr/lib/systemd/system/duetpluginservice.service) depends on how DCS went away, which was not checked here
+    /// When DCS is not there at start-up, CommandService stops the application "and let systemd restart us to retry" (CommandService.cs:26-33). It does the same
+    /// when DCS closes the connection later, so that DPS registers with the next DCS (Restart=always in
+    /// pkg/common/duetpluginservice/usr/lib/systemd/system/duetpluginservice*.service)
     /// </summary>
     [Test]
-    [Explicit("Bug: DPS keeps running without DCS connection after DCS closed it, unlike when DCS is missing at start-up")]
     public async Task ServiceStopsWhenDcsClosesTheConnection()
     {
         await StartDpsAsync();
         Dps!.Bridge!.PluginServiceConnection!.Close();
         Assert.That(await WaitForAsync(() => Dps.Lifetime.ApplicationStopping.IsCancellationRequested, TimeSpan.FromSeconds(5)), Is.True);
+        Assert.That(Dps.Log.Contains("Connection to DCS has been closed"), Is.True);
     }
 
     /// <summary>
