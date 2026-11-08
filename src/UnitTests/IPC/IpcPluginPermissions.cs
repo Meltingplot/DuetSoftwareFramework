@@ -129,6 +129,28 @@ public class IpcPluginPermissions
     }
 
     /// <summary>
+    /// InvalidateChannel aborts every file and code of a channel, so it needs CodeInterceptionReadWrite (DuetAPI/Commands/Generic/InvalidateChannel.cs).
+    /// CommandExecution, which runs codes, is not enough
+    /// </summary>
+    [TestCase(SbcPermissions.CommandExecution | SbcPermissions.CodeInterceptionRead, false)]
+    [TestCase(SbcPermissions.CodeInterceptionReadWrite, true)]
+    public async Task InvalidateChannelNeedsCodeInterceptionReadWrite(SbcPermissions permissions, bool granted)
+    {
+        await using FakePluginService service = await FakePluginService.StartAsync(_host);
+        await AddPluginAsync("Invalidator", Environment.ProcessId, permissions);
+        using RawIpcClient plugin = await RawIpcClient.ConnectAsync(_host.SocketPath!, "{\"mode\":\"Command\",\"version\":13}");
+        using JsonDocument response = await plugin.RequestAsync("{\"command\":\"InvalidateChannel\",\"channel\":\"Telnet\"}");
+        if (granted)
+        {
+            Assert.That(RawIpcClient.AssertResponse(response.RootElement), Is.True, response.RootElement.ToString());
+        }
+        else
+        {
+            Assert.That(RawIpcClient.GetErrorType(response.RootElement), Is.EqualTo(nameof(UnauthorizedAccessException)), response.RootElement.ToString());
+        }
+    }
+
+    /// <summary>
     /// An interceptor with CodeInterceptionRead may only ignore codes. Resolve, Cancel and Rewrite need CodeInterceptionReadWrite (DuetAPI/Commands/CodeInterception),
     /// which Connection.ReceiveCommandAsync checks before CodeInterception.ProcessAsync hands the command to the intercepted code
     /// </summary>

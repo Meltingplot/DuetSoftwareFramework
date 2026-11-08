@@ -256,15 +256,21 @@ public class IpcClientApi
 
     /// <summary>
     /// DuetAPIClient offers InvalidateChannel ("Invalidate all pending codes and files on the given channel") and DCS implements it
-    /// (DuetControlServer/Commands/Generic/InvalidateChannel.cs, added as "new IPC command to invalidate codes and files" in 3.4-b3),
-    /// but no IPC processor lists it, so the server refuses it as "unsupported command InvalidateChannel"
+    /// (DuetControlServer/Commands/Generic/InvalidateChannel.cs, added as "new IPC command to invalidate codes and files" in 3.4-b3).
+    /// Without an entry in Command.SupportedCommands the server refused it as "unsupported command InvalidateChannel"
     /// </summary>
     [Test]
-    [Explicit("Bug: InvalidateChannel is missing from Command.SupportedCommands, so the DuetAPIClient calls always fail")]
     public async Task InvalidateChannel()
     {
+        int Invalidations() => _host.Firmware.GetReceivedRequests().Count(request => request.Request == DuetControlServer.Link.Protocol.SbcRequests.Request.InvalidateChannel && request.Channel == CodeChannel.Telnet);
+        int before = Invalidations();
+
         _connection.InvalidateChannel(CodeChannel.Telnet);
         await _connection.InvalidateChannelAsync(CodeChannel.Telnet);
+
+        // AbortAllFilesAsync only marks the channel, the request goes out with a later transfer (Processor.cs:809, :902)
+        Assert.That(_host.Firmware.WaitUntil(firmware => Invalidations() > before, FakeFirmwareHost.DefaultTimeout), Is.True, "RRF did not get an InvalidateChannel request for Telnet");
+        Assert.That(await _connection.PerformSimpleCodeAsync("echo 7", CodeChannel.Telnet), Is.EqualTo("7\n"));
     }
 
     [Test]
