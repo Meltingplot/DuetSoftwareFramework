@@ -286,3 +286,6 @@ src/DuetAPI/Generated
 
 # NativeAOT builds
 aot/out
+
+# Host keys and accounts of the firmware side-load, local only (firmware/README.md)
+firmware/sideload/.fw-sideload.env

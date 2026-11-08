@@ -1,0 +1,40 @@
+[submodule "firmware/RepRapFirmware"]
+	path = firmware/RepRapFirmware
+	url = https://github.com/Meltingplot/RepRapFirmware.git
+	branch = 3.7-dev
+[submodule "firmware/Duet3Expansion"]
+	path = firmware/Duet3Expansion
+	url = https://github.com/Meltingplot/Duet3Expansion.git
+	branch = 3.7-dev
+[submodule "firmware/CANlib"]
+	path = firmware/CANlib
+	url = https://github.com/Meltingplot/CANlib.git
+	branch = 3.7-dev
+[submodule "firmware/CoreN2G"]
+	path = firmware/CoreN2G
+	url = https://github.com/Meltingplot/CoreN2G.git
+	branch = 3.7-dev
+[submodule "firmware/FreeRTOS"]
+	path = firmware/FreeRTOS
+	url = https://github.com/Meltingplot/FreeRTOS.git
+	branch = 3.7-dev
+[submodule "firmware/LibTinyusb"]
+	path = firmware/LibTinyusb
+	url = https://github.com/Meltingplot/LibTinyusb.git
+	branch = 3.7-dev
+[submodule "firmware/LibMbedTls"]
+	path = firmware/LibMbedTls
+	url = https://github.com/Meltingplot/LibMbedTls.git
+	branch = master
+[submodule "firmware/RRFLibraries"]
+	path = firmware/RRFLibraries
+	url = https://github.com/Meltingplot/RRFLibraries.git
+	branch = 3.7-dev
+[submodule "firmware/WiFiSocketServerRTOS"]
+	path = firmware/WiFiSocketServerRTOS
+	url = https://github.com/Meltingplot/WiFiSocketServerRTOS.git
+	branch = master
+[submodule "firmware/Qfplib-M0-full"]
+	path = firmware/Qfplib-M0-full
+	url = https://github.com/Meltingplot/Qfplib-M0-full.git
+	branch = 3.7-dev
