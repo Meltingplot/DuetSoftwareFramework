@@ -904,7 +904,7 @@ public class MCodeHandler(
             case 472:
                 if (await codeProcessor.FlushAsync(code, cancellationToken: cancellationToken))
                 {
-                    string path = code.GetString('P'), physicalPath = await filePathResolver.ToPhysicalAsync(path, cancellationToken: cancellationToken);
+                    string path = code.GetString('P'), physicalPath = await filePathResolver.ToPhysicalAsync(path, forDeletion: true, cancellationToken: cancellationToken);
                     if (!Path.Exists(physicalPath))
                     {
                         // File.Delete does not fail if the file does not exist, but RRF does

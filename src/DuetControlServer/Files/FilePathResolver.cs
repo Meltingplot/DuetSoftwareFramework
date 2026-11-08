@@ -57,14 +57,26 @@ public partial class FilePathResolver(Model.ObjectModel model, IOptions<Settings
     /// not escape the root (e.g. via ..)
     /// </summary>
     /// <param name="root">Physical root directory the result must remain in</param>
+    /// <param name="forDeletion">Path is going to be deleted, so it must not be the root itself</param>
     /// <param name="segments">Path segments to combine</param>
     /// <returns>Normalized physical path</returns>
-    /// <exception cref="ArgumentException">Resulting path escapes the root directory</exception>
-    private static string CombineContained(string root, params string[] segments)
+    /// <exception cref="ArgumentException">Resulting path escapes the root directory or is the root to be deleted</exception>
+    private static string CombineContained(string root, bool forDeletion, params string[] segments)
     {
         string fullRoot = Path.GetFullPath(root);
         string result = Path.GetFullPath(Path.Combine([fullRoot, .. segments.Select(segment => segment.TrimStart('/'))]));
-        if (result != fullRoot && !result.StartsWith(fullRoot.EndsWith('/') ? fullRoot : fullRoot + '/', StringComparison.Ordinal))
+
+        // Path.GetFullPath keeps a trailing separator, so compare both without it
+        string trimmedRoot = Path.TrimEndingDirectorySeparator(fullRoot), trimmedResult = Path.TrimEndingDirectorySeparator(result);
+        if (trimmedResult == trimmedRoot)
+        {
+            if (forDeletion)
+            {
+                // Same as RRF's MassStorage::Delete
+                throw new ArgumentException("Delete root folder is not allowed");
+            }
+        }
+        else if (!trimmedResult.StartsWith(trimmedRoot.EndsWith('/') ? trimmedRoot : trimmedRoot + '/', StringComparison.Ordinal))
         {
             throw new ArgumentException($"Path {string.Join('/', segments)} escapes the volume root directory");
         }
@@ -182,9 +194,23 @@ public partial class FilePathResolver(Model.ObjectModel model, IOptions<Settings
     /// <param name="directory">Directory containing filePath if it is not absolute is specified</param>
     /// <param name="cancellationToken">Optional cancellation token</param>
     /// <returns>Resolved file path</returns>
-    public async Task<string> ToPhysicalAsync(string filePath, FileDirectory directory, CancellationToken cancellationToken = default)
+    public Task<string> ToPhysicalAsync(string filePath, FileDirectory directory, CancellationToken cancellationToken = default)
     {
-        return await ToPhysicalAsync(filePath, await GetDirectoryPathAsync(directory, cancellationToken), cancellationToken);
+        return ToPhysicalAsync(filePath, directory, false, cancellationToken);
+    }
+
+    /// <summary>
+    /// Resolve a RepRapFirmware/FatFs-style file path to a physical file path asynchronously.
+    /// The first drive (0:/) is reserved for usage with the base directory as specified in the settings
+    /// </summary>
+    /// <param name="filePath">File path to resolve</param>
+    /// <param name="directory">Directory containing filePath if it is not absolute is specified</param>
+    /// <param name="forDeletion">Path is going to be deleted, so the root directory of its drive is refused</param>
+    /// <param name="cancellationToken">Optional cancellation token</param>
+    /// <returns>Resolved file path</returns>
+    public async Task<string> ToPhysicalAsync(string filePath, FileDirectory directory, bool forDeletion, CancellationToken cancellationToken = default)
+    {
+        return await ToPhysicalAsync(filePath, await GetDirectoryPathAsync(directory, cancellationToken), forDeletion, cancellationToken);
     }
 
     /// <summary>
@@ -193,15 +219,16 @@ public partial class FilePathResolver(Model.ObjectModel model, IOptions<Settings
     /// </summary>
     /// <param name="filePath">File path to resolve</param>
     /// <param name="directory">Directory containing filePath if it is not absolute is specified</param>
+    /// <param name="forDeletion">Path is going to be deleted, so the root directory of its drive is refused</param>
     /// <returns>Resolved file path</returns>
-    public string ToPhysical(string filePath, string? directory = null)
+    public string ToPhysical(string filePath, string? directory = null, bool forDeletion = false)
     {
         filePath = filePath.Replace('\\', '/');
 
         Match match = _driveRegex.Match(filePath);
         if (match.Success && int.TryParse(match.Groups[1].Value, out int driveNumber))
         {
-            return CombineContained(GetDrivePath(driveNumber), match.Groups[2].Value);
+            return CombineContained(GetDrivePath(driveNumber), forDeletion, match.Groups[2].Value);
         }
 
         if (directory is not null && !filePath.StartsWith('/'))
@@ -209,11 +236,11 @@ public partial class FilePathResolver(Model.ObjectModel model, IOptions<Settings
             match = _driveRegex.Match(directory);
             if (match.Success && int.TryParse(match.Groups[1].Value, out driveNumber))
             {
-                return CombineContained(GetDrivePath(driveNumber), match.Groups[2].Value, filePath);
+                return CombineContained(GetDrivePath(driveNumber), forDeletion, match.Groups[2].Value, filePath);
             }
-            return CombineContained(settings.Value.BaseDirectory, directory, filePath);
+            return CombineContained(settings.Value.BaseDirectory, forDeletion, directory, filePath);
         }
-        return CombineContained(settings.Value.BaseDirectory, filePath);
+        return CombineContained(settings.Value.BaseDirectory, forDeletion, filePath);
     }
 
     /// <summary>
@@ -222,16 +249,17 @@ public partial class FilePathResolver(Model.ObjectModel model, IOptions<Settings
     /// </summary>
     /// <param name="filePath">File path to resolve</param>
     /// <param name="directory">Directory containing filePath if it is not absolute is specified</param>
+    /// <param name="forDeletion">Path is going to be deleted, so the root directory of its drive is refused</param>
     /// <param name="cancellationToken">Optional cancellation token</param>
     /// <returns>Resolved file path</returns>
-    public async Task<string> ToPhysicalAsync(string filePath, string? directory = null, CancellationToken cancellationToken = default)
+    public async Task<string> ToPhysicalAsync(string filePath, string? directory = null, bool forDeletion = false, CancellationToken cancellationToken = default)
     {
         filePath = filePath.Replace('\\', '/');
 
         Match match = _driveRegex.Match(filePath);
         if (match.Success && int.TryParse(match.Groups[1].Value, out int driveNumber))
         {
-            return CombineContained(await GetDrivePathAsync(driveNumber, cancellationToken), match.Groups[2].Value);
+            return CombineContained(await GetDrivePathAsync(driveNumber, cancellationToken), forDeletion, match.Groups[2].Value);
         }
 
         if (directory is not null && !filePath.StartsWith('/'))
@@ -239,11 +267,11 @@ public partial class FilePathResolver(Model.ObjectModel model, IOptions<Settings
             match = _driveRegex.Match(directory);
             if (match.Success && int.TryParse(match.Groups[1].Value, out driveNumber))
             {
-                return CombineContained(await GetDrivePathAsync(driveNumber, cancellationToken), match.Groups[2].Value, filePath);
+                return CombineContained(await GetDrivePathAsync(driveNumber, cancellationToken), forDeletion, match.Groups[2].Value, filePath);
             }
-            return CombineContained(settings.Value.BaseDirectory, directory, filePath);
+            return CombineContained(settings.Value.BaseDirectory, forDeletion, directory, filePath);
         }
-        return CombineContained(settings.Value.BaseDirectory, filePath);
+        return CombineContained(settings.Value.BaseDirectory, forDeletion, filePath);
     }
 
     /// <summary>

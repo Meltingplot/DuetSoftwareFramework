@@ -103,11 +103,12 @@ internal static class EndpointHelper
     /// </summary>
     /// <param name="socketPath">Path to the DSF IPC socket</param>
     /// <param name="path">Path to resolve</param>
+    /// <param name="forDeletion">Path is going to be deleted, so DCS refuses the root directory of its volume</param>
     /// <returns>Physical path</returns>
-    public static async Task<string> ResolvePathAsync(string socketPath, string path)
+    public static async Task<string> ResolvePathAsync(string socketPath, string path, bool forDeletion = false)
     {
         using CommandConnection connection = await BuildConnectionAsync(socketPath);
-        return await connection.ResolvePathAsync(path);
+        return await connection.ResolvePathAsync(path, forDeletion);
     }
 
     /// <summary>

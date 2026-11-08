@@ -18,7 +18,7 @@ public sealed class ResolvePath(FilePathResolver filePathResolver) : DuetAPI.Com
     public override Task<string> ExecuteAsync(CancellationToken cancellationToken = default)
     {
         return (BaseDirectory != null)
-            ? filePathResolver.ToPhysicalAsync(Path, BaseDirectory.Value, cancellationToken)
-            : filePathResolver.ToPhysicalAsync(Path, cancellationToken: cancellationToken);
+            ? filePathResolver.ToPhysicalAsync(Path, BaseDirectory.Value, ForDeletion, cancellationToken)
+            : filePathResolver.ToPhysicalAsync(Path, forDeletion: ForDeletion, cancellationToken: cancellationToken);
     }
 }

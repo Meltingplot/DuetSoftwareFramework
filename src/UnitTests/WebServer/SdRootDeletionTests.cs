@@ -71,7 +71,9 @@ public class SdRootDeletionTests : WebServerFixture
         await connection.ConnectAsync(Dcs.SocketPath!);
         string resolved = Path.GetFullPath(await connection.ResolvePathAsync(path));
         Assert.That(resolved == root || resolved.StartsWith(root + "/"), Is.True, $"{path} resolves to {resolved} outside the SD card");
-        return resolved == root;
+
+        // Path.GetFullPath keeps a trailing separator, e.g. of 0:/sys/../
+        return resolved == root || resolved == root + "/";
     }
 
     /// <summary>
@@ -101,10 +103,10 @@ public class SdRootDeletionTests : WebServerFixture
     /// its own. Result in-process (not run on the printer): DELETE /machine/file with recursive=true answers 204 and deletes the whole SD card
     /// directory including the directory itself for 0:/, 0:, 0:/., / and 0:/sys/..; without recursive it is refused with 500 "Directory not
     /// empty" (which names the physical path). rr_delete is refused with {"err":1} only because it ignores recursive=yes
-    /// (WebServerFindings.RrDeleteDeletesRecursively), so passing the flag on without a root check would open it as well
+    /// (WebServerFindings.RrDeleteDeletesRecursively), so passing the flag on without a root check would open it as well.
+    /// 0:/sys/../, 0:/./ and ./ resolve to the root with a trailing separator, which Path.GetFullPath keeps
     /// </summary>
     [Test]
-    [Explicit("Bug: DELETE /machine/file/0:/?recursive=true deletes the whole virtual SD card")]
     public async Task RootCannotBeDeleted()
     {
         (string Path, string Uri)[] requests =
@@ -115,9 +117,13 @@ public class SdRootDeletionTests : WebServerFixture
             ("0:/.", "machine/file/0%3A%2F.?recursive=true"),
             ("/", "machine/file/%2F?recursive=true"),
             ("0:/sys/..", "machine/file/0%3A%2Fsys%2F..?recursive=true"),
+            ("0:/sys/../", "machine/file/0%3A%2Fsys%2F..%2F?recursive=true"),
+            ("0:/./", "machine/file/0%3A%2F.%2F?recursive=true"),
+            ("./", "machine/file/.%2F?recursive=true"),
             ("0:/", "rr_delete?name=0:/"),
             ("0:/", "rr_delete?name=0:/&recursive=yes"),
-            ("0:", "rr_delete?name=0:&recursive=yes")
+            ("0:", "rr_delete?name=0:&recursive=yes"),
+            ("0:/sys/../", "rr_delete?name=0:/sys/../&recursive=yes")
         ];
 
         List<string> results = [], failures = [];
@@ -128,7 +134,9 @@ public class SdRootDeletionTests : WebServerFixture
                 RestoreSdCard();
                 if (!await ResolvesToTheRootAsync(path))
                 {
+                    // Every path of the list names the root, so this is a mistake of the list and the request is not sent to be safe
                     results.Add($"{uri}: {path} does not resolve to the root, not sent");
+                    failures.Add(results[^1]);
                     continue;
                 }
 
@@ -152,5 +160,49 @@ public class SdRootDeletionTests : WebServerFixture
             TestContext.Out.WriteLine(string.Join('\n', results));
         }
         Assert.That(failures, Is.Empty, "Requests that deleted the SD card root:\n" + string.Join('\n', failures) + "\nAll results:\n" + string.Join('\n', results));
+    }
+
+    /// <summary>
+    /// A path can also name the root through the name of the SD card directory, which no check of the path string like RRF's (MassStorage.cpp:841-851)
+    /// would see. DCS refuses the resolved path instead, with RRF's message (FilePathResolver.CombineContained), and DWS reports it like every other
+    /// path that DCS refuses
+    /// </summary>
+    [Test]
+    public async Task RootCannotBeDeletedThroughItsName()
+    {
+        RestoreSdCard();
+        string name = Path.GetFileName(Path.GetFullPath(Dcs.BaseDirectory));
+        Assert.That(await ResolvesToTheRootAsync($"0:/../{name}"), Is.True);
+        try
+        {
+            using HttpResponseMessage response = await SendAsync(_client, HttpMethod.Delete, $"machine/file/0%3A%2F..%2F{name}?recursive=true", _key);
+            Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.InternalServerError));
+            Assert.That(await response.Content.ReadAsStringAsync(), Is.EqualTo("Delete root folder is not allowed"));
+            Assert.That(SdCardIntact, Is.True);
+        }
+        finally
+        {
+            RestoreSdCard();
+        }
+    }
+
+    /// <summary>
+    /// Only a delete refuses the root, a directory listing of it still works (MachineEndpoints.GetFileList, RepRapFirmwareEndpoints.GetFileList)
+    /// </summary>
+    [Test]
+    public async Task RootCanStillBeListed()
+    {
+        RestoreSdCard();
+        using (HttpResponseMessage response = await SendAsync(_client, HttpMethod.Get, "machine/directory/0%3A%2F", _key))
+        {
+            Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.OK));
+            string body = await response.Content.ReadAsStringAsync();
+            Assert.That(Directories.All(d => body.Contains($"\"name\":\"{d}\"")), Is.True, body);
+        }
+        using (HttpResponseMessage response = await SendAsync(_client, HttpMethod.Get, "rr_filelist?dir=0:/", _key))
+        {
+            string body = await response.Content.ReadAsStringAsync();
+            Assert.That(Directories.All(d => body.Contains($"\"name\":\"{d}\"")), Is.True, body);
+        }
     }
 }

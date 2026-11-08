@@ -1117,7 +1117,7 @@ public sealed class LinkService(
 
         try
         {
-            string physicalFile = filePathResolver.ToPhysical(filename);
+            string physicalFile = filePathResolver.ToPhysical(filename, forDeletion: true);
             if (Directory.Exists(physicalFile))
             {
                 Directory.Delete(physicalFile, recursive);

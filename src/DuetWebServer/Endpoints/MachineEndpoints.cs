@@ -359,7 +359,7 @@ public class MachineEndpoints
         string resolvedPath = "n/a";
         try
         {
-            resolvedPath = await EndpointHelper.ResolvePathAsync(settings.SocketPath, filename);
+            resolvedPath = await EndpointHelper.ResolvePathAsync(settings.SocketPath, filename, forDeletion: true);
 
             if (Directory.Exists(resolvedPath))
             {
