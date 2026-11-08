@@ -334,6 +334,11 @@ public class DpsRootService : DpsTestBase
             Directory.Move(Path.Combine(pluginBase, "dsf"), elsewhere);
             Directory.CreateSymbolicLink(Path.Combine(pluginBase, "dsf"), elsewhere);
         }),
+        ("dsf directory replaced by a symlink inside the plugin directory", (pluginBase, manifest) =>
+        {
+            Directory.Move(Path.Combine(pluginBase, "dsf"), Path.Combine(pluginBase, "real"));
+            Directory.CreateSymbolicLink(Path.Combine(pluginBase, "dsf"), Path.Combine(pluginBase, "real"));
+        }),
         ("venv writable by the group", (pluginBase, manifest) =>
         {
             Directory.CreateDirectory(Path.Combine(pluginBase, "venv/bin"), RootDirectory);
@@ -359,8 +364,9 @@ public class DpsRootService : DpsTestBase
         await AddToDcsAsync(plugin);
         Tampering.Single(item => item.Description == description).Change(Path.Combine(PluginDirectory, "Root"), Path.Combine(PluginDirectory, "Root.json"));
 
+        // A symlinked dsf directory that leads out of the plugin directory is refused for every plugin before (StartPlugin.cs)
         ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("Root")))!;
-        Assert.That(e.Message, Does.StartWith("Refusing to start plugin Root: ").And.EndWith(" may be changed by others than the root service"));
+        Assert.That(e.Message, Does.Match("^Refusing to start plugin Root: .* may be changed by others than the root service$|^Refusing to launch plugin Root: executable .* is outside of its directory$"));
         Assert.That(Dps.Store.Processes, Is.Empty);
     }
 

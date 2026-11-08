@@ -150,8 +150,14 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
                 }
             }
 
+            // The plugin directory is the base of the checks above, which resolve symlinks, so a plugin directory that was replaced by a symlink loses the link only
             string pluginBase = Path.Combine(settings.Value.PluginDirectory, Plugin);
-            if (removesPluginDirectory && ForUpgrade)
+            if (removesPluginDirectory && new DirectoryInfo(pluginBase).LinkTarget is not null)
+            {
+                logger.LogWarning("Plugin directory {Directory} is a symlink, removing the link only", pluginBase);
+                File.Delete(pluginBase);
+            }
+            else if (removesPluginDirectory && ForUpgrade)
             {
                 // Remove only installed files so custom plugin files survive the upgrade
                 foreach (string dsfFile in plugin.DsfFiles)

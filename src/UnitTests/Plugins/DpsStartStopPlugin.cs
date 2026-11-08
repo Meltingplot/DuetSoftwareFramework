@@ -224,7 +224,34 @@ public class DpsStartStopPlugin : DpsTestBase
         Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Linked2", "dsf", "bin"), "/bin");
         e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("Linked2")))!;
         Assert.That(e.Message, Is.EqualTo($"Refusing to launch plugin Linked2: executable {Path.Combine(PluginDirectory, "Linked2", "dsf", "bin", "bash")} is outside of its directory"));
-        Assert.That(Dps!.Store.Processes, Is.Empty);
+
+        // The plugin may write its own directory, so it can replace its dsf directory with a symlink
+        await AddPluginAsync("LinkedDsf", null, plugin => plugin.SbcExecutable = "bash");
+        Directory.Delete(Path.Combine(PluginDirectory, "LinkedDsf", "dsf"), true);
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "LinkedDsf", "dsf"), "/bin");
+        e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("LinkedDsf")))!;
+        Assert.That(e.Message, Is.EqualTo($"Refusing to launch plugin LinkedDsf: executable {Path.Combine(PluginDirectory, "LinkedDsf", "dsf", "bash")} is outside of its directory"));
+
+        // A plugin with ManagePlugins or FileSystemAccess may even replace its plugin directory
+        string elsewhere = OutsidePath("elsewhere");
+        Directory.CreateDirectory(Path.Combine(elsewhere, "dsf"));
+        File.WriteAllText(Path.Combine(elsewhere, "dsf", "plugin.sh"), "#!/bin/sh\nexec sleep 30\n");
+        File.SetUnixFileMode(Path.Combine(elsewhere, "dsf", "plugin.sh"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        await AddPluginAsync("LinkedBase", null);
+        Directory.Delete(Path.Combine(PluginDirectory, "LinkedBase"), true);
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "LinkedBase"), elsewhere);
+        e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("LinkedBase")))!;
+        Assert.That(e.Message, Is.EqualTo($"Refusing to launch plugin LinkedBase: executable {Path.Combine(PluginDirectory, "LinkedBase", "dsf", "plugin.sh")} is outside of its directory"));
+
+        // A symlink that stays inside the plugin directory is fine
+        await AddPluginAsync("Versioned", null, plugin => plugin.SbcExecutable = "current/plugin.sh");
+        string version = Path.Combine(PluginDirectory, "Versioned", "dsf", "v2");
+        Directory.CreateDirectory(version);
+        File.WriteAllText(Path.Combine(version, "plugin.sh"), "#!/bin/sh\nexec sleep 30\n");
+        File.SetUnixFileMode(Path.Combine(version, "plugin.sh"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Versioned", "dsf", "current"), version);
+        await StartAsync("Versioned");
+        Assert.That(Dps!.Store.Processes.Keys, Is.EqualTo(new[] { "Versioned" }));
     }
 
     [Test]

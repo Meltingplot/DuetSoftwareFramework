@@ -361,6 +361,13 @@ public class DpsInstallPlugin : DpsTestBase
         Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Linked/dsf/dangling"), Path.Combine(outside, "missing"));
         Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(Manifest("Linked"), ("dsf/dangling/file", "x")), upgrade: true));
         Assert.That(Directory.EnumerateFileSystemEntries(outside), Is.Empty, "Something was created outside the plugin directory");
+
+        // The plugin directory is the base of the check, so it must not be a symlink itself
+        Directory.Delete(Path.Combine(PluginDirectory, "Linked"), true);
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Linked"), outside);
+        e = (await Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(Manifest("Linked"), ("dsf/config.g", "M999")), upgrade: true)))!;
+        Assert.That(e.Message, Is.EqualTo($"Refusing to install plugin Linked: {Path.Combine(PluginDirectory, "Linked")} is a symlink"));
+        Assert.That(Directory.EnumerateFileSystemEntries(outside), Is.Empty, "Something was created outside the plugin directory");
     }
 
     [Test]

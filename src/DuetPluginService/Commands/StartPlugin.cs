@@ -116,8 +116,10 @@ public sealed class StartPlugin(PluginStore pluginStore, ServicePrivileges privi
             throw new ArgumentException($"Refusing to launch plugin {plugin.Id}: executable {sbcExecutable} is a symlink");
         }
 
-        // The same holds for an executable whose directory is a symlink that leads out of the plugin directory
-        if (!Path.IsInside(sbcExecutable, Path.Combine(settings.Value.PluginDirectory, plugin.Id, "dsf")))
+        // The same holds for an executable whose directory is a symlink that leads out of the plugin directory. Path.IsInside resolves the base
+        // directory too, so the base is the plugin directory, which the profile lets the plugin read only, and it must not be a symlink itself
+        string pluginBase = Path.Combine(settings.Value.PluginDirectory, plugin.Id);
+        if (new DirectoryInfo(pluginBase).LinkTarget is not null || !Path.IsInside(sbcExecutable, pluginBase))
         {
             throw new ArgumentException($"Refusing to launch plugin {plugin.Id}: executable {sbcExecutable} is outside of its directory");
         }

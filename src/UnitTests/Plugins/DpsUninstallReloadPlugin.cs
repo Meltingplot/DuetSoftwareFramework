@@ -155,6 +155,26 @@ public class DpsUninstallReloadPlugin : DpsTestBase
         Assert.That(await Dps.GetPluginAsync("Packaged"), Is.Not.Null);
     }
 
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task SymlinkedPluginDirectoryLosesTheLinkOnly(bool forUpgrade)
+    {
+        // A plugin with ManagePlugins or FileSystemAccess may replace its plugin directory by a symlink. The checks of UninstallPlugin resolve symlinks
+        // with the plugin directory as base, so nothing behind such a link is deleted, only the link
+        await StartDpsAsync(register: false);
+        await InstallAsync("Replaced", null, ("dsf/replaced", "x"));
+        string elsewhere = OutsidePath("elsewhere");
+        Directory.CreateDirectory(Path.Combine(elsewhere, "dsf"));
+        File.WriteAllText(Path.Combine(elsewhere, "dsf", "replaced"), "keep me");
+        Directory.Delete(Path.Combine(PluginDirectory, "Replaced"), true);
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Replaced"), elsewhere);
+
+        await UninstallAsync("Replaced", forUpgrade);
+        Assert.That(Path.Exists(Path.Combine(PluginDirectory, "Replaced")), Is.False);
+        Assert.That(File.ReadAllText(Path.Combine(elsewhere, "dsf", "replaced")), Is.EqualTo("keep me"));
+        Assert.That(Dps!.Log.Contains($"Plugin directory {Path.Combine(PluginDirectory, "Replaced")} is a symlink, removing the link only"), Is.True);
+    }
+
     /// <summary>
     /// UninstallPlugin deletes the manifest only if it exists, and it checks the file mode of the manifest only then as well, so a plugin whose manifest is
     /// gone is still uninstalled

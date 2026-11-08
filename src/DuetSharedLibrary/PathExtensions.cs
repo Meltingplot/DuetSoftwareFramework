@@ -39,6 +39,8 @@ public static class PathExtensions
         /// <param name="directory">Directory the path must not leave</param>
         /// <returns>Whether the path is the directory or below it</returns>
         /// <remarks>
+        /// The directory is resolved as well, so whoever controls the path must not be able to replace the directory by a symlink: a caller that checks
+        /// the files of a plugin uses its plugin directory and makes sure that it is no symlink.
         /// The file system may change after the check, so this does not protect against a concurrent change of the parent directories
         /// </remarks>
         public static bool IsInside(string path, string directory)

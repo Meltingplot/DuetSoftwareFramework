@@ -105,8 +105,14 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
                 }
             }
 
-            // Delete old files. The root service also deletes an old installation that others may change, it would not start the plugin from there
+            // The checks of the paths below resolve symlinks, but the plugin directory is their base, so it must not be a symlink itself
             string pluginBase = Path.Combine(settings.Value.PluginDirectory, plugin.Id);
+            if (installsPluginDirectory && new DirectoryInfo(pluginBase).LinkTarget is not null)
+            {
+                throw new ArgumentException($"Refusing to install plugin {plugin.Id}: {pluginBase} is a symlink");
+            }
+
+            // Delete old files. The root service also deletes an old installation that others may change, it would not start the plugin from there
             if (installsPluginDirectory && Directory.Exists(pluginBase) && (!Upgrade || (privileges.IsPrivileged && !FileExtensions.IsProtected(pluginBase, privileges.UserId))))
             {
                 try
