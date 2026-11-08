@@ -102,7 +102,7 @@ public class FirmwareUpdates
     }
 
     /// <summary>
-    /// A package upgrade stops DuetPiManagementPlugin halfway through, so M997 S2 is not an error while one is in progress (MCodeHandler.cs:1321-1334).
+    /// A package upgrade stops DuetPiManagementPlugin halfway through, so M997 S2 is not an error while one is in progress (MCodeHandler.cs:1338-1351).
     /// The flag is set by SetUpdateStatus (Commands/Generic/SetUpdateStatus.cs:21)
     /// </summary>
     [Test]

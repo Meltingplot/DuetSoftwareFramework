@@ -185,7 +185,7 @@ public class UpdateOnlyMode
 
     /// <summary>
     /// Firmware files that are not in directories.firmware are looked for in directories.system, where they were kept before RRF 3.3
-    /// (FirmwareUpdater.cs:59-63 and 291-295, the wiki: Gcodes.md, M997 notes)
+    /// (FirmwareUpdater.cs:84-88 and 305-309, the wiki: Gcodes.md, M997 notes)
     /// </summary>
     [TestCase(false)]
     [TestCase(true)]
@@ -201,7 +201,7 @@ public class UpdateOnlyMode
 
     /// <summary>
     /// A board without firmwareFileName, e.g. the main board when RRF did not report its verbose fields (see VerboseFieldsAfterReset), is
-    /// left alone with a warning (FirmwareUpdater.cs:84-88 and 314-318)
+    /// left alone with a warning (FirmwareUpdater.cs:109-113 and 328-332)
     /// </summary>
     [TestCase(false)]
     [TestCase(true)]
@@ -235,8 +235,8 @@ public class UpdateOnlyMode
     }
 
     /// <summary>
-    /// FirmwareUpdater waits for the board to report the new version, polling every 2 s (FirmwareUpdater.cs:175-198), then resets the main board
-    /// because it was not updated itself (FirmwareUpdater.cs:229-248)
+    /// FirmwareUpdater waits for the board to report the new version, polling every 2 s (FirmwareUpdater.cs:189-212), then resets the main board
+    /// because it was not updated itself (FirmwareUpdater.cs:243-262)
     /// </summary>
     [Test]
     public async Task OutdatedExpansionBoard()
@@ -254,7 +254,7 @@ public class UpdateOnlyMode
     }
 
     /// <summary>
-    /// Expansion boards come first, because updating the main board restarts it and ends DCS (FirmwareUpdater.cs:154-228)
+    /// Expansion boards come first, because updating the main board restarts it and ends DCS (FirmwareUpdater.cs:160-242)
     /// </summary>
     [Test]
     public async Task OutdatedMainAndExpansionBoards()
@@ -278,8 +278,8 @@ public class UpdateOnlyMode
     }
 
     /// <summary>
-    /// A board whose firmware file is missing gets no version in the table of versions (FirmwareUpdater.cs:44-69), so it is left alone with the
-    /// warning for a board without a firmware version (FirmwareUpdater.cs:77-88 and 307-318), like a board without a file name. Updating it would
+    /// A board whose firmware file is missing gets no version in the table of versions (FirmwareUpdater.cs:68-94), so it is left alone with the
+    /// warning for a board without a firmware version (FirmwareUpdater.cs:102-113 and 321-332), like a board without a file name. Updating it would
     /// send M997 B121, which RRF refuses ("Firmware file ... not found", ExpansionManager.cpp:484-489), and then wait for a version that never
     /// comes. The same holds for a firmware file whose version cannot be read, e.g. one without the version text at 0x20 (Firmware.cs:141-171)
     /// </summary>
@@ -397,7 +397,7 @@ public class UpdateOnlyMode
 
     /// <summary>
     /// Stopping DCS -u while it waits for a tool board ends the wait, and the reset of the main board that follows is cancelled as well, because
-    /// both codes get the token of the update (FirmwareUpdater.cs:173-204 and 229-248)
+    /// both codes get the token of the update (FirmwareUpdater.cs:176-218 and 243-262)
     /// </summary>
     [Test]
     public async Task CancelledWhileWaitingForExpansionBoard()
@@ -459,7 +459,7 @@ public class UpdateOnlyMode
     }
 
     /// <summary>
-    /// The running DCS carries out the M997 it gets over IPC, the firmware file is resolved through it as well (FirmwareUpdater.cs:289-301, 431-453)
+    /// The running DCS carries out the M997 it gets over IPC, the firmware file is resolved through it as well (FirmwareUpdater.cs:302-315, 438-460)
     /// </summary>
     [Test]
     public async Task RemoteOutdatedMainBoard()
@@ -474,7 +474,7 @@ public class UpdateOnlyMode
     }
 
     /// <summary>
-    /// The new version of the tool board comes in through the object model subscription (FirmwareUpdater.cs:399-412), then the main board is reset
+    /// The new version of the tool board comes in through the object model subscription (FirmwareUpdater.cs:406-419), then the main board is reset
     /// </summary>
     [Test]
     public async Task RemoteOutdatedExpansionBoard()
@@ -588,7 +588,7 @@ public class UpdateOnlyMode
 
     /// <summary>
     /// A tool board that does not report the new version in time is reported, polled every 2 s, and the main board is still reset because RRF has
-    /// started the update (FirmwareUpdater.cs:190-260). Only the local update is tested: the remote one waits for an object model patch in every
+    /// started the update (FirmwareUpdater.cs:189-262). Only the local update is tested: the remote one waits for an object model patch in every
     /// poll (FirmwareUpdater.cs:412-418), which comes only when something under boards/**, directories/** or state/status changes, and the values of
     /// the fake firmware stay the same
     /// </summary>

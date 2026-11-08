@@ -16,7 +16,7 @@ namespace UnitTests.Codes;
 
 /// <summary>
 /// M997 updates of the main board that get as far as flashing. DCS handles M997 S0 for board 0 itself: it looks for the IAP binary and the
-/// firmware, stops the plugins, sends both to the link (MCodeHandler.cs:1203-1318) and the LinkService flashes the firmware through the IAP
+/// firmware, stops the plugins, sends both to the link (MCodeHandler.cs:1203-1335) and the LinkService flashes the firmware through the IAP
 /// program (LinkService.cs:62-156). The fake firmware emulates RRF and the IAP program for that (FakeFirmwareIap.cs). The paths that end before
 /// an update starts are in <see cref="FirmwareUpdates"/>
 /// </summary>
@@ -107,7 +107,7 @@ public class FirmwareUpdateFlashing
     /// <summary>
     /// M997 without a P parameter flashes boards[0].firmwareFileName with boards[0].iapFileNameSBC, both from directories.firmware.
     /// The plugins are stopped first, the machine status is Updating from then on, and DCS stops a moment after the reply so that systemd starts it
-    /// again for the new firmware (MCodeHandler.cs:1262-1316, LinkService.cs:64-67). The wiki: S0 is the default and B is 0 for the main board
+    /// again for the new firmware (MCodeHandler.cs:1288-1333, LinkService.cs:64-67). The wiki: S0 is the default and B is 0 for the main board
     /// </summary>
     [TestCase("M997", true)]
     [TestCase("M997 S0", false)]
@@ -155,7 +155,7 @@ public class FirmwareUpdateFlashing
     }
 
     /// <summary>
-    /// The Duet 3 Mini reports a .uf2 firmware file (Pins_Duet3Mini.h:18-29). DCS unpacks it and flashes the image (MCodeHandler.cs:1272-1276)
+    /// The Duet 3 Mini reports a .uf2 firmware file (Pins_Duet3Mini.h:18-29). DCS unpacks it and flashes the image (MCodeHandler.cs:1270-1286)
     /// </summary>
     [Test]
     public async Task UpdateWithUf2File()
@@ -210,7 +210,7 @@ public class FirmwareUpdateFlashing
 
     /// <summary>
     /// After the third mismatch DCS gives up with an IOException (LinkService.cs:145-151). M997 reports it, writes it to the start error file for
-    /// DWS and stops DCS (MCodeHandler.cs:1287-1313). The IAP program resets after its third mismatch as well (src/iap.cpp:720-727)
+    /// DWS and stops DCS (MCodeHandler.cs:1304-1330). The IAP program resets after its third mismatch as well (src/iap.cpp:720-727)
     /// </summary>
     [Test]
     public async Task UpdateFailsAfterThreeChecksumErrors()
@@ -228,7 +228,7 @@ public class FirmwareUpdateFlashing
     }
 
     /// <summary>
-    /// A start error file that cannot be written only costs a warning in the log, the error reply stays (MCodeHandler.cs:1291-1298)
+    /// A start error file that cannot be written only costs a warning in the log, the error reply stays (MCodeHandler.cs:1308-1315)
     /// </summary>
     [Test]
     public async Task FailedUpdateWithoutStartErrorFile()
@@ -249,7 +249,7 @@ public class FirmwareUpdateFlashing
 
     /// <summary>
     /// When the IAP binary or the firmware is not in directories.firmware, DCS falls back to 0:/firmware and then to directories.system, where the
-    /// files were kept before RRF 3.3 (MCodeHandler.cs:1230-1260, the wiki: Gcodes.md, M997 notes)
+    /// files were kept before RRF 3.3 (MCodeHandler.cs:1238-1268, the wiki: Gcodes.md, M997 notes)
     /// </summary>
     [Test]
     public async Task UpdateWithFilesInFallbackDirectories()
@@ -268,7 +268,7 @@ public class FirmwareUpdateFlashing
     }
 
     /// <summary>
-    /// Without boards there is nothing to take the file names from (MCodeHandler.cs:1212-1215)
+    /// Without boards there is nothing to take the file names from (MCodeHandler.cs:1220-1223)
     /// </summary>
     [Test]
     public async Task UpdateWithoutBoards()
@@ -279,7 +279,7 @@ public class FirmwareUpdateFlashing
     }
 
     /// <summary>
-    /// A second update while the first one waits for the LinkService fails without stopping DCS (MCodeHandler.cs:1282-1286, LinkInterface.cs:523-526).
+    /// A second update while the first one waits for the LinkService fails without stopping DCS (MCodeHandler.cs:1299-1303, LinkInterface.cs:523-526).
     /// The transfers are held so that the LinkService cannot take the first update, and the second M997 gets through its flush because its channel is
     /// idle (Channel/Processor.cs:521-528)
     /// </summary>
@@ -303,7 +303,7 @@ public class FirmwareUpdateFlashing
 
     /// <summary>
     /// When the IAP program stops answering, the SPI adapter times out waiting for TfrRdy and throws an OperationCanceledException (SPI.cs:1207,
-    /// 1741-1780). M997 takes an OperationCanceledException for its own cancellation (MCodeHandler.cs:1287), so the LinkService passes the timeout
+    /// 1741-1780). M997 takes an OperationCanceledException for its own cancellation (MCodeHandler.cs:1304), so the LinkService passes the timeout
     /// on as an IOException unless DCS is stopping (LinkService.cs:319-326). M997 then reports it, writes it to the start error file and stops DCS,
     /// whose transfer thread has ended (LinkService.cs:330). By then the IAP program has erased the flash and resets into the bootloader
     /// (src/iap_spi.cpp:406-410, src/iap.cpp:772-789)

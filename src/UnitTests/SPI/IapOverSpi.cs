@@ -300,7 +300,7 @@ public class IapOverSpi
     /// <summary>
     /// When the IAP program stops raising TfrRdy, DSF times out after Consts.IapTimeout with an OperationCanceledException that names no transfer
     /// phase, since the transfer is not one of RRF's (SPI.cs:1741-1780). The update fails with it as an IOException, because M997 would take an
-    /// OperationCanceledException for its own cancellation and drop the reason (LinkService.cs:134-139 and 319-326, MCodeHandler.cs:1287)
+    /// OperationCanceledException for its own cancellation and drop the reason (LinkService.cs:134-139 and 319-326, MCodeHandler.cs:1304)
     /// </summary>
     [Test]
     public async Task IapProgramStopsAnswering()
