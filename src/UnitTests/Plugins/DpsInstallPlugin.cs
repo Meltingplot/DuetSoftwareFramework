@@ -324,13 +324,11 @@ public class DpsInstallPlugin : DpsTestBase
     /// <summary>
     /// A plugin can write below its own directory (owner {pluginDirectory}/** rwmlk, apparmor.conf:27), so it can replace its dsf directory with a
     /// symlink. When the same plugin is upgraded, DCS uninstalls it with ForUpgrade (DuetControlServer/Commands/Plugins/InstallPlugin.cs:139-146), which
-    /// deletes only the files listed in the manifest (UninstallPlugin.cs:132-154) and keeps the symlink, and InstallPlugin keeps the plugin directory
-    /// (Upgrade, InstallPlugin.cs:84). The zip-slip guard compares Path.GetFullPath, which does not resolve symlinks (InstallPlugin.cs:162-167), and the
-    /// file is created through the symlink (InstallPlugin.cs:185) by DPS, which runs without AppArmor profile. So the package of the upgrade writes
-    /// wherever the dsf user may write, e.g. 0:/sys/config.g, which DCS refuses as sd/ entry (InstallPlugin.cs:49-52 in DCS), or other plugins
+    /// deletes only the files listed in the manifest and keeps the symlink, and InstallPlugin keeps the plugin directory (Upgrade). DPS runs without
+    /// AppArmor profile, so writing through the symlink would reach wherever the dsf user may write, e.g. 0:/sys/config.g, which DCS refuses as sd/ entry.
+    /// The zip-slip guard resolves the symlinks of the parent directories (Path.IsInside, DuetSharedLibrary/PathExtensions.cs)
     /// </summary>
     [Test]
-    [Explicit("Bug: an upgrade writes through a symlink that the plugin left in its directory, outside the plugin directory")]
     public async Task UpgradeDoesNotWriteThroughSymlinks()
     {
         await StartDpsAsync(register: false);
@@ -339,15 +337,63 @@ public class DpsInstallPlugin : DpsTestBase
         Directory.CreateDirectory(Path.Combine(PluginDirectory, "Linked"));
         Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Linked/dsf"), outside);
 
-        try
-        {
-            await InstallAsync(Package(Manifest("Linked"), ("dsf/config.g", "M999")), upgrade: true);
-        }
-        catch (Exception e) when (e is ArgumentException or IOException)
-        {
-            // Refusing the package is fine too
-        }
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(Manifest("Linked"), ("dsf/config.g", "M999")), upgrade: true)))!;
+        Assert.That(e.Message, Is.EqualTo("Refusing to install entry dsf/config.g: path escapes plugin directory"));
         Assert.That(File.Exists(Path.Combine(outside, "config.g")), Is.False, "The package was written outside the plugin directory");
+
+        // The same for a directory below that does not exist yet and for a dangling symlink
+        Directory.Delete(Path.Combine(PluginDirectory, "Linked/dsf"));
+        Directory.CreateDirectory(Path.Combine(PluginDirectory, "Linked/dsf"));
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Linked/dsf/sub"), outside);
+        Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(Manifest("Linked"), ("dsf/sub/new/file", "x")), upgrade: true));
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Linked/dsf/dangling"), Path.Combine(outside, "missing"));
+        Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(Manifest("Linked"), ("dsf/dangling/file", "x")), upgrade: true));
+        Assert.That(Directory.EnumerateFileSystemEntries(outside), Is.Empty, "Something was created outside the plugin directory");
+    }
+
+    [Test]
+    public async Task SymlinkedFilesAreReplacedInsteadOfWrittenThrough()
+    {
+        // A symlink in place of a file of the package, in the plugin directory, in 0:/ or as manifest, is replaced by the file of the package
+        await StartDpsAsync(register: false);
+        string outside = OutsidePath("precious.g");
+        File.WriteAllText(outside, "keep me");
+        Directory.CreateDirectory(Path.Combine(PluginDirectory, "Replaced/dsf"));
+        File.CreateSymbolicLink(Path.Combine(PluginDirectory, "Replaced/dsf/replaced"), outside);
+        File.CreateSymbolicLink(Path.Combine(SdDirectory, "macros/replaced.g"), outside);
+        File.CreateSymbolicLink(Path.Combine(PluginDirectory, "Replaced.json"), outside);
+
+        await InstallAsync(Package(Manifest("Replaced", manifest => manifest["sbcExecutable"] = "replaced"), ("dsf/replaced", "binary"), ("sd/macros/replaced.g", "M117")), upgrade: true);
+        Assert.That(File.ReadAllText(outside), Is.EqualTo("keep me"));
+        Assert.That(new FileInfo(Path.Combine(PluginDirectory, "Replaced/dsf/replaced")).LinkTarget, Is.Null);
+        Assert.That(File.ReadAllText(Path.Combine(PluginDirectory, "Replaced/dsf/replaced")), Is.EqualTo("binary"));
+        Assert.That(File.GetUnixFileMode(Path.Combine(PluginDirectory, "Replaced/dsf/replaced")), Is.EqualTo(Executable));
+        Assert.That(File.ReadAllText(Path.Combine(SdDirectory, "macros/replaced.g")), Is.EqualTo("M117"));
+        Assert.That(new FileInfo(Path.Combine(PluginDirectory, "Replaced.json")).LinkTarget, Is.Null);
+        Assert.That(ReadManifest("Replaced").DsfFiles, Is.EqualTo(new[] { "replaced" }));
+    }
+
+    [Test]
+    public async Task SymlinksThatStayInsideAreFollowed()
+    {
+        // A symlinked directory that resolves inside the allowed base is fine, e.g. a link between two directories of 0:/
+        await StartDpsAsync(register: false);
+        Directory.CreateDirectory(Path.Combine(SdDirectory, "macros/real"));
+        Directory.CreateSymbolicLink(Path.Combine(SdDirectory, "macros/alias"), Path.Combine(SdDirectory, "macros/real"));
+        await InstallAsync(Package(Manifest("Aliased"), ("sd/macros/alias/aliased.g", "M117")));
+        Assert.That(File.ReadAllText(Path.Combine(SdDirectory, "macros/real/aliased.g")), Is.EqualTo("M117"));
+    }
+
+    [Test]
+    public async Task WebFilesAreNotLinkedOutsideTheWebDirectory()
+    {
+        await StartDpsAsync(register: false);
+        string outside = OutsidePath("web");
+        Directory.CreateDirectory(outside);
+        Directory.CreateSymbolicLink(Path.Combine(SdDirectory, "www/linked"), outside);
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(Manifest("WebLink"), ("dwc/linked/file.js", "js")))))!;
+        Assert.That(e.Message, Is.EqualTo("Refusing to install entry dwc/linked/file.js: path escapes web directory"));
+        Assert.That(Directory.EnumerateFileSystemEntries(outside), Is.Empty);
     }
 
     /// <summary>

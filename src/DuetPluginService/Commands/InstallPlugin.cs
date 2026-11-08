@@ -159,7 +159,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
                 }
 
                 // Guard against zip-slip: a malicious archive could use '..' segments or absolute paths in entry names
-                // to escape the plugin directory and overwrite files elsewhere
+                // to escape the plugin directory and overwrite files elsewhere, and a plugin may have left symlinked directories in its own directory
                 if (!Path.IsInside(fileName, allowedBase))
                 {
                     throw new ArgumentException($"Refusing to install entry {entry.FullName}: path escapes plugin directory");
@@ -180,8 +180,11 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
                 }
                 else
                 {
+                    // Replace what is there instead of writing through it, it may be a symlink that leads elsewhere.
+                    // CreateNew does not follow a symlink that shows up in the meantime either
                     logger.LogDebug("Extracting {CompressedFile} to {File}", entry.FullName, fileName);
-                    await using FileStream fileStream = new(fileName, FileMode.Create, FileAccess.Write, FileShare.None);
+                    File.Delete(fileName);
+                    await using FileStream fileStream = new(fileName, FileMode.CreateNew, FileAccess.Write, FileShare.None);
                     await using Stream zipFileStream = entry.Open();
                     await zipFileStream.CopyToAsync(fileStream);
 
@@ -191,7 +194,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
                             plugin.SbcExtraExecutables.Any(executable => (entry.FullName == "dsf/" + executable) || (entry.FullName == $"dsf/{architecture}/{executable}"))))
                     {
                         logger.LogDebug("Changing mode of {File} to 770", fileName);
-                        File.SetUnixFileMode(fileName,
+                        File.SetUnixFileMode(fileStream.SafeFileHandle,
                             UnixFileMode.UserWrite | UnixFileMode.UserRead | UnixFileMode.UserExecute |
                             UnixFileMode.GroupWrite | UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
                     }
@@ -214,10 +217,15 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
             }
 
             // Install the web files. Try to use a symlink or copy the files if that failed
+            string wwwDirectory = Path.Combine(sdPath, "www");
             foreach (string dwcFile in plugin.DwcFiles)
             {
                 string pluginWwwPath = Path.Combine(pluginBase, "dwc", dwcFile);
-                string installWwwPath = Path.Combine(sdPath, "www", dwcFile);
+                string installWwwPath = Path.Combine(wwwDirectory, dwcFile);
+                if (!Path.IsInside(installWwwPath, wwwDirectory))
+                {
+                    throw new ArgumentException($"Refusing to install entry dwc/{dwcFile}: path escapes web directory");
+                }
 
                 // Create parent directory first
                 string directory = Path.GetDirectoryName(installWwwPath)!;
@@ -249,7 +257,8 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
             // Install refreshed plugin manifest
             logger.LogDebug("Installing plugin manifest");
             string manifestFilename = Path.Combine(settings.Value.PluginDirectory, $"{plugin.Id}.json");
-            await using (FileStream manifestFile = new(manifestFilename, FileMode.Create, FileAccess.Write, FileShare.None))
+            File.Delete(manifestFilename);
+            await using (FileStream manifestFile = new(manifestFilename, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
                 await JsonSerializer.SerializeAsync(manifestFile, plugin, ObjectModelContext.Default.Plugin);
             }
