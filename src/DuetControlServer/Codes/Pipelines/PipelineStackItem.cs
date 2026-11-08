@@ -60,7 +60,7 @@ public sealed class PipelineStackItem
         {
             ProcessorTask = Task.Factory.StartNew(async delegate
             {
-                await foreach (Code code in PendingCodes.Reader.ReadAllAsync(_lifetime.ApplicationStopping))
+                await foreach (Code code in PendingCodes.Reader.ReadAllAsync(codeProcessor.StoppingToken))
                 {
                     // Set it up
                     lock (this)

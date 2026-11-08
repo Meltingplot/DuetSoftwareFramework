@@ -28,15 +28,19 @@ namespace UnitTests.Startup;
 /// duetcontrolserver.service:8). DCS tells systemd that it stops when ApplicationStopping fires (SystemdLifetime.cs:104-109 of
 /// Microsoft.Extensions.Hosting.Systemd, the "Application is shutting down..." line), also when it stops on its own after M999. The host then waits up to
 /// HostOptions.ShutdownTimeout, 30 s by default (HostOptions.cs:24), for each service, see <see cref="HostLifecycle.HostOptionsAreTheDefaults"/>.
-/// So every service that does not stop until the shutdown timeout ends in SIGKILL. These tests show three ways to get there:
+/// So every service that does not stop until the shutdown timeout ends in SIGKILL. These tests show three ways to get there, the first two offline only:
 /// <list type="number">
-/// <item>A code of a client that is still pending is never completed: the stages of the code pipeline stop reading their queues on ApplicationStopping
-/// (PipelineStackItem.cs:63), and LinkService.StopAsync cancels the codes of the link into the Executed queue afterwards (LinkService.cs:241,
-/// LinkInterface.cs:707-713, Channel/Processor.cs:1444-1484, CodeProcessor.cs:277-285, 318). The IPC connection waits for the code
-/// (SimpleCode.ExecuteAsync awaits it without a token), and the IPC server waits for its connections until ApplicationStopped (IPC/Server.cs:123),
-/// which the host signals only after all services have stopped (Host.cs:272 of Microsoft.Extensions.Hosting)</item>
+/// <item>A code of a client that is still pending was never completed: the stages of the code pipeline stopped reading their queues on ApplicationStopping,
+/// and LinkService.StopAsync cancels the codes of the link into the Executed queue afterwards (LinkService.cs:241, LinkInterface.cs:707-713,
+/// Channel/Processor.cs:1444-1484, CodeProcessor.cs:277-285). The IPC connection waits for the code (SimpleCode.ExecuteAsync awaits it without a token),
+/// and the IPC server waits for its connections until ApplicationStopped (IPC/Server.cs:123), which the host signals only after all services have stopped
+/// (Host.cs:272 of Microsoft.Extensions.Hosting).
+/// Fixed: the stages read until the CodeProcessorService stops (PipelineStackItem.cs:63, CodeProcessorService.cs), which the host does after the LinkService,
+/// the IPC server and the JobProcessor, so the codes they cancel are completed. In v3.6 the link was shut down before the token of the pipelines was cancelled
+/// as well (Program.ShutdownAsync there)</item>
 /// <item>After M999 the transfer thread has ended (LinkService.cs:297), so a code that a client sends in the second before DCS stops
-/// (MCodeHandler.cs:1363-1368) is never sent and hangs the same way. This fits "after the boot-time M999", when clients are busy</item>
+/// (MCodeHandler.cs:1363-1368) waits in the Firmware stage until LinkService.StopAsync cancels it (Channel/Processor.cs:1459-1463), and hung the same way.
+/// This fits "after the boot-time M999", when clients are busy. Fixed with case 1</item>
 /// <item>A transfer that does not complete keeps the transfer thread inside PerformFullTransfer until its token is cancelled (SPI.cs:324). It got
 /// ApplicationStopped, which the host signals only after all services have stopped, so LinkService.StopAsync waited for the stop token (BackgroundService.cs:73
 /// of Microsoft.Extensions.Hosting.Abstractions). This fits "systemctl restart while the SPI link is stuck", once DCS has reported the lost connection.
@@ -77,10 +81,10 @@ public class ShutdownHang
 
     /// <summary>
     /// The pipeline part of case 1 without the generic host: a blocking message box from a client is pending when DCS stops, as with a dialog that waits
-    /// for the user (M291 S2). The fake firmware host stops the services like the generic host, ApplicationStopping first, then in reverse order
+    /// for the user (M291 S2). The fake firmware host stops the services like the generic host, ApplicationStopping first, then in reverse order.
+    /// SimpleCode answers a cancelled code with an empty reply (SimpleCode.cs:183-186)
     /// </summary>
     [Test]
-    [Explicit("Bug: a code that is still pending when DCS stops is never completed, because the pipeline stops reading its queues on ApplicationStopping")]
     public async Task PendingCodeIsCancelledWhenDcsStops()
     {
         FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
@@ -97,14 +101,13 @@ public class ShutdownHang
 
         bool completed = await Task.WhenAny(m291, Task.Delay(ExpectedStopTime)) == m291;
         Assert.That(completed, Is.True, "M291 was neither finished nor cancelled");
-        Assert.That(m291.IsCanceled || m291.IsFaulted, Is.True);
+        Assert.That(await m291, Is.Empty, "M291 was not cancelled");
     }
 
     /// <summary>
     /// Case 1 with the generic host and a client on the IPC socket, as DWS is for a code from DWC
     /// </summary>
     [Test]
-    [Explicit("Bug: DCS does not stop until the host's shutdown timeout (30 s, systemd kills it after 15 s) while an IPC client waits for a code")]
     public async Task StopsWhileAnIpcCodeIsPending()
     {
         await using DcsHost host = DcsHost.Create();
@@ -120,14 +123,15 @@ public class ShutdownHang
             Assert.That(elapsed, Is.LessThan(ExpectedStopTime), running);
             Assert.That(m291.IsCompleted, Is.True, "The client got no answer");
         });
+        Assert.That(await m291, Is.Empty, "M291 was not cancelled");
     }
 
     /// <summary>
     /// Case 2: M999 resets RRF and ends the transfer thread; a code that another client sends right after the reply is never sent to RRF, and DCS
-    /// stops a second later. On a printer without other clients at that moment DCS stops at once, see <see cref="HostLifecycle.M999StopsDcsAfterItsReply"/>
+    /// stops a second later. On a printer without other clients at that moment DCS stops at once, see <see cref="HostLifecycle.M999StopsDcsAfterItsReply"/>.
+    /// The code is cancelled when DCS stops, RRF never gets it
     /// </summary>
     [Test]
-    [Explicit("Bug: DCS does not stop until the host's shutdown timeout after M999 when a client has sent a code after the reset")]
     public async Task StopsAfterM999WhileAnotherCodeIsPending()
     {
         await using DcsHost host = DcsHost.Create();
@@ -146,6 +150,8 @@ public class ShutdownHang
             Assert.That(elapsed, Is.LessThan(ExpectedStopTime), running);
             Assert.That(g4.IsCompleted, Is.True, "The client got no answer");
         });
+        Assert.That(await g4, Is.Empty, "G4 was not cancelled");
+        Assert.That(host.Firmware!.GetExecutedCodes(CodeChannel.SBC).Any(code => code.Text == "G4 P10"), Is.False, "RRF got the G4 after its reset");
     }
 
     /// <summary>
