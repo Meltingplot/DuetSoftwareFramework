@@ -319,8 +319,10 @@ public sealed class LinkService(
                     catch (Exception e)
                     {
                         // Pass the failure to the M997 handler, which reports it and stops DCS.
-                        // Rethrowing would stop the host before the error reply could go out
-                        linkInterface.FirmwareUpdateRequest?.SetException(e);
+                        // Rethrowing would stop the host before the error reply could go out.
+                        // The adapters report timeouts as OperationCanceledException, which M997 would take for a
+                        // cancellation of its own and drop the reason, so only a stopping DCS is passed on as one
+                        linkInterface.FirmwareUpdateRequest?.SetException((e is OperationCanceledException && !lifetime.ApplicationStopped.IsCancellationRequested) ? new IOException(e.Message, e) : e);
                     }
                     linkInterface.FirmwareUpdateRequest = null;
 

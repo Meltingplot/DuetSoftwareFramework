@@ -303,20 +303,21 @@ public class FirmwareUpdateFlashing
 
     /// <summary>
     /// When the IAP program stops answering, the SPI adapter times out waiting for TfrRdy and throws an OperationCanceledException (SPI.cs:1207,
-    /// 1741-1780). The LinkService hands it to M997 "which reports it and stops DCS" (LinkService.cs:319-324), but M997 catches every exception except
-    /// OperationCanceledException (MCodeHandler.cs:1287), so the code ends as cancelled: no error reply, no start error file, and DCS keeps running
-    /// although the transfer thread has ended (LinkService.cs:328) and the status stays Updating. By then the IAP program has erased the flash and
-    /// resets into the bootloader (src/iap_spi.cpp:406-410, src/iap.cpp:772-789)
+    /// 1741-1780). M997 takes an OperationCanceledException for its own cancellation (MCodeHandler.cs:1287), so the LinkService passes the timeout
+    /// on as an IOException unless DCS is stopping (LinkService.cs:319-326). M997 then reports it, writes it to the start error file and stops DCS,
+    /// whose transfer thread has ended (LinkService.cs:330). By then the IAP program has erased the flash and resets into the bootloader
+    /// (src/iap_spi.cpp:406-410, src/iap.cpp:772-789)
     /// </summary>
-    [Test, Explicit("Bug: M997 does not report a TfrRdy timeout of the IAP program and DCS keeps running without a transfer thread")]
+    [Test]
     public async Task UpdateFailsWhenTheIapProgramStopsAnswering()
     {
         FakeFirmwareHost host = await StartAsync(firmware => firmware.IapStopsAfterBlocks = 1);
         WriteFile("firmware", IapFile, _iap);
         WriteFile("firmware", FirmwareFile, _firmware);
 
-        Assert.That(await host.ExecuteAsync("M997"), Does.StartWith("Error: M997: Failed to update firmware: "));
-        Assert.That(System.IO.File.Exists(StartErrorFile), Is.True);
+        const string error = "Failed to update firmware: Transfer timeout while waiting for TfrRdy pin (fake IAP program does not answer)";
+        Assert.That(await host.ExecuteAsync("M997"), Is.EqualTo($"Error: M997: {error}\n"));
+        Assert.That(System.IO.File.ReadAllText(StartErrorFile), Is.EqualTo(error));
         Assert.That(await StopsAsync(StopTimeout), Is.True, "DCS did not stop after the failed update");
     }
 
