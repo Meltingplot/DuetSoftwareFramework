@@ -290,6 +290,7 @@ Nach jedem Lauf das Journal ab dem Cursor des Laufs lesen und auch auf fehlgesch
 **Erwartet in bestimmten Testfällen:**
 - RG-3: 20 x `Failed to find corresponding state for code M291 P"never" S3` (`PipelineBase.cs:243`). Das `M291` steht im Testmakro hinter einem `M99` und wird absichtlich nie erreicht (`MacroReturns.cs:20`, `:54`, `:65`).
 - RG-7 und jeder andere DCS-Neustart, auch beim Side-Load: `Machine is halted`, bis `M999` folgt (`Lab.cs:218-220`).
+- `RefusedMacroPaths` (G2, #132): je verweigertem Pfad `Failed to start macro file 99:/macros/lab-tests/refused/...` oder `... 0:/../lab-tests-refused-...` und `Macro file ... not found`. `run-lab-tests.py` zählt diese Zeilen hier und nicht als Fehlerbefund (`REFUSED_PATH_TESTS`).
 - Fehlerinjektion: `Restarting full transfer because ...`, `Bad header CRC32`, `Bad data CRC32`, `Sending transfer #... again` und ähnliche Meldungen, sofern der Fall als `Retry` endet.
 
 **Bekannt, Ursache oder Bewertung offen.** Anzahl notieren; diese Meldungen werden nicht als unbedenklich gewertet:

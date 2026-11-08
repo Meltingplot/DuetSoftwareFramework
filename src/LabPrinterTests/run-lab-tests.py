@@ -259,6 +259,9 @@ KNOWN_OPEN = ["State 'stop-sigterm' timed out", 'Failed to find query for object
               "Daemon: Out-of-order reply"]
 # Outside the plan, only noted
 NOTED = ['Client with outdated protocol version', 'has no value', 'predicted maximum temperature']
+# Expected in some test cases as well: lines that RefusedMacroPaths causes on purpose, with the refused paths it uses. They are left out of
+# the findings
+REFUSED_PATH_TESTS = ['Failed to start macro file 99:/macros/lab-tests/refused/', 'Failed to start macro file 0:/../lab-tests-refused-']
 
 
 def count_lines(journal: str, pattern: str) -> int:
@@ -328,13 +331,14 @@ def evaluate(start: dict, end: dict, journal: str, results: list, output_log: Pa
     if suppressed:
         say(f'  {red("journald suppressed " + str(suppressed) + " messages")}')
     say('Findings, unless the test case expects them:')
-    for line in counts_line(journal, FINDINGS, True):
+    findings_journal = '\n'.join(line for line in journal.splitlines() if not any(pattern in line for pattern in REFUSED_PATH_TESTS))
+    for line in counts_line(findings_journal, FINDINGS, True):
         say(line)
     say('Expected once per RRF reboot:')
     for line in counts_line(journal, PER_REBOOT, False) or ['  none']:
         say(line)
     say('Expected in some test cases:')
-    for line in counts_line(journal, IN_SOME_TESTS, False) or ['  none']:
+    for line in counts_line(journal, IN_SOME_TESTS + REFUSED_PATH_TESTS, False) or ['  none']:
         say(line)
     say('Known, cause or assessment open:')
     for line in counts_line(journal, KNOWN_OPEN, False) or ['  none']:

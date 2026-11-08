@@ -35,6 +35,9 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection]] [dotnet t
 - Category `FaultInjection` (explicit): single corrupted SPI exchanges. A fault that breaks the link costs a DCS restart and M999, and on the fork the lost link also triggers an E-stop and switches ATX off.
 - Category `Approval` (explicit): `IntrusiveCodes`, codes that change the state of the machine, such as M112, M929 or a test file in `0:/gcodes`. Tim decides on each run, see `design/lab-test-plan.md`. Run one with `--filter "FullyQualifiedName~IntrusiveCodes.M112StaysHaltedUntilM999"`.
 - Explicit only: the 30-minute soak, and the M581.1 string literal test, which hangs RRF until its watchdog resets it.
+- `AbortsCrossingMacroRequests` (explicit, `Restart`) runs a Python IPC client as root on the SBC, which aborts Telnet with the IPC command `InvalidateChannel`, and sets the DCS log level to debug for about a minute (`M111 P-1 S"debug"`, set back afterwards). `LAB_ABORT_ITERATIONS` sets the number of aborts (default 600).
+- `PluginPermissions.WebServerPassesPermissionCheckOfSystemPackages` sends `DELETE /machine/systemPackage` for `labtest_no_such_package`, a name no Debian package can have. With root plugin support, DPS runs `dpkg -r` with it.
+- `CodeBufferReserve` keeps Telnet and Aux2 waiting for 12 s with RRF's code buffer full. Without the fix, no trigger macro, including those of the doors and the E-stop input, gets a code to RRF in that time.
 - Never: print jobs, motion or heaters.
 - A test that leaves a channel stuck restarts DCS and sends M999 before it fails.
 
@@ -70,6 +73,11 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection]] [dotnet t
 | `IntrusiveCodes.M30AndM472Delete` (explicit) | M30 used the wrong folder for a relative name, M30 and M472 reported success for a missing file | DSF #74, #80 |
 | `IntrusiveCodes.M929InvalidLevelReportsAnError` (explicit) | M929 with an invalid log level reported success | DSF #81 |
 | `IntrusiveCodes.M606FromHttpOnlyWarns` (explicit) | M606 S1 from another channel than File forked the job reader of DCS | DSF #76 |
+| `RefusedMacroPaths.*` | M98 with a path that leaves its volume or names an unknown drive stopped DCS, RRF stayed halted until M999 (G2) | DSF #132 |
+| `CodeBufferReserve.TriggerMacroGetsRoomWhileOtherChannelsReadAhead` | Codes read ahead on two waiting channels filled RRF's code buffer, so a trigger macro got no code out (T3) | DSF #133 |
+| `AbortsCrossingMacroRequests.ChannelWorksAfterAbortsCrossingMacroRequests` (explicit) | An abort that crossed the macro request of an M98 started a macro RRF does not run and blocked the channel (T2). A block can also come from T1 (RRF) | DSF #134 |
+| `PluginPermissions.PluginsStartWithTheirManifestPermissions` | No bug: guards #135, the installed plugins start and keep running with only their manifest permissions | DSF #135 |
+| `PluginPermissions.WebServerPassesPermissionCheckOfSystemPackages` | No bug: guards #135, DELETE /machine/systemPackage gets past the permission check | DSF #135 |
 
 ## SPI fault injection
 
