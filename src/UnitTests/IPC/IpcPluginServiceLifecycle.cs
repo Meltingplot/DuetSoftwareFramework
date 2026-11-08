@@ -117,6 +117,29 @@ public class IpcPluginServiceLifecycle
         Assert.That(e.Message, Is.EqualTo("Plugin service (root) is already connected"));
     }
 
+    /// <summary>
+    /// The second plugin service waits for a full model update before DCS starts the plugins (PluginService.ProcessAsync). A service that goes away during that
+    /// wait must not stay registered, else DCS sends its commands to a processor that no longer reads them. The update lock of the model is held here, so the
+    /// wait cannot end before the service is closed
+    /// </summary>
+    [Test]
+    public async Task ServiceClosedBeforeThePluginsAreStartedIsUnregistered()
+    {
+        Nito.AsyncEx.AsyncLock updateLock = (Nito.AsyncEx.AsyncLock)typeof(DuetControlServer.Model.ObjectModel)
+            .GetField("_updateLock", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(_host.Model)!;
+        await using FakePluginService service = await FakePluginService.StartAsync(_host);
+        using (await updateLock.LockAsync())
+        {
+            FakePluginService rootService = await FakePluginService.StartAsync(_host, asRoot: true);
+            Assert.That(PluginService.IsConnected(true), Is.True);
+
+            // FakePluginService.DisposeAsync checks that the processor unregistered the service
+            await rootService.DisposeAsync();
+            Assert.That(rootService.ProcessorException, Is.Null);
+            Assert.That(PluginService.IsConnected(true), Is.False, "The closed root service is still registered");
+        }
+    }
+
     [Test]
     public async Task PluginServiceIsRefusedWithoutPluginSupport()
     {

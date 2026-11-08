@@ -214,20 +214,21 @@ public sealed class PluginService : IProcessor, IDisposable
             }
         }
 
-        // Start the plugins when both services are connected
-        if (!_settings.UpdateOnly && _serviceConnected && _rootServiceConnected)
-        {
-            // First ensure that object model is up-to-date
-            await _model.WaitForFullUpdateAsync(cancellationToken);
-
-            Commands.StartPlugins startCommand = _commandFactory.Create<Commands.StartPlugins>();
-            _ = Task.Run(async () => await startCommand.ExecuteAsync(), cancellationToken);
-        }
-
-        // Process incoming requests
         Queue<Tuple<BaseCommand, TaskCompletionSource<object?>>> pendingCommands = Connection.IsRoot ? _pendingRootCommands : _pendingCommands;
         try
         {
+            // Start the plugins when both services are connected. This is inside the block that releases the registration again,
+            // the service may go away while the object model is being updated
+            if (!_settings.UpdateOnly && _serviceConnected && _rootServiceConnected)
+            {
+                // First ensure that object model is up-to-date
+                await _model.WaitForFullUpdateAsync(cancellationToken);
+
+                Commands.StartPlugins startCommand = _commandFactory.Create<Commands.StartPlugins>();
+                _ = Task.Run(async () => await startCommand.ExecuteAsync(), cancellationToken);
+            }
+
+            // Process incoming requests
             do
             {
                 // Wait for the next request and read it

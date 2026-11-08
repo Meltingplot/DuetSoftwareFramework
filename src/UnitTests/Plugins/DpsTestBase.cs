@@ -151,9 +151,8 @@ public abstract class DpsTestBase
     }
 
     /// <summary>
-    /// Wait until DCS has started the plugins, which it does once both plugin services are registered (DuetControlServer/IPC/Processors/PluginService.cs:217-225).
-    /// The processor of the second service waits for a full model update before, outside the try/finally block that unregisters the service again, so a
-    /// service that is closed before that wait is over stays registered
+    /// Wait until DCS has started the plugins, which it does in the background once both plugin services are registered and the object model has been
+    /// updated (DuetControlServer/IPC/Processors/PluginService.cs, ProcessAsync), so that this does not run into the test
     /// </summary>
     protected async Task WaitForPluginsStartedAsync()
     {
