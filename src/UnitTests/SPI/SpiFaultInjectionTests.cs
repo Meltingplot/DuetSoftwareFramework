@@ -28,6 +28,91 @@ public class SpiFaultInjectionTests
         Assert.That(() => SpiFaultSpec.Parse("BothData HeaderResponse ToRrf twist 2"), Throws.TypeOf<FormatException>());
     }
 
+    [Test]
+    public void SpecOptionsRoundTrip()
+    {
+        SpiFaultSpec fault = SpiFaultSpec.Parse("Any Header ToRrf times=1000 counter=0 flip 96");
+        Assert.That(fault, Is.EqualTo(new SpiFaultSpec(SpiTransferKind.Any, SpiExchange.Header, SpiFaultDirection.ToRrf, "flip 96", 1000, 0)));
+        Assert.That(fault.ToString(), Is.EqualTo("Any Header ToRrf times=1000 counter=0 flip 96"));
+        Assert.That(SpiFaultSpec.Parse("DsfData Data ToRrf counter=31 times=10 add 0 2 -1"), Is.EqualTo(new SpiFaultSpec(SpiTransferKind.DsfData, SpiExchange.Data, SpiFaultDirection.ToRrf, "add 0 2 -1", 10, 31)));
+
+        // Without options the text form stays as it was, which the case files of the lab tests and the journal lines rely on
+        Assert.That(new SpiFaultSpec(SpiTransferKind.NoData, SpiExchange.Header, SpiFaultDirection.ToDsf, "flip 3").ToString(), Is.EqualTo("NoData Header ToDsf flip 3"));
+
+        Assert.That(() => SpiFaultSpec.Parse("Any Header ToRrf times=0 flip 96"), Throws.TypeOf<FormatException>());
+        Assert.That(() => SpiFaultSpec.Parse("Any Header ToRrf counter=32 flip 96"), Throws.TypeOf<FormatException>());
+        Assert.That(() => SpiFaultSpec.Parse("Any Header ToRrf counter=-1 flip 96"), Throws.TypeOf<FormatException>());
+        Assert.That(() => SpiFaultSpec.Parse("Any Header ToRrf repeat=2 flip 96"), Throws.TypeOf<FormatException>());
+        Assert.That(() => SpiFaultSpec.Parse("Any Header ToRrf times=2"), Throws.TypeOf<FormatException>());
+    }
+
+    /// <summary>
+    /// Write a header of DSF with the given sequence number and exchange it with its response, as DSF does for every header retry
+    /// </summary>
+    private static void ExchangeHeader(FaultInjectingSpiDevice injector, ushort sequenceNumber)
+    {
+        byte[] header = new byte[16];
+        header[0] = Consts.FormatCode;
+        BitConverter.TryWriteBytes(header.AsSpan(4), sequenceNumber);
+        injector.TransferFullDuplex(header, new byte[16]);
+        injector.TransferFullDuplex(BitConverter.GetBytes(TransferResponse.Success), new byte[4]);
+    }
+
+    /// <summary>
+    /// A fault with times=N corrupts up to N exchanges of the transfer it hits first and ends with that transfer, which the injector tells by the
+    /// sequence number DSF sends. Retries of the header keep the number, the next transfer and a new session after a lost connection do not
+    /// </summary>
+    [Test]
+    public void TimesHitsTheExchangesOfOneTransfer()
+    {
+        FirmwareStub firmware = new();
+        FaultInjectingSpiDevice injector = new(firmware, null, NullLogger.Instance);
+        int hits = 0;
+        injector.Injected += (_, _) => hits++;
+
+        injector.Arm(SpiFaultSpec.Parse("Any Header ToRrf times=3 flip 96"));
+        ExchangeHeader(injector, 7);
+        ExchangeHeader(injector, 7);
+        Assert.That(hits, Is.EqualTo(2));
+        Assert.That(firmware.Received[^2][12], Is.EqualTo(1), "the header that reached the firmware");
+
+        // The next transfer ends the fault before its third exchange
+        ExchangeHeader(injector, 8);
+        ExchangeHeader(injector, 8);
+        Assert.That(hits, Is.EqualTo(2));
+        Assert.That(firmware.Received[^2][12], Is.Zero);
+
+        // Without a new transfer the fault ends after N exchanges
+        injector.Arm(SpiFaultSpec.Parse("Any Header ToRrf times=3 flip 96"));
+        for (int i = 0; i < 5; i++)
+        {
+            ExchangeHeader(injector, 9);
+        }
+        Assert.That(hits, Is.EqualTo(5));
+    }
+
+    /// <summary>
+    /// A fault with counter=N waits for a header of DSF with an extended sequence number and that counter value. A regular number never matches,
+    /// also not one whose low bits are the counter value
+    /// </summary>
+    [Test]
+    public void CounterWaitsForTheExtendedCounterValue()
+    {
+        FirmwareStub firmware = new();
+        FaultInjectingSpiDevice injector = new(firmware, null, NullLogger.Instance);
+        List<ushort> hit = [];
+        ushort current = 0;
+        injector.Injected += (_, _) => hit.Add(current);
+        injector.Arm(SpiFaultSpec.Parse("Any Header ToRrf times=2 counter=0 flip 96"));
+
+        foreach (ushort sequenceNumber in (ushort[])[0x0000, 0x0020, 0xFFDF, ExtendedLink.Next(0xFFE0, true), 0xFFFF, 0xFFE0, 0xFFE0, 0xFFE0, 0x0000, 0xFFE0])
+        {
+            current = sequenceNumber;
+            ExchangeHeader(injector, sequenceNumber);
+        }
+        Assert.That(hit, Is.EqualTo(new ushort[] { 0xFFE0, 0xFFE0 }));
+    }
+
     [TestCase("flip 9", new byte[] { 0x01, 0x02, 0x03, 0x04 }, new byte[] { 0x01, 0x00, 0x03, 0x04 })]
     [TestCase("flip 40", new byte[] { 0x01, 0x02, 0x03, 0x04 }, new byte[] { 0x01, 0x02, 0x03, 0x04 })]
     [TestCase("zero 1 2", new byte[] { 0x01, 0x02, 0x03, 0x04 }, new byte[] { 0x01, 0x00, 0x00, 0x04 })]

@@ -225,6 +225,29 @@ LAB_SPI_FAULT_CASES=/tmp/ext.json src/LabPrinterTests/run-lab-tests.sh --side-lo
 - Referenz: 678 von 679 `Retry` und 1 nicht injiziert auf RRF dev.3, noch ohne #98, #99, #102 und #105 (#95).
 - Nicht injizierte Fälle einzeln nennen und nachholen.
 
+**F-3: Einzelfehler auf dem Plain-Link, belegt #137 (P1)**
+
+```
+LAB_SPI_FAULT_CASES=/tmp/plain.json dotnet test src/UnitTests/UnitTests.csproj --filter "Name=WriteHardwareCases_RrfOfToday"
+LAB_SPI_FAULT_CASES=/tmp/p1.json LAB_SPI_FAULT_SELECT=all src/LabPrinterTests/run-lab-tests.sh --side-load --fault-injection --plain-link --filter "FullyQualifiedName~SpiFaultInjection"
+```
+
+- **Plain-Link:** RRF mp.8 bietet die Capabilities an (`DataTransfer.cpp:476-479`), DSF aktiviert sie immer (`LinkService.cs:1482`, `:1505`), und `Settings.cs` hat keinen Schalter dafür. `--plain-link` legt `/var/tmp/lab-tests/spi-plain-link` an, dann meldet der Injektions-Build keine Capabilities (`SPI.cs`, nur unter `SPI_FAULT_INJECTION`) und DSF fragt sie nicht ab. Ohne das Define baut `SPI.cs` byte-gleich zu `origin/v3.7-dev` (am 2026-11-08 verglichen), und den Injektor erzeugt DCS nur unter dem Define (`SPI.cs:113-117`).
+- **RRF ohne Aktivierung:** Phase Guard, Sequence Guard und die erweiterten Codes wirken nur mit `activeLinkCapabilities` (`DataTransfer.cpp:841`, `:857`, `:890`, `:926`, `:964`, `:1068`, `:1125`, `:1385`), das nur die Aktivierungsanfrage setzt (`:826-835`, `SbcInterface.cpp:1313-1321`). Ohne sie bleiben gegenüber dem Port (RRF 03a87245b) zwei Regeln, die der Port schon nachbildet: das Dekodieren des ersten Header-Worts ohne Verbindung (`DataTransfer.cpp:873-874`, `RrfRule.DecodeHeaderWordUnconnected`) und `lastTransferNumber` bei Sequenznummer 0xFFE0 nach einem Neustart ohne Daten (`:1018-1020`, `ExtendedLink.Previous` in `FakeRrfSpi.RestartTransfer`).
+- **Fälle:** Mit `RrfOfToday` (Polling) brechen 28 von 3234 Fällen den Link, mit #137 noch 20. Die 8 Unterschiede sind Fehler in der Antwort von RRF auf den Header bei Daten von DSF (6 verschiedene Specs, `BothData`/`DsfData HeaderResponse ToDsf` mit `flip 2`, `word 0x00000005`, `word 0xfefefefe`). Dazu 4 Kontrollen, die in beiden Ständen `Retry` sind, und 2, die in beiden den Link brechen.
+- **Soll mit #137:** 10 `Retry`, 2 brechen den Link, 0 Abweichungen. **Ohne #137:** die 6 P1-Fälle `NoRecovery` (Link hängt, `RecoverAsync`), insgesamt 4 `Retry`, 0 Abweichungen. Der Test bricht ab, wenn DCS den erweiterten Link nutzt (`Lab.GetLinkModeAsync`).
+
+**F-4: Verbindungsverlust auf dem erweiterten Link im Triggermakro, belegt #138 (P4)**
+
+```
+src/LabPrinterTests/run-lab-tests.sh --side-load --fault-injection --filter "FullyQualifiedName~SpiFaultLostConnection"
+```
+
+- **Auslöser:** Kein Einzelfehler führt auf dem erweiterten Link zum Verbindungsverlust (`ExtendedLinkRecoversFromEverySingleFault`). Der Injektor kann jetzt mit `times=N` mehrere Austausche derselben Übertragung treffen und mit `counter=N` den Zählerwert wählen. `Any Header ToRrf times=1000 counter=0 flip 96` verfälscht jeden Header von DSF auf dem Weg zu RRF. RRF antwortet jedes Mal `BadHeaderChecksum` (`DataTransfer.cpp:1099-1108`), DSF gibt nach 10 x 11 Header-Austauschen auf (`SPI.cs` `ExchangeHeader`, `PerformFullTransfer`, `MaxSbcRetries` 10) und verliert die Verbindung.
+- **Soll mit #138:** RRF setzt die Verbindung zurück und macht einen Not-Halt (`DataTransfer.cpp:1125-1131`, `DataTransfer.h:212-215`, `SbcInterface.cpp:194-230`), Status `halted`, für Zählerwert 0 und 16. **Ohne #138:** Zählerwert 0 schlägt fehl, RRF bleibt in der Sitzung, DSF bricht das Triggermakro ab (`LinkService.cs:333-340`), und RRF hält weitere Triggermakros zurück (`GCodes.cpp:423-433`, `:1000`). Zählerwert 16 besteht.
+- **Offline:** `LinkRecovery.LabFaultLosesConnectionAndRrfStops` prüft den Fehler für alle 32 Zählerwerte und vier Übertragungsarten. Den Teil mit dem zurückgehaltenen Trigger bildet der Port nicht nach.
+- **Kosten:** Je Fall ein Not-Halt (am Fork auch ATX aus) und `M999`. Bleibt RRF in der Sitzung, DCS-Neustart und `M999`.
+
 ### Neue Tests
 
 A-1 bis A-7 und A-10 liefen am 2026-11-07 auf Hardware ([Abschnitt 14](#14-durchgeführte-läufe)), A-8, A-9 und A-11 bis A-13 noch nicht. `src/LabPrinterTests/README.md` nennt zu jedem Test die Klasse und den Aufruf.

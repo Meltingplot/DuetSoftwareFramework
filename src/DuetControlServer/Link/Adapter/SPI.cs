@@ -116,6 +116,13 @@ public class SPI : IDiagnostics, ILinkAdapter
         new SpiDevice(settings.Value.SpiDevice, settings.Value.SpiFrequency, settings.Value.SpiTransferMode))
 #endif
     {
+#if SPI_FAULT_INJECTION
+        if (File.Exists(PlainLinkFile))
+        {
+            _supportedLinkCapabilities = LinkCapabilities.None;
+            logger.LogWarning("SPI fault injection: keeping the plain link because {File} exists", PlainLinkFile);
+        }
+#endif
     }
 
 #if SPI_FAULT_INJECTION
@@ -123,6 +130,18 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// File through which the lab tests arm single faults of the link, see <see cref="FaultInjectingSpiDevice"/>
     /// </summary>
     private const string FaultControlFile = "/var/tmp/lab-tests/spi-fault";
+
+    /// <summary>
+    /// File that makes DCS keep the plain link if it exists when DCS starts: DCS then supports no link capabilities, so it neither queries
+    /// nor activates them (LinkService.UpdateLinkCapabilities), as with an RRF that offers none. The lab tests check the plain link that way
+    /// with the RRF on the printer, which offers them
+    /// </summary>
+    private const string PlainLinkFile = "/var/tmp/lab-tests/spi-plain-link";
+
+    /// <summary>
+    /// Capabilities of the link that this adapter can use, see <see cref="PlainLinkFile"/>
+    /// </summary>
+    private readonly LinkCapabilities _supportedLinkCapabilities = LinkCapabilities.All;
 #endif
 
     /// <summary>
@@ -900,7 +919,11 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// <summary>
     /// Capabilities of the link that this adapter can use
     /// </summary>
+#if SPI_FAULT_INJECTION
+    public LinkCapabilities SupportedLinkCapabilities => _supportedLinkCapabilities;
+#else
     public LinkCapabilities SupportedLinkCapabilities => LinkCapabilities.All;
+#endif
 
     /// <summary>
     /// Ask the firmware to activate capabilities of the link for the current connection.

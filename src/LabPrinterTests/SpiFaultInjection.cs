@@ -15,7 +15,8 @@ namespace LabPrinterTests;
 /// </summary>
 /// <remarks>
 /// Needs the fault injection build of DCS (run-lab-tests.sh --side-load --fault-injection) and a case file written by
-/// UnitTests LinkRecovery.WriteHardwareCases for the firmware on the printer, whose path is in LAB_SPI_FAULT_CASES.
+/// UnitTests LinkRecovery.WriteHardwareCases, whose path is in LAB_SPI_FAULT_CASES. The cases of WriteHardwareCases_RrfOfToday are for the plain link,
+/// which DCS keeps with the RRF on the printer only with --plain-link, those of WriteHardwareCases_Extended for the extended link.
 /// LAB_SPI_FAULT_SELECT picks the cases: "failures" (predicted to break the link), "responses" (every fault in a response word,
 /// where the census finds all failing single bits), or "all"; the default is both of the first two. LAB_SPI_FAULT_MAX limits the number.
 /// A case that breaks the link costs a DCS restart and M999, which Tim allows unattended
@@ -38,6 +39,16 @@ public class SpiFaultInjection : LabTest
             Assert.Ignore("LAB_SPI_FAULT_CASES does not name a case file");
         }
         CaseFile file = JsonSerializer.Deserialize<CaseFile>(await File.ReadAllTextAsync(path!))!;
+
+        // The census predicts the plain link for RRF without capabilities. The RRF on the printer offers them, so DCS keeps the plain link only with --plain-link
+        string expectedLink = Regex.Match(file.Options, @"Capabilities = (\w+)").Groups[1].Value is "" or "None" ? "plain" : "extended";
+        string? link = await Lab.GetLinkModeAsync();
+        if (link != expectedLink)
+        {
+            Assert.Fail($"The cases of {file.Configuration} are for the {expectedLink} link, but DCS uses the {link ?? "unknown"} link. " +
+                $"Run them {(expectedLink == "plain" ? "with" : "without")} run-lab-tests.sh --plain-link");
+        }
+
         string select = Environment.GetEnvironmentVariable("LAB_SPI_FAULT_SELECT") ?? "failures,responses";
         List<HardwareCase> cases = [.. file.Cases.Where(c =>
             select.Contains("all") ||

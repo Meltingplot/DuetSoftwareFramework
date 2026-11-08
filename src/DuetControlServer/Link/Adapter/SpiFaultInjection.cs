@@ -103,28 +103,57 @@ public enum SpiFaultDirection
 /// <param name="Exchange">Exchange to corrupt</param>
 /// <param name="Direction">Bytes that are corrupted</param>
 /// <param name="Mutation">Mutation of the bytes, see <see cref="Apply"/></param>
-public sealed record SpiFaultSpec(SpiTransferKind Kind, SpiExchange Exchange, SpiFaultDirection Direction, string Mutation)
+/// <param name="Times">Number of exchanges to corrupt in the transfer the fault hits first, e.g. its retries. The transfer ends for the fault when
+/// DSF sends a header with another sequence number, which DSF does for its next transfer and when it loses the connection on the extended link</param>
+/// <param name="Counter">Hit only a transfer whose header from DSF has an extended sequence number with this counter value (<see cref="ExtendedLink"/>),
+/// or any transfer if null</param>
+public sealed record SpiFaultSpec(SpiTransferKind Kind, SpiExchange Exchange, SpiFaultDirection Direction, string Mutation, int Times = 1, int? Counter = null)
 {
     /// <summary>
-    /// Text form, which <see cref="Parse"/> reads
+    /// Text form, which <see cref="Parse"/> reads. The options are left out when they have their default
     /// </summary>
-    public override string ToString() => $"{Kind} {Exchange} {Direction} {Mutation}";
+    public override string ToString() => $"{Kind} {Exchange} {Direction} " + ((Times != 1) ? $"times={Times} " : "") + ((Counter is int counter) ? $"counter={counter} " : "") + Mutation;
 
     /// <summary>
-    /// Read a fault from its text form, e.g. "BothData HeaderResponse ToDsf flip 2"
+    /// Read a fault from its text form, e.g. "BothData HeaderResponse ToDsf flip 2" or "Any Header ToRrf times=1000 counter=0 flip 96".
+    /// The options times=N and counter=N may come between the direction and the mutation
     /// </summary>
     /// <param name="text">Text form</param>
     /// <returns>Fault</returns>
     /// <exception cref="FormatException">Invalid text</exception>
     public static SpiFaultSpec Parse(string text)
     {
-        string[] parts = text.Trim().Split(' ', 4, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length != 4 || !Enum.TryParse(parts[0], out SpiTransferKind kind) || !Enum.TryParse(parts[1], out SpiExchange exchange) || !Enum.GetNames<SpiFaultDirection>().Contains(parts[2]))
+        string[] parts = text.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 4 || !Enum.TryParse(parts[0], out SpiTransferKind kind) || !Enum.TryParse(parts[1], out SpiExchange exchange) || !Enum.GetNames<SpiFaultDirection>().Contains(parts[2]))
         {
             throw new FormatException($"Invalid SPI fault: {text}");
         }
-        Apply(parts[3], []);
-        return new SpiFaultSpec(kind, exchange, Enum.Parse<SpiFaultDirection>(parts[2]), parts[3]);
+
+        int times = 1, next = 3;
+        int? counter = null;
+        for (; next < parts.Length && parts[next].Contains('='); next++)
+        {
+            string[] option = parts[next].Split('=', 2);
+            if (!int.TryParse(option[1], NumberStyles.None, CultureInfo.InvariantCulture, out int value))
+            {
+                throw new FormatException($"Invalid SPI fault option: {parts[next]}");
+            }
+            switch (option[0])
+            {
+                case "times" when value >= 1:
+                    times = value;
+                    break;
+                case "counter" when value <= ExtendedLink.CounterMask:
+                    counter = value;
+                    break;
+                default:
+                    throw new FormatException($"Invalid SPI fault option: {parts[next]}");
+            }
+        }
+
+        string mutation = string.Join(' ', parts[next..]);
+        Apply(mutation, []);
+        return new SpiFaultSpec(kind, exchange, Enum.Parse<SpiFaultDirection>(parts[2]), mutation, times, counter);
     }
 
     /// <summary>
@@ -191,7 +220,8 @@ public sealed record SpiFaultSpec(SpiTransferKind Kind, SpiExchange Exchange, Sp
 /// SPI device that corrupts a single exchange of the link when it is armed, to test the recovery of the link on hardware.
 /// DCS uses it only when built with SPI_FAULT_INJECTION, and it is armed by writing the text form of a <see cref="SpiFaultSpec"/>
 /// to the control file. It recognises the exchanges from what DSF sends: a header starts with the format code, a 4-byte exchange
-/// after a header or data is the response to it, anything else is data
+/// after a header or data is the response to it, anything else is data. With <see cref="SpiFaultSpec.Times"/> it corrupts more
+/// exchanges of the same transfer, which it tells by the sequence number in the header of DSF
 /// </summary>
 /// <param name="device">Real device</param>
 /// <param name="controlFile">File to watch for faults, or null to arm only through <see cref="Arm"/></param>
@@ -207,7 +237,12 @@ public sealed class FaultInjectingSpiDevice(ISpiDevice device, string? controlFi
     private SpiFaultSpec? _armed;
     private SpiExchange? _lastExchange;
     private int _txDataLength, _rxDataLength;
+    private ushort _txSequenceNumber;
     private bool _txActivates;
+
+    // Exchanges the armed fault has corrupted so far, all in the transfer DSF numbered with _hitSequenceNumber
+    private int _hits;
+    private ushort _hitSequenceNumber;
 
     /// <summary>
     /// Raised when a fault has been injected, with the kind of transfer it hit
@@ -218,7 +253,11 @@ public sealed class FaultInjectingSpiDevice(ISpiDevice device, string? controlFi
     /// Inject a fault into the next transfer that has the exchange and is of the requested kind
     /// </summary>
     /// <param name="fault">Fault to inject</param>
-    public void Arm(SpiFaultSpec fault) => _armed = fault;
+    public void Arm(SpiFaultSpec fault)
+    {
+        _armed = fault;
+        _hits = 0;
+    }
 
     /// <inheritdoc/>
     public void TransferFullDuplex(ReadOnlySpan<byte> writeBuffer, Span<byte> readBuffer)
@@ -227,9 +266,16 @@ public sealed class FaultInjectingSpiDevice(ISpiDevice device, string? controlFi
         if ((writeBuffer.Length == Marshal.SizeOf<TransferHeader>() || writeBuffer.Length == 12) && writeBuffer[0] == Consts.FormatCode)
         {
             exchange = SpiExchange.Header;
+            _txSequenceNumber = BinaryPrimitives.ReadUInt16LittleEndian(writeBuffer[4..]);
             _txDataLength = BinaryPrimitives.ReadUInt16LittleEndian(writeBuffer[6..]);
             _rxDataLength = -1;
             _txActivates = false;
+            if (_armed is not null && _hits > 0 && _txSequenceNumber != _hitSequenceNumber)
+            {
+                // DSF has gone on with another transfer, so the fault has hit every exchange of its transfer it could
+                logger.LogWarning("SPI fault done after {Hits} of {Times} exchanges: {Fault}", _hits, _armed.Times, _armed);
+                _armed = null;
+            }
             CheckControlFile();
         }
         else if (writeBuffer.Length == sizeof(uint))
@@ -244,7 +290,8 @@ public sealed class FaultInjectingSpiDevice(ISpiDevice device, string? controlFi
         _lastExchange = exchange;
 
         // Only the DSF part of the kind is known before the headers are exchanged
-        SpiFaultSpec? fault = (_armed is not null && _armed.Exchange == exchange && Matches(_armed.Kind, _txDataLength, (exchange == SpiExchange.Header) ? null : _rxDataLength, _txActivates)) ? _armed : null;
+        SpiFaultSpec? fault = (_armed is not null && _armed.Exchange == exchange && Matches(_armed.Kind, _txDataLength, (exchange == SpiExchange.Header) ? null : _rxDataLength, _txActivates) &&
+            (_armed.Counter is not int counter || (ExtendedLink.IsExtended(_txSequenceNumber) && (_txSequenceNumber & ExtendedLink.CounterMask) == counter))) ? _armed : null;
         if (fault?.Direction is SpiFaultDirection.ToRrf or SpiFaultDirection.Both)
         {
             byte[] corrupted = writeBuffer.ToArray();
@@ -268,7 +315,11 @@ public sealed class FaultInjectingSpiDevice(ISpiDevice device, string? controlFi
             {
                 SpiFaultSpec.Apply(fault.Mutation, readBuffer);
             }
-            _armed = null;
+            _hitSequenceNumber = _txSequenceNumber;
+            if (++_hits >= fault.Times)
+            {
+                _armed = null;
+            }
 
             SpiTransferKind kind = (_txDataLength, _rxDataLength) switch
             {
@@ -277,7 +328,14 @@ public sealed class FaultInjectingSpiDevice(ISpiDevice device, string? controlFi
                 (_, 0) => SpiTransferKind.DsfData,
                 _ => SpiTransferKind.BothData
             };
-            logger.LogWarning("SPI fault injected: {Fault}, hit a {Kind} transfer", fault, kind);
+            if (fault.Times == 1)
+            {
+                logger.LogWarning("SPI fault injected: {Fault}, hit a {Kind} transfer", fault, kind);
+            }
+            else
+            {
+                logger.LogWarning("SPI fault injected: {Fault}, hit a {Kind} transfer with sequence number 0x{SequenceNumber:x4} ({Hits} of {Times})", fault, kind, _txSequenceNumber, _hits, fault.Times);
+            }
             Injected?.Invoke(fault, kind);
         }
     }
@@ -339,7 +397,7 @@ public sealed class FaultInjectingSpiDevice(ISpiDevice device, string? controlFi
                 string text = File.ReadAllText(controlFile).Trim();
                 if (text.Length > 0)
                 {
-                    _armed = SpiFaultSpec.Parse(text);
+                    Arm(SpiFaultSpec.Parse(text));
                     logger.LogWarning("SPI fault armed: {Fault}", _armed);
                 }
                 else if (_armed is not null)
