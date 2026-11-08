@@ -21,10 +21,12 @@ namespace UnitTests.Fuzz;
 /// or RRF restarts right before
 /// </summary>
 /// <remarks>
-/// The properties are those the code guarantees (StopPath.RunAsync): the stop is never lost, it reaches RRF once unless a side reconnected, DSF completes it
-/// only once RRF has been stopped, and without a reconnect the macro starts once and its codes reach RRF once each and in order. How long the stop and the
-/// start of the macro take is measured, not asserted, because nothing in the code bounds it: R10 of design/sbc-link-requirements.md is not implemented
-/// (implementation status, R10-R14). <see cref="ExploreStopPath"/> reports the distributions and the cases above the 100 ms of R10
+/// The properties are those the code guarantees (StopPath.RunAsync): the stop is never lost while the link is not stuck, it reaches RRF once unless a side
+/// reconnected, M112 does not fail, and without a reconnect the macro starts once and its codes reach RRF once each and in order. That M112 replies only once
+/// RRF has been stopped holds on a clean link (StopPath.EmergencyStopOnCleanLink) but not under every fault (StopPath.M112RepliesOnlyOnceRrfIsStopped), so it is
+/// measured here. How long the stop and the start of the macro take is measured, not asserted, because nothing in the code bounds it: R10 of
+/// design/sbc-link-requirements.md is not implemented (implementation status, R10-R14). <see cref="ExploreStopPath"/> reports the distributions and the cases
+/// above the 100 ms of R10, <see cref="ExploreProperties"/> the properties over many seeds
 /// </remarks>
 [TestFixture]
 public class StopPathFuzz
@@ -273,20 +275,19 @@ public class StopPathFuzz
     }
 
     /// <summary>
-    /// Number of inputs per test at the default of 5000 iterations
+    /// Run a fuzz test
     /// </summary>
-    private static int Inputs => Fuzzer.Scale(150);
-
-    private static void RunFuzzer(Func<Random, StopCase> generate) =>
-        Fuzzer.Run(generate, Check, input => input.ToString(), Shrink, Inputs, TimeSpan.FromSeconds(30));
+    /// <param name="generate">Generator of the inputs</param>
+    /// <param name="inputs">Number of inputs at the default of 5000 iterations, which keeps the three tests at about 10 s</param>
+    private static void RunFuzzer(Func<Random, StopCase> generate, int inputs) =>
+        Fuzzer.Run(generate, Check, input => input.ToString(), Shrink, Fuzzer.Scale(inputs), TimeSpan.FromSeconds(30));
 
     /// <summary>
-    /// An emergency stop under random faults on both kinds of link: it is never lost, reaches RRF once without a reconnect, and DSF completes it only once
-    /// RRF has been stopped
+    /// An emergency stop under random faults on both kinds of link: it is never lost, reaches RRF once without a reconnect, and M112 does not fail
     /// </summary>
     [Test]
     public void EmergencyStopUnderFaults() => RunFuzzer(random =>
-        Generate(random, Scenario.Stop, (random.Next(2) == 0) ? LinkCapabilities.All : LinkCapabilities.None, Enum.GetValues<FaultModel>()[1 + random.Next(4)], random.Next(4) == 0));
+        Generate(random, Scenario.Stop, (random.Next(2) == 0) ? LinkCapabilities.All : LinkCapabilities.None, Enum.GetValues<FaultModel>()[1 + random.Next(4)], random.Next(4) == 0), 400);
 
     /// <summary>
     /// The start of a trigger macro under random faults on both kinds of link: without a reconnect, the macro starts once and its codes reach RRF once
@@ -294,13 +295,13 @@ public class StopPathFuzz
     /// </summary>
     [Test]
     public void TriggerMacroUnderFaults() => RunFuzzer(random =>
-        Generate(random, Scenario.Trigger, (random.Next(2) == 0) ? LinkCapabilities.All : LinkCapabilities.None, Enum.GetValues<FaultModel>()[1 + random.Next(4)]));
+        Generate(random, Scenario.Trigger, (random.Next(2) == 0) ? LinkCapabilities.All : LinkCapabilities.None, Enum.GetValues<FaultModel>()[1 + random.Next(4)]), 200);
 
     /// <summary>
     /// Any of the scenarios with any of the faults, including an emergency stop while a trigger macro starts
     /// </summary>
     [Test]
-    public void StopPathUnderFaults() => RunFuzzer(GenerateAny);
+    public void StopPathUnderFaults() => RunFuzzer(GenerateAny, 300);
     #endregion
 
     #region Exploration

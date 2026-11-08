@@ -344,7 +344,8 @@ public partial class StopPath
         public string ReconnectKind { get; init; } = string.Empty;
 
         /// <summary>
-        /// How the trigger macro ended: "completed", "RRF stopped" if RRF lost the connection or restarted instead, "lost" if neither, or empty without a trigger
+        /// How the trigger macro ended: "completed", "RRF stopped" if RRF processed an emergency stop, lost the connection or restarted instead, "lost" if none
+        /// of these, or empty without a trigger
         /// </summary>
         public string TriggerOutcome { get; init; } = string.Empty;
 
@@ -396,7 +397,7 @@ public partial class StopPath
     /// Virtual time after which a scenario ends without its requests done. Longer than the connection timeouts of both sides (4 s, SbcMessageFormats.h:45 and
     /// Settings.SbcConnectionTimeout) and the reconnect wait of DSF (4.5 s, SPI.WaitForTransfer), so that a lost connection comes back within it
     /// </summary>
-    private const double VirtualTimeLimit = 30000;
+    private const double VirtualTimeLimit = 15000;
 
     /// <summary>
     /// Number of bytes RRF has for buffered codes (SbcMessageFormats.h:47, SbcCodeBufferSize)
@@ -592,8 +593,8 @@ public partial class StopPath
         {
             lock (this)
             {
-                // The emergency stop is complete for DSF only once RRF has been stopped. RRF does its part within an exchange and DSF completes the
-                // request between two, so the state at the start of an exchange shows the order
+                // Whether DSF completed the emergency stop before RRF was stopped. RRF does its part within an exchange and DSF completes the request
+                // between two, so the state at the start of an exchange shows the order
                 if (HaltTask is { IsCompleted: true } && HaltSeenAt is null)
                 {
                     HaltSeenAt = Rrf.Now;
@@ -1055,7 +1056,7 @@ public partial class StopPath
                     (probe.DsfConnectionLosses > 0) ? "DSF loss" : null
                 }.Where(kind => kind is not null)),
                 TriggerOutcome = (probe.TriggerAt is null) ? string.Empty : (probe.MacroCompletedAt is not null && !probe.MacroError) ? "completed" :
-                    (rrf.Disconnects > probe.StartDisconnects || rrf.RestartTimes.Count > probe.StartRestarts) ? "RRF stopped" : "lost",
+                    (probe.StopPacketAt is not null || rrf.Disconnects > probe.StartDisconnects || rrf.RestartTimes.Count > probe.StartRestarts) ? "RRF stopped" : "lost",
                 Reconnected = reconnected,
                 Stuck = probe.Stuck,
                 NoiseAsFlips = (rrf.NoiseLog is null) ? null : input with
