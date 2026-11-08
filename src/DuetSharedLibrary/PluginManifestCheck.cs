@@ -39,5 +39,13 @@ public static class PluginManifestCheck
         {
             throw new ArgumentException("Plugins with super-user permissions are not allowed");
         }
+
+        // DPS passes the arguments in a command line (Arguments or PythonLaunchArguments), which may be configured to go through a shell.
+        // Reject any char that could break out of its quoting
+        if (!string.IsNullOrEmpty(manifest.SbcExecutableArguments) &&
+            manifest.SbcExecutableArguments.AsSpan().IndexOfAny(['"', '$', '`', '\\', '\n', '\r']) >= 0)
+        {
+            throw new ArgumentException("SbcExecutableArguments must not contain shell metacharacters (\", $, `, \\, newline)");
+        }
     }
 }

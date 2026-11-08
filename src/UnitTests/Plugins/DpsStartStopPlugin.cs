@@ -254,7 +254,9 @@ public class DpsStartStopPlugin : DpsTestBase
     [Test]
     public async Task PythonPluginIsLaunchedThroughItsVirtualEnvironment()
     {
-        // PythonLaunchCommand and PythonLaunchArguments (Settings.cs:112-117, defaults /bin/bash -c "{pluginDir}/venv/bin/python {command} {args}"), StartPlugin.cs:119-125
+        // PythonLaunchCommand and PythonLaunchArguments (Settings.cs): bash with a fixed script that executes the interpreter of the venv with the executable and
+        // the arguments. The image of the CHX 350 confines Python plugins on that path, DuetPluginService -> bash -> python (its AppArmor profile
+        // opt.dsf.bin.DuetPluginService, rpi-image-gen meltingplot/layer/mp-dsf.d)
         await StartDpsAsync(register: false);
         Plugin plugin = await AddPluginAsync("Python", "print()", plugin =>
         {
@@ -269,8 +271,29 @@ public class DpsStartStopPlugin : DpsTestBase
 
         await StartAsync("Python");
         Assert.That(await WaitForDcsMessageAsync($"[Python]: python {Path.Combine(PluginDirectory, "Python", "dsf", "main.py")} --flag value"), Is.True);
-        Assert.That(Dps!.Log.Contains($"Launching /bin/bash -c \"{Path.Combine(PluginDirectory, "Python")}/venv/bin/python"), Is.True);
+        Assert.That(Dps!.Log.Contains($"Launching /bin/bash -c \"exec \\\"$0\\\" \\\"$@\\\"\" {python} {Path.Combine(PluginDirectory, "Python", "dsf", "main.py")} --flag value"), Is.True);
         Assert.That(await WaitForStoppedAsync(plugin), Is.True);
+    }
+
+    [Test]
+    public void ShippedConfigurationLaunchesPythonLikeTheDefaults()
+    {
+        // pkg/common/duetpluginservice/opt/dsf/conf/plugins.json is the configuration file of a new installation
+        using System.Text.Json.JsonDocument shipped = System.Text.Json.JsonDocument.Parse(File.ReadAllText(DpsHost.ShippedFile("pkg/common/duetpluginservice/opt/dsf/conf/plugins.json")));
+        DuetPluginService.Settings defaults = new();
+        Assert.That(shipped.RootElement.GetProperty("PythonLaunchCommand").GetString(), Is.EqualTo(defaults.PythonLaunchCommand));
+        Assert.That(shipped.RootElement.GetProperty("PythonLaunchArguments").GetString(), Is.EqualTo(defaults.PythonLaunchArguments));
+    }
+
+    [Test]
+    public async Task ArgumentsAreCheckedAgainBeforeTheStart()
+    {
+        // StartPlugin makes the checks of the installation again (PluginManifestCheck), here for a manifest that was changed in the store
+        await StartDpsAsync(register: false);
+        await AddPluginAsync("Changed", "exec sleep 30", plugin => plugin.SbcExecutableArguments = "$(id)");
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("Changed")))!;
+        Assert.That(e.Message, Does.StartWith("SbcExecutableArguments must not contain shell metacharacters"));
+        Assert.That(Dps!.Store.Processes, Is.Empty);
     }
 
     [Test]
@@ -366,14 +389,12 @@ public class DpsStartStopPlugin : DpsTestBase
     }
 
     /// <summary>
-    /// SbcExecutableArguments of a Python plugin go into the command string of bash -c (Settings.cs:117, StartPlugin.cs:119-125). InstallPlugin
-    /// refuses the characters that end the double quotes of that string (InstallPlugin.cs:300-306: ", $, `, \, newline), but bash runs the whole string as a
-    /// command line, so ;, |, &amp;, &gt; and &lt; still start other commands. bash and anything it starts besides the plugin are not below the plugin
-    /// directory, which the AppArmor profile attaches to (apparmor.conf:4), so whether they are confined could not be checked here. The same holds for an
-    /// SbcExecutable with ; in its name, StartPlugin.cs:105 checks only ", $, `, \, newline and space
+    /// SbcExecutableArguments of a Python plugin went into the command string of bash -c, where ;, |, &amp;, &gt; and &lt; started other commands although
+    /// the arguments passed the check of the installation (", $, `, \, newline). The script of bash -c is fixed now (Settings.cs: PythonLaunchArguments),
+    /// the interpreter, the executable and the arguments reach it as positional parameters, split like the arguments of any other plugin, and bash
+    /// executes them without interpreting them. The same holds for an SbcExecutable with ; in its name
     /// </summary>
     [Test]
-    [Explicit("Bug: ; in SbcExecutableArguments of a Python plugin runs a second command via bash -c")]
     public async Task PythonPluginArgumentsDoNotRunShellCommands()
     {
         await StartDpsAsync(register: false);
@@ -382,10 +403,10 @@ public class DpsStartStopPlugin : DpsTestBase
         {
             ["id"] = "Injection",
             ["name"] = "Injection",
-            ["sbcExecutable"] = "main.py",
-            ["sbcExecutableArguments"] = $"--flag; touch {marker}",
+            ["sbcExecutable"] = "main;id.py",
+            ["sbcExecutableArguments"] = $"--flag; touch {marker} | id & id > {marker}",
             ["sbcPythonDependencies"] = new JsonArray("requests")
-        }.ToJsonString(), ("dsf/main.py", "print()"));
+        }.ToJsonString(), ("dsf/main;id.py", "print()"));
 
         // The arguments pass the check of InstallPlugin
         DuetPluginService.IPC.InstallPlugin install = Dps!.Create<DuetPluginService.IPC.InstallPlugin>();
@@ -396,12 +417,18 @@ public class DpsStartStopPlugin : DpsTestBase
         File.WriteAllText(Dps.ProfilePath("Injection"), "# profile");
         string python = Path.Combine(PluginDirectory, "Injection", "venv", "bin", "python");
         Directory.CreateDirectory(Path.GetDirectoryName(python)!);
-        File.WriteAllText(python, "#!/bin/sh\nexit 0\n");
+        File.WriteAllText(python, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\n");
         File.SetUnixFileMode(python, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
         await StartAsync("Injection");
         Assert.That(await WaitForStoppedAsync(plugin), Is.True);
         Assert.That(File.Exists(marker), Is.False, "The arguments started another command");
+
+        // The interpreter got the executable and each word of the arguments as they are
+        Assert.That(File.ReadAllLines(python + ".args"), Is.EqualTo(new[]
+        {
+            Path.Combine(PluginDirectory, "Injection", "dsf", "main;id.py"), "--flag;", "touch", marker, "|", "id", "&", "id", ">", marker
+        }));
     }
 
     /// <summary>

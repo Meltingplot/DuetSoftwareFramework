@@ -51,6 +51,7 @@ public class DcsPluginManifests : DpsTestBase
     [TestCase("{\"id\":\"Invalid\"}", "Plugin manifest must provide an id and a name")]
     [TestCase("{\"id\":\"Invalid\",\"name\":\"Invalid\",\"sbcPermissions\":[\"servicePlugins\"]}", "ServicePlugins permission is reserved for internal purposes")]
     [TestCase("{\"id\":\"Invalid\",\"name\":\"Invalid\",\"sbcPermissions\":[\"superUser\"]}", "Plugins with super-user permissions are not allowed")]
+    [TestCase("{\"id\":\"Invalid\",\"name\":\"Invalid\",\"sbcExecutableArguments\":\"$(id)\"}", "SbcExecutableArguments must not contain shell metacharacters (\", $, `, \\, newline)")]
     public async Task ReloadRefusesInvalidManifests(string manifest, string error)
     {
         File.WriteAllText(Path.Combine(PluginDirectory, "Invalid.json"), manifest);
@@ -69,6 +70,7 @@ public class DcsPluginManifests : DpsTestBase
     [TestCase("{\"id\":\"Invalid\"}", "Plugin manifest must provide an id and a name")]
     [TestCase("{\"id\":\"Invalid\",\"name\":\"Invalid\",\"sbcPermissions\":[\"servicePlugins\"]}", "ServicePlugins permission is reserved for internal purposes")]
     [TestCase("{\"id\":\"Invalid\",\"name\":\"Invalid\",\"sbcPermissions\":[\"superUser\"]}", "Plugins with super-user permissions are not allowed")]
+    [TestCase("{\"id\":\"Invalid\",\"name\":\"Invalid\",\"sbcExecutableArguments\":\"$(id)\"}", "SbcExecutableArguments must not contain shell metacharacters (\", $, `, \\, newline)")]
     public async Task InvalidManifestsAreSkippedAtStart(string manifest, string error)
     {
         File.WriteAllText(Path.Combine(PluginDirectory, "Invalid.json"), manifest);

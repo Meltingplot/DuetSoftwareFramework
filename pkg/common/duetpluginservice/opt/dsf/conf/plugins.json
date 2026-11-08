@@ -20,6 +20,6 @@
   "UninstallLocalPackageCommand": "/usr/bin/dpkg",
   "UninstallLocalPackageArguments": "-r {package}",
   "PythonLaunchCommand": "/bin/bash",
-  "PythonLaunchArguments": "-c \"{pluginDir}/venv/bin/python {command} {args}\"",
+  "PythonLaunchArguments": "-c \"exec \\\"$0\\\" \\\"$@\\\"\" {pluginDir}/venv/bin/python {command} {args}",
   "StopTimeout": 4000
 }

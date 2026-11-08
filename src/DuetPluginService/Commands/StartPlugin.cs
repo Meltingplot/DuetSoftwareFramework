@@ -111,8 +111,8 @@ public sealed class StartPlugin(PluginStore pluginStore, ServicePrivileges privi
             throw new ArgumentException($"Refusing to launch plugin {plugin.Id}: executable {sbcExecutable} is a symlink");
         }
 
-        // Python plugins are launched via a double-quoted bash -c string, so the executable path must not be able
-        // to break out of the quoting. SbcExecutableArguments is restricted the same way at install time, but the
+        // Python plugins get their executable as one argument of PythonLaunchArguments, so the executable path must not be able
+        // to split or end it. SbcExecutableArguments is restricted the same way by PluginManifestCheck, but the
         // executable filename is plugin-controlled and only checked against ".." so far
         if (plugin.SbcPythonDependencies.Count > 0 && sbcExecutable.AsSpan().IndexOfAny(['"', '$', '`', '\\', '\n', '\r', ' ']) >= 0)
         {
@@ -130,7 +130,8 @@ public sealed class StartPlugin(PluginStore pluginStore, ServicePrivileges privi
             // Start the plugin process
             ProcessStartInfo startInfo = new()
             {
-                FileName = (plugin.SbcPythonDependencies.Count == 0) ? sbcExecutable : _settings.PythonLaunchCommand,
+                FileName = (plugin.SbcPythonDependencies.Count == 0) ? sbcExecutable : _settings.PythonLaunchCommand
+                    .Replace("{pluginDir}", Path.Combine(settings.Value.PluginDirectory, plugin.Id)),
                 Arguments = (plugin.SbcPythonDependencies.Count == 0) ? plugin.SbcExecutableArguments : _settings.PythonLaunchArguments
                     .Replace("{pluginDir}", Path.Combine(settings.Value.PluginDirectory, plugin.Id))
                     .Replace("{command}", sbcExecutable)

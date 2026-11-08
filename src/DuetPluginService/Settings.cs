@@ -112,14 +112,19 @@ public sealed class Settings
     public string SystemdRunCommand { get; set; } = "/usr/bin/systemd-run";
 
     /// <summary>
-    /// Command to launch Python plugin scripts that have a virtual environment
+    /// Command to launch Python plugin scripts that have a virtual environment. {pluginDir} is replaced by the directory of the plugin
     /// </summary>
     public string PythonLaunchCommand { get; set; } = "/bin/bash";
 
     /// <summary>
-    /// Command-line arguments to invoke Python scripts with virtual environments
+    /// Command-line arguments to invoke Python scripts with virtual environments. {pluginDir}, {command} and {args} are replaced by the directory of the plugin,
+    /// its executable and its arguments
     /// </summary>
-    public string PythonLaunchArguments { get; set; } = "-c \"{pluginDir}/venv/bin/python {command} {args}\"";
+    /// <remarks>
+    /// The script of bash -c is fixed and gets the interpreter, the executable and the arguments as positional parameters, so bash does not interpret the
+    /// arguments of the plugin. Systems may rely on the launch through bash, e.g. for an AppArmor transition of the shell
+    /// </remarks>
+    public string PythonLaunchArguments { get; set; } = "-c \"exec \\\"$0\\\" \\\"$@\\\"\" {pluginDir}/venv/bin/python {command} {args}";
 
     /// <summary>
     /// Timeout in ms for SIGTERM requests. When it expires plugin processes are forcefully killed
