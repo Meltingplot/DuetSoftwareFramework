@@ -49,6 +49,7 @@ public class DcsPluginManifests : DpsTestBase
 
     [TestCase("{\"name\":\"No id\"}", "Plugin manifest must provide an id and a name")]
     [TestCase("{\"id\":\"Invalid\"}", "Plugin manifest must provide an id and a name")]
+    [TestCase("{\"id\":\"Invalid\",\"name\":\"Invalid\",\"sbcPermissions\":[\"servicePlugins\"]}", "ServicePlugins permission is reserved for internal purposes")]
     public async Task ReloadRefusesInvalidManifests(string manifest, string error)
     {
         File.WriteAllText(Path.Combine(PluginDirectory, "Invalid.json"), manifest);
@@ -65,6 +66,7 @@ public class DcsPluginManifests : DpsTestBase
 
     [TestCase("{\"name\":\"No id\"}", "Plugin manifest must provide an id and a name")]
     [TestCase("{\"id\":\"Invalid\"}", "Plugin manifest must provide an id and a name")]
+    [TestCase("{\"id\":\"Invalid\",\"name\":\"Invalid\",\"sbcPermissions\":[\"servicePlugins\"]}", "ServicePlugins permission is reserved for internal purposes")]
     public async Task InvalidManifestsAreSkippedAtStart(string manifest, string error)
     {
         File.WriteAllText(Path.Combine(PluginDirectory, "Invalid.json"), manifest);

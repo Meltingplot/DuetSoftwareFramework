@@ -293,12 +293,6 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
         plugin.Pid = -1;
         PluginManifestCheck.Check(plugin);
 
-        // Check for reserved permissions
-        if (plugin.SbcPermissions.HasFlag(SbcPermissions.ServicePlugins))
-        {
-            throw new ArgumentException("ServicePlugins permission is reserved for internal purposes");
-        }
-
         // Plugins with Python dependencies are launched via bash -c with the arguments interpolated into the
         // double-quoted command string. Reject any char that could break out of that quoting and execute arbitrary code
         if (!string.IsNullOrEmpty(plugin.SbcExecutableArguments) &&

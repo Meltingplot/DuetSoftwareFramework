@@ -268,41 +268,31 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     }
 
     /// <summary>
-    /// ServicePlugins "is reserved for internal purposes" and InstallPlugin refuses manifests with it, in DPS (InstallPlugin.cs:294-298) and DCS
-    /// (DuetControlServer/Commands/Plugins/InstallPlugin.cs:198-202). The manifests on disk are read again by ReloadPlugin (ReloadPlugin.cs:51-54) and at
-    /// start (PluginService.cs:43-47) without that check, in DCS as well (DuetControlServer/Commands/Plugins/ReloadPlugin.cs and Model/PeriodicUpdateService.cs:85-117).
+    /// ServicePlugins "is reserved for internal purposes" and InstallPlugin refuses manifests with it. ReloadPlugin and the start of DPS and DCS read the
+    /// manifests on disk again, all of them make that check of the installation (DuetSharedLibrary/PluginManifestCheck.cs).
     /// DCS grants a plugin connection the permissions of its manifest (DuetControlServer/IPC/Connection.cs:121-124, 136-140), and ServicePlugins is enough for
     /// Install/UninstallSystemPackage (RequiredPermissions SuperUser | ServicePlugins, any of them). A plugin with ManagePlugins or FileSystemAccess may write the
     /// manifests (AppArmorPermissionManager.cs:55-64)
     /// </summary>
     [Test]
-    [Explicit("Bug: ReloadPlugin accepts a manifest with the reserved ServicePlugins permission, which InstallPlugin refuses")]
     public async Task ReloadRefusesTheReservedPermission()
     {
         await StartDpsAsync(register: false);
         File.WriteAllText(Path.Combine(PluginDirectory, "Elevated.json"), "{\"id\":\"Elevated\",\"name\":\"Elevated\",\"sbcPermissions\":[\"servicePlugins\"]}");
-        try
-        {
-            await ReloadAsync("Elevated");
-        }
-        catch (ArgumentException)
-        {
-            // Refusing it is fine
-        }
-        Plugin? plugin = await Dps!.GetPluginAsync("Elevated");
-        Assert.That(plugin is null || !plugin.SbcPermissions.HasFlag(SbcPermissions.ServicePlugins), Is.True, "The plugin was registered with ServicePlugins");
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await ReloadAsync("Elevated")))!;
+        Assert.That(e.Message, Is.EqualTo("ServicePlugins permission is reserved for internal purposes"));
+        Assert.That(await Dps!.GetPluginAsync("Elevated"), Is.Null);
     }
 
     /// <summary>
     /// Same as <see cref="ReloadRefusesTheReservedPermission"/> for the manifests that PluginService.StartAsync loads (PluginService.cs:43-54)
     /// </summary>
     [Test]
-    [Explicit("Bug: a manifest with the reserved ServicePlugins permission is loaded at start")]
     public async Task ReservedPermissionIsNotLoadedAtStart()
     {
         File.WriteAllText(Path.Combine(PluginDirectory, "Elevated.json"), "{\"id\":\"Elevated\",\"name\":\"Elevated\",\"sbcPermissions\":[\"servicePlugins\"]}");
         await StartDpsAsync(register: false);
-        Plugin? plugin = await Dps!.GetPluginAsync("Elevated");
-        Assert.That(plugin is null || !plugin.SbcPermissions.HasFlag(SbcPermissions.ServicePlugins), Is.True, "The plugin was loaded with ServicePlugins");
+        Assert.That(await Dps!.GetPluginAsync("Elevated"), Is.Null);
+        Assert.That(Dps.Log.Contains("Skipping plugin manifest Elevated.json: ServicePlugins permission is reserved for internal purposes"), Is.True);
     }
 }

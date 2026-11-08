@@ -189,12 +189,6 @@ public sealed class InstallPlugin(CommandFactory commandFactory, Model.ObjectMod
         plugin.Started = false;
         PluginManifestCheck.Check(plugin);
 
-        // Check for reserved permissions
-        if (plugin.SbcPermissions.HasFlag(SbcPermissions.ServicePlugins))
-        {
-            throw new ArgumentException("ServicePlugins permission is reserved for internal purposes");
-        }
-
         // All OK
         return plugin;
     }

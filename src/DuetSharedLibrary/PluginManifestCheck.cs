@@ -1,4 +1,5 @@
 using DuetAPI.ObjectModel;
+using DuetAPI.Utility;
 using System;
 
 namespace DuetSharedLibrary;
@@ -20,6 +21,12 @@ public static class PluginManifestCheck
         if (string.IsNullOrEmpty(manifest.Id) || string.IsNullOrEmpty(manifest.Name))
         {
             throw new ArgumentException("Plugin manifest must provide an id and a name");
+        }
+
+        // Check for reserved permissions
+        if (manifest.SbcPermissions.HasFlag(SbcPermissions.ServicePlugins))
+        {
+            throw new ArgumentException("ServicePlugins permission is reserved for internal purposes");
         }
     }
 }
