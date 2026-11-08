@@ -350,8 +350,12 @@ public class TriggerMacros
         Assert.That(triggers.Count, Is.Zero);
     }
 
-    [Test, Explicit("RRF resolves a trigger macro request that is not sent yet as failed when DSF invalidates the channel, but sends it afterwards " +
-        "(SbcInterface.cpp:880-883, 1576-1590), so DSF starts a macro that RRF does not run and discards every later trigger request (Processor.cs:1301-1305)")]
+    /// <summary>
+    /// RRF resolved a trigger macro request that was not sent yet as failed when DSF invalidated the channel, but sent it afterwards
+    /// (SbcInterface.cpp:880-883, 1576-1590 at cde4e4fa1), so DSF started a macro that RRF did not run and discarded every later trigger request
+    /// (Processor.cs:1301-1305). Meltingplot/RepRapFirmware#43 clears the request first, and FakeFirmware does the same (finding T1)
+    /// </summary>
+    [Test]
     public async Task TriggerChannelWorksAfterInvalidationDuringTriggerRequest()
     {
         // Found by TriggerFuzz with an abort of the trigger channel from outside, as the IPC command InvalidateChannel does
