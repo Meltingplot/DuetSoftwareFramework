@@ -74,7 +74,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
         {
             foreach (Board board in model.Boards)
             {
-                if (!string.IsNullOrEmpty(board.FirmwareFileName) && firmwareVersions.TryGetValue(board.FirmwareFileName, out string? newVersion))
+                if (!string.IsNullOrEmpty(board.FirmwareFileName) && firmwareVersions.TryGetValue(board.FirmwareFileName, out string? newVersion) && newVersion is not null)
                 {
                     if (board.FirmwareVersion != newVersion)
                     {
@@ -304,7 +304,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
         List<Board> outdatedBoards = [];
         foreach (Board board in objectModel.Boards)
         {
-            if (!string.IsNullOrEmpty(board.FirmwareFileName) && firmwareVersions.TryGetValue(board.FirmwareFileName, out string? newVersion))
+            if (!string.IsNullOrEmpty(board.FirmwareFileName) && firmwareVersions.TryGetValue(board.FirmwareFileName, out string? newVersion) && newVersion is not null)
             {
                 if (board.FirmwareVersion != newVersion)
                 {

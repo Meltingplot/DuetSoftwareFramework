@@ -277,22 +277,45 @@ public class UpdateOnlyMode
     }
 
     /// <summary>
-    /// A board whose firmware file is missing gets a null version in the table of versions (FirmwareUpdater.cs:44-69), which differs from the
-    /// version the board reports, so the board counts as outdated (FirmwareUpdater.cs:77-82) and is listed as "-> n/a". The warning for a board
-    /// without a firmware version (FirmwareUpdater.cs:84-88) is reached only by a board without a file name. For a tool board DCS -u then sends
-    /// M997 B121, which RRF refuses ("Firmware file ... not found", ExpansionManager.cpp:484-489), waits 3 minutes for a version null and then
-    /// resets the main board with M999 although nothing was updated (FirmwareUpdater.cs:175-248). The same happens for a firmware file whose
-    /// version cannot be read, e.g. one without the version text at 0x20 (Firmware.cs:141-171)
+    /// A board whose firmware file is missing gets no version in the table of versions (FirmwareUpdater.cs:44-69), so it is left alone with the
+    /// warning for a board without a firmware version (FirmwareUpdater.cs:77-88 and 307-318), like a board without a file name. Updating it would
+    /// send M997 B121, which RRF refuses ("Firmware file ... not found", ExpansionManager.cpp:484-489), and then wait for a version that never
+    /// comes. The same holds for a firmware file whose version cannot be read, e.g. one without the version text at 0x20 (Firmware.cs:141-171)
     /// </summary>
-    [Test, Explicit("Bug: DCS -u updates a board whose firmware file is missing and then waits 3 minutes and resets the main board")]
-    public async Task BoardWithoutFirmwareFileIsLeftAlone()
+    [TestCase(false, false)]
+    [TestCase(false, true)]
+    [TestCase(true, false)]
+    [TestCase(true, true)]
+    public async Task BoardWithoutFirmwareFileIsLeftAlone(bool remote, bool fileWithoutVersion)
     {
-        await StartAsync(MainVersion, null, configure: firmware => firmware.OnCode("M997", code => FakeReply.Error($"Firmware file {ExpansionFirmwareFile} not found")));
-        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(5));
-        await Updater.UpdateFirmwareAsync(cts.Token).WaitAsync(UpdateTimeout);
+        FakeFirmwareHost host = await StartAsync(MainVersion, null, ipc: remote,
+            configure: firmware => firmware.OnCode("M997", code => FakeReply.Error($"Firmware file {ExpansionFirmwareFile} not found")));
+        if (fileWithoutVersion)
+        {
+            System.IO.File.WriteAllBytes(Path.Combine(host.BaseDirectory, "firmware", ExpansionFirmwareFile), new byte[0x1000]);
+        }
+        await RunAsync(remote);
 
         Assert.That(ReceivedCodes(), Is.Empty, "DCS -u must not update a board without a firmware file");
+        Assert.That(Output, Does.Contain($"Warning: Failed to get corresponding firmware version for Duet 3 Tool Board 1LC (fake) @ 121, RRF version {ExpansionVersion}, firmware filename '{ExpansionFirmwareFile}'"));
         Assert.That(Output, Does.Contain("All boards are up-to-date!"));
+        Assert.That(MainBoardWasReset(), Is.False);
+    }
+
+    /// <summary>
+    /// The other boards are still compared and updated
+    /// </summary>
+    [Test]
+    public async Task BoardWithoutFirmwareFileDoesNotStopTheOthers()
+    {
+        FakeFirmwareHost host = await StartAsync(NewVersion, null);
+        await Updater.UpdateFirmwareAsync().WaitAsync(UpdateTimeout);
+
+        Assert.That(Output, Does.Contain("Warning: Failed to get corresponding firmware version for Duet 3 Tool Board 1LC (fake) @ 121"));
+        Assert.That(Output, Does.Contain("There is 1 outdated board:"));
+        Assert.That(Output, Does.Contain("Updating firmware on mainboard... Done!"));
+        Assert.That(ReceivedCodes(), Is.Empty);
+        Assert.That(host.Firmware.IapRebooted, Is.True);
     }
 
     /// <summary>
