@@ -172,6 +172,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
         }
 
         // Update expansion boards
+        bool expansionUpdateStarted = false;
         foreach (Board board in boardsToUpdate)
         {
             if (board.CanAddress > 0)
@@ -191,6 +192,13 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
                     ];
 
                     Message result = await updateCode.ExecuteAsync(cancellationToken) ?? new Message();
+                    if (result.Type == MessageType.Error)
+                    {
+                        // RRF replies at once and has not started the update (ExpansionManager.cpp:447-505), so there is nothing to wait for
+                        Console.WriteLine(result.ToString());
+                        continue;
+                    }
+                    expansionUpdateStarted = true;
 
                     // Unlike with M997, we need to wait for RRF to complete the update process. The machine
                     // status cannot be used for that because a package upgrade in progress pins it to
@@ -246,7 +254,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
                 logger.LogDebug(e, "Failed to update firmware on mainboard");
             }
         }
-        else if (boardsToUpdate.Count > 0)
+        else if (expansionUpdateStarted)
         {
             Console.Write("Resetting mainboard... ");
             try
@@ -395,6 +403,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
         }
 
         // Update expansion boards
+        bool expansionUpdateStarted = false;
         foreach (Board board in boardsToUpdate)
         {
             if (board.CanAddress > 0)
@@ -415,6 +424,13 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
                         ]
                     };
                     Message result = await commandConnection.PerformCodeAsync(updateCode, cancellationToken);
+                    if (result.Type == MessageType.Error)
+                    {
+                        // RRF replies at once and has not started the update (ExpansionManager.cpp:447-505), so there is nothing to wait for
+                        Console.WriteLine(result.ToString());
+                        continue;
+                    }
+                    expansionUpdateStarted = true;
 
                     // Unlike with M997, we need to wait for RRF to complete the update process. The machine
                     // status cannot be used for that because a package upgrade in progress pins it to
@@ -471,7 +487,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
                 logger.LogDebug(e, "Failed to update firmware on mainboard");
             }
         }
-        else if (boardsToUpdate.Count > 0)
+        else if (expansionUpdateStarted)
         {
             Console.Write("Resetting mainboard... ");
             try

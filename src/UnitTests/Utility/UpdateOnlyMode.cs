@@ -342,20 +342,56 @@ public class UpdateOnlyMode
 
     /// <summary>
     /// RRF replies to M997 B at once, with an error if it cannot start the update, e.g. when the board does not answer (ExpansionManager.cpp:459-473,
-    /// CanInterface.cpp:1003) or the file is missing (ExpansionManager.cpp:484-489). FirmwareUpdater looks at the reply only after the board has
-    /// reported the new version (FirmwareUpdater.cs:173-198), so after an error it waits the full 3 minutes, prints a timeout instead of RRF's
-    /// error and then resets the main board (FirmwareUpdater.cs:229-248). The test cancels the wait after 5 s
+    /// CanInterface.cpp:1003) or the file is missing (ExpansionManager.cpp:484-489). FirmwareUpdater reports the error and does not wait for a new
+    /// version, and since no board was updated it does not reset the main board either
     /// </summary>
-    [Test, Explicit("Bug: DCS -u ignores an error reply of M997 B, waits 3 minutes, drops RRF's message and resets the main board")]
-    public async Task ExpansionUpdateErrorIsReported()
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task ExpansionUpdateErrorIsReported(bool remote)
     {
         const string error = "Timed out awaiting response from board 121 to request type 6024";
-        await StartAsync(MainVersion, NewVersion, configure: firmware => firmware.OnCode("M997", code => FakeReply.Error(error)));
-        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(5));
-        await Updater.UpdateFirmwareAsync(cts.Token).WaitAsync(UpdateTimeout);
+        await StartAsync(MainVersion, NewVersion, ipc: remote, configure: firmware => firmware.OnCode("M997", code => FakeReply.Error(error)));
+        Task update = RunAsync(remote);
+        Assert.That(await Task.WhenAny(update, Task.Delay(TimeSpan.FromSeconds(1.5))), Is.SameAs(update), "DCS -u must not wait after an error");
+        await update;
 
-        Assert.That(Output, Does.Contain(error));
+        Assert.That(Output, Does.Contain($"Updating firmware on board #121... Error: M997: {error}" + Environment.NewLine));
+        Assert.That(Output, Does.Not.Contain("Timed out waiting"));
+        Assert.That(Output, Does.Not.Contain("Resetting mainboard"));
+        Assert.That(ReceivedCodes(), Is.EqualTo(new[] { "M997 B121" }));
         Assert.That(MainBoardWasReset(), Is.False);
+    }
+
+    /// <summary>
+    /// When RRF refuses the update of one tool board but starts the one of another, the main board is still reset after the second one
+    /// </summary>
+    [Test]
+    public async Task ExpansionUpdateErrorForOneOfTwoBoards()
+    {
+        const string error = "Firmware file Duet3Firmware_TOOL1LC.bin not found";
+        FakeFirmwareHost host = await StartAsync(MainVersion, NewVersion,
+            editBoards: boards =>
+            {
+                JsonNode second = boards[1]!.DeepClone();
+                second["canAddress"] = 122;
+                boards.Add(second);
+            },
+            configure: firmware => firmware.OnCode("M997", code =>
+            {
+                if (code.Text == "M997 B121")
+                {
+                    return FakeReply.Error(error);
+                }
+                firmware.ObjectModel.Set("boards[2].firmwareVersion", NewVersion);
+                return FakeReply.Ok();
+            }));
+        await Updater.UpdateFirmwareAsync().WaitAsync(UpdateTimeout);
+
+        Assert.That(Output, Does.Contain($"Updating firmware on board #121... Error: M997: {error}" + Environment.NewLine));
+        Assert.That(Output, Does.Contain("Updating firmware on board #122... Done!"));
+        Assert.That(Output, Does.Contain("Resetting mainboard... Done!"));
+        Assert.That(ReceivedCodes(), Is.EqualTo(new[] { "M997 B121", "M997 B122" }));
+        Assert.That(MainBoardWasReset(), Is.True);
     }
 
     /// <summary>
