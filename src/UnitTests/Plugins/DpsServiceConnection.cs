@@ -192,32 +192,31 @@ public class DpsServiceConnection : DpsTestBase
     }
 
     /// <summary>
-    /// When DCS is not there at start-up, CommandService stops the application "and let systemd restart us to retry" (CommandService.cs:26-33). When DCS closes
-    /// the connection later, the command loop ends (CommandService.cs:69-73) but the application keeps running without connection, so DPS does not register
-    /// with the next DCS on its own. Whether systemd restarts it anyway (PartOf=duetcontrolserver.service in
-    /// pkg/common/duetpluginservice/usr/lib/systemd/system/duetpluginservice.service) depends on how DCS went away, which was not checked here
+    /// When DCS is not there at start-up, CommandService stops the application "and let systemd restart us to retry" (CommandService.cs:26-33). It does the same
+    /// when DCS closes the connection later, so that DPS registers with the next DCS (Restart=always in
+    /// pkg/common/duetpluginservice/usr/lib/systemd/system/duetpluginservice*.service)
     /// </summary>
     [Test]
-    [Explicit("Bug: DPS keeps running without DCS connection after DCS closed it, unlike when DCS is missing at start-up")]
     public async Task ServiceStopsWhenDcsClosesTheConnection()
     {
         await StartDpsAsync();
         Dps!.Bridge!.PluginServiceConnection!.Close();
         Assert.That(await WaitForAsync(() => Dps.Lifetime.ApplicationStopping.IsCancellationRequested, TimeSpan.FromSeconds(5)), Is.True);
+        Assert.That(Dps.Log.Contains("Connection to DCS has been closed"), Is.True);
     }
 
     /// <summary>
-    /// CommandService.cs:47 declares the received command outside the loop and never resets it, so when receiving the next command fails, the error is logged
-    /// as failure of the previous command (CommandService.cs:79-88)
+    /// The received command belongs to one pass of the command loop, so when receiving the next command fails, the error is not logged as failure of the
+    /// previous command (CommandService.cs)
     /// </summary>
     [Test]
-    [Explicit("Bug: an invalid command after a valid one is logged as failure of the valid one")]
     public async Task InvalidCommandIsNotLoggedAsThePreviousOne()
     {
         await StartDpsAsync();
         await DcsPluginService.PerformCommandAsync(new ReloadPlugin { Plugin = "Previous" }, false).WaitAsync(FakeFirmwareHost.DefaultTimeout);
         await SendMalformedAsync("{\"command\":5}");
         Assert.That(Dps!.Log.Contains("Failed to execute ReloadPlugin"), Is.False);
+        Assert.That(Dps.Log.Entries.Any(entry => entry.Message == "Failed to execute command" && entry.Exception?.Message == "Command type must be a string"), Is.True);
     }
 
     [Test]

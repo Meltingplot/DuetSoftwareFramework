@@ -1,5 +1,6 @@
 ﻿using DuetAPI.ObjectModel;
 using DuetControlServer.IPC.Processors;
+using DuetSharedLibrary;
 using Microsoft.Extensions.Options;
 using System;
 using System.IO;
@@ -41,14 +42,19 @@ public sealed class ReloadPlugin(Model.ObjectModel model, IOptions<Settings> set
             string file = Path.Combine(settings.Value.PluginDirectory, Plugin + ".json");
             if (File.Exists(file))
             {
+                await using FileStream manifestStream = new(file, FileMode.Open, FileAccess.Read, FileShare.Read, settings.Value.FileBufferSize);
+                using JsonDocument manifestJson = await JsonDocument.ParseAsync(manifestStream, cancellationToken: cancellationToken);
+
+                // Check the manifest like an installation does before anything is changed
+                Plugin manifest = new();
+                manifest.UpdateFromJson(manifestJson.RootElement, false);
+                PluginManifestCheck.Check(manifest, settings.Value.RootPluginSupport || PluginManifestCheck.IsInstalledByPackage(file, PluginManifestCheck.RootUserId));
+
                 if (plugin is null)
                 {
                     plugin = new();
                     model.Plugins.Add(Plugin, plugin);
                 }
-
-                await using FileStream manifestStream = new(file, FileMode.Open, FileAccess.Read, FileShare.Read, settings.Value.FileBufferSize);
-                using JsonDocument manifestJson = await JsonDocument.ParseAsync(manifestStream, cancellationToken: cancellationToken);
                 plugin.UpdateFromJson(manifestJson.RootElement, false);
                 plugin.Pid = -1;
                 plugin.Started = false;

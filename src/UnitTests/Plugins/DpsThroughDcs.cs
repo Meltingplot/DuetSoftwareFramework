@@ -10,7 +10,10 @@ using DuetAPI;
 using DuetAPI.ObjectModel;
 using DuetAPI.Utility;
 using DuetAPIClient;
+using DuetControlServer.Model;
 using DuetPluginService.PermissionManagers;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using NUnit.Framework;
 using UnitTests.FakeFirmware;
@@ -40,11 +43,12 @@ public class DpsThroughDcs : DpsTestBase
     }
 
     /// <summary>
-    /// Start the root service that writes and removes the AppArmor profiles like the root DPS
+    /// Start the root service that writes and removes the AppArmor profiles like the root DPS, after the regular service
     /// </summary>
     private async Task<FakePluginService> StartRootServiceAsync()
     {
         FakePluginService root = await FakePluginService.StartAsync(Dcs, asRoot: true);
+        await WaitForPluginsStartedAsync();
         AppArmorPermissionManager permissionManager = new(Options.Create(Dps!.Settings));
         root.Responder = async command =>
         {
@@ -144,16 +148,12 @@ public class DpsThroughDcs : DpsTestBase
     }
 
     /// <summary>
-    /// "By default root plugins are not allowed" (PLUGINS.md:15-16): DCS refuses to install a plugin with SuperUser unless RootPluginSupport is set
-    /// (DuetControlServer/Commands/Plugins/InstallPlugin.cs:59-63). ReloadPlugin registers any manifest from the plugin directory
-    /// (DuetControlServer/Commands/Plugins/ReloadPlugin.cs), StartPlugin sends a plugin with SuperUser to the root service (StartPlugin.cs:346-368 in DCS),
-    /// and the root DPS starts it as root (DuetPluginService/Commands/StartPlugin.cs:57-61) - neither checks RootPluginSupport. The plugin directory belongs
-    /// to the dsf user, and plugins with ManagePlugins may write it (AppArmorPermissionManager.cs:55-58), ManagePlugins is also what ReloadPlugin and
-    /// StartPlugin require (DuetAPI/Commands/Plugins). DuetPiManagementPlugin is a root plugin that DCS loads from the same directory
-    /// (Model/PeriodicUpdateService.cs:85-117), so where to check is a design question
+    /// "By default root plugins are not allowed" (PLUGINS.md:15-16): DCS refuses to install a plugin with SuperUser unless RootPluginSupport is set. The
+    /// plugin directory belongs to the dsf user, and plugins with ManagePlugins may write it (AppArmorPermissionManager.cs:55-58), ManagePlugins is also what
+    /// ReloadPlugin and StartPlugin require (DuetAPI/Commands/Plugins). So ReloadPlugin makes the check of the installation
+    /// (DuetSharedLibrary/PluginManifestCheck.cs), and StartPlugin makes it again before it sends a plugin with SuperUser to the root service
     /// </summary>
     [Test]
-    [Explicit("Bug: a SuperUser manifest written to the plugin directory and reloaded is started by the root service although RootPluginSupport is disabled")]
     public async Task RootPluginIsNotStartedWithoutRootPluginSupport()
     {
         using CommandConnection client = await ConnectAsync();
@@ -163,16 +163,76 @@ public class DpsThroughDcs : DpsTestBase
 
         Directory.CreateDirectory(Path.Combine(PluginDirectory, "Escalated/dsf"));
         File.WriteAllText(Path.Combine(PluginDirectory, "Escalated.json"), "{\"id\":\"Escalated\",\"name\":\"Escalated\",\"sbcExecutable\":\"plugin.sh\",\"sbcPermissions\":[\"superUser\"]}");
-        try
-        {
-            await client.ReloadPluginAsync("Escalated");
-            await client.StartPluginAsync("Escalated");
-        }
-        catch (InternalServerException)
-        {
-            // Refusing it is fine
-        }
+        InternalServerException e = (await Assert.ThrowsAsync<InternalServerException>(async () => await client.ReloadPluginAsync("Escalated")))!;
+        Assert.That(e.Message, Does.Contain("Plugins with super-user permissions are not allowed"));
+        Assert.That(await GetFromDcsAsync("Escalated"), Is.Null);
+
+        // A root plugin that is known already, e.g. from a time with root plugin support, is not started either
+        await AddToDcsAsync(new Plugin { Id = "Escalated", Name = "Escalated", SbcExecutable = "plugin.sh", SbcPermissions = SbcPermissions.SuperUser, Pid = -1 });
+        e = (await Assert.ThrowsAsync<InternalServerException>(async () => await client.StartPluginAsync("Escalated")))!;
+        Assert.That(e.Message, Does.Contain("Plugins with super-user permissions are not allowed"));
+
+        // Also not as dependency of another plugin
+        await AddToDcsAsync(new Plugin { Id = "Dependent", Name = "Dependent", SbcExecutable = "plugin.sh", SbcPluginDependencies = { "Escalated" }, Pid = -1 });
+        e = (await Assert.ThrowsAsync<InternalServerException>(async () => await client.StartPluginAsync("Dependent")))!;
+        Assert.That(e.Message, Does.Contain("Plugins with super-user permissions are not allowed"));
         Assert.That(root.ReceivedCommands.Any(command => command.GetProperty("command").GetString() == "StartPlugin"), Is.False,
             "The root service was asked to start a root plugin");
+    }
+
+    [Test]
+    public async Task RootPluginIsStartedWithRootPluginSupport()
+    {
+        using CommandConnection client = await ConnectAsync();
+        await StartDpsAsync();
+        await using FakePluginService root = await StartRootServiceAsync();
+        await EnableRootPluginSupportAsync();
+
+        File.WriteAllText(Path.Combine(PluginDirectory, "Allowed.json"), "{\"id\":\"Allowed\",\"name\":\"Allowed\",\"sbcExecutable\":\"plugin.sh\",\"sbcPermissions\":[\"superUser\"]}");
+        await client.ReloadPluginAsync("Allowed");
+        await client.StartPluginAsync("Allowed");
+        Assert.That(root.ReceivedCommands.Count(command => command.GetProperty("command").GetString() == "StartPlugin"), Is.EqualTo(1));
+    }
+
+    /// <summary>
+    /// DuetPiManagementPlugin is a root plugin that its package puts into the plugin directory (pkg/common/duetpimanagementplugin/opt/dsf/plugins), DCS
+    /// loads it at start (Model/PeriodicUpdateService.cs) and the postinst script reloads and starts it with PluginManager
+    /// (pkg/deb/duetpimanagementplugin/DEBIAN/postinst). Its manifest is read-only and belongs to root, which marks it as plugin of a system package that may run
+    /// without root plugin support (PluginManifestCheck.IsInstalledByPackage). A test cannot create a file of root, so the read-only manifest here belongs to
+    /// the user of the test, and DCS needs root plugin support for it like for any other root plugin
+    /// </summary>
+    [TestCase(true)]
+    [TestCase(false)]
+    public async Task DuetPiManagementPluginNotOwnedByRootNeedsRootPluginSupport(bool rootPluginSupport)
+    {
+        // pkg/deb/build.sh replaces DSFVER by the version of DSF
+        string manifest = File.ReadAllText(DpsHost.ShippedFile("pkg/common/duetpimanagementplugin/opt/dsf/plugins/DuetPiManagementPlugin.json"))
+            .Replace("DSFVER", DuetSharedLibrary.VersionHelper.GetVersion());
+        File.WriteAllText(Path.Combine(PluginDirectory, "DuetPiManagementPlugin.json"), manifest);
+        File.SetUnixFileMode(Path.Combine(PluginDirectory, "DuetPiManagementPlugin.json"), UnixFileMode.UserRead | UnixFileMode.GroupRead);
+        if (rootPluginSupport)
+        {
+            await EnableRootPluginSupportAsync();
+        }
+        PeriodicUpdateService periodicUpdateService = Dcs.Services.GetServices<IHostedService>().OfType<PeriodicUpdateService>().Single();
+        await periodicUpdateService.StartAsync(CancellationToken.None);
+        await periodicUpdateService.StopAsync(CancellationToken.None);
+
+        using CommandConnection client = await ConnectAsync();
+        await StartDpsAsync();
+        await using FakePluginService root = await StartRootServiceAsync();
+        if (rootPluginSupport)
+        {
+            Assert.That((await GetFromDcsAsync("DuetPiManagementPlugin"))!.SbcPermissions, Is.EqualTo(SbcPermissions.SuperUser));
+            await client.StartPluginAsync("DuetPiManagementPlugin");
+            Assert.That(root.ReceivedCommands.Count(command => command.GetProperty("command").GetString() == "StartPlugin"), Is.EqualTo(1));
+        }
+        else
+        {
+            Assert.That(await GetFromDcsAsync("DuetPiManagementPlugin"), Is.Null);
+            Assert.That(DcsLog.Entries.Any(entry => entry.Message == "Skipping plugin manifest DuetPiManagementPlugin.json: Plugins with super-user permissions are not allowed"), Is.True);
+            InternalServerException e = (await Assert.ThrowsAsync<InternalServerException>(async () => await client.StartPluginAsync("DuetPiManagementPlugin")))!;
+            Assert.That(e.Message, Does.Contain("Plugin DuetPiManagementPlugin not found"));
+        }
     }
 }

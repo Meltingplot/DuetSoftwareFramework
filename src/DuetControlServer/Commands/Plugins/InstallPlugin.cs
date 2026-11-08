@@ -41,7 +41,7 @@ public sealed class InstallPlugin(CommandFactory commandFactory, Model.ObjectMod
         using (ZipArchive zipArchive = ZipFile.OpenRead(PluginFile))
         {
             // Get the plugin manifest from the ZIP file
-            plugin = await ExtractManifestAsync(zipArchive, cancellationToken);
+            plugin = await ExtractManifestAsync(zipArchive, settings.Value.RootPluginSupport, cancellationToken);
 
             // Run preflight check to make sure no malicious files are installed
             foreach (ZipArchiveEntry entry in zipArchive.Entries)
@@ -54,12 +54,6 @@ public sealed class InstallPlugin(CommandFactory commandFactory, Model.ObjectMod
                     throw new ArgumentException($"Illegal filename {entry.FullName}, stopping installation");
                 }
             }
-        }
-
-        // Permit root plugins only if they're enabled
-        if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser) && !settings.Value.RootPluginSupport)
-        {
-            throw new ArgumentException("Installation of plugins with super-user permissions is not allowed");
         }
 
         // Validate the current DSF/RRF versions
@@ -172,10 +166,11 @@ public sealed class InstallPlugin(CommandFactory commandFactory, Model.ObjectMod
     /// Extract, parse, and verify the plugin manifest
     /// </summary>
     /// <param name="zipArchive">ZIP archive containing the plugin files</param>
+    /// <param name="rootPluginSupport">Whether plugins with super-user permissions are allowed</param>
     /// <param name="cancellationToken">Optional cancellation token</param>
     /// <returns>Plugin manifest</returns>
     /// <exception cref="ArgumentException">Plugin is incompatible</exception>
-    private static async Task<Plugin> ExtractManifestAsync(ZipArchive zipArchive, CancellationToken cancellationToken = default)
+    private static async Task<Plugin> ExtractManifestAsync(ZipArchive zipArchive, bool rootPluginSupport, CancellationToken cancellationToken = default)
     {
         // Extract the plugin manifest
         ZipArchiveEntry? manifestFile = zipArchive.GetEntry("plugin.json") ?? throw new ArgumentException("plugin.json not found in the ZIP file");
@@ -187,19 +182,7 @@ public sealed class InstallPlugin(CommandFactory commandFactory, Model.ObjectMod
         }
         plugin.Pid = -1;
         plugin.Started = false;
-
-        // Make sure the required fields are present. The property setters only validate the content,
-        // a missing manifest key leaves the default value behind
-        if (string.IsNullOrEmpty(plugin.Id) || string.IsNullOrEmpty(plugin.Name))
-        {
-            throw new ArgumentException("Plugin manifest must provide an id and a name");
-        }
-
-        // Check for reserved permissions
-        if (plugin.SbcPermissions.HasFlag(SbcPermissions.ServicePlugins))
-        {
-            throw new ArgumentException("ServicePlugins permission is reserved for internal purposes");
-        }
+        PluginManifestCheck.Check(plugin, rootPluginSupport);
 
         // All OK
         return plugin;

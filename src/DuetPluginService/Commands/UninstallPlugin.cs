@@ -2,6 +2,7 @@
 using DuetAPI.Utility;
 using DuetAPIClient;
 using DuetPluginService.PermissionManagers;
+using DuetSharedLibrary;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System;
@@ -18,9 +19,10 @@ namespace DuetPluginService.IPC;
 /// </summary>
 /// <param name="permissionManager">Permission manager</param>
 /// <param name="pluginStore">Plugin store</param>
+/// <param name="privileges">Privileges of this service</param>
 /// <param name="loggerFactory">Logger factory</param>
 /// <param name="settings">Application settings</param>
-public sealed class UninstallPlugin(IPermissionManager permissionManager, PluginStore pluginStore, ILoggerFactory loggerFactory, IOptions<Settings> settings) : DuetAPI.Commands.UninstallPlugin
+public sealed class UninstallPlugin(IPermissionManager permissionManager, PluginStore pluginStore, ServicePrivileges privileges, ILoggerFactory loggerFactory, IOptions<Settings> settings) : DuetAPI.Commands.UninstallPlugin
 {
     private readonly Settings _settings = settings.Value;
 
@@ -56,26 +58,27 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
 
         if (plugin is null)
         {
-            throw new ArgumentException($"Plugin {Plugin} not found by {(Environment.IsPrivilegedProcess ? "root service" : "service")}");
+            throw new ArgumentException($"Plugin {Plugin} not found by {(privileges.IsPrivileged ? "root service" : "service")}");
         }
         if (plugin.Pid > 0)
         {
             throw new ArgumentException("Plugin must be stopped before it can be uninstalled");
         }
 
-        // Root plugins are deleted by the root service to avoid potential permission issues
-        if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser) == Environment.IsPrivilegedProcess)
+        // Check if the manifest is writable. A manifest without write permission marks a plugin of a system package.
+        // Both services check this before either of them deletes anything
+        string manifestFile = Path.Combine(settings.Value.PluginDirectory, $"{Plugin}.json");
+        if (File.Exists(manifestFile) && !File.GetUnixFileMode(manifestFile).HasFlag(UnixFileMode.UserWrite))
         {
-            string manifestFile = Path.Combine(settings.Value.PluginDirectory, $"{Plugin}.json");
+            throw new ArgumentException("Plugin cannot be uninstalled via API");
+        }
 
-            // Check if the manifest is writable
-            UnixFileMode fileMode = File.GetUnixFileMode(manifestFile);
-            if (!fileMode.HasFlag(UnixFileMode.UserWrite))
-            {
-                throw new ArgumentException("Plugin cannot be uninstalled via API");
-            }
-
-            // Remove the plugin manifest
+        // Each service removes what it has installed: the service that runs the plugin its manifest and its plugin directory,
+        // the regular service the files on the virtual SD card and the links to the web files (see InstallPlugin)
+        bool removesPluginDirectory = plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser) == privileges.IsPrivileged;
+        bool removesSdFiles = !privileges.IsPrivileged;
+        if (removesPluginDirectory || removesSdFiles)
+        {
             if (ForUpgrade)
             {
                 logger.LogInformation("Uninstalling plugin {Plugin} for upgrade", Plugin);
@@ -85,16 +88,34 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
                 logger.LogInformation("Uninstalling plugin {Plugin}", Plugin);
             }
 
-            if (File.Exists(manifestFile))
+            // Remove the plugin manifest
+            if (removesPluginDirectory && File.Exists(manifestFile))
             {
                 logger.LogDebug("Removing plugin manifest");
                 File.Delete(manifestFile);
             }
 
-            // Remove installed files and directories from the dwc and www directories
-            foreach (string dwcFile in plugin.DwcFiles)
+            // The file lists come from the manifest, so delete only files inside the directory that the installation put them into
+            bool IsInside(string file, string directory)
             {
-                string installWwwPath = Path.Combine(sdPath, "www", dwcFile);
+                if (Path.IsInside(file, directory))
+                {
+                    return true;
+                }
+                logger.LogWarning("Not deleting {File}, it is outside of {Directory}", file, directory);
+                return false;
+            }
+
+            // Remove installed files and directories from the dwc and www directories
+            string wwwDirectory = Path.Combine(sdPath, "www");
+            foreach (string dwcFile in removesSdFiles ? plugin.DwcFiles : [])
+            {
+                string installWwwPath = Path.Combine(wwwDirectory, dwcFile);
+                if (!IsInside(installWwwPath, wwwDirectory))
+                {
+                    continue;
+                }
+
                 if (Path.Exists(installWwwPath))
                 {
                     logger.LogDebug("Removing {File}", installWwwPath);
@@ -110,10 +131,10 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
             }
 
             // Remove the files installed on the virtual SD card, sparing config files on an upgrade
-            foreach (string sdFile in plugin.SdFiles)
+            foreach (string sdFile in removesSdFiles ? plugin.SdFiles : [])
             {
                 string fileName = Path.Combine(sdPath, sdFile);
-                if (File.Exists(fileName) && !(ForUpgrade && plugin.SbcConfigFiles.Any(file => fileName == Path.Combine(sdPath, "sys", file) || fileName == Path.Combine(sdPath, file))))
+                if (IsInside(fileName, sdPath) && File.Exists(fileName) && !(ForUpgrade && plugin.SbcConfigFiles.Any(file => fileName == Path.Combine(sdPath, "sys", file) || fileName == Path.Combine(sdPath, file))))
                 {
                     if (Path.GetFileName(sdFile).Equals("daemon.g"))
                     {
@@ -129,13 +150,20 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
                 }
             }
 
-            if (ForUpgrade)
+            // The plugin directory is the base of the checks above, which resolve symlinks, so a plugin directory that was replaced by a symlink loses the link only
+            string pluginBase = Path.Combine(settings.Value.PluginDirectory, Plugin);
+            if (removesPluginDirectory && new DirectoryInfo(pluginBase).LinkTarget is not null)
+            {
+                logger.LogWarning("Plugin directory {Directory} is a symlink, removing the link only", pluginBase);
+                File.Delete(pluginBase);
+            }
+            else if (removesPluginDirectory && ForUpgrade)
             {
                 // Remove only installed files so custom plugin files survive the upgrade
                 foreach (string dsfFile in plugin.DsfFiles)
                 {
-                    string file = Path.Combine(settings.Value.PluginDirectory, Plugin, "dsf", dsfFile);
-                    if (File.Exists(file))
+                    string file = Path.Combine(pluginBase, "dsf", dsfFile);
+                    if (IsInside(file, pluginBase) && File.Exists(file))
                     {
                         logger.LogDebug("Deleting file {File}", file);
                         File.Delete(file);
@@ -144,28 +172,24 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
 
                 foreach (string dwcFile in plugin.DwcFiles)
                 {
-                    string file = Path.Combine(settings.Value.PluginDirectory, Plugin, "dwc", dwcFile);
-                    if (File.Exists(file))
+                    string file = Path.Combine(pluginBase, "dwc", dwcFile);
+                    if (IsInside(file, pluginBase) && File.Exists(file))
                     {
                         logger.LogDebug("Deleting file {File}", file);
                         File.Delete(file);
                     }
                 }
             }
-            else
+            else if (removesPluginDirectory && Directory.Exists(pluginBase))
             {
                 // Remove the full plugin directory
-                string pluginDirectory = Path.Combine(settings.Value.PluginDirectory, Plugin);
-                if (Directory.Exists(pluginDirectory))
-                {
-                    logger.LogDebug("Removing plugin directory {Directory}", pluginDirectory);
-                    Directory.Delete(pluginDirectory, true);
-                }
+                logger.LogDebug("Removing plugin directory {Directory}", pluginBase);
+                Directory.Delete(pluginBase, true);
             }
         }
 
         // Remove the security policy
-        if (Environment.IsPrivilegedProcess && !_settings.DisableAppArmor)
+        if (privileges.IsPrivileged && !_settings.DisableAppArmor)
         {
             await permissionManager.UninstallProfileAsync(plugin, cancellationToken);
         }

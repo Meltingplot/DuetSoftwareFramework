@@ -14,8 +14,8 @@ using File = System.IO.File;
 /// <summary>
 /// UninstallPlugin (DuetPluginService/Commands/UninstallPlugin.cs) and ReloadPlugin (Commands/ReloadPlugin.cs) of the DuetPluginService instance that runs as
 /// dsf user, and the manifests that PluginService.StartAsync loads (PluginService.cs:34-59). The plugins are installed with the InstallPlugin command of DPS
-/// first, so the file lists in their manifests are the ones DPS wrote. Not covered, because it runs only as root: the removal of the AppArmor profile
-/// (UninstallPlugin.cs:167-171) and the regeneration of missing profiles at start (PluginService.cs:62-112)
+/// first, so the file lists in their manifests are the ones DPS wrote. The part of the root service, the removal of the AppArmor profile
+/// (UninstallPlugin.cs:167-171) and the regeneration of missing profiles at start (PluginService.cs:62-112), is covered by <see cref="DpsRootService"/>
 /// </summary>
 [TestFixture]
 public class DpsUninstallReloadPlugin : DpsTestBase
@@ -125,24 +125,61 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     }
 
     [Test]
-    public async Task FilesOfRootPluginsAreLeftToTheRootService()
+    public async Task FilesOfRootPluginsAreSplitBetweenTheServices()
     {
-        // "Root plugins are deleted by the root service" (UninstallPlugin.cs:66-67), the regular service only forgets the plugin
+        // Each service removes what it installed: the regular service the SD files and the links to the web files, the root service the manifest and the
+        // plugin directory of a plugin with SuperUser (UninstallPlugin.cs), which it installed itself
         await StartDpsAsync(register: false);
-        await InstallAsync("RootFiles", manifest => manifest["sbcPermissions"] = new JsonArray("superUser"), ("dsf/root", "x"), ("sd/macros/root.g", "M117"));
+        Plugin plugin = await InstallAsync("RootFiles", manifest => manifest["sbcPermissions"] = new JsonArray("superUser"),
+            ("dsf/root", "x"), ("dwc/RootFiles.js", "js"), ("sd/macros/root.g", "M117"));
+        Dps!.WritePlugin(plugin, "exit 0", profile: false);
         await UninstallAsync("RootFiles");
+        Assert.That(File.Exists(Sd("macros/root.g")), Is.False);
+        Assert.That(Path.Exists(Sd("www/RootFiles.js")), Is.False);
         Assert.That(File.Exists(Path.Combine(PluginDirectory, "RootFiles.json")), Is.True);
-        Assert.That(File.Exists(Path.Combine(PluginDirectory, "RootFiles/dsf/root")), Is.True);
-        Assert.That(File.Exists(Sd("macros/root.g")), Is.True);
-        Assert.That(await Dps!.GetPluginAsync("RootFiles"), Is.Null);
+        Assert.That(Directory.Exists(Path.Combine(PluginDirectory, "RootFiles/dsf")), Is.True);
+        Assert.That(await Dps.GetPluginAsync("RootFiles"), Is.Null);
+    }
+
+    [Test]
+    public async Task RootPluginOfASystemPackageIsNotUninstalledByEitherService()
+    {
+        // The read-only manifest is checked by both services before either deletes anything, here by the regular service that comes first
+        await StartDpsAsync(register: false);
+        Plugin plugin = await InstallAsync("Packaged", manifest => manifest["sbcPermissions"] = new JsonArray("superUser"), ("sd/macros/packaged.g", "M117"));
+        Dps!.WritePlugin(plugin, "exit 0", profile: false);
+        File.SetUnixFileMode(Path.Combine(PluginDirectory, "Packaged.json"), UnixFileMode.UserRead | UnixFileMode.GroupRead);
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await UninstallAsync("Packaged")))!;
+        Assert.That(e.Message, Is.EqualTo("Plugin cannot be uninstalled via API"));
+        Assert.That(File.Exists(Sd("macros/packaged.g")), Is.True);
+        Assert.That(await Dps.GetPluginAsync("Packaged"), Is.Not.Null);
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task SymlinkedPluginDirectoryLosesTheLinkOnly(bool forUpgrade)
+    {
+        // A plugin with ManagePlugins or FileSystemAccess may replace its plugin directory by a symlink. The checks of UninstallPlugin resolve symlinks
+        // with the plugin directory as base, so nothing behind such a link is deleted, only the link
+        await StartDpsAsync(register: false);
+        await InstallAsync("Replaced", null, ("dsf/replaced", "x"));
+        string elsewhere = OutsidePath("elsewhere");
+        Directory.CreateDirectory(Path.Combine(elsewhere, "dsf"));
+        File.WriteAllText(Path.Combine(elsewhere, "dsf", "replaced"), "keep me");
+        Directory.Delete(Path.Combine(PluginDirectory, "Replaced"), true);
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Replaced"), elsewhere);
+
+        await UninstallAsync("Replaced", forUpgrade);
+        Assert.That(Path.Exists(Path.Combine(PluginDirectory, "Replaced")), Is.False);
+        Assert.That(File.ReadAllText(Path.Combine(elsewhere, "dsf", "replaced")), Is.EqualTo("keep me"));
+        Assert.That(Dps!.Log.Contains($"Plugin directory {Path.Combine(PluginDirectory, "Replaced")} is a symlink, removing the link only"), Is.True);
     }
 
     /// <summary>
-    /// UninstallPlugin.cs:88-92 deletes the manifest only if it exists, but UninstallPlugin.cs:72 reads its file mode first, which throws
-    /// FileNotFoundException for a missing manifest. The plugin then stays registered and its files stay behind
+    /// UninstallPlugin deletes the manifest only if it exists, and it checks the file mode of the manifest only then as well, so a plugin whose manifest is
+    /// gone is still uninstalled
     /// </summary>
     [Test]
-    [Explicit("Bug: a plugin whose manifest is missing cannot be uninstalled (FileNotFoundException at UninstallPlugin.cs:72)")]
     public async Task PluginWithoutManifestIsUninstalled()
     {
         await StartDpsAsync(register: false);
@@ -154,34 +191,33 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     }
 
     /// <summary>
-    /// InstallPlugin keeps every installed file inside its directory (zip-slip guard, InstallPlugin.cs:160-167), UninstallPlugin deletes the files that the
-    /// manifest lists without that check (UninstallPlugin.cs:113-153: Path.Combine(sdPath, sdFile), same for the dsf and dwc files on upgrade). The manifest is
-    /// a file of the dsf user that plugins with ManagePlugins or FileSystemAccess may write (AppArmorPermissionManager.cs:55-64). For a plugin with SuperUser
-    /// the root service runs this code (UninstallPlugin.cs:67), so it deletes as root whatever such a manifest lists
+    /// InstallPlugin keeps every installed file inside its directory (zip-slip guard), UninstallPlugin deletes the files that the manifest lists with the same
+    /// check (Path.IsInside, DuetSharedLibrary/PathExtensions.cs). The manifest is a file of the dsf user that plugins with ManagePlugins or FileSystemAccess
+    /// may write (AppArmorPermissionManager.cs:55-64). For a plugin with SuperUser the root service runs this code, so it would delete as root whatever such a
+    /// manifest lists. A listed file outside its directory is skipped with a warning, the rest of the plugin is uninstalled
     /// </summary>
-    [Test]
-    [Explicit("Bug: UninstallPlugin deletes files outside 0:/ that the manifest lists, as root for root plugins")]
-    public async Task UninstallDeletesOnlyFilesInsideTheSdDirectory()
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task UninstallDeletesOnlyFilesInsideTheSdDirectory(bool forUpgrade)
     {
         await StartDpsAsync(register: false);
         string outside = OutsidePath("precious.txt");
         File.WriteAllText(outside, "keep me");
-        Plugin plugin = await InstallAsync("Tampered", null, ("dsf/tampered", "x"));
+        Plugin plugin = await InstallAsync("Tampered", null, ("dsf/tampered", "x"), ("sd/macros/tampered.g", "M117"));
 
-        // The manifest lists a file outside 0:/
+        // The manifest lists a file outside 0:/, outside 0:/www and outside the plugin directory
         plugin.SdFiles.Add(Path.GetRelativePath(SdDirectory, outside));
+        plugin.DwcFiles.Add(Path.GetRelativePath(Path.Combine(SdDirectory, "www"), outside));
+        plugin.DsfFiles.Add(Path.GetRelativePath(Path.Combine(PluginDirectory, "Tampered", "dsf"), outside));
         File.WriteAllText(Path.Combine(PluginDirectory, "Tampered.json"), JsonSerializer.Serialize(plugin, ObjectModelContext.Default.Plugin));
         await ReloadAsync("Tampered");
 
-        try
-        {
-            await UninstallAsync("Tampered");
-        }
-        catch (ArgumentException)
-        {
-            // Refusing the manifest is fine too
-        }
-        Assert.That(File.Exists(outside), Is.True, "A file outside 0:/ was deleted");
+        await UninstallAsync("Tampered", forUpgrade);
+        Assert.That(File.Exists(outside), Is.True, "A file outside its directory was deleted");
+        Assert.That(Dps!.Log.Contains($"Not deleting {Path.Combine(SdDirectory, Path.GetRelativePath(SdDirectory, outside))}, it is outside of {SdDirectory}"), Is.True);
+        Assert.That(File.Exists(Sd("macros/tampered.g")), Is.False, "The files inside 0:/ are still uninstalled");
+        Assert.That(File.Exists(Path.Combine(PluginDirectory, "Tampered/dsf/tampered")), Is.False);
+        Assert.That(await Dps.GetPluginAsync("Tampered"), Is.Null);
     }
 
     [Test]
@@ -232,55 +268,67 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     }
 
     /// <summary>
-    /// DCS skips manifests without id or name at start, "a plugin without id or name cannot be addressed properly" (DuetControlServer/Model/PeriodicUpdateService.cs:99-104).
-    /// DPS adds them to its store (PluginService.cs:43-53). The root service would then regenerate the missing profile "dsf." for it (PluginService.cs:64-111),
-    /// whose attachment is the whole plugin directory, Path.Combine(pluginDirectory, "") (AppArmorPermissionManager.cs:34); that part runs only as root
+    /// DCS skips manifests without id or name at start (DuetControlServer/Model/PeriodicUpdateService.cs), DPS does the same with the same check
+    /// (DuetSharedLibrary/PluginManifestCheck.cs). Otherwise the root service would regenerate the missing profile "dsf." for it (PluginService.cs:62-112),
+    /// whose attachment is the whole plugin directory, Path.Combine(pluginDirectory, "") (AppArmorPermissionManager.cs:34)
     /// </summary>
     [Test]
-    [Explicit("Bug: DPS loads a manifest without id at start, DCS skips it")]
     public async Task ManifestWithoutIdIsNotLoadedAtStart()
     {
         File.WriteAllText(Path.Combine(PluginDirectory, "Anonymous.json"), "{\"name\":\"Anonymous\",\"sbcPermissions\":[\"fileSystemAccess\"]}");
+        File.WriteAllText(Path.Combine(PluginDirectory, "Valid.json"), "{\"id\":\"Valid\",\"name\":\"Valid\"}");
+        await StartDpsAsync(register: false, privileged: true);
+        Assert.That(Dps!.Store.Plugins.ConvertAll(plugin => plugin.Id), Is.EqualTo(new[] { "Valid" }));
+        Assert.That(Dps.Log.Contains("Skipping plugin manifest Anonymous.json: Plugin manifest must provide an id and a name"), Is.True);
+        Assert.That(File.Exists(Dps.ProfilePath("")), Is.False, "A profile for the whole plugin directory was generated");
+        Assert.That(File.Exists(Dps.ProfilePath("Valid")), Is.True);
+    }
+
+    [Test]
+    public async Task ReloadRefusesAManifestWithoutId()
+    {
+        // ReloadPlugin makes the check of the installation before it changes anything
         await StartDpsAsync(register: false);
-        Assert.That(Dps!.Store.Plugins, Is.Empty);
+        string file = Path.Combine(PluginDirectory, "Changed.json");
+        File.WriteAllText(file, "{\"id\":\"Changed\",\"name\":\"Changed\",\"version\":\"1.0\"}");
+        await ReloadAsync("Changed");
+
+        File.WriteAllText(file, "{\"name\":\"Changed\",\"version\":\"2.0\"}");
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await ReloadAsync("Changed")))!;
+        Assert.That(e.Message, Is.EqualTo("Plugin manifest must provide an id and a name"));
+        Assert.That((await Dps!.GetPluginAsync("Changed"))!.Version, Is.EqualTo("1.0"), "The plugin was changed");
+
+        File.WriteAllText(Path.Combine(PluginDirectory, "New.json"), "{\"name\":\"New\"}");
+        Assert.ThrowsAsync<ArgumentException>(async () => await ReloadAsync("New"));
+        Assert.That(Dps.Store.Plugins.ConvertAll(item => item.Id), Is.EqualTo(new[] { "Changed" }), "An empty plugin was added");
     }
 
     /// <summary>
-    /// ServicePlugins "is reserved for internal purposes" and InstallPlugin refuses manifests with it, in DPS (InstallPlugin.cs:294-298) and DCS
-    /// (DuetControlServer/Commands/Plugins/InstallPlugin.cs:198-202). The manifests on disk are read again by ReloadPlugin (ReloadPlugin.cs:51-54) and at
-    /// start (PluginService.cs:43-47) without that check, in DCS as well (DuetControlServer/Commands/Plugins/ReloadPlugin.cs and Model/PeriodicUpdateService.cs:85-117).
+    /// ServicePlugins "is reserved for internal purposes" and InstallPlugin refuses manifests with it. ReloadPlugin and the start of DPS and DCS read the
+    /// manifests on disk again, all of them make that check of the installation (DuetSharedLibrary/PluginManifestCheck.cs).
     /// DCS grants a plugin connection the permissions of its manifest (DuetControlServer/IPC/Connection.cs:121-124, 136-140), and ServicePlugins is enough for
     /// Install/UninstallSystemPackage (RequiredPermissions SuperUser | ServicePlugins, any of them). A plugin with ManagePlugins or FileSystemAccess may write the
     /// manifests (AppArmorPermissionManager.cs:55-64)
     /// </summary>
     [Test]
-    [Explicit("Bug: ReloadPlugin accepts a manifest with the reserved ServicePlugins permission, which InstallPlugin refuses")]
     public async Task ReloadRefusesTheReservedPermission()
     {
         await StartDpsAsync(register: false);
         File.WriteAllText(Path.Combine(PluginDirectory, "Elevated.json"), "{\"id\":\"Elevated\",\"name\":\"Elevated\",\"sbcPermissions\":[\"servicePlugins\"]}");
-        try
-        {
-            await ReloadAsync("Elevated");
-        }
-        catch (ArgumentException)
-        {
-            // Refusing it is fine
-        }
-        Plugin? plugin = await Dps!.GetPluginAsync("Elevated");
-        Assert.That(plugin is null || !plugin.SbcPermissions.HasFlag(SbcPermissions.ServicePlugins), Is.True, "The plugin was registered with ServicePlugins");
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await ReloadAsync("Elevated")))!;
+        Assert.That(e.Message, Is.EqualTo("ServicePlugins permission is reserved for internal purposes"));
+        Assert.That(await Dps!.GetPluginAsync("Elevated"), Is.Null);
     }
 
     /// <summary>
     /// Same as <see cref="ReloadRefusesTheReservedPermission"/> for the manifests that PluginService.StartAsync loads (PluginService.cs:43-54)
     /// </summary>
     [Test]
-    [Explicit("Bug: a manifest with the reserved ServicePlugins permission is loaded at start")]
     public async Task ReservedPermissionIsNotLoadedAtStart()
     {
         File.WriteAllText(Path.Combine(PluginDirectory, "Elevated.json"), "{\"id\":\"Elevated\",\"name\":\"Elevated\",\"sbcPermissions\":[\"servicePlugins\"]}");
         await StartDpsAsync(register: false);
-        Plugin? plugin = await Dps!.GetPluginAsync("Elevated");
-        Assert.That(plugin is null || !plugin.SbcPermissions.HasFlag(SbcPermissions.ServicePlugins), Is.True, "The plugin was loaded with ServicePlugins");
+        Assert.That(await Dps!.GetPluginAsync("Elevated"), Is.Null);
+        Assert.That(Dps.Log.Contains("Skipping plugin manifest Elevated.json: ServicePlugins permission is reserved for internal purposes"), Is.True);
     }
 }

@@ -6,7 +6,10 @@ using System.Threading.Tasks;
 using DuetAPI;
 using DuetAPI.ObjectModel;
 using DuetAPI.Utility;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NUnit.Framework;
 
 namespace UnitTests.Plugins;
@@ -205,6 +208,52 @@ public class DpsStartStopPlugin : DpsTestBase
         Assert.That(Dps!.Store.Processes, Is.Empty);
     }
 
+    /// <summary>
+    /// The AppArmor profile of a plugin attaches to programs below its directory (apparmor.conf: {pluginDirectory}/**), so a plugin must not be started from
+    /// an executable elsewhere. Path.Combine drops the plugin directory for an absolute SbcExecutable, and a symlinked directory leads elsewhere too
+    /// </summary>
+    [Test]
+    public async Task ExecutableOutsideThePluginDirectoryIsNotStarted()
+    {
+        await StartDpsAsync(register: false);
+        await AddPluginAsync("Absolute", null, plugin => plugin.SbcExecutable = "/bin/bash");
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("Absolute")))!;
+        Assert.That(e.Message, Is.EqualTo("Executable must be a relative path"));
+
+        await AddPluginAsync("Linked2", null, plugin => plugin.SbcExecutable = "bin/bash");
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Linked2", "dsf", "bin"), "/bin");
+        e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("Linked2")))!;
+        Assert.That(e.Message, Is.EqualTo($"Refusing to launch plugin Linked2: executable {Path.Combine(PluginDirectory, "Linked2", "dsf", "bin", "bash")} is outside of its directory"));
+
+        // The plugin may write its own directory, so it can replace its dsf directory with a symlink
+        await AddPluginAsync("LinkedDsf", null, plugin => plugin.SbcExecutable = "bash");
+        Directory.Delete(Path.Combine(PluginDirectory, "LinkedDsf", "dsf"), true);
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "LinkedDsf", "dsf"), "/bin");
+        e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("LinkedDsf")))!;
+        Assert.That(e.Message, Is.EqualTo($"Refusing to launch plugin LinkedDsf: executable {Path.Combine(PluginDirectory, "LinkedDsf", "dsf", "bash")} is outside of its directory"));
+
+        // A plugin with ManagePlugins or FileSystemAccess may even replace its plugin directory
+        string elsewhere = OutsidePath("elsewhere");
+        Directory.CreateDirectory(Path.Combine(elsewhere, "dsf"));
+        File.WriteAllText(Path.Combine(elsewhere, "dsf", "plugin.sh"), "#!/bin/sh\nexec sleep 30\n");
+        File.SetUnixFileMode(Path.Combine(elsewhere, "dsf", "plugin.sh"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        await AddPluginAsync("LinkedBase", null);
+        Directory.Delete(Path.Combine(PluginDirectory, "LinkedBase"), true);
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "LinkedBase"), elsewhere);
+        e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("LinkedBase")))!;
+        Assert.That(e.Message, Is.EqualTo($"Refusing to launch plugin LinkedBase: executable {Path.Combine(PluginDirectory, "LinkedBase", "dsf", "plugin.sh")} is outside of its directory"));
+
+        // A symlink that stays inside the plugin directory is fine
+        await AddPluginAsync("Versioned", null, plugin => plugin.SbcExecutable = "current/plugin.sh");
+        string version = Path.Combine(PluginDirectory, "Versioned", "dsf", "v2");
+        Directory.CreateDirectory(version);
+        File.WriteAllText(Path.Combine(version, "plugin.sh"), "#!/bin/sh\nexec sleep 30\n");
+        File.SetUnixFileMode(Path.Combine(version, "plugin.sh"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Versioned", "dsf", "current"), version);
+        await StartAsync("Versioned");
+        Assert.That(Dps!.Store.Processes.Keys, Is.EqualTo(new[] { "Versioned" }));
+    }
+
     [Test]
     public async Task ExecutableOfTheArchitectureComesFirst()
     {
@@ -254,7 +303,9 @@ public class DpsStartStopPlugin : DpsTestBase
     [Test]
     public async Task PythonPluginIsLaunchedThroughItsVirtualEnvironment()
     {
-        // PythonLaunchCommand and PythonLaunchArguments (Settings.cs:112-117, defaults /bin/bash -c "{pluginDir}/venv/bin/python {command} {args}"), StartPlugin.cs:119-125
+        // PythonLaunchCommand and PythonLaunchArguments (Settings.cs): bash with a fixed script that executes the interpreter of the venv with the executable and
+        // the arguments. The image of the CHX 350 confines Python plugins on that path, DuetPluginService -> bash -> python (its AppArmor profile
+        // opt.dsf.bin.DuetPluginService, rpi-image-gen meltingplot/layer/mp-dsf.d)
         await StartDpsAsync(register: false);
         Plugin plugin = await AddPluginAsync("Python", "print()", plugin =>
         {
@@ -269,8 +320,48 @@ public class DpsStartStopPlugin : DpsTestBase
 
         await StartAsync("Python");
         Assert.That(await WaitForDcsMessageAsync($"[Python]: python {Path.Combine(PluginDirectory, "Python", "dsf", "main.py")} --flag value"), Is.True);
-        Assert.That(Dps!.Log.Contains($"Launching /bin/bash -c \"{Path.Combine(PluginDirectory, "Python")}/venv/bin/python"), Is.True);
+        Assert.That(Dps!.Log.Contains($"Launching /bin/bash -c \"exec \\\"$0\\\" \\\"$@\\\"\" {python} {Path.Combine(PluginDirectory, "Python", "dsf", "main.py")} --flag value"), Is.True);
         Assert.That(await WaitForStoppedAsync(plugin), Is.True);
+    }
+
+    [Test]
+    public void ShippedConfigurationLaunchesPythonLikeTheDefaults()
+    {
+        // pkg/common/duetpluginservice/opt/dsf/conf/plugins.json is the configuration file of a new installation
+        using System.Text.Json.JsonDocument shipped = System.Text.Json.JsonDocument.Parse(File.ReadAllText(DpsHost.ShippedFile("pkg/common/duetpluginservice/opt/dsf/conf/plugins.json")));
+        DuetPluginService.Settings defaults = new();
+        Assert.That(shipped.RootElement.GetProperty("PythonLaunchCommand").GetString(), Is.EqualTo(defaults.PythonLaunchCommand));
+        Assert.That(shipped.RootElement.GetProperty("PythonLaunchArguments").GetString(), Is.EqualTo(defaults.PythonLaunchArguments));
+    }
+
+    [TestCase("-c \"{pluginDir}/venv/bin/python {command} {args}\"", DuetPluginService.Settings.DefaultPythonLaunchArguments)]
+    [TestCase("-c \"{pluginDir}/venv/bin/python {command} {args} --verbose\"", "-c \"{pluginDir}/venv/bin/python {command} {args} --verbose\"")]
+    public void OldShippedPythonLaunchArgumentsAreReplaced(string configured, string expected)
+    {
+        // A plugins.json that was changed in another setting keeps the old PythonLaunchArguments on a package upgrade (conffile, --force-confold).
+        // The value that DSF shipped before is replaced when the configuration is bound like in Program.cs, any other value is kept
+        Microsoft.Extensions.Configuration.IConfiguration configuration = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddInMemoryCollection(new System.Collections.Generic.Dictionary<string, string?> { ["PythonLaunchArguments"] = configured, ["StopTimeout"] = "1234" })
+            .Build();
+        using Microsoft.Extensions.DependencyInjection.ServiceProvider services = new Microsoft.Extensions.DependencyInjection.ServiceCollection()
+            .Configure<DuetPluginService.Settings>(configuration)
+            .BuildServiceProvider();
+        DuetPluginService.Settings settings = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions
+            .GetRequiredService<Microsoft.Extensions.Options.IOptions<DuetPluginService.Settings>>(services).Value;
+        Assert.That(settings.PythonLaunchArguments, Is.EqualTo(expected));
+        Assert.That(settings.StopTimeout, Is.EqualTo(1234));
+        Assert.That(DuetPluginService.Settings.UnsafePythonLaunchArguments, Is.EqualTo("-c \"{pluginDir}/venv/bin/python {command} {args}\""));
+    }
+
+    [Test]
+    public async Task ArgumentsAreCheckedAgainBeforeTheStart()
+    {
+        // StartPlugin makes the checks of the installation again (PluginManifestCheck), here for a manifest that was changed in the store
+        await StartDpsAsync(register: false);
+        await AddPluginAsync("Changed", "exec sleep 30", plugin => plugin.SbcExecutableArguments = "$(id)");
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("Changed")))!;
+        Assert.That(e.Message, Does.StartWith("SbcExecutableArguments must not contain shell metacharacters"));
+        Assert.That(Dps!.Store.Processes, Is.Empty);
     }
 
     [Test]
@@ -313,14 +404,12 @@ public class DpsStartStopPlugin : DpsTestBase
     }
 
     /// <summary>
-    /// StopPlugin sends SIGTERM to the plugin process only (StopPlugin.cs:63, ProcessHelpers.Terminate) and kills "any potentially left-over child processes"
-    /// only when the plugin does not exit in time (StopPlugin.cs:72-77). A shell plugin that waits for a child exits on SIGTERM, its child is re-parented and
-    /// keeps running. With redirected output the child also holds the pipes, so WaitForExitAsync does not return before StopTimeout and "Process killed" is
-    /// logged, but Kill(true) no longer finds the child below the exited plugin. DCS refuses IPC connections of the orphan afterwards (it is no longer below
-    /// a plugin PID, DuetControlServer/IPC/Connection.cs:144-168), it just keeps running
+    /// StopPlugin sends SIGTERM to the plugin process only (ProcessHelpers.Terminate), so the plugin can stop its children itself. A shell plugin that waits for
+    /// a child exits on SIGTERM and its child is re-parented, so Kill(true) no longer finds it below the exited plugin. StopPlugin looks the children up before
+    /// SIGTERM and kills the ones that are still left afterwards (StopPlugin.cs). With redirected output the child holds the pipes, so WaitForExitAsync returns
+    /// only after StopTimeout
     /// </summary>
     [Test]
-    [Explicit("Bug: StopPlugin leaves the child processes of a plugin running when the plugin exits on SIGTERM")]
     public async Task ChildProcessesAreStoppedWithThePlugin()
     {
         await StartDpsAsync(settings => settings.StopTimeout = 500, register: false);
@@ -332,6 +421,7 @@ public class DpsStartStopPlugin : DpsTestBase
         {
             await StopAsync("Parent");
             Assert.That(await WaitForAsync(() => !File.Exists($"/proc/{child}/stat"), TimeSpan.FromSeconds(2)), Is.True, $"Child process {child} still runs");
+            Assert.That(Dps!.Log.Contains($"Left-over child process {child} killed"), Is.True);
         }
         finally
         {
@@ -367,14 +457,12 @@ public class DpsStartStopPlugin : DpsTestBase
     }
 
     /// <summary>
-    /// SbcExecutableArguments of a Python plugin go into the command string of bash -c (Settings.cs:117, StartPlugin.cs:119-125). InstallPlugin
-    /// refuses the characters that end the double quotes of that string (InstallPlugin.cs:300-306: ", $, `, \, newline), but bash runs the whole string as a
-    /// command line, so ;, |, &amp;, &gt; and &lt; still start other commands. bash and anything it starts besides the plugin are not below the plugin
-    /// directory, which the AppArmor profile attaches to (apparmor.conf:4), so whether they are confined could not be checked here. The same holds for an
-    /// SbcExecutable with ; in its name, StartPlugin.cs:105 checks only ", $, `, \, newline and space
+    /// SbcExecutableArguments of a Python plugin went into the command string of bash -c, where ;, |, &amp;, &gt; and &lt; started other commands although
+    /// the arguments passed the check of the installation (", $, `, \, newline). The script of bash -c is fixed now (Settings.cs: PythonLaunchArguments),
+    /// the interpreter, the executable and the arguments reach it as positional parameters, split like the arguments of any other plugin, and bash
+    /// executes them without interpreting them. The same holds for an SbcExecutable with ; in its name
     /// </summary>
     [Test]
-    [Explicit("Bug: ; in SbcExecutableArguments of a Python plugin runs a second command via bash -c")]
     public async Task PythonPluginArgumentsDoNotRunShellCommands()
     {
         await StartDpsAsync(register: false);
@@ -383,10 +471,10 @@ public class DpsStartStopPlugin : DpsTestBase
         {
             ["id"] = "Injection",
             ["name"] = "Injection",
-            ["sbcExecutable"] = "main.py",
-            ["sbcExecutableArguments"] = $"--flag; touch {marker}",
+            ["sbcExecutable"] = "main;id.py",
+            ["sbcExecutableArguments"] = $"--flag; touch {marker} | id & id > {marker}",
             ["sbcPythonDependencies"] = new JsonArray("requests")
-        }.ToJsonString(), ("dsf/main.py", "print()"));
+        }.ToJsonString(), ("dsf/main;id.py", "print()"));
 
         // The arguments pass the check of InstallPlugin
         DuetPluginService.IPC.InstallPlugin install = Dps!.Create<DuetPluginService.IPC.InstallPlugin>();
@@ -397,28 +485,60 @@ public class DpsStartStopPlugin : DpsTestBase
         File.WriteAllText(Dps.ProfilePath("Injection"), "# profile");
         string python = Path.Combine(PluginDirectory, "Injection", "venv", "bin", "python");
         Directory.CreateDirectory(Path.GetDirectoryName(python)!);
-        File.WriteAllText(python, "#!/bin/sh\nexit 0\n");
+        File.WriteAllText(python, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\n");
         File.SetUnixFileMode(python, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
         await StartAsync("Injection");
         Assert.That(await WaitForStoppedAsync(plugin), Is.True);
         Assert.That(File.Exists(marker), Is.False, "The arguments started another command");
+
+        // The interpreter got the executable and each word of the arguments as they are
+        Assert.That(File.ReadAllLines(python + ".args"), Is.EqualTo(new[]
+        {
+            Path.Combine(PluginDirectory, "Injection", "dsf", "main;id.py"), "--flag;", "touch", marker, "|", "id", "&", "id", ">", marker
+        }));
     }
 
     /// <summary>
-    /// StartPlugin registers the process (StartPlugin.cs:147-149) before it reports the PID to DCS (151-155) and sets up the task that waits for its exit
-    /// only afterwards (157-199). If SetPluginProcess fails, e.g. because DCS does not know the plugin (DuetControlServer/Commands/Plugins/SetPluginProcess.cs
-    /// throws "Plugin ... not found"), the exception leaves StartPlugin with the process still running and registered. Nobody removes it when it exits,
-    /// so every later StartPlugin returns at StartPlugin.cs:113-116 without starting the plugin again, until DPS restarts
+    /// StartPlugin reports the PID to DCS. If SetPluginProcess fails, e.g. because DCS does not know the plugin (DuetControlServer/Commands/Plugins/SetPluginProcess.cs
+    /// throws "Plugin ... not found"), DCS cannot track or stop the process, so StartPlugin kills it again. The task that waits for the exit is set up before, so it
+    /// forgets the process and the next StartPlugin starts the plugin again
     /// </summary>
     [Test]
-    [Explicit("Bug: a failed SetPluginProcess leaves the plugin process registered, so the plugin cannot be started again")]
     public async Task FailedRegistrationAtDcsDoesNotBlockTheNextStart()
     {
         await StartDpsAsync(register: false);
-        Plugin plugin = await AddPluginAsync("Unknown2Dcs", "sleep 0.5", inDcs: false);
+        Plugin plugin = await AddPluginAsync("Unknown2Dcs", "exec sleep 30", inDcs: false);
         await Assert.ThrowsAsync<InternalServerException>(async () => await StartAsync("Unknown2Dcs"));
-        Assert.That(await WaitForAsync(() => !Dps!.Store.Processes.ContainsKey("Unknown2Dcs"), TimeSpan.FromSeconds(5)), Is.True, "The exited process is still registered");
-        Assert.That(plugin.Pid, Is.EqualTo(-1));
+        Assert.That(Dps!.Log.Contains("Failed to report the process to DCS, killing it"), Is.True);
+        Assert.That(await DpsHost.WaitForAsync(async () =>
+        {
+            using (await Dps.Store.LockAsync(default))
+            {
+                return !Dps.Store.Processes.ContainsKey("Unknown2Dcs") && plugin.Pid == -1;
+            }
+        }, TimeSpan.FromSeconds(5)), Is.True, "The exited process is still registered");
+
+        await AddToDcsAsync(plugin);
+        await StartAsync("Unknown2Dcs");
+        Assert.That((await GetFromDcsAsync("Unknown2Dcs"))!.Pid, Is.EqualTo(Dps.Store.Processes["Unknown2Dcs"].Id));
+    }
+
+    [Test]
+    public async Task ExitedProcessIsForgottenBeforeDcsIsTold()
+    {
+        // The plugin can be started again as soon as DCS knows that it has stopped
+        await StartDpsAsync(register: false);
+        Plugin plugin = await AddPluginAsync("Quick", "exit 0");
+        for (int i = 0; i < 3; i++)
+        {
+            await StartAsync("Quick");
+            Assert.That(await DpsHost.WaitForAsync(async () => (await GetFromDcsAsync("Quick"))!.Pid == -1), Is.True);
+            using (await Dps!.Store.LockAsync(default))
+            {
+                Assert.That(Dps.Store.Processes.ContainsKey("Quick"), Is.False);
+            }
+        }
+        Assert.That(Dps!.Log.Entries.Count(entry => entry.Message.StartsWith("Launching")), Is.EqualTo(3));
     }
 }

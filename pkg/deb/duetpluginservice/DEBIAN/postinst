@@ -1,10 +1,14 @@
 #!/bin/sh
 
-# Set ownership and permissions
+# Set ownership and permissions. The root service runs the Python installer for root plugins, so the dsf user must not be able to change it
 chown -R dsf:dsf /opt/dsf/conf/plugins*
-chown dsf:dsf /opt/dsf/bin/pipInstall2.py
-chmod 755 /opt/dsf/plugins
-chmod 744 /opt/dsf/bin/pipInstall2.py
+chown root:root /opt/dsf/bin/pipInstall2.py
+chmod 755 /opt/dsf/bin/pipInstall2.py
+
+# The plugin directory belongs to root, the dsf group may create entries and the sticky bit lets dsf remove or rename only its own entries,
+# like the duetcontrolserver package sets it up
+chown root:dsf /opt/dsf/plugins
+chmod 1775 /opt/dsf/plugins
 
 # Drop existing per-plugin AppArmor profiles so DPS regenerates them from the current template on its next start
 rm -f /etc/apparmor.d/dsf.*

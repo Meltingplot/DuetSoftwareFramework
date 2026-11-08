@@ -91,6 +91,7 @@ rootCommand.SetAction((parserResult) =>
             services
                 .Configure<Settings>(filteredConfig)
                 .AddSingleton<CommandFactory>()
+                .AddSingleton<ServicePrivileges>()
                 .AddSingleton<IPermissionManager, AppArmorPermissionManager>()
                 .AddSingleton<PluginStore>()
                 .AddHostedService<PluginService>()

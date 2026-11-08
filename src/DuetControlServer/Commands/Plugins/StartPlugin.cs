@@ -136,7 +136,10 @@ public sealed class StartPlugin(CommandFactory commandFactory, Model.ObjectModel
                     }
                 }
 
-                // Got a plugin
+                // Got a plugin. Check its manifest again like its installation, root plugins in particular may run only if they are enabled
+                // or if they come from a system package
+                PluginManifestCheck.Check(plugin, settings.Value.RootPluginSupport ||
+                    PluginManifestCheck.IsInstalledByPackage(Path.Combine(settings.Value.PluginDirectory, plugin.Id + ".json"), PluginManifestCheck.RootUserId));
                 rootPlugin = plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser);
             }
             else

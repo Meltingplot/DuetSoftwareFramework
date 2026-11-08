@@ -89,7 +89,11 @@ public abstract class DpsTestBase
     public void PrepareTest()
     {
         DcsLog.Clear();
+
+        // Like the postinst scripts of duetcontrolserver and duetpluginservice set up /opt/dsf/plugins: root:dsf 1775, here with the user of the test as owner
         Directory.CreateDirectory(PluginDirectory);
+        File.SetUnixFileMode(PluginDirectory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupWrite |
+            UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute | UnixFileMode.StickyBit);
     }
 
     [TearDown]
@@ -112,6 +116,7 @@ public abstract class DpsTestBase
             {
                 Dcs.Model.Plugins.Clear();
                 Dcs.Model.State.PluginsStarted = false;
+                Dcs.Model.SBC!.DSF.RootPluginSupport = false;
             }
             DcsSettings.RootPluginSupport = false;
             File.Delete(DcsSettings.PluginsFilename);
@@ -141,11 +146,41 @@ public abstract class DpsTestBase
     /// <param name="configure">Optional callback to change the settings</param>
     /// <param name="register">Whether to register DPS as plugin service of DCS</param>
     /// <param name="asRoot">Whether DCS treats DPS as root plugin service</param>
+    /// <param name="privileged">Whether DPS takes the code paths of the root plugin service</param>
+    /// <param name="userId">User ID that DPS assumes to run as or null for the one of the test</param>
     /// <returns>Started DPS</returns>
-    protected async Task<DpsHost> StartDpsAsync(Action<Settings>? configure = null, bool register = true, bool asRoot = false)
+    protected async Task<DpsHost> StartDpsAsync(Action<Settings>? configure = null, bool register = true, bool asRoot = false, bool privileged = false, int? userId = null)
     {
-        Dps = await DpsHost.StartAsync(Dcs, PluginDirectory, configure, register, asRoot);
+        Dps = await DpsHost.StartAsync(Dcs, PluginDirectory, configure, register, asRoot, privileged, userId);
         return Dps;
+    }
+
+    /// <summary>
+    /// Wait until DCS has started the plugins, which it does in the background once both plugin services are registered and the object model has been
+    /// updated (DuetControlServer/IPC/Processors/PluginService.cs, ProcessAsync), so that this does not run into the test
+    /// </summary>
+    protected async Task WaitForPluginsStartedAsync()
+    {
+        Assert.That(await DpsHost.WaitForAsync(async () =>
+        {
+            using (await Dcs.Model.AccessReadOnlyAsync())
+            {
+                return Dcs.Model.State.PluginsStarted;
+            }
+        }), Is.True, "DCS did not start the plugins");
+    }
+
+    /// <summary>
+    /// Enable root plugin support in DCS like RootPluginSupport in config.json does: the setting and sbc.dsf.rootPluginSupport, which DCS sets from it
+    /// when the object model is created (DuetControlServer/Model/ObjectModel.cs)
+    /// </summary>
+    protected async Task EnableRootPluginSupportAsync()
+    {
+        DcsSettings.RootPluginSupport = true;
+        using (await Dcs.Model.AccessReadWriteAsync())
+        {
+            Dcs.Model.SBC!.DSF.RootPluginSupport = true;
+        }
     }
 
     /// <summary>

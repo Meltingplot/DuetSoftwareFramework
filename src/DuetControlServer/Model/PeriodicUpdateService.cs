@@ -3,6 +3,7 @@ using DuetAPI.Commands;
 using DuetAPI.ObjectModel;
 using DuetControlServer.Codes;
 using DuetControlServer.Link;
+using DuetSharedLibrary;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -97,11 +98,14 @@ public partial class PeriodicUpdateService(CodeFactory codeFactory, LinkInterfac
                         plugin.UpdateFromJson(manifestJson.RootElement, false);
                         plugin.Pid = -1;
 
-                        // Do not add incomplete manifests to the object model, a plugin without id or
-                        // name cannot be addressed properly
-                        if (string.IsNullOrEmpty(plugin.Id) || string.IsNullOrEmpty(plugin.Name))
+                        // Do not add manifests to the object model that could not be installed either
+                        try
                         {
-                            logger.LogError("Skipping incomplete plugin manifest {File}", Path.GetFileName(file));
+                            PluginManifestCheck.Check(plugin, settings.Value.RootPluginSupport || PluginManifestCheck.IsInstalledByPackage(file, PluginManifestCheck.RootUserId));
+                        }
+                        catch (ArgumentException e)
+                        {
+                            logger.LogError("Skipping plugin manifest {File}: {Message}", Path.GetFileName(file), e.Message);
                             continue;
                         }
 

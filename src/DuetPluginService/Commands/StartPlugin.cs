@@ -19,10 +19,11 @@ namespace DuetPluginService.IPC;
 /// Implementation of the <see cref="DuetAPI.Commands.StartPlugin"/> command
 /// </summary>
 /// <param name="pluginStore">Plugin store</param>
+/// <param name="privileges">Privileges of this service</param>
 /// <param name="lifetime">Application lifetime</param>
 /// <param name="loggerFactory">Logger factory</param>
 /// <param name="settings">Application settings</param>
-public sealed class StartPlugin(PluginStore pluginStore, IHostApplicationLifetime lifetime, ILoggerFactory loggerFactory, IOptions<Settings> settings) : DuetAPI.Commands.StartPlugin
+public sealed class StartPlugin(PluginStore pluginStore, ServicePrivileges privileges, IHostApplicationLifetime lifetime, ILoggerFactory loggerFactory, IOptions<Settings> settings) : DuetAPI.Commands.StartPlugin
 {
     private readonly Settings _settings = settings.Value;
 
@@ -51,14 +52,30 @@ public sealed class StartPlugin(PluginStore pluginStore, IHostApplicationLifetim
         }
         if (plugin is null)
         {
-            throw new ArgumentException($"Plugin {Plugin} not found by {(Environment.IsPrivilegedProcess ? "root service" : "service")}");
+            throw new ArgumentException($"Plugin {Plugin} not found by {(privileges.IsPrivileged ? "root service" : "service")}");
         }
 
         // Is this the right service to start the plugin?
-        if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser) != Environment.IsPrivilegedProcess)
+        if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser) != privileges.IsPrivileged)
         {
             throw new InvalidOperationException("Wrong plugin service to start this plugin");
         }
+
+        // Check the manifest again like its installation. Root plugins may run only if they come from a system package or if root plugin support
+        // is enabled in DCS, which owns that setting
+        bool? rootPluginSupport = null;
+        if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser))
+        {
+            rootPluginSupport = PluginManifestCheck.IsInstalledByPackage(Path.Combine(settings.Value.PluginDirectory, plugin.Id + ".json"), privileges.UserId);
+            if (rootPluginSupport == false)
+            {
+                using InternalCommandConnection connection = new();
+                await connection.ConnectAsync(_settings.SocketPath, cancellationToken);
+                ObjectModel model = await connection.GetObjectModelAsync("sbc/dsf/rootPluginSupport", cancellationToken);
+                rootPluginSupport = model.SBC?.DSF.RootPluginSupport ?? false;
+            }
+        }
+        PluginManifestCheck.Check(plugin, rootPluginSupport);
 
         // Refuse to launch a non-SuperUser plugin if AppArmor is enabled but its profile is missing on disk - this
         // prevents a regen failure (or any other reason the profile is absent) from letting the plugin run unconfined
@@ -99,8 +116,22 @@ public sealed class StartPlugin(PluginStore pluginStore, IHostApplicationLifetim
             throw new ArgumentException($"Refusing to launch plugin {plugin.Id}: executable {sbcExecutable} is a symlink");
         }
 
-        // Python plugins are launched via a double-quoted bash -c string, so the executable path must not be able
-        // to break out of the quoting. SbcExecutableArguments is restricted the same way at install time, but the
+        // The same holds for an executable whose directory is a symlink that leads out of the plugin directory. Path.IsInside resolves the base
+        // directory too, so the base is the plugin directory, which the profile lets the plugin read only, and it must not be a symlink itself
+        string pluginBase = Path.Combine(settings.Value.PluginDirectory, plugin.Id);
+        if (new DirectoryInfo(pluginBase).LinkTarget is not null || !Path.IsInside(sbcExecutable, pluginBase))
+        {
+            throw new ArgumentException($"Refusing to launch plugin {plugin.Id}: executable {sbcExecutable} is outside of its directory");
+        }
+
+        // The root service starts a plugin only from files that nobody else may change
+        if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser))
+        {
+            RootPluginFiles.CheckStart(plugin, settings.Value.PluginDirectory, sbcExecutable, privileges);
+        }
+
+        // Python plugins get their executable as one argument of PythonLaunchArguments, so the executable path must not be able
+        // to split or end it. SbcExecutableArguments is restricted the same way by PluginManifestCheck, but the
         // executable filename is plugin-controlled and only checked against ".." so far
         if (plugin.SbcPythonDependencies.Count > 0 && sbcExecutable.AsSpan().IndexOfAny(['"', '$', '`', '\\', '\n', '\r', ' ']) >= 0)
         {
@@ -118,7 +149,8 @@ public sealed class StartPlugin(PluginStore pluginStore, IHostApplicationLifetim
             // Start the plugin process
             ProcessStartInfo startInfo = new()
             {
-                FileName = (plugin.SbcPythonDependencies.Count == 0) ? sbcExecutable : _settings.PythonLaunchCommand,
+                FileName = (plugin.SbcPythonDependencies.Count == 0) ? sbcExecutable : _settings.PythonLaunchCommand
+                    .Replace("{pluginDir}", Path.Combine(settings.Value.PluginDirectory, plugin.Id)),
                 Arguments = (plugin.SbcPythonDependencies.Count == 0) ? plugin.SbcExecutableArguments : _settings.PythonLaunchArguments
                     .Replace("{pluginDir}", Path.Combine(settings.Value.PluginDirectory, plugin.Id))
                     .Replace("{command}", sbcExecutable)
@@ -148,13 +180,9 @@ public sealed class StartPlugin(PluginStore pluginStore, IHostApplicationLifetim
             plugin.Pid = process.Id;
             pluginStore.Processes[plugin.Id] = process;
             logger.LogInformation("Process started (pid {Pid})", process.Id);
-            using (InternalCommandConnection connection = new())
-            {
-                await connection.ConnectAsync(_settings.SocketPath, cancellationToken);
-                await connection.SetPluginProcessAsync(plugin.Id, process.Id, cancellationToken);
-            }
 
-            // Wait for the plugin to terminate in the background
+            // Wait for the plugin to terminate in the background. This must be set up before DCS is told about the process,
+            // else the process stays registered and blocks the next start if that fails
             _ = Task.Run(async delegate
             {
                 try
@@ -167,9 +195,10 @@ public sealed class StartPlugin(PluginStore pluginStore, IHostApplicationLifetim
                         process.OutputDataReceived -= outputHandler;
                     }
 
-                    // Update the PID again
+                    // Forget the process and update the PID again. The process goes first, so that the plugin can be started again as soon as DCS knows it has stopped
                     using (await pluginStore.LockAsync(lifetime.ApplicationStopped))
                     {
+                        pluginStore.Processes.Remove(plugin.Id);
                         foreach (Plugin item in pluginStore.Plugins)
                         {
                             if (item.Id == Plugin)
@@ -190,13 +219,23 @@ public sealed class StartPlugin(PluginStore pluginStore, IHostApplicationLifetim
                 }
                 finally
                 {
-                    using (await pluginStore.LockAsync(lifetime.ApplicationStopped))
-                    {
-                        pluginStore.Processes.Remove(plugin.Id);
-                    }
                     process.Dispose();
                 }
             });
+
+            // Tell DCS about the new process. DCS cannot track or stop a plugin process it does not know, so it must not keep running if that fails
+            try
+            {
+                using InternalCommandConnection connection = new();
+                await connection.ConnectAsync(_settings.SocketPath, cancellationToken);
+                await connection.SetPluginProcessAsync(plugin.Id, process.Id, cancellationToken);
+            }
+            catch
+            {
+                logger.LogError("Failed to report the process to DCS, killing it");
+                process.Kill(true);
+                throw;
+            }
         }
     }
 

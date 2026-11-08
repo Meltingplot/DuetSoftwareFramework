@@ -10,6 +10,7 @@ using DuetAPIClient;
 using DuetPluginService.Commands;
 using DuetPluginService.IPC;
 using DuetPluginService.PermissionManagers;
+using DuetSharedLibrary;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -22,9 +23,10 @@ namespace DuetPluginService;
 /// <param name="commandFactory">Command factory to create commands</param>
 /// <param name="permissionManager">Permission manager</param>
 /// <param name="pluginStore">Plugin store</param>
+/// <param name="privileges">Privileges of this service</param>
 /// <param name="logger">Logger</param>
 /// <param name="settings">Settings</param>
-public sealed class PluginService(CommandFactory commandFactory, IPermissionManager permissionManager, PluginStore pluginStore, ILogger<PluginService> logger, IOptions<Settings> settings) : IHostedService
+public sealed class PluginService(CommandFactory commandFactory, IPermissionManager permissionManager, PluginStore pluginStore, ServicePrivileges privileges, ILogger<PluginService> logger, IOptions<Settings> settings) : IHostedService
 {
     /// <summary>
     /// Register installed plugins
@@ -45,6 +47,23 @@ public sealed class PluginService(CommandFactory commandFactory, IPermissionMana
                     Plugin plugin = new();
                     plugin.UpdateFromJson(manifestJson.RootElement, false);
                     plugin.Pid = -1;
+
+                    // Do not load manifests that could not be installed either. The root service loads the manifest of a plugin with super-user
+                    // permissions only if nobody else may change it
+                    try
+                    {
+                        PluginManifestCheck.Check(plugin, null);
+                        if (privileges.IsPrivileged && plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser))
+                        {
+                            RootPluginFiles.CheckManifest(file, privileges);
+                        }
+                    }
+                    catch (ArgumentException e)
+                    {
+                        logger.LogError("Skipping plugin manifest {File}: {Message}", Path.GetFileName(file), e.Message);
+                        continue;
+                    }
+
                     using (await pluginStore.LockAsync(cancellationToken))
                     {
                         pluginStore.Plugins.Add(plugin);
@@ -61,7 +80,7 @@ public sealed class PluginService(CommandFactory commandFactory, IPermissionMana
 
         // Regenerate any AppArmor profile that is missing from disk. The DSF package postinst removes the dsf.* profile
         // files on upgrade, so this loop runs once after each package update to rebuild them from the current template
-        if (Environment.IsPrivilegedProcess && !settings.Value.DisableAppArmor && loadedPlugins.Count > 0)
+        if (privileges.IsPrivileged && !settings.Value.DisableAppArmor && loadedPlugins.Count > 0)
         {
             List<Plugin> missingProfiles = [];
             foreach (Plugin plugin in loadedPlugins)

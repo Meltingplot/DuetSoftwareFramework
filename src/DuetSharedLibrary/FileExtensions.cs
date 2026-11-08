@@ -39,4 +39,41 @@ public static class FileExtensions
         }
         return (long)buf.FragmentSize;
     }
+
+    /// <summary>
+    /// Get the owner of a file system entry. A symlink is not followed
+    /// </summary>
+    /// <param name="path">Path of the entry</param>
+    /// <returns>User ID of the owner, mode bits and whether the entry is a symlink</returns>
+    /// <exception cref="IOException">Entry could not be queried, e.g. because it does not exist</exception>
+    public static (int UserId, UnixFileMode Mode, bool IsSymlink) GetOwner(string path)
+    {
+        const ushort FileTypeMask = 0xF000, Symlink = 0xA000;
+        statxbuf buf = default;
+        if (Interop.statx(Interop.AT_FDCWD, path, Interop.AT_SYMLINK_NOFOLLOW, (uint)(Interop.STATX_TYPE | Interop.STATX_MODE | Interop.STATX_UID), ref buf) < 0)
+        {
+            throw new IOException($"Failed to query {path} (error {Marshal.GetLastWin32Error()})");
+        }
+        return ((int)buf.UserID, (UnixFileMode)(buf.Mode & ~FileTypeMask), (buf.Mode & FileTypeMask) == Symlink);
+    }
+
+    /// <summary>
+    /// Check if a file system entry can only be changed by the given user: it is no symlink, belongs to that user and nobody else may write it.
+    /// A service may act on such an entry without trusting other users
+    /// </summary>
+    /// <param name="path">Path of the entry</param>
+    /// <param name="owner">User ID that must own the entry</param>
+    /// <returns>Whether the entry exists and is protected</returns>
+    public static bool IsProtected(string path, int owner)
+    {
+        try
+        {
+            (int userId, UnixFileMode mode, bool isSymlink) = GetOwner(path);
+            return !isSymlink && userId == owner && (mode & (UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) == 0;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+    }
 }

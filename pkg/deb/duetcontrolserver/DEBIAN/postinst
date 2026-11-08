@@ -15,10 +15,14 @@ systemd-tmpfiles --create duetcontrolserver.conf
 # Trigger assignment of gpio group to the existing devices, but only when udev is running
 [ -d /run/udev ] && udevadm trigger || true
 
-# Set ownership and permissions
-chown -R dsf:dsf /opt/dsf/conf /opt/dsf/plugins
+# Set ownership and permissions. The files of root plugins in /opt/dsf/plugins belong to root, so only the plugin directory itself is changed:
+# it belongs to root, the dsf group may create entries in it, and the sticky bit lets dsf remove or rename only the entries it owns.
+# The owner of a sticky directory may remove any entry, so the directory must not belong to dsf. The root plugin service refuses
+# root plugins unless the directory is set up like this
+chown -R dsf:dsf /opt/dsf/conf
+chown root:dsf /opt/dsf/plugins
 chmod -R g+wX /opt/dsf/conf
-chmod 755 /opt/dsf/plugins
+chmod 1775 /opt/dsf/plugins
 
 # File capabilities trigger AT_SECURE=1 on exec, which DPS verifies when DCS connects back
 # to itself (e.g. `DuetControlServer -u`) to defend against LD_PRELOAD masquerade attacks.

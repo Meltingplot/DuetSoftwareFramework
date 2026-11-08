@@ -1,10 +1,12 @@
 #!/bin/sh
 
-# Set ownership and permissions
-chown dsf:dsf /opt/dsf/plugins/DuetPiManagementPlugin.json
+# Set ownership and permissions. The root plugin service starts this plugin only from files that nobody else may change,
+# and the read-only manifest marks it as plugin of a system package. DCS reads the manifest as member of the dsf group
+chown root:dsf /opt/dsf/plugins/DuetPiManagementPlugin.json
 chmod 440 /opt/dsf/plugins/DuetPiManagementPlugin.json
 
-chown -R dsf:dsf /opt/dsf/plugins/DuetPiManagementPlugin
+chown -R root:root /opt/dsf/plugins/DuetPiManagementPlugin
+chmod -R go-w /opt/dsf/plugins/DuetPiManagementPlugin
 chmod 755 /opt/dsf/plugins/DuetPiManagementPlugin
 
 # Reload the plugin manifest

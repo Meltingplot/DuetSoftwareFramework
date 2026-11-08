@@ -16,8 +16,8 @@ using File = System.IO.File;
 /// <summary>
 /// Installation of plugin packages by the DuetPluginService instance that runs as dsf user (DuetPluginService/Commands/InstallPlugin.cs:80-264).
 /// The command is created and run like CommandService does for a command from DCS, DCS resolves 0:/ for it.
-/// Not covered, because it runs only as root (InstallPlugin.cs:54-79): the preinstall command, the installation of SbcPackageDependencies and the AppArmor
-/// profile at installation time; <see cref="DpsAppArmorProfiles"/> covers the profile itself
+/// The part of the root service (InstallPlugin.cs:54-79: the preinstall command, the installation of SbcPackageDependencies and the AppArmor profile at
+/// installation time) is covered by <see cref="DpsRootService"/>, <see cref="DpsAppArmorProfiles"/> covers the profile itself
 /// </summary>
 [TestFixture]
 public class DpsInstallPlugin : DpsTestBase
@@ -127,6 +127,10 @@ public class DpsInstallPlugin : DpsTestBase
     }
 
     [TestCase(null, "plugin.json not found in the ZIP file")]
+    [TestCase("{\"name\":\"No id\"}", "Plugin manifest must provide an id and a name")]
+    [TestCase("{\"id\":\"NoName\"}", "Plugin manifest must provide an id and a name")]
+    [TestCase("{\"id\":\"Absolute\",\"name\":\"Absolute\",\"sbcExecutable\":\"/bin/bash\"}", "Executable must be a relative path")]
+    [TestCase("{\"id\":\"Absolute\",\"name\":\"Absolute\",\"sbcExecutable\":\"file\",\"sbcExtraExecutables\":[\"/bin/bash\"]}", "Executable must be a relative path")]
     [TestCase("{\"id\":\"Reserved\",\"name\":\"Reserved\",\"sbcPermissions\":[\"servicePlugins\"]}", "ServicePlugins permission is reserved for internal purposes")]
     [TestCase("{\"id\":\"Reserved\",\"name\":\"Reserved\",\"sbcPermissions\":[\"superUser\",\"servicePlugins\"]}", "ServicePlugins permission is reserved for internal purposes")]
     [TestCase("{\"id\":\"Quote\",\"name\":\"Quote\",\"sbcExecutableArguments\":\"a\\\"b\"}", "SbcExecutableArguments must not contain shell metacharacters")]
@@ -334,32 +338,40 @@ public class DpsInstallPlugin : DpsTestBase
     }
 
     [Test]
-    public async Task FilesOfRootPluginsAreInstalledByTheRegularService()
+    public async Task RegularServiceInstallsOnlyTheSdFilesOfRootPlugins()
     {
-        // InstallPlugin.cs:80-264 runs for every plugin in the service that is not privileged, also for plugins with SuperUser, so the files of a root plugin
-        // belong to the dsf user. The root service only installs packages and profiles (InstallPlugin.cs:54-79) and starts the plugin from this directory
-        // (StartPlugin.cs:84-92)
+        // The files in the plugin directory and the manifest of a plugin with SuperUser are up to the root service, which starts it only from files nobody
+        // else may change (RootPluginFiles). The files on the virtual SD card and the links to the web files belong to the dsf user (InstallPlugin.cs)
         await StartDpsAsync(register: false);
         await InstallAsync(Package(Manifest("Root", manifest =>
         {
             manifest["sbcExecutable"] = "root";
             manifest["sbcPermissions"] = new JsonArray("superUser");
-        }), ("dsf/root", "binary")));
-        Assert.That(File.Exists(Path.Combine(PluginDirectory, "Root/dsf/root")), Is.True);
-        Assert.That(ReadManifest("Root").SbcPermissions, Is.EqualTo(SbcPermissions.SuperUser));
-        Assert.That(File.Exists(Dps!.ProfilePath("Root")), Is.False);
+            manifest["sbcPythonDependencies"] = new JsonArray("requests");
+        }), ("dsf/root", "binary"), ("dwc/Root.js", "js"), ("sd/macros/root.g", "M117")));
+
+        Assert.That(Directory.Exists(Path.Combine(PluginDirectory, "Root")), Is.False);
+        Assert.That(File.Exists(Path.Combine(PluginDirectory, "Root.json")), Is.False);
+        Assert.That(File.ReadAllText(Path.Combine(SdDirectory, "macros/root.g")), Is.EqualTo("M117"));
+        Assert.That(new FileInfo(Path.Combine(SdDirectory, "www/Root.js")).LinkTarget, Is.EqualTo(Path.Combine(PluginDirectory, "Root/dwc/Root.js")),
+            "The link to the web file is created before the root service installs the file");
+        Assert.That(FakeTool.Calls(Dps!.Settings.InstallPythonPackageCommand), Is.Empty, "The venv of a root plugin is up to the root service");
+
+        // Both services know the full file lists
+        Plugin plugin = (await Dps.GetPluginAsync("Root"))!;
+        Assert.That(plugin.DsfFiles, Is.EqualTo(new[] { "root" }));
+        Assert.That(plugin.DwcFiles, Is.EqualTo(new[] { "Root.js" }));
+        Assert.That(plugin.SdFiles, Is.EqualTo(new[] { "macros/root.g" }));
     }
 
     /// <summary>
     /// A plugin can write below its own directory (owner {pluginDirectory}/** rwmlk, apparmor.conf:27), so it can replace its dsf directory with a
     /// symlink. When the same plugin is upgraded, DCS uninstalls it with ForUpgrade (DuetControlServer/Commands/Plugins/InstallPlugin.cs:139-146), which
-    /// deletes only the files listed in the manifest (UninstallPlugin.cs:132-154) and keeps the symlink, and InstallPlugin keeps the plugin directory
-    /// (Upgrade, InstallPlugin.cs:84). The zip-slip guard compares Path.GetFullPath, which does not resolve symlinks (InstallPlugin.cs:162-167), and the
-    /// file is created through the symlink (InstallPlugin.cs:185) by DPS, which runs without AppArmor profile. So the package of the upgrade writes
-    /// wherever the dsf user may write, e.g. 0:/sys/config.g, which DCS refuses as sd/ entry (InstallPlugin.cs:49-52 in DCS), or other plugins
+    /// deletes only the files listed in the manifest and keeps the symlink, and InstallPlugin keeps the plugin directory (Upgrade). DPS runs without
+    /// AppArmor profile, so writing through the symlink would reach wherever the dsf user may write, e.g. 0:/sys/config.g, which DCS refuses as sd/ entry.
+    /// The zip-slip guard resolves the symlinks of the parent directories (Path.IsInside, DuetSharedLibrary/PathExtensions.cs)
     /// </summary>
     [Test]
-    [Explicit("Bug: an upgrade writes through a symlink that the plugin left in its directory, outside the plugin directory")]
     public async Task UpgradeDoesNotWriteThroughSymlinks()
     {
         await StartDpsAsync(register: false);
@@ -368,25 +380,78 @@ public class DpsInstallPlugin : DpsTestBase
         Directory.CreateDirectory(Path.Combine(PluginDirectory, "Linked"));
         Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Linked/dsf"), outside);
 
-        try
-        {
-            await InstallAsync(Package(Manifest("Linked"), ("dsf/config.g", "M999")), upgrade: true);
-        }
-        catch (Exception e) when (e is ArgumentException or IOException)
-        {
-            // Refusing the package is fine too
-        }
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(Manifest("Linked"), ("dsf/config.g", "M999")), upgrade: true)))!;
+        Assert.That(e.Message, Is.EqualTo("Refusing to install entry dsf/config.g: path escapes plugin directory"));
         Assert.That(File.Exists(Path.Combine(outside, "config.g")), Is.False, "The package was written outside the plugin directory");
+
+        // The same for a directory below that does not exist yet and for a dangling symlink
+        Directory.Delete(Path.Combine(PluginDirectory, "Linked/dsf"));
+        Directory.CreateDirectory(Path.Combine(PluginDirectory, "Linked/dsf"));
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Linked/dsf/sub"), outside);
+        Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(Manifest("Linked"), ("dsf/sub/new/file", "x")), upgrade: true));
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Linked/dsf/dangling"), Path.Combine(outside, "missing"));
+        Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(Manifest("Linked"), ("dsf/dangling/file", "x")), upgrade: true));
+        Assert.That(Directory.EnumerateFileSystemEntries(outside), Is.Empty, "Something was created outside the plugin directory");
+
+        // The plugin directory is the base of the check, so it must not be a symlink itself
+        Directory.Delete(Path.Combine(PluginDirectory, "Linked"), true);
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Linked"), outside);
+        e = (await Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(Manifest("Linked"), ("dsf/config.g", "M999")), upgrade: true)))!;
+        Assert.That(e.Message, Is.EqualTo($"Refusing to install plugin Linked: {Path.Combine(PluginDirectory, "Linked")} is a symlink"));
+        Assert.That(Directory.EnumerateFileSystemEntries(outside), Is.Empty, "Something was created outside the plugin directory");
+    }
+
+    [Test]
+    public async Task SymlinkedFilesAreReplacedInsteadOfWrittenThrough()
+    {
+        // A symlink in place of a file of the package, in the plugin directory, in 0:/ or as manifest, is replaced by the file of the package
+        await StartDpsAsync(register: false);
+        string outside = OutsidePath("precious.g");
+        File.WriteAllText(outside, "keep me");
+        Directory.CreateDirectory(Path.Combine(PluginDirectory, "Replaced/dsf"));
+        File.CreateSymbolicLink(Path.Combine(PluginDirectory, "Replaced/dsf/replaced"), outside);
+        File.CreateSymbolicLink(Path.Combine(SdDirectory, "macros/replaced.g"), outside);
+        File.CreateSymbolicLink(Path.Combine(PluginDirectory, "Replaced.json"), outside);
+
+        await InstallAsync(Package(Manifest("Replaced", manifest => manifest["sbcExecutable"] = "replaced"), ("dsf/replaced", "binary"), ("sd/macros/replaced.g", "M117")), upgrade: true);
+        Assert.That(File.ReadAllText(outside), Is.EqualTo("keep me"));
+        Assert.That(new FileInfo(Path.Combine(PluginDirectory, "Replaced/dsf/replaced")).LinkTarget, Is.Null);
+        Assert.That(File.ReadAllText(Path.Combine(PluginDirectory, "Replaced/dsf/replaced")), Is.EqualTo("binary"));
+        Assert.That(File.GetUnixFileMode(Path.Combine(PluginDirectory, "Replaced/dsf/replaced")), Is.EqualTo(Executable));
+        Assert.That(File.ReadAllText(Path.Combine(SdDirectory, "macros/replaced.g")), Is.EqualTo("M117"));
+        Assert.That(new FileInfo(Path.Combine(PluginDirectory, "Replaced.json")).LinkTarget, Is.Null);
+        Assert.That(ReadManifest("Replaced").DsfFiles, Is.EqualTo(new[] { "replaced" }));
+    }
+
+    [Test]
+    public async Task SymlinksThatStayInsideAreFollowed()
+    {
+        // A symlinked directory that resolves inside the allowed base is fine, e.g. a link between two directories of 0:/
+        await StartDpsAsync(register: false);
+        Directory.CreateDirectory(Path.Combine(SdDirectory, "macros/real"));
+        Directory.CreateSymbolicLink(Path.Combine(SdDirectory, "macros/alias"), Path.Combine(SdDirectory, "macros/real"));
+        await InstallAsync(Package(Manifest("Aliased"), ("sd/macros/alias/aliased.g", "M117")));
+        Assert.That(File.ReadAllText(Path.Combine(SdDirectory, "macros/real/aliased.g")), Is.EqualTo("M117"));
+    }
+
+    [Test]
+    public async Task WebFilesAreNotLinkedOutsideTheWebDirectory()
+    {
+        await StartDpsAsync(register: false);
+        string outside = OutsidePath("web");
+        Directory.CreateDirectory(outside);
+        Directory.CreateSymbolicLink(Path.Combine(SdDirectory, "www/linked"), outside);
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(Manifest("WebLink"), ("dwc/linked/file.js", "js")))))!;
+        Assert.That(e.Message, Is.EqualTo("Refusing to install entry dwc/linked/file.js: path escapes web directory"));
+        Assert.That(Directory.EnumerateFileSystemEntries(outside), Is.Empty);
     }
 
     /// <summary>
-    /// The id is optional in PluginManifest (PluginManifest.cs:25-26), DCS refuses a manifest without it (DuetControlServer/Commands/Plugins/InstallPlugin.cs:193-196)
-    /// before it forwards InstallPlugin, DPS does not check it (InstallPlugin.cs:282-310). With an empty id the plugin base is the plugin directory itself
-    /// (InstallPlugin.cs:83), which is deleted with all installed plugins (InstallPlugin.cs:84-96). DPS only gets commands from DCS, so this is
-    /// defence in depth like the ServicePlugins check that both make (InstallPlugin.cs:294-298 and DCS InstallPlugin.cs:198-202)
+    /// The id is optional in PluginManifest (PluginManifest.cs:25-26). With an empty id the plugin base would be the plugin directory itself
+    /// (InstallPlugin.cs:83), which would be deleted with all installed plugins (InstallPlugin.cs:84-96). DPS refuses such a manifest with the check that
+    /// DCS makes before it forwards InstallPlugin (DuetSharedLibrary/PluginManifestCheck.cs, DuetControlServer/Commands/Plugins/InstallPlugin.cs)
     /// </summary>
     [Test]
-    [Explicit("Bug: DPS accepts a manifest without id and deletes the whole plugin directory (DCS refuses it before)")]
     public async Task ManifestWithoutIdIsRefused()
     {
         await StartDpsAsync(register: false);

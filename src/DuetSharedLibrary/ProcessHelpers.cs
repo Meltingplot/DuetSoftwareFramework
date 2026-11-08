@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -24,7 +25,7 @@ public static class ProcessHelpers
     public static int GetEffectiveUserID() => Interop.geteuid();
 
     /// <summary>
-    /// Ask the process to terminate by sending SIGTERM to it
+    /// Ask the process to terminate by sending SIGTERM to it. Nothing happens if it has gone already
     /// </summary>
     /// <param name="process">Process</param>
     /// <exception cref="IOException">Failed to kill process</exception>
@@ -33,7 +34,11 @@ public static class ProcessHelpers
         int error = Interop.kill(process.Id, Interop.SIGTERM);
         if (error < 0)
         {
-            throw new IOException($"Failed to kill process (error {Marshal.GetLastWin32Error()})");
+            int errno = Marshal.GetLastWin32Error();
+            if (errno != Interop.ESRCH)
+            {
+                throw new IOException($"Failed to kill process (error {errno})");
+            }
         }
     }
 
@@ -42,24 +47,90 @@ public static class ProcessHelpers
     /// </summary>
     /// <param name="pid">Process ID to look up</param>
     /// <returns>Parent PID, or 0 if it could not be determined</returns>
-    public static int GetParentPid(int pid)
+    public static int GetParentPid(int pid) => ReadStat(pid)?.ParentPid ?? 0;
+
+    /// <summary>
+    /// Read the parent PID and the start time of a given process from /proc/{pid}/stat
+    /// </summary>
+    /// <param name="pid">Process ID to look up</param>
+    /// <returns>Parent PID and start time in clock ticks after boot, or null if the process does not exist</returns>
+    private static (int ParentPid, ulong StartTime)? ReadStat(int pid)
     {
         try
         {
             string stat = File.ReadAllText($"/proc/{pid}/stat");
-            // Field 2 (comm) is parenthesised and may contain spaces, so scan past the final ')' to reach the PPID
+            // Field 2 (comm) is parenthesised and may contain spaces, so scan past the final ')' to reach the PPID (field 4) and the start time (field 22)
             int lastParen = stat.LastIndexOf(')');
             if (lastParen < 0 || lastParen + 2 >= stat.Length)
             {
-                return 0;
+                return null;
             }
             string[] fields = stat[(lastParen + 2)..].Split(' ');
-            return (fields.Length >= 2) && int.TryParse(fields[1], out int ppid) ? ppid : 0;
+            if (fields.Length < 20 || !int.TryParse(fields[1], out int ppid) || !ulong.TryParse(fields[19], out ulong startTime))
+            {
+                return null;
+            }
+            return (ppid, startTime);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            return 0;
+            return null;
         }
+    }
+
+    /// <summary>
+    /// Get the processes below a given process, i.e. its children, their children and so on
+    /// </summary>
+    /// <param name="pid">Process ID</param>
+    /// <returns>PIDs and start times of the descendants</returns>
+    /// <remarks>
+    /// The children of a process are re-parented when it exits, so they must be looked up while it is still running
+    /// </remarks>
+    public static List<(int Pid, ulong StartTime)> GetDescendants(int pid)
+    {
+        Dictionary<int, List<(int Pid, ulong StartTime)>> children = [];
+        foreach (string directory in Directory.EnumerateDirectories("/proc"))
+        {
+            if (int.TryParse(Path.GetFileName(directory), out int childPid) && ReadStat(childPid) is (int parentPid, ulong startTime))
+            {
+                if (!children.TryGetValue(parentPid, out List<(int, ulong)>? list))
+                {
+                    list = [];
+                    children.Add(parentPid, list);
+                }
+                list.Add((childPid, startTime));
+            }
+        }
+
+        List<(int Pid, ulong StartTime)> descendants = [];
+        Queue<int> pending = new([pid]);
+        while (pending.TryDequeue(out int parent))
+        {
+            if (children.TryGetValue(parent, out List<(int Pid, ulong StartTime)>? list))
+            {
+                foreach ((int childPid, ulong startTime) in list)
+                {
+                    descendants.Add((childPid, startTime));
+                    pending.Enqueue(childPid);
+                }
+            }
+        }
+        return descendants;
+    }
+
+    /// <summary>
+    /// Kill a process with SIGKILL unless it has exited or its PID belongs to another process by now
+    /// </summary>
+    /// <param name="pid">Process ID</param>
+    /// <param name="startTime">Start time of the process as returned by <see cref="GetDescendants(int)"/></param>
+    /// <returns>Whether the process was still running and has been killed</returns>
+    public static bool Kill(int pid, ulong startTime)
+    {
+        if (ReadStat(pid)?.StartTime == startTime)
+        {
+            return Interop.kill(pid, Interop.SIGKILL) == 0;
+        }
+        return false;
     }
 
     /// <summary>
