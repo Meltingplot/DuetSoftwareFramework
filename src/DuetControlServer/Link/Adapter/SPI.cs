@@ -1836,21 +1836,21 @@ public class SPI : IDiagnostics, ILinkAdapter
                 throw new OperationCanceledException("SPI data transfer failed");
             }
 
-            // Read received header and verify the format code
-            _rxHeader = MemoryMarshal.Read<TransferHeader>(_rxHeaderBuffer.Span);
-            if (_rxHeader.FormatCode == 0 || _rxHeader.FormatCode == 0xFF)
+            // Read received header and verify the format code. Only a header with a valid checksum replaces the one RRF sent earlier in this transfer
+            TransferHeader rxHeader = MemoryMarshal.Read<TransferHeader>(_rxHeaderBuffer.Span);
+            if (rxHeader.FormatCode == 0 || rxHeader.FormatCode == 0xFF)
             {
-                _logger.LogWarning("Restarting full transfer because a bad header format code was received (0x{0:x2})", _rxHeader.FormatCode);
+                _logger.LogWarning("Restarting full transfer because a bad header format code was received (0x{0:x2})", rxHeader.FormatCode);
                 ExchangeResponse(TransferResponse.BadResponse);
                 return false;
             }
 
             // Change the protocol version if necessary
             ushort lastProtocolVersion = _txHeader.ProtocolVersion;
-            if (_rxHeader.ProtocolVersion != lastProtocolVersion &&
-                (_rxHeader.ProtocolVersion <= Consts.ProtocolVersion || _settings.UpdateOnly))
+            if (rxHeader.ProtocolVersion != lastProtocolVersion &&
+                (rxHeader.ProtocolVersion <= Consts.ProtocolVersion || _settings.UpdateOnly))
             {
-                _txHeader.ProtocolVersion = _rxHeader.ProtocolVersion;
+                _txHeader.ProtocolVersion = rxHeader.ProtocolVersion;
                 WriteCRC();
 
                 ExchangeResponse(TransferResponse.BadResponse);
@@ -1858,17 +1858,21 @@ public class SPI : IDiagnostics, ILinkAdapter
             }
 
             // Verify header checksum
-            if (_rxHeader.ProtocolVersion >= 4)
+            if (rxHeader.ProtocolVersion >= 4)
             {
                 uint crc32 = CRC32.Calculate(_rxHeaderBuffer[..12].Span);
-                if (_rxHeader.ChecksumHeader32 != crc32)
+                if (rxHeader.ChecksumHeader32 != crc32)
                 {
-                    _logger.LogWarning("Bad header CRC32 (expected 0x{ExpectedChecksum:x8}, got 0x{ActualChecksum:x8})", _rxHeader.ChecksumHeader32.ToString("x8"), crc32.ToString(""));
+                    _logger.LogWarning("Bad header CRC32 (expected 0x{ExpectedChecksum:x8}, got 0x{ActualChecksum:x8})", rxHeader.ChecksumHeader32.ToString("x8"), crc32.ToString(""));
                     responseCode = ExchangeResponse(TransferResponse.BadHeaderChecksum);
                     if (responseCode == TransferResponse.BadResponse)
                     {
                         _logger.LogWarning("Restarting full transfer because RepRapFirmware received a bad header response");
                         return false;
+                    }
+                    if (IsExchangingData(responseCode))
+                    {
+                        return true;
                     }
                     if (responseCode != TransferResponse.Success)
                     {
@@ -1880,14 +1884,18 @@ public class SPI : IDiagnostics, ILinkAdapter
             else
             {
                 ushort crc16 = CRC16.Calculate(_rxHeaderBuffer[..10].Span);
-                if (_rxHeader.ChecksumHeader16 != crc16)
+                if (rxHeader.ChecksumHeader16 != crc16)
                 {
-                    _logger.LogWarning("Bad header CRC16 (expected 0x{ExpectedChecksum:x4}, got 0x{ActualChecksum:x4})", _rxHeader.ChecksumHeader16, crc16);
+                    _logger.LogWarning("Bad header CRC16 (expected 0x{ExpectedChecksum:x4}, got 0x{ActualChecksum:x4})", rxHeader.ChecksumHeader16, crc16);
                     responseCode = ExchangeResponse(TransferResponse.BadHeaderChecksum);
                     if (responseCode == TransferResponse.BadResponse)
                     {
                         _logger.LogWarning("Restarting full transfer because RepRapFirmware received a bad header response");
                         return false;
+                    }
+                    if (IsExchangingData(responseCode))
+                    {
+                        return true;
                     }
                     if (responseCode != TransferResponse.Success)
                     {
@@ -1896,6 +1904,7 @@ public class SPI : IDiagnostics, ILinkAdapter
                     continue;
                 }
             }
+            _rxHeader = rxHeader;
 
             // Check format code
             switch (_rxHeader.FormatCode)
@@ -2014,6 +2023,24 @@ public class SPI : IDiagnostics, ILinkAdapter
         // so a single response exchange would be mistaken for a request to repeat the data response
         _logger.LogWarning("Restarting full transfer because the number of maximum retries has been exceeded");
         return false;
+    }
+
+    /// <summary>
+    /// Check if RRF has answered a header response from the data phase, which it entered after it took the Success of DSF for the header it got before.
+    /// RRF sends BadDataChecksum only for the data, and after it, it exchanges the data again whatever DSF answers (DataTransfer.cpp:1194, 1218-1222).
+    /// The data phase of DSF takes the same code the same way (<see cref="ExchangeData"/>), so DSF can go on with the data once it has the header of RRF
+    /// </summary>
+    /// <param name="responseCode">Response of RRF to the header response of DSF</param>
+    /// <returns>Whether the data is to be exchanged next</returns>
+    private bool IsExchangingData(uint responseCode)
+    {
+        if (responseCode != TransferResponse.BadDataChecksum || _rxHeader.FormatCode != Consts.FormatCode || (_rxHeader.DataLength == 0 && _txPointer == 0))
+        {
+            return false;
+        }
+
+        _logger.LogWarning("RepRapFirmware is exchanging the data, exchanging the data as well");
+        return true;
     }
 
     /// <summary>

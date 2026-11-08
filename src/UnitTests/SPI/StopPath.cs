@@ -1170,16 +1170,16 @@ public partial class StopPath
 
     /// <summary>
     /// R10 of design/sbc-link-requirements.md: the emergency stop reaches RRF within 100 ms while the link is disturbed but alive. On the plain link a single bit
-    /// error in the Success of RRF for the header of the transfer that carries the stop (Success 1 read as BadHeaderChecksum 5) leaves both sides answering each
-    /// other: DSF exchanges its header again while RRF takes it as the 8 bytes of data and answers BadDataChecksum, which it gives priority over the BadResponse of
-    /// DSF and repeats without a limit (DataTransfer.cpp:1218-1223). DSF keeps exchanging, so no timeout of RRF ends it, and only DCS stops after
-    /// Settings.SbcRestartTimeout (60 s, SPI.PerformFullTransfer). Two bit errors make RRF time out after 500 ms (SbcTransferTimeout) and stop because it lost the connection
+    /// error in the Success of RRF for the header of the transfer that carries the stop (Success 1 read as BadHeaderChecksum 5) makes DSF exchange its header again
+    /// while RRF goes on with the data. RRF takes the header as the 8 bytes of data and answers BadDataChecksum, after which it exchanges the data again whatever DSF
+    /// answers (DataTransfer.cpp:1218-1222). DSF goes on with the data as well (SPI.IsExchangingData), so the stop reaches RRF in the same transfer. Before, DSF kept
+    /// exchanging its header, so no timeout of RRF ended it and only DCS stopped after Settings.SbcRestartTimeout (60 s, SPI.PerformFullTransfer). The last input has
+    /// a full transfer restart before the same error, after which RRF used to stop only by its 500 ms transfer timeout
     /// </summary>
     /// <param name="text">Input as the tests print it</param>
     [TestCase("Stop None | Stop 3 ToDsf 130")]
     [TestCase("Stop None | Stop 1 ToRrf 0 | Stop 7 ToDsf 130")]
     [TestCase("Stop None | Stop 3 ToDsf 0 | Stop 6 ToDsf 2")]
-    [Explicit("R10 is not implemented: on the plain link one bit error leaves the link stuck until DCS restarts after 60 s, two make RRF stop only after its 500 ms timeout")]
     public async Task EmergencyStopReachesRrfWithin100Ms(string text)
     {
         StopResult result = await RunAsync(StopCase.Parse(text));
