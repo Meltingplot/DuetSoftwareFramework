@@ -89,7 +89,11 @@ public abstract class DpsTestBase
     public void PrepareTest()
     {
         DcsLog.Clear();
+
+        // Like the postinst scripts of duetcontrolserver and duetpluginservice set up /opt/dsf/plugins: root:dsf 1775, here with the user of the test as owner
         Directory.CreateDirectory(PluginDirectory);
+        File.SetUnixFileMode(PluginDirectory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupWrite |
+            UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute | UnixFileMode.StickyBit);
     }
 
     [TearDown]

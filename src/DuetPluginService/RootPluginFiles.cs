@@ -7,12 +7,37 @@ using System.IO;
 namespace DuetPluginService;
 
 /// <summary>
-/// Checks of the files of a plugin with super-user permissions. The plugin directory belongs to the dsf user, so the root service loads such a
-/// plugin and starts it only from files that nobody but itself may change (<see cref="FileExtensions.IsProtected"/>). The root service installs
-/// these files itself (InstallPlugin), and the sticky bit of the plugin directory keeps the dsf user from renaming them
+/// Checks of the files of a plugin with super-user permissions. The dsf user installs the other plugins into the same plugin directory, so the root service
+/// loads such a plugin and starts it only from files that nobody but itself may change (<see cref="FileExtensions.IsProtected"/>). The root service installs
+/// these files itself (InstallPlugin). The plugin directory must belong to the root service and have the sticky bit (root:dsf 1775, set by the postinst
+/// scripts of duetcontrolserver and duetpluginservice), so that the dsf group may create entries but not rename or remove the ones of root between a check
+/// and their use. The owner of a sticky directory may remove any entry, so the plugin directory must not belong to dsf
 /// </summary>
 public static class RootPluginFiles
 {
+    /// <summary>
+    /// Make sure that nobody but the root service may rename or remove its entries in the plugin directory
+    /// </summary>
+    /// <param name="pluginDirectory">Directory holding the plugins</param>
+    /// <param name="privileges">Privileges of the root service</param>
+    /// <returns>Error message or null if the plugin directory is set up correctly</returns>
+    private static string? CheckPluginDirectory(string pluginDirectory, ServicePrivileges privileges)
+    {
+        try
+        {
+            (int userId, UnixFileMode mode, bool isSymlink) = FileExtensions.GetOwner(pluginDirectory.TrimEnd(Path.DirectorySeparatorChar));
+            if (!isSymlink && userId == privileges.UserId && mode.HasFlag(UnixFileMode.StickyBit) && !mode.HasFlag(UnixFileMode.OtherWrite))
+            {
+                return null;
+            }
+        }
+        catch (IOException)
+        {
+            // Handled below
+        }
+        return $"{pluginDirectory} must belong to the root service and have the sticky bit (root:dsf 1775), else others may rename the files of root plugins";
+    }
+
     /// <summary>
     /// Make sure the manifest of a plugin with super-user permissions may be loaded by the root service
     /// </summary>
@@ -21,6 +46,10 @@ public static class RootPluginFiles
     /// <exception cref="ArgumentException">Others may change the manifest</exception>
     public static void CheckManifest(string manifestFile, ServicePrivileges privileges)
     {
+        if (CheckPluginDirectory(Path.GetDirectoryName(Path.GetFullPath(manifestFile))!, privileges) is string error)
+        {
+            throw new ArgumentException(error);
+        }
         if (!FileExtensions.IsProtected(manifestFile, privileges.UserId))
         {
             throw new ArgumentException($"{manifestFile} may be changed by others than the root service, the plugin must be installed again");
@@ -38,6 +67,11 @@ public static class RootPluginFiles
     /// <exception cref="ArgumentException">Others may change one of the files</exception>
     public static void CheckStart(Plugin plugin, string pluginDirectory, string executable, ServicePrivileges privileges)
     {
+        if (CheckPluginDirectory(pluginDirectory, privileges) is string error)
+        {
+            throw new ArgumentException($"Refusing to start plugin {plugin.Id}: {error}");
+        }
+
         string pluginBase = Path.GetFullPath(Path.Combine(pluginDirectory, plugin.Id));
         if (!Path.GetFullPath(executable).StartsWith(pluginBase + Path.DirectorySeparatorChar, StringComparison.Ordinal))
         {

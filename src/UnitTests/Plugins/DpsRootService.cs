@@ -381,7 +381,38 @@ public class DpsRootService : DpsTestBase
         await Dps.AddToStoreAsync(plugin);
         await AddToDcsAsync(plugin);
         ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("Foreign")))!;
-        Assert.That(e.Message, Is.EqualTo($"Refusing to start plugin Foreign: {Path.Combine(PluginDirectory, "Foreign.json")} may be changed by others than the root service"));
+        Assert.That(e.Message, Is.EqualTo($"Refusing to start plugin Foreign: {PluginDirectory} must belong to the root service and have the sticky bit (root:dsf 1775), " +
+            "else others may rename the files of root plugins"));
+    }
+
+    /// <summary>
+    /// The owner of a sticky directory may rename or remove every entry in it, and without the sticky bit everybody with write permission may. So the root
+    /// service needs the plugin directory to belong to it and to have the sticky bit (root:dsf 1775), else the dsf user could swap the files of a root plugin
+    /// between their check and their use
+    /// </summary>
+    [TestCase(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+        UnixFileMode.OtherRead | UnixFileMode.OtherExecute, Description = "775 without sticky bit")]
+    [TestCase(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+        UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute | UnixFileMode.StickyBit, Description = "1777, writable by others")]
+    public async Task RootPluginsNeedAProtectedPluginDirectory(UnixFileMode mode)
+    {
+        Plugin plugin = new() { Id = "Unsafe", Name = "Unsafe", SbcExecutable = "plugin.sh", SbcPermissions = SbcPermissions.SuperUser, Pid = -1 };
+        await StartDpsAsync(register: false, privileged: true);
+        await EnableRootPluginSupportAsync();
+        Dps!.WritePlugin(plugin, "exec sleep 30", profile: false);
+        await Dps.AddToStoreAsync(plugin);
+        await AddToDcsAsync(plugin);
+        File.SetUnixFileMode(PluginDirectory, mode);
+        string error = $"{PluginDirectory} must belong to the root service and have the sticky bit (root:dsf 1775), else others may rename the files of root plugins";
+
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("Unsafe")))!;
+        Assert.That(e.Message, Is.EqualTo($"Refusing to start plugin Unsafe: {error}"));
+
+        // The manifest is not loaded either, while a regular plugin is
+        File.WriteAllText(Path.Combine(PluginDirectory, "Regular.json"), "{\"id\":\"Regular\",\"name\":\"Regular\"}");
+        await using DpsHost restarted = await DpsHost.StartAsync(Dcs, PluginDirectory, settings => settings.DisableAppArmor = true, register: false, privileged: true);
+        Assert.That(restarted.Store.Plugins.ConvertAll(item => item.Id), Is.EqualTo(new[] { "Regular" }));
+        Assert.That(restarted.Log.Contains($"Skipping plugin manifest Unsafe.json: {error}"), Is.True);
     }
 
     [Test]
