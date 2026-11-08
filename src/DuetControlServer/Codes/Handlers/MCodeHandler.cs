@@ -1269,7 +1269,7 @@ public class MCodeHandler(
                         Message result = new();
                         try
                         {
-                            if (Path.GetExtension(firmwareFile) == ".uf2")
+                            if (string.Equals(Path.GetExtension(firmwareFile), ".uf2", StringComparison.OrdinalIgnoreCase))
                             {
                                 await using MemoryStream unpackedFirmwareStream = await Firmware.UnpackUF2Async(firmwareStream);
                                 await linkInterface.UpdateFirmware(iapStream, unpackedFirmwareStream, lifetime.ApplicationStopped);

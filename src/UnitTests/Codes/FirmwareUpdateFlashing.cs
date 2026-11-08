@@ -174,21 +174,21 @@ public class FirmwareUpdateFlashing
     }
 
     /// <summary>
-    /// DCS unpacks only files whose extension is ".uf2" in lower case (MCodeHandler.cs:1272), the SD card IAP program of the same release checks
-    /// the extension without regard to case (Duet3D/DuetIAP 3.7-dev src/iap_sd.cpp:133). With "M997 P"Duet3Firmware_Mini5plus.UF2"" DCS sends the
-    /// UF2 container as the image, the IAP program flashes it and confirms the CRC16 that DCS computed over the same bytes, and the board reboots
-    /// into an image whose first word is the UF2 magic instead of a stack pointer, so it does not start until it is recovered by hand
+    /// The extension is compared without regard to case, like the SD card IAP program of the same release does (Duet3D/DuetIAP 3.7-dev
+    /// src/iap_sd.cpp:133). Flashing the UF2 container itself would make the board reboot into an image whose first word is the UF2 magic
+    /// instead of a stack pointer, so it would not start until it is recovered by hand
     /// </summary>
-    [Test, Explicit("Bug: M997 flashes a .UF2 file (upper case extension) without unpacking it, which leaves the board unbootable")]
-    public async Task UpdateWithUf2FileInUpperCase()
+    [TestCase("Duet3Firmware_Mini5plus.UF2")]
+    [TestCase("Duet3Firmware_Mini5plus.Uf2")]
+    public async Task UpdateWithUf2FileInUpperCase(string fileName)
     {
         FakeFirmwareHost host = await StartAsync();
         byte[] image = FirmwareImage.Build("RepRapFirmware for Duet 3 Mini 5+ version 3.7.0+1.mp.9", length: 5000, loadAddress: 0);
         WriteFile("firmware", IapFile, _iap);
-        WriteFile("firmware", "Duet3Firmware_Mini5plus.UF2", FirmwareImage.ToUf2(image, targetAddress: 0));
+        WriteFile("firmware", fileName, FirmwareImage.ToUf2(image, targetAddress: 0));
 
-        Assert.That(await host.ExecuteAsync("M997 P\"Duet3Firmware_Mini5plus.UF2\""), Is.EqualTo("\n"));
-        Assert.That(host.Firmware.GetFlashedFirmware(), Is.EqualTo(FirmwareImage.Pad(image, Consts.FirmwareSegmentSize)));
+        Assert.That(await host.ExecuteAsync($"M997 P\"{fileName}\""), Is.EqualTo("\n"));
+        AssertFlashed(image);
     }
 
     /// <summary>
