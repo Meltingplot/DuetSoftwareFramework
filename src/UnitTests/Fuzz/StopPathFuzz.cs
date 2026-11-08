@@ -105,7 +105,8 @@ public class StopPathFuzz
         StopCase input = new(scenario, capabilities, [])
         {
             Macro = (random.Next(2) == 0) ? "trigger2.g" : "trigger4.g",
-            StopAt = Enum.GetValues<StopMoment>()[random.Next(3)]
+            StopAt = Enum.GetValues<StopMoment>()[random.Next(3)],
+            Offset = random.Next(1 << ExtendedLink.CounterBits)
         };
         if (paced && scenario == Scenario.Stop)
         {
@@ -228,6 +229,10 @@ public class StopPathFuzz
         if (input.Macro != "trigger2.g")
         {
             yield return input with { Macro = "trigger2.g" };
+        }
+        if (input.Offset > 0)
+        {
+            yield return input with { Offset = 0 };
         }
         for (int i = 0; i < input.Flips.Count; i++)
         {

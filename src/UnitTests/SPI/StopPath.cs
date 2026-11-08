@@ -147,6 +147,12 @@ public partial class StopPath
         public StopMoment StopAt { get; init; }
 
         /// <summary>
+        /// Number of idle transfers after the setup before the scenario starts. The extended counter of the sequence numbers has 32 values
+        /// (ExtendedLink.CounterBits), so this puts the transfers of the scenario on each of them
+        /// </summary>
+        public int Offset { get; init; }
+
+        /// <summary>
         /// Time RRF waits between two transfers, see <see cref="FakeRrfSpi.TransferDelay"/>, only for <see cref="Scenario.Stop"/>
         /// </summary>
         public double Delay { get; init; }
@@ -185,6 +191,10 @@ public partial class StopPath
             {
                 text.Append($" at={StopAt}");
             }
+            if (Offset > 0)
+            {
+                text.Append(CultureInfo.InvariantCulture, $" offset={Offset}");
+            }
             if (Delay > 0)
             {
                 text.Append(CultureInfo.InvariantCulture, $" delay={Delay} phase={Phase}");
@@ -221,6 +231,7 @@ public partial class StopPath
                 {
                     "macro" => input with { Macro = pair[1] },
                     "at" => input with { StopAt = Enum.Parse<StopMoment>(pair[1]) },
+                    "offset" => input with { Offset = int.Parse(pair[1], CultureInfo.InvariantCulture) },
                     "delay" => input with { Delay = double.Parse(pair[1], CultureInfo.InvariantCulture) },
                     "phase" => input with { Phase = double.Parse(pair[1], CultureInfo.InvariantCulture) },
                     "ber" => input with { BitErrorRate = double.Parse(pair[1], CultureInfo.InvariantCulture) },
@@ -759,7 +770,8 @@ public partial class StopPath
 
                 // RRF reports the space of its code buffer after it started (SbcInterface.cpp:59 and 1374-1378)
                 rrf.SendPacket(FirmwareRequest.CodeBufferUpdate, RrfPackets.CodeBufferUpdate(SbcCodeBufferSize));
-                rrf.HoldBeforeHeader(SetupExchanges);
+                // Every idle transfer after the setup takes a header and a response exchange
+                rrf.HoldBeforeHeader(SetupExchanges + 2 * input.Offset);
             });
         FakeRrfSpi rrf = host.Rrf;
         LinkInterface link = host.Link;
@@ -1190,13 +1202,42 @@ public partial class StopPath
         StopResult result = await RunAsync(StopCase.Parse(text));
         Assert.That(result.HaltBeforeStop, Is.False, result.Details);
     }
+
+    /// <summary>
+    /// Ten bit errors in the data of the transfer that carries the codes of the macro use up the retries of DSF (Settings.MaxSbcRetries), so DSF loses the
+    /// connection, leaves the extended link (SPI.EndSession) and drops the macro once it is connected again (SPI.PerformFullTransfer sets _hadReset,
+    /// LinkService.Invalidate). RRF has got the codes by then, so it must notice the end of the session and stop, because the macro will never end.
+    /// It does: DSF numbers from the counter on with status 0, which does not follow the extended numbers of RRF, so RRF resets the connection when
+    /// the transfer ends (DataTransfer.cpp:1125-1131 and 852, DataTransfer.h:212-215) and performs an emergency stop (SbcInterface.cpp:194-230)
+    /// </summary>
+    /// <param name="offset">Idle transfers before the scenario, which puts the transfer of the codes on counter value <paramref name="offset"/></param>
+    [TestCase(1), TestCase(16), TestCase(31)]
+    public async Task RrfStopsWhenDsfDropsTheTriggerMacro(int offset)
+    {
+        StopResult result = await RunAsync(StopCase.Parse($"Trigger All offset={offset} | Code 2 ToRrf 0 | Code 4 ToRrf 0 | Code 6 ToRrf 0 | Code 8 ToRrf 0 | Code 10 ToRrf 0 | Code 12 ToRrf 0 | Code 14 ToRrf 0 | Code 16 ToRrf 0 | Code 18 ToRrf 0 | Code 20 ToRrf 0"));
+        Assert.That(result.TriggerOutcome, Is.EqualTo("RRF stopped"), result.Details);
+    }
+
+    /// <summary>
+    /// The faults of <see cref="RrfStopsWhenDsfDropsTheTriggerMacro"/> when the transfer of the codes has counter value 0. DSF then leaves the extended link
+    /// with sequence number 0x0000, which follows the 0xFFFF RRF saw last as a regular number, so SequenceDistance is 1 once RRF has left the extended link
+    /// as well (DataTransfer.cpp:852) and RRF does not reset the connection. RRF has processed the codes and waits for the end of the macro that DSF has
+    /// dropped, and it keeps running. On RRF the trigger file then stays open, so IsTriggerBusy (GCodes.cpp:423-431) would hold back the next trigger
+    /// macros (GCodes.cpp:999); the port does not model that part of RRF
+    /// </summary>
+    [Test, Explicit("DSF leaving the extended link at counter 0 goes unnoticed by RRF: the trigger macro is lost and RRF does not stop")]
+    public async Task TriggerMacroRunsOrRrfStops()
+    {
+        StopResult result = await RunAsync(StopCase.Parse("Trigger All | Code 2 ToRrf 0 | Code 4 ToRrf 0 | Code 6 ToRrf 0 | Code 8 ToRrf 0 | Code 10 ToRrf 0 | Code 12 ToRrf 0 | Code 14 ToRrf 0 | Code 16 ToRrf 0 | Code 18 ToRrf 0 | Code 20 ToRrf 0"));
+        Assert.That(result.TriggerOutcome, Is.Not.EqualTo("lost"), result.Details);
+    }
     #endregion
 
     /// <summary>
     /// Print the exchanges of a single input, for analysing a finding
     /// </summary>
     /// <param name="text">Input as the tests print it</param>
-    [TestCase("Stop All"), TestCase("Trigger All macro=trigger4.g"), TestCase("Stop None | Stop 3 ToDsf 0 | Stop 8 ToRrf 0"), TestCase("Stop None delay=25 phase=0.59 ber=0.001 seed=394099683"), TestCase("Stop None | Stop 3 ToDsf 130"), TestCase("Trigger All macro=trigger4.g ber=0.003 seed=565872108"), Explicit("Analysis")]
+    [TestCase("Stop All"), TestCase("Trigger All macro=trigger4.g"), TestCase("Both All macro=trigger4.g at=FirstCode"), Explicit("Analysis")]
     public async Task TraceInput(string text)
     {
         List<string> trace = [];
