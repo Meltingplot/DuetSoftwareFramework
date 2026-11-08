@@ -172,6 +172,15 @@ public static class Lab
         RunOnSbcAsync($"sudo -n journalctl -u duetcontrolserver --after-cursor='{cursor}' -o cat --no-pager");
 
     /// <summary>
+    /// Read the log of the given units since a cursor, each line prefixed with the name of the process
+    /// </summary>
+    /// <remarks>
+    /// A cursor marks a position in the whole journal, so a cursor of the DCS log works for other units too
+    /// </remarks>
+    public static Task<string> ReadJournalAsync(string cursor, params string[] units) =>
+        RunOnSbcAsync($"sudo -n journalctl {string.Join(' ', units.Select(unit => $"-u {unit}"))} --after-cursor='{cursor}' -o short-iso --no-pager");
+
+    /// <summary>
     /// Get the process ID of DCS, to tell when systemd has started a new instance
     /// </summary>
     public static async Task<string> GetControlServerPidAsync() =>
