@@ -115,7 +115,9 @@ public partial class AbortsCrossingMacroRequests : LabTest
             if reply is None:
                 return "no reply"
             if reply.get("success"):
-                return "done" if not reply.get("result") else "reply: " + reply["result"].strip()[:60]
+                # Telnet answers every code with "ok" (Marlin-style), which is no reply of the macro
+                result = (reply.get("result") or "").strip()
+                return "done" if result in ("", "ok") else "reply: " + result[:60]
             return reply.get("errorType", "error")
 
         codes, aborts = Ipc(), Ipc()
@@ -142,6 +144,10 @@ public partial class AbortsCrossingMacroRequests : LabTest
                 pass
             aborts.send({"command": "InvalidateChannel", "channel": channel})
             abort_reply, m98_reply = aborts.receive(5), codes.receive(5)
+            if abort_reply is not None and not abort_reply.get("success"):
+                # Nothing was aborted, so the loop cannot hit the window. The channel is not affected
+                print(json.dumps({"refused": "%s: %s" % (abort_reply.get("errorType"), abort_reply.get("errorMessage"))}))
+                sys.exit(0)
             probe = None
             if abort_reply is not None and m98_reply is not None:
                 code(aborts, "G4 P0")
@@ -213,6 +219,11 @@ public partial class AbortsCrossingMacroRequests : LabTest
         if (error == "python3 is missing")
         {
             Assert.Ignore("The SBC has no python3 for the IPC client");
+        }
+        if (result.RootElement.TryGetProperty("refused", out JsonElement refused))
+        {
+            // Before the fix for I8, DCS refused InvalidateChannel as unsupported command (IPC/Processors/Command.cs, SupportedCommands)
+            Assert.Fail($"DCS refused InvalidateChannel, so nothing was aborted: {refused.GetString()}");
         }
         bool blocked = result.RootElement.TryGetProperty("blocked", out JsonElement block) && block.ValueKind != JsonValueKind.Null;
         if (blocked || error is not null)
