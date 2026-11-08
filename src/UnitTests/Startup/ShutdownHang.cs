@@ -37,10 +37,11 @@ namespace UnitTests.Startup;
 /// which the host signals only after all services have stopped (Host.cs:272 of Microsoft.Extensions.Hosting)</item>
 /// <item>After M999 the transfer thread has ended (LinkService.cs:297), so a code that a client sends in the second before DCS stops
 /// (MCodeHandler.cs:1363-1368) is never sent and hangs the same way. This fits "after the boot-time M999", when clients are busy</item>
-/// <item>A transfer that does not complete keeps the transfer thread inside PerformFullTransfer, which watches only ApplicationStopped (LinkService.cs:541,
-/// SPI.cs:324), so LinkService.StopAsync waits for the stop token (BackgroundService.cs:73 of Microsoft.Extensions.Hosting.Abstractions).
-/// This fits "systemctl restart while the SPI link is stuck", once DCS has reported the lost connection; see <see cref="LostConnectionAfterTheStopEndsTheThread"/>
-/// for the other order</item>
+/// <item>A transfer that does not complete keeps the transfer thread inside PerformFullTransfer until its token is cancelled (SPI.cs:324). It got
+/// ApplicationStopped, which the host signals only after all services have stopped, so LinkService.StopAsync waited for the stop token (BackgroundService.cs:73
+/// of Microsoft.Extensions.Hosting.Abstractions). This fits "systemctl restart while the SPI link is stuck", once DCS has reported the lost connection.
+/// Fixed: the transfer gets the stop token of the LinkService (LinkService.cs:290, 542), like the loop around it, as before 2cbc04ae and in v3.6
+/// (DataTransfer.cs:210 there)</item>
 /// </list>
 /// Each test stops with a limit of <see cref="StopLimit"/> instead of the 30 s of the host. Where DCS stopped in time, it would stop in well under a second
 /// </summary>
@@ -149,10 +150,9 @@ public class ShutdownHang
 
     /// <summary>
     /// Case 3 with the fake firmware: its transfer is held, and like PerformFullTransfer of the SPI adapter it ends the wait only for the cancellation
-    /// token, which LinkService passes as ApplicationStopped (FakeFirmware.cs:566-577, LinkService.cs:541)
+    /// token, which LinkService passes as its stop token (FakeFirmware.cs:566-577, LinkService.cs:542)
     /// </summary>
     [Test]
-    [Explicit("Bug: DCS does not stop until the host's shutdown timeout while a transfer with RRF does not complete")]
     public async Task StopsWhileTheLinkIsStuck()
     {
         await using DcsHost host = DcsHost.Create();
@@ -172,13 +172,10 @@ public class ShutdownHang
     /// <summary>
     /// Case 3 on the SPI adapter of DCS: RRF stops answering after the connection is up, e.g. because it hangs, and DCS has reported the lost connection
     /// before it is stopped. TfrRdy keeps its level, so every wait for the pin ends with its timeout (IInputGpioPin.cs:23-29) and PerformFullTransfer starts
-    /// over until SbcRestartTimeout (60 s, SPI.cs:324-331). It watches only the token it gets, ApplicationStopped (LinkService.cs:541), so
-    /// LinkService.StopAsync returns only when its stop token gives up.
-    /// If the connection is lost only after ApplicationStopping, the thread ends by chance: the "Lost connection" message (SPI.cs:469-475) takes the lock of the
-    /// event log with ApplicationStopping (Logger.cs:224), and the cancellation leaves the transfer loop. <see cref="LostConnectionAfterTheStopEndsTheThread"/>
+    /// over until SbcRestartTimeout (60 s, SPI.cs:324-331) or until its token is cancelled. That is the stop token of the LinkService (LinkService.cs:542),
+    /// so the thread ends after the wait that is running when the service stops, at most SbcConnectionTimeout + SbcTransferTimeout (4.5 s, SPI.cs:1741)
     /// </summary>
     [Test]
-    [Explicit("Bug: LinkService does not stop while RRF does not answer over SPI, because the transfer thread waits for ApplicationStopped")]
     public async Task LinkServiceStopsWhileRrfDoesNotAnswer()
     {
         (TimeSpan elapsed, bool stopped) = await StopLinkServiceWithHungRrfAsync(lostBeforeStop: true);
@@ -186,9 +183,9 @@ public class ShutdownHang
     }
 
     /// <summary>
-    /// The chance exit described at <see cref="LinkServiceStopsWhileRrfDoesNotAnswer"/>: RRF hangs just before DCS is stopped, so the lost connection is
-    /// reported after ApplicationStopping and the transfer thread ends with the OperationCanceledException of the event log, at the latest after
-    /// SbcConnectionTimeout (4 s)
+    /// The other order than <see cref="LinkServiceStopsWhileRrfDoesNotAnswer"/>: RRF hangs just before DCS is stopped, so the lost connection is reported
+    /// after ApplicationStopping. The transfer thread ends with the stop token as well. Before that was passed, it ended here only by chance: the "Lost
+    /// connection" message (SPI.cs:469-475) takes the lock of the event log with ApplicationStopping (Logger.cs:224), and the cancellation left the transfer loop
     /// </summary>
     [Test]
     public async Task LostConnectionAfterTheStopEndsTheThread()
@@ -199,16 +196,31 @@ public class ShutdownHang
     }
 
     /// <summary>
+    /// Case 3 as seen on the lab printer (2026-11-08): with the link stuck in the activation transfer, DCS logged "Lost connection to Duet" with
+    /// "Maximum number of SPI transfer retries exceeded" every 12 ms during the stop, and systemd killed it after 15 s. Here TfrRdy toggles at once, but RRF
+    /// clocks out 0xFF, so every header has a bad format code (SPI.cs:1873-1878) and each full transfer fails after MaxSbcRetries without a wait (SPI.cs:336-339).
+    /// PerformFullTransfer starts over at once (SPI.cs:442-477) and sees the stop token at its next round (SPI.cs:324)
+    /// </summary>
+    [Test]
+    public async Task LinkServiceStopsWhileEveryTransferFails()
+    {
+        (TimeSpan elapsed, bool stopped) = await StopLinkServiceWithHungRrfAsync(lostBeforeStop: true, answerAtOnce: true);
+        Assert.That(stopped, Is.True, $"The transfer thread was still running when StopAsync returned after {elapsed.TotalSeconds:F1} s");
+        Assert.That(elapsed, Is.LessThan(ExpectedStopTime));
+    }
+
+    /// <summary>
     /// Start the LinkService on the SPI adapter, let RRF hang and stop the service like the host does
     /// </summary>
     /// <param name="lostBeforeStop">Whether to wait until DCS has reported the lost connection before it is stopped</param>
+    /// <param name="answerAtOnce">Whether the hung RRF toggles TfrRdy at once, see <see cref="HungRrf"/></param>
     /// <returns>Time StopAsync took and whether the transfer thread had ended when it returned</returns>
-    private static async Task<(TimeSpan Elapsed, bool Stopped)> StopLinkServiceWithHungRrfAsync(bool lostBeforeStop)
+    private static async Task<(TimeSpan Elapsed, bool Stopped)> StopLinkServiceWithHungRrfAsync(bool lostBeforeStop, bool answerAtOnce = false)
     {
         HungRrf? hung = null;
         await using LinkServiceOverSpi.Host host = await LinkServiceOverSpi.Host.StartAsync(createAdapter: (provider, rrf, settings) =>
         {
-            hung = new HungRrf(rrf);
+            hung = new HungRrf(rrf, answerAtOnce);
             return new SpiAdapter(provider.GetRequiredService<EventLogger>(), provider.GetRequiredService<DuetControlServer.Model.ObjectModel>(), NullLogger<SpiAdapter>.Instance,
                 settings, hung, hung, null);
         });
@@ -223,6 +235,18 @@ public class ShutdownHang
             {
                 Assert.That(DateTime.UtcNow, Is.LessThan(end), "DCS did not notice that RRF does not answer");
                 await Task.Delay(50);
+            }
+
+            if (answerAtOnce)
+            {
+                // The lost connection is counted before it is reported (SPI.cs:471-474), and the transfers go on at once. Wait for the next failed round, so that
+                // the report is done and the stop cannot end the thread through the event log, see LostConnectionAfterTheStopEndsTheThread
+                int restarts = FullTransferRestarts(host.Adapter);
+                while (FullTransferRestarts(host.Adapter) <= restarts + host.Get<IOptions<DuetControlServer.Settings>>().Value.MaxSbcRetries)
+                {
+                    Assert.That(DateTime.UtcNow, Is.LessThan(end), "The transfers did not go on after the lost connection");
+                    await Task.Delay(10);
+                }
             }
         }
         Assert.That(host.Service.ExecuteTask!.IsCompleted, Is.False, $"The transfer thread ended while RRF did not answer: {host.Service.ExecuteTask.Exception}");
@@ -242,6 +266,11 @@ public class ShutdownHang
         await ((Task)host.Service.ExecuteTask).ContinueWith(_ => { }).WaitAsync(Timeout);
         return (elapsed, stopped);
     }
+
+    /// <summary>
+    /// Full transfers the SPI adapter has started over (SPI.cs:362, 370, PrintDiagnostics)
+    /// </summary>
+    private static int FullTransferRestarts(SpiAdapter adapter) => int.Parse(Regex.Match(Diagnostics(adapter), @"Full transfer restarts: (\d+)").Groups[1].Value);
 
     private static string Diagnostics(SpiAdapter adapter)
     {
@@ -269,11 +298,12 @@ public class ShutdownHang
 
     /// <summary>
     /// The SPI port of RRF until <see cref="Hang"/>, then a processor that no longer answers: TfrRdy keeps its level, so every wait for an edge ends with
-    /// the timeout, and the SPI peripheral clocks out 0xFF as without a DMA set up (FakeRrfSpi.TransferFullDuplex)
+    /// the timeout, and the SPI peripheral clocks out 0xFF as without a DMA set up (FakeRrfSpi.TransferFullDuplex).
+    /// With <paramref name="answerAtOnce"/>, TfrRdy toggles at every wait instead, so the exchanges go on without a wait but carry only 0xFF
     /// </summary>
-    private sealed class HungRrf(FakeRrfSpi rrf) : ISpiDevice, IInputGpioPin
+    private sealed class HungRrf(FakeRrfSpi rrf, bool answerAtOnce = false) : ISpiDevice, IInputGpioPin
     {
-        private volatile bool _hung;
+        private volatile bool _hung, _level;
         private readonly ManualResetEventSlim _stopWaiting = new();
 
         public void Hang() => _hung = true;
@@ -285,7 +315,7 @@ public class ShutdownHang
 
         public int MissedEdges => _hung ? 0 : rrf.MissedEdges;
 
-        public bool Value => !_hung && rrf.Value;
+        public bool Value => _hung ? _level : rrf.Value;
 
         public void FlushEvents()
         {
@@ -300,6 +330,11 @@ public class ShutdownHang
             if (!_hung)
             {
                 return rrf.WaitForEvent(timeout);
+            }
+            if (answerAtOnce)
+            {
+                _level = !_level;
+                return _level;
             }
             _stopWaiting.Wait(timeout);
             throw new OperationCanceledException();
