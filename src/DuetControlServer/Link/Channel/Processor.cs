@@ -117,6 +117,12 @@ public sealed class Processor
     private bool _allFilesAborted;
 
     /// <summary>
+    /// This is set to true if the notification about aborted files went out with the last transfer. RRF wrote the data of that transfer
+    /// before it read the notification, which ends a pending macro request with an error, so macro requests in that data are void
+    /// </summary>
+    private bool _allFilesAbortedSent;
+
+    /// <summary>
     /// Stack of the different channel states
     /// </summary>
     public Stack<StackState> Stack { get; } = new();
@@ -861,6 +867,9 @@ public sealed class Processor
     /// </summary>
     public void Spin()
     {
+        // The data RRF sent with the notification about aborted files has been processed
+        _allFilesAbortedSent = false;
+
         // 1. Whole line comments and pending replies
         ResolveCommentCodes();
         ResolvePendingReplies();
@@ -892,7 +901,8 @@ public sealed class Processor
         // 3. Abort requests
         if (_allFilesAborted)
         {
-            _allFilesAborted = !_linkAdapter.WriteInvalidateChannel(Channel);
+            _allFilesAbortedSent = _linkAdapter.WriteInvalidateChannel(Channel);
+            _allFilesAborted = !_allFilesAbortedSent;
             return;
         }
 
@@ -1297,6 +1307,13 @@ public sealed class Processor
         // Macro requests are not meant for comment codes, resolve them separately
         ResolveCommentCodes();
 
+        // RRF ends a pending macro request with an error when it is notified about aborted files, so a request it sent before is void
+        if (_allFilesAborted || _allFilesAbortedSent)
+        {
+            _logger.LogDebug("Macro file {File} was requested before RRF got the abort of all files. Discarding request.", virtualFile);
+            return;
+        }
+
         // Cannot start system macro if something is still busy
         if (!fromCode && Stack.Count > 1)
         {
@@ -1462,6 +1479,6 @@ public sealed class Processor
 
         // Clear codes that are still pending but have not been fed into the SPI interface yet
         _codeProcessor.CancelPending(Channel);
-        _allFilesAborted = false;
+        _allFilesAborted = _allFilesAbortedSent = false;
     }
 }

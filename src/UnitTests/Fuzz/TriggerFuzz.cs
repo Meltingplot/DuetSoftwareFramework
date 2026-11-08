@@ -32,8 +32,9 @@ namespace UnitTests.Fuzz;
 /// </list>
 /// Trigger macros do not contain M112, which would stop the machine until a reset (TriggerMacros.EmergencyStopTriggerWhileOtherChannelsAreBusy
 /// covers it). Files are aborted by the abort lines of the macros and the job and by cancelling the job, but not by aborting a channel from
-/// outside a file (LinkInterface.AbortAllAsync, as the IPC command InvalidateChannel does): that can cross a macro request of RRF and block the
-/// channel, see <see cref="ChannelWorksAfterAbortWhileMacroRequestIsUnderway"/> and TriggerMacros.TriggerChannelWorksAfterInvalidationDuringTriggerRequest
+/// outside a file (LinkInterface.AbortAllAsync, as the IPC command InvalidateChannel does): RRF still sends a macro request that the abort
+/// reaches before it has gone out and blocks the channel, see TriggerMacros.TriggerChannelWorksAfterInvalidationDuringTriggerRequest.
+/// A request that has gone out is covered by <see cref="ChannelWorksAfterAbortWhileMacroRequestIsUnderway"/> and <see cref="ChannelWorksAfterAbortCrossingMacroRequest"/>
 /// </summary>
 [TestFixture]
 public class TriggerFuzz
@@ -515,12 +516,13 @@ public class TriggerFuzz
         Assert.That(host.Firmware.WaitUntil(firmware => firmware.TransferCount > transfer && firmware.IsTransferHeld, Timeout), Is.True, "No transfer");
     }
 
-    [Test, Explicit("DSF starts a macro that RRF requested for a code DSF has just cancelled (Processor.cs:1308-1325), RRF gives the request up when " +
-        "the InvalidateChannel of the abort arrives (SbcInterface.cpp:880-883), so DSF waits for the end of that macro forever and the channel is blocked")]
+    [Test]
     public async Task ChannelWorksAfterAbortWhileMacroRequestIsUnderway()
     {
         // Found by this fuzz test with an abort of HTTP while M98 waited for its macro (LinkInterface.AbortAllAsync, as the IPC command
-        // InvalidateChannel and the abort keyword outside a file do)
+        // InvalidateChannel and the abort keyword outside a file do). RRF gives the request up when the InvalidateChannel of the abort arrives
+        // (SbcInterface.cpp:880-883), so DSF must not start the macro (Processor.DoMacroFile). Before, DSF started it without a start code and
+        // waited for the end of that macro forever
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
         host.WriteMacro("http-macro.g", "G4 P90001\n");
         host.Firmware.HoldTransfers();
@@ -551,7 +553,61 @@ public class TriggerFuzz
         bool finished = await Task.WhenAny(next, Task.Delay(TimeSpan.FromSeconds(2))) == next;
         Assert.That(finished, Is.True, $"The next code on HTTP did not finish, DSF has {DsfStackDepth(host, CodeChannel.HTTP)} stack levels on HTTP and RRF " +
             $"{(host.Firmware.IsIdle(CodeChannel.HTTP) ? "none" : "some")}");
+
+        // The request arrived before InvalidateChannel went out, and DSF did not start the macro
+        Assert.That(InvalidateChannelTransfer(host, CodeChannel.HTTP), Is.GreaterThan(MacroRequestTransfers(host, CodeChannel.HTTP).Single()));
+        Assert.That(host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.None.EqualTo("G4 P90001"));
     }
+
+    [Test]
+    public async Task ChannelWorksAfterAbortCrossingMacroRequest()
+    {
+        // As ChannelWorksAfterAbortWhileMacroRequestIsUnderway, but DSF aborts HTTP before RRF sends the macro request, so InvalidateChannel goes
+        // out with the transfer that brings the request. After each transfer RRF reads the packets of DSF before it writes its own for the next
+        // transfer (SbcInterface.cpp:267-268, ExchangeData reads from :312 and writes macro requests at :1492-1506 and :1576-1590), so it sent this
+        // request before it read InvalidateChannel and gives the request up as well (:880-883)
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        host.WriteMacro("http-macro.g", "G4 P90001\n");
+        host.Firmware.HoldTransfers();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, Timeout), Is.True, "The transfers were not held");
+
+        Task<string> m98 = host.StartCode("M98 P\"http-macro.g\"");
+        for (int i = 0; i < 100 && !host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Any(code => code.Text == "M98 P\"http-macro.g\""); i++)
+        {
+            Step(host);
+        }
+        await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
+        host.Firmware.ReleaseTransfers();
+        try
+        {
+            await m98.WaitAsync(Timeout);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled by the abort
+        }
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetReceivedRequests().Any(request => request.Request == SbcRequest.InvalidateChannel) &&
+            firmware.IsIdle(CodeChannel.HTTP), Timeout), Is.True, "RRF did not get the abort");
+        Assert.That(InvalidateChannelTransfer(host, CodeChannel.HTTP), Is.EqualTo(MacroRequestTransfers(host, CodeChannel.HTTP).Single()));
+
+        // DSF did not start the macro of the request, the next macro on HTTP runs as usual
+        Assert.That(await host.ExecuteAsync("M98 P\"http-macro.g\""), Is.EqualTo("\n"));
+        Assert.That(host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Count(code => code.Text == "G4 P90001"), Is.EqualTo(1));
+        Assert.That(host.Firmware.GetReceivedRequests().Count(request => request.Request == SbcRequest.MacroStarted && request.Channel == CodeChannel.HTTP), Is.EqualTo(1));
+        Assert.That(MacroRequestTransfers(host, CodeChannel.HTTP), Has.Length.EqualTo(2));
+    }
+
+    /// <summary>
+    /// Transfers in which RRF asked for a macro on a channel
+    /// </summary>
+    private static int[] MacroRequestTransfers(FakeFirmwareHost host, CodeChannel channel) =>
+        [.. host.Firmware.GetSentPackets().Where(packet => packet.Request == Request.ExecuteMacro && packet.Channel == channel).Select(packet => packet.Transfer)];
+
+    /// <summary>
+    /// Transfer that brought the only InvalidateChannel of a channel to RRF
+    /// </summary>
+    private static int InvalidateChannelTransfer(FakeFirmwareHost host, CodeChannel channel) =>
+        host.Firmware.GetReceivedRequests().Single(request => request.Request == SbcRequest.InvalidateChannel && request.Channel == channel).Transfer;
 
     /// <summary>
     /// Run a failing input again, 20 times because the interleavings depend on the timing. DSF_TRIGGER_FUZZ_INPUT names a file with the text of
