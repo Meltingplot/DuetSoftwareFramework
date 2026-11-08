@@ -27,13 +27,14 @@ using File = System.IO.File;
 using Settings = DuetPluginService.Settings;
 
 /// <summary>
-/// DuetPluginService (DPS) in-process, with the services wired like DuetPluginService/Program.cs:91-98 and started in the order of the generic host
+/// DuetPluginService (DPS) in-process, with the services wired like DuetPluginService/Program.cs:91-99 and started in the order of the generic host
 /// (PluginService, then CommandService). DPS reaches DCS through a <see cref="DcsBridge"/> for both its plugin service connection and the command
 /// connections it opens itself (ResolvePath, SetPluginProcess, WriteMessage, SetUpdateStatus).
 /// The settings point to a temporary directory: AppArmor profiles go to a directory of their own, apparmor_parser, the Python package installer and the
 /// package managers are replaced by <see cref="FakeTool"/> scripts that record their arguments, and the profile template is the one that DSF ships
-/// (pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf). The tests run as a regular user, so Environment.IsPrivilegedProcess is false: this is the
-/// service that runs as dsf user (duetpluginservice.service), the root code paths are not reached
+/// (pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf), systemd-run is a <see cref="FakeTool"/> as well. The tests run as a regular user. By default DPS is
+/// the service that runs as dsf user (duetpluginservice.service); with privileged set, <see cref="ServicePrivileges"/> makes it take the code paths of the
+/// root service (duetpluginservice-root.service), which then run as the user of the test, with the fake tools
 /// </summary>
 public sealed class DpsHost : IAsyncDisposable
 {
@@ -99,8 +100,9 @@ public sealed class DpsHost : IAsyncDisposable
     /// <param name="configure">Optional callback to change the settings</param>
     /// <param name="register">Whether to start CommandService, which registers DPS as plugin service of DCS</param>
     /// <param name="asRoot">Whether DCS treats the connections of DPS as the ones of the root plugin service (DPS itself still runs as regular user)</param>
+    /// <param name="privileged">Whether DPS takes the code paths of the root plugin service (<see cref="ServicePrivileges.IsPrivileged"/>)</param>
     /// <returns>Started DPS</returns>
-    public static async Task<DpsHost> StartAsync(FakeFirmwareHost? dcs, string pluginDirectory, Action<Settings>? configure = null, bool register = true, bool asRoot = false)
+    public static async Task<DpsHost> StartAsync(FakeFirmwareHost? dcs, string pluginDirectory, Action<Settings>? configure = null, bool register = true, bool asRoot = false, bool privileged = false)
     {
         string directory = Path.Combine(Path.GetTempPath(), "dsf-dps-" + Guid.NewGuid().ToString("N"));
         System.IO.Directory.CreateDirectory(Path.Combine(directory, "apparmor.d"));
@@ -119,7 +121,8 @@ public sealed class DpsHost : IAsyncDisposable
             InstallPackageCommand = FakeTool.Create(directory, "apt-install"),
             InstallPythonPackageCommand = FakeTool.Create(directory, "pipInstall2.py"),
             InstallLocalPackageCommand = FakeTool.Create(directory, "dpkg-install"),
-            UninstallLocalPackageCommand = FakeTool.Create(directory, "dpkg-remove")
+            UninstallLocalPackageCommand = FakeTool.Create(directory, "dpkg-remove"),
+            SystemdRunCommand = FakeTool.Create(directory, "systemd-run")
         };
         configure?.Invoke(settings);
 
@@ -129,8 +132,9 @@ public sealed class DpsHost : IAsyncDisposable
             .AddLogging(builder => builder.SetMinimumLevel(LogLevel.Trace).AddProvider(log))
             .AddSingleton(Options.Create(settings))
             .AddSingleton<IHostApplicationLifetime, ApplicationLifetime>()
-            // Program.cs:91-98
+            // Program.cs:91-99
             .AddSingleton<CommandFactory>()
+            .AddSingleton(new ServicePrivileges { IsPrivileged = privileged })
             .AddSingleton<IPermissionManager, AppArmorPermissionManager>()
             .AddSingleton<PluginStore>()
             .AddHostedService<PluginService>()

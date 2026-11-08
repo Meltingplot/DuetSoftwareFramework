@@ -16,9 +16,10 @@ namespace DuetPluginService.IPC;
 /// <summary>
 /// Implementation of the <see cref="DuetAPI.Commands.InstallSystemPackage"/> command
 /// </summary>
+/// <param name="privileges">Privileges of this service</param>
 /// <param name="loggerFactory">Logger factory</param>
 /// <param name="settings">Application settings</param>
-public sealed class InstallSystemPackage(ILoggerFactory loggerFactory, IOptions<Settings> settings) : DuetAPI.Commands.InstallSystemPackage
+public sealed class InstallSystemPackage(ServicePrivileges privileges, ILoggerFactory loggerFactory, IOptions<Settings> settings) : DuetAPI.Commands.InstallSystemPackage
 {
     private readonly Settings _settings = settings.Value;
 
@@ -72,7 +73,7 @@ public sealed class InstallSystemPackage(ILoggerFactory loggerFactory, IOptions<
     [UnsupportedOSPlatform("windows")]
     public override async Task ExecuteAsync(CancellationToken cancellationToken = default)
     {
-        if (!Environment.IsPrivilegedProcess)
+        if (!privileges.IsPrivileged)
         {
             throw new ArgumentException("Unable to manage system packages without root privileges");
         }
@@ -115,7 +116,7 @@ public sealed class InstallSystemPackage(ILoggerFactory loggerFactory, IOptions<
             if (!string.IsNullOrWhiteSpace(args))
             {
                 // Run the installation process
-                using Process process = TransientUnit.Start(PackageUnit, _settings.InstallLocalPackageCommand, args);
+                using Process process = TransientUnit.Start(PackageUnit, _settings.InstallLocalPackageCommand, args, systemdRun: _settings.SystemdRunCommand);
                 try
                 {
                     await process.WaitForExitAsync(cancellationToken);
@@ -145,7 +146,7 @@ public sealed class InstallSystemPackage(ILoggerFactory loggerFactory, IOptions<
 
                     try
                     {
-                        using Process updateScriptProcess = TransientUnit.Start(PackageUnit, updateScript, string.Empty);
+                        using Process updateScriptProcess = TransientUnit.Start(PackageUnit, updateScript, string.Empty, systemdRun: _settings.SystemdRunCommand);
                         await updateScriptProcess.WaitForExitAsync(cancellationToken);
                     }
                     catch (OperationCanceledException)

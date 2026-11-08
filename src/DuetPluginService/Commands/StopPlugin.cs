@@ -14,8 +14,10 @@ namespace DuetPluginService.IPC;
 /// Implementation of the <see cref="DuetAPI.Commands.StopPlugin"/> command
 /// </summary>
 /// <param name="pluginStore">Plugin store</param>
+/// <param name="privileges">Privileges of this service</param>
 /// <param name="loggerFactory">Logger factory</param>
-public sealed class StopPlugin(PluginStore pluginStore, ILoggerFactory loggerFactory, IOptions<Settings> settings) : DuetAPI.Commands.StopPlugin
+/// <param name="settings">Application settings</param>
+public sealed class StopPlugin(PluginStore pluginStore, ServicePrivileges privileges, ILoggerFactory loggerFactory, IOptions<Settings> settings) : DuetAPI.Commands.StopPlugin
 {
     private readonly Settings _settings = settings.Value;
 
@@ -44,11 +46,11 @@ public sealed class StopPlugin(PluginStore pluginStore, ILoggerFactory loggerFac
 
             if (plugin is null)
             {
-                throw new ArgumentException($"Plugin {Plugin} not found by {(Environment.IsPrivilegedProcess ? "root service" : "service")}");
+                throw new ArgumentException($"Plugin {Plugin} not found by {(privileges.IsPrivileged ? "root service" : "service")}");
             }
 
             // Is this the right service to start the plugin?
-            if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser) != Environment.IsPrivilegedProcess)
+            if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser) != privileges.IsPrivileged)
             {
                 throw new InvalidOperationException("Wrong plugin service to start this plugin");
             }

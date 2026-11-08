@@ -35,13 +35,14 @@ public static class TransientUnit
     /// <param name="arguments">Command-line arguments</param>
     /// <param name="redirectOutput">Whether stdout and stderr are to be redirected</param>
     /// <param name="environment">Environment variables to pass to the unit</param>
+    /// <param name="systemdRun">Path to the utility that runs the command as a transient unit or null for /usr/bin/systemd-run</param>
     /// <returns>Process representing the unit, exiting with the same code as the command</returns>
     /// <exception cref="IOException">Unit could not be started</exception>
     /// <remarks>
     /// The returned process only tracks the unit, so killing it leaves the unit running.
     /// Units are started with --collect so a previous failure does not block the name
     /// </remarks>
-    public static Process Start(string unit, string fileName, string arguments, bool redirectOutput = false, IReadOnlyDictionary<string, string>? environment = null)
+    public static Process Start(string unit, string fileName, string arguments, bool redirectOutput = false, IReadOnlyDictionary<string, string>? environment = null, string? systemdRun = null)
     {
         string setEnv = string.Empty;
         if (environment is not null)
@@ -54,7 +55,7 @@ public static class TransientUnit
 
         ProcessStartInfo startInfo = new()
         {
-            FileName = SystemdRun,
+            FileName = systemdRun ?? SystemdRun,
             Arguments = $"--collect --wait --pipe --quiet --unit={unit} {setEnv}{fileName} {arguments}",
             RedirectStandardOutput = redirectOutput,
             RedirectStandardError = redirectOutput

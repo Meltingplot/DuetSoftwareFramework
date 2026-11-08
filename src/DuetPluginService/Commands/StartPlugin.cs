@@ -19,10 +19,11 @@ namespace DuetPluginService.IPC;
 /// Implementation of the <see cref="DuetAPI.Commands.StartPlugin"/> command
 /// </summary>
 /// <param name="pluginStore">Plugin store</param>
+/// <param name="privileges">Privileges of this service</param>
 /// <param name="lifetime">Application lifetime</param>
 /// <param name="loggerFactory">Logger factory</param>
 /// <param name="settings">Application settings</param>
-public sealed class StartPlugin(PluginStore pluginStore, IHostApplicationLifetime lifetime, ILoggerFactory loggerFactory, IOptions<Settings> settings) : DuetAPI.Commands.StartPlugin
+public sealed class StartPlugin(PluginStore pluginStore, ServicePrivileges privileges, IHostApplicationLifetime lifetime, ILoggerFactory loggerFactory, IOptions<Settings> settings) : DuetAPI.Commands.StartPlugin
 {
     private readonly Settings _settings = settings.Value;
 
@@ -51,11 +52,11 @@ public sealed class StartPlugin(PluginStore pluginStore, IHostApplicationLifetim
         }
         if (plugin is null)
         {
-            throw new ArgumentException($"Plugin {Plugin} not found by {(Environment.IsPrivilegedProcess ? "root service" : "service")}");
+            throw new ArgumentException($"Plugin {Plugin} not found by {(privileges.IsPrivileged ? "root service" : "service")}");
         }
 
         // Is this the right service to start the plugin?
-        if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser) != Environment.IsPrivilegedProcess)
+        if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser) != privileges.IsPrivileged)
         {
             throw new InvalidOperationException("Wrong plugin service to start this plugin");
         }

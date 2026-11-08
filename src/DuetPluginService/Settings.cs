@@ -107,6 +107,11 @@ public sealed class Settings
     public string UninstallLocalPackageArguments { get; set; } = "-r {package}";
 
     /// <summary>
+    /// Utility that runs the system package installations as transient systemd units
+    /// </summary>
+    public string SystemdRunCommand { get; set; } = "/usr/bin/systemd-run";
+
+    /// <summary>
     /// Command to launch Python plugin scripts that have a virtual environment
     /// </summary>
     public string PythonLaunchCommand { get; set; } = "/bin/bash";

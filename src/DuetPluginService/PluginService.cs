@@ -22,9 +22,10 @@ namespace DuetPluginService;
 /// <param name="commandFactory">Command factory to create commands</param>
 /// <param name="permissionManager">Permission manager</param>
 /// <param name="pluginStore">Plugin store</param>
+/// <param name="privileges">Privileges of this service</param>
 /// <param name="logger">Logger</param>
 /// <param name="settings">Settings</param>
-public sealed class PluginService(CommandFactory commandFactory, IPermissionManager permissionManager, PluginStore pluginStore, ILogger<PluginService> logger, IOptions<Settings> settings) : IHostedService
+public sealed class PluginService(CommandFactory commandFactory, IPermissionManager permissionManager, PluginStore pluginStore, ServicePrivileges privileges, ILogger<PluginService> logger, IOptions<Settings> settings) : IHostedService
 {
     /// <summary>
     /// Register installed plugins
@@ -61,7 +62,7 @@ public sealed class PluginService(CommandFactory commandFactory, IPermissionMana
 
         // Regenerate any AppArmor profile that is missing from disk. The DSF package postinst removes the dsf.* profile
         // files on upgrade, so this loop runs once after each package update to rebuild them from the current template
-        if (Environment.IsPrivilegedProcess && !settings.Value.DisableAppArmor && loadedPlugins.Count > 0)
+        if (privileges.IsPrivileged && !settings.Value.DisableAppArmor && loadedPlugins.Count > 0)
         {
             List<Plugin> missingProfiles = [];
             foreach (Plugin plugin in loadedPlugins)

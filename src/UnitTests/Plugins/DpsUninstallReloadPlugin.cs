@@ -14,8 +14,8 @@ using File = System.IO.File;
 /// <summary>
 /// UninstallPlugin (DuetPluginService/Commands/UninstallPlugin.cs) and ReloadPlugin (Commands/ReloadPlugin.cs) of the DuetPluginService instance that runs as
 /// dsf user, and the manifests that PluginService.StartAsync loads (PluginService.cs:34-59). The plugins are installed with the InstallPlugin command of DPS
-/// first, so the file lists in their manifests are the ones DPS wrote. Not covered, because it runs only as root: the removal of the AppArmor profile
-/// (UninstallPlugin.cs:167-171) and the regeneration of missing profiles at start (PluginService.cs:62-112)
+/// first, so the file lists in their manifests are the ones DPS wrote. The part of the root service, the removal of the AppArmor profile
+/// (UninstallPlugin.cs:167-171) and the regeneration of missing profiles at start (PluginService.cs:62-112), is covered by <see cref="DpsRootService"/>
 /// </summary>
 [TestFixture]
 public class DpsUninstallReloadPlugin : DpsTestBase

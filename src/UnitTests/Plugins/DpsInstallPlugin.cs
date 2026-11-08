@@ -16,8 +16,8 @@ using File = System.IO.File;
 /// <summary>
 /// Installation of plugin packages by the DuetPluginService instance that runs as dsf user (DuetPluginService/Commands/InstallPlugin.cs:80-264).
 /// The command is created and run like CommandService does for a command from DCS, DCS resolves 0:/ for it.
-/// Not covered, because it runs only as root (InstallPlugin.cs:54-79): the preinstall command, the installation of SbcPackageDependencies and the AppArmor
-/// profile at installation time; <see cref="DpsAppArmorProfiles"/> covers the profile itself
+/// The part of the root service (InstallPlugin.cs:54-79: the preinstall command, the installation of SbcPackageDependencies and the AppArmor profile at
+/// installation time) is covered by <see cref="DpsRootService"/>, <see cref="DpsAppArmorProfiles"/> covers the profile itself
 /// </summary>
 [TestFixture]
 public class DpsInstallPlugin : DpsTestBase

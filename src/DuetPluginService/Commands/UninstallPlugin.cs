@@ -18,9 +18,10 @@ namespace DuetPluginService.IPC;
 /// </summary>
 /// <param name="permissionManager">Permission manager</param>
 /// <param name="pluginStore">Plugin store</param>
+/// <param name="privileges">Privileges of this service</param>
 /// <param name="loggerFactory">Logger factory</param>
 /// <param name="settings">Application settings</param>
-public sealed class UninstallPlugin(IPermissionManager permissionManager, PluginStore pluginStore, ILoggerFactory loggerFactory, IOptions<Settings> settings) : DuetAPI.Commands.UninstallPlugin
+public sealed class UninstallPlugin(IPermissionManager permissionManager, PluginStore pluginStore, ServicePrivileges privileges, ILoggerFactory loggerFactory, IOptions<Settings> settings) : DuetAPI.Commands.UninstallPlugin
 {
     private readonly Settings _settings = settings.Value;
 
@@ -56,7 +57,7 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
 
         if (plugin is null)
         {
-            throw new ArgumentException($"Plugin {Plugin} not found by {(Environment.IsPrivilegedProcess ? "root service" : "service")}");
+            throw new ArgumentException($"Plugin {Plugin} not found by {(privileges.IsPrivileged ? "root service" : "service")}");
         }
         if (plugin.Pid > 0)
         {
@@ -64,7 +65,7 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
         }
 
         // Root plugins are deleted by the root service to avoid potential permission issues
-        if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser) == Environment.IsPrivilegedProcess)
+        if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser) == privileges.IsPrivileged)
         {
             string manifestFile = Path.Combine(settings.Value.PluginDirectory, $"{Plugin}.json");
 
@@ -165,7 +166,7 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
         }
 
         // Remove the security policy
-        if (Environment.IsPrivilegedProcess && !_settings.DisableAppArmor)
+        if (privileges.IsPrivileged && !_settings.DisableAppArmor)
         {
             await permissionManager.UninstallProfileAsync(plugin, cancellationToken);
         }

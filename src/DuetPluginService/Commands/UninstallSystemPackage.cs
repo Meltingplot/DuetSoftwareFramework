@@ -9,7 +9,9 @@ namespace DuetPluginService.IPC;
 /// <summary>
 /// Implementation of the <see cref="DuetAPI.Commands.UninstallSystemPackage"/> command
 /// </summary>
-public sealed class UninstallSystemPackage(IOptions<Settings> settings) : DuetAPI.Commands.UninstallSystemPackage
+/// <param name="privileges">Privileges of this service</param>
+/// <param name="settings">Application settings</param>
+public sealed class UninstallSystemPackage(ServicePrivileges privileges, IOptions<Settings> settings) : DuetAPI.Commands.UninstallSystemPackage
 {
     private readonly Settings _settings = settings.Value;
 
@@ -21,7 +23,7 @@ public sealed class UninstallSystemPackage(IOptions<Settings> settings) : DuetAP
     /// <exception cref="ArgumentException">Failed to uninstall package</exception>
     public override async Task ExecuteAsync(CancellationToken cancellationToken = default)
     {
-        if (!Environment.IsPrivilegedProcess)
+        if (!privileges.IsPrivileged)
         {
             throw new ArgumentException("Unable to manage system packages without root privileges");
         }

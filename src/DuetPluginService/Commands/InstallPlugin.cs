@@ -23,9 +23,10 @@ namespace DuetPluginService.IPC;
 /// </summary>
 /// <param name="permissionManager">Permission manager</param>
 /// <param name="pluginStore">Plugin store</param>
+/// <param name="privileges">Privileges of this service</param>
 /// <param name="loggerFactory">Logger factory</param>
 /// <param name="settings">Application settings</param>
-public sealed class InstallPlugin(IPermissionManager permissionManager, PluginStore pluginStore, ILoggerFactory loggerFactory, IOptions<Settings> settings) : DuetAPI.Commands.InstallPlugin
+public sealed class InstallPlugin(IPermissionManager permissionManager, PluginStore pluginStore, ServicePrivileges privileges, ILoggerFactory loggerFactory, IOptions<Settings> settings) : DuetAPI.Commands.InstallPlugin
 {
     private readonly Settings _settings = settings.Value;
 
@@ -51,7 +52,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
             sdPath = await connection.ResolvePathAsync("0:/", cancellationToken);
         }
 
-        if (Environment.IsPrivilegedProcess)
+        if (privileges.IsPrivileged)
         {
             // Run preinstall routine if needed
             if (plugin.SbcPackageDependencies.Count > 0 && !string.IsNullOrEmpty(_settings.PreinstallPackageCommand))
@@ -321,7 +322,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
     /// <param name="package">Name of the package to install</param>
     private async Task InstallPackage(string package, CancellationToken cancellationToken)
     {
-        if (!Environment.IsPrivilegedProcess)
+        if (!privileges.IsPrivileged)
         {
             throw new ArgumentException("Cannot install packages as regular user");
         }
@@ -356,7 +357,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
     /// <param name="plugin">Plugin identifier</param>
     private async Task InstallPythonPackages(string plugin, CancellationToken cancellationToken)
     {
-        if (Environment.IsPrivilegedProcess)
+        if (privileges.IsPrivileged)
         {
             throw new ArgumentException("Cannot install Python packages as root");
         }
