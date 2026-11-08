@@ -132,23 +132,21 @@ The census showed it once a restart between two exchanges was added (`SpiFault.R
 
 ## Findings of the fuzz and coverage tests (2026-11-07)
 
-The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the trigger tests of #129 found 9 more, and the stop path tests of #130 another 4. None is fixed. Each has an `[Explicit]` test in `src/UnitTests` that reproduces it and fails today. Run one by its exact name, e.g. `dotnet test src/UnitTests/bin/Debug/net10.0/UnitTests.dll --filter "FullyQualifiedName=UnitTests.WebServer.SdRootDeletionTests.RootCannotBeDeleted"`. Once a finding is fixed, remove the `[Explicit]` of its test and this entry.
+The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the trigger tests of #129 found 9 more, and the stop path tests of #130 another 4.
+- **Fixed and removed from this list (2026-11-08):** H1 (#136), G2 (#132), I1 (#135), T2 (#134), T3 (#133), P1 and P2 (#137), and the extended-link part of P4 (#138). The lab printer showed each fix, and the stock build showed the bug (`design/lab-test-plan.md`, section 14, 2026-11-08).
+- **The others:** each has an `[Explicit]` test in `src/UnitTests` that reproduces it and fails today. Run one by its exact name, e.g. `dotnet test src/UnitTests/bin/Debug/net10.0/UnitTests.dll --filter "FullyQualifiedName=UnitTests.Codes.TriggerMacros.TriggerChannelWorksAfterInvalidationDuringTriggerRequest"`. Once a finding is fixed, remove the `[Explicit]` of its test and this entry.
 
-- **Line numbers:** DSF `v3.7-dev` at c6d225f2. The production code there is the same as at d576ee9e, where the tests started. RRF `3.7-dev` at cde4e4fa1 (3.7.0+1.mp.8).
+- **Line numbers:** DSF `v3.7-dev` at c6d225f2. The production code there is the same as at d576ee9e, where the tests started. Entries added on 2026-11-08 cite DSF at 9e6449d1. RRF `3.7-dev` at cde4e4fa1 (3.7.0+1.mp.8).
 - **Printer:** "printer" marks findings that were confirmed on the lab printer on 2026-11-07, with DSF 3.7.0+mp.13 and RRF 3.7.0+1.mp.8.
-- **Origin:** git blame puts all of them on upstream code, except the two DuetHttpClient findings in H14 and H15 and the fork's extended SPI link in S1.
+- **Origin:** git blame puts all of them on upstream code, except the two DuetHttpClient findings in H14 and H15, the fork's extended SPI link in S1 and S5, and the fork's sequence guard in S4.
 
 ### Highest priority
 
-1. **H1** One request deletes the whole virtual SD card, `config.g` included.
-2. **G2** M98 with a path that DSF refuses stops DCS. Printer.
-3. **I1** DCS never refuses a missing permission.
-4. **I3** An Executed interceptor with filters blocks its channel for good. Printer.
-5. **O2** A value of the wrong type in a firmware response ends the object model update loop.
-6. **O3** and **O4** An out-of-range float or a global string with invalid UTF-8 makes the object model unserializable, so model queries, subscriptions and DWS fail.
-7. **T1** and **T2** An invalidation or abort at the wrong moment leaves the Trigger channel or another channel blocked until DCS restarts. The door and E-stop macros run on the Trigger channel.
-8. **T3** A full code buffer can hold back the M98 and the M112 of trigger2.g.
-9. **P1** and **P4** One bit error can leave the plain link stuck for 60 s, and a trigger macro can get lost after a reconnect while RRF keeps running.
+1. **I3** An Executed interceptor with filters blocks its channel for good. Printer.
+2. **O2** A value of the wrong type in a firmware response ends the object model update loop.
+3. **O3** and **O4** An out-of-range float or a global string with invalid UTF-8 makes the object model unserializable, so model queries, subscriptions and DWS fail.
+4. **T1** An invalidation of the Trigger channel at the wrong moment leaves it blocked until DCS restarts. The door and E-stop macros run on the Trigger channel. Needs RRF.
+5. **P4** (plain link) A trigger macro can get lost after a reconnect while RRF keeps running. The fix is case 2 of #57, which is on hold.
 
 ### SBC link (#122)
 
@@ -166,16 +164,15 @@ The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the tr
   - DSF writes a `StringHeader` before the key (`SPI.cs:1655-1670`, `Writer.cs:729`). RRF reads the key from the start of the data (`SbcInterface.cpp:1298-1310`).
   - As a result, `NetworkUpdated()` and `VolumesUpdated()` are never called from the SBC.
   - Test: `SPI.LinkServiceOverSpi.ObjectModelKeyChangedIsReadByRrf`.
+- **S4. A lost connection while the sequence guard resends a transfer can send a transfer of the old session.** From reading the code, not tested.
+  - The guard saves the pending transfer and sets `_resending` (`SPI.cs:1989-2002`). Only a completed transfer clears it again, after it has put the pending transfer back (`:408-416`).
+  - Neither the lost-connection catch (`:442-470`) nor `EndSession` (`:501-512`) clears it. After the reconnect, the first completed transfer therefore swaps in the pending header of the old session, with its extended sequence number, although DSF has left the extended link.
+- **S5. A lost connection in the switch window of the extended link gives RRF a regular number it takes in sequence.** From reading the code, not tested.
+  - In the window, RRF has switched and DSF has not (`_extendedRequested` without `_extendedTx`, `SPI.cs:422-433`).
+  - The catch advances the sequence number only when DSF was on the extended link (`leavingExtendedLink = _extendedTx`, `:454`), so the fix of #138 does not apply there. This is the same cause as the plain-link part of P4.
 
 ### HTTP: DuetWebServer and DuetHttpClient (#123)
 
-- **H1. A recursive DELETE of the SD root deletes the whole virtual SD card.**
-  - `DELETE /machine/file/0%3A%2F?recursive=true` answers 204 and removes every file and the directory itself. The same works with `0:`, `0:/.`, `/` and `0:/sys/..`.
-  - Cause: `FilePathResolver.CombineContained` accepts the root itself (`FilePathResolver.cs:62-66`), and `DeleteFileOrDirectory` passes `recursive` on (`MachineEndpoints.cs:362-367`).
-  - RRF refuses this with "Delete root folder is not allowed" (`MassStorage.cpp:840-858`). In SBC mode RRF hands the delete to DSF before that check (`:822-836`), and `LinkService.HandleDeleteFileOrDirectory` has no check either (`LinkService.cs:1113-1137`).
-  - On the CHX, plugin directories are mounted below `/opt/dsf/sd`.
-  - Confirmed only in-process, not on the printer.
-  - Test: `WebServer.SdRootDeletionTests.RootCannotBeDeleted`.
 - **H2. Expired sessions stay in DCS for good when many expire at once.** Printer: 40 parallel logins left 4, each logged "Failed to unregister … (11) Resource temporarily unavailable".
   - Each expiry opens its own IPC connection (`SessionStorage.cs:404, 420-422`). The DCS backlog is 4 (`Settings.cs:116`, also in the printer's `config.json`), and there is no retry.
   - Test: `WebServer.WebServerFindings.ExpiredSessionsAreRemovedFromDcs`.
@@ -191,7 +188,9 @@ The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the tr
 - **H10. rr_gcode returns `{"bufferSpace":255,"err":0}` instead of `{"buff":N}`.** Printer. RRF: `HttpResponder.cpp:566`. This is why the PollConnector cannot send codes to DWS. Test: `RrGcodeReportsBuff`.
 - **H11. rr_disconnect returns 204 instead of `{"err":0}`.** Printer. Test: `RrDisconnectReturnsErr`.
 - **H12. Every rr_connect adds another session for the same client.** Printer: 5 → 8. RRF keeps one per IP (`HttpResponder.cpp:803-808`). Test: `RrConnectKeepsOneIpSession`.
-- **H13. rr_delete ignores `recursive=yes`** (`RepRapFirmwareEndpoints.cs:354-383`). Fix it only together with H1, or rr_delete gets the same problem. Test: `RrDeleteDeletesRecursively`.
+- **H13. rr_delete ignores `recursive=yes`** (`RepRapFirmwareEndpoints.cs:354-383`). Test: `RrDeleteDeletesRecursively`.
+  - Upstream fixed it in 5130ca43 (2026-11-03), which the fork has not merged yet: `upstream/v3.7-dev` is 4 commits ahead.
+  - The root check of the H1 fix (#136) already covers `rr_delete`, so the merge can no longer delete the whole SD card.
 - **H14. DuetHttpClient's RestConnector reconnects with a new session every PingInterval while the model is quiet.** Cancelling the receive for the PING aborts the WebSocket (`RestConnector.cs:294`). Test: `WebServer.DuetHttpClientTests.RestKeepsAQuietWebSocket`.
 - **H15. DuetHttpClient's PollConnector never loads keys whose sequence number is still 0** (`PollConnector.cs:320-330`). RRF starts every sequence number at 0 (`RepRap.cpp:450`). Test: `PollLoadsKeysWithSequenceZero`.
 
@@ -206,17 +205,11 @@ Open questions:
   - `MCodeHandler.CodeExecutedAsync` reads P with `GetInt` while P is still an unevaluated expression (`MCodeHandler.cs:1432`). The exception in the Executed stage is only logged (`Executed.cs:76-97`, `PipelineStackItem.cs:85-88`).
   - M122 is unbuffered (`CodeProcessor.cs:188-191`), so every later code waits in `Start.cs:224-232`.
   - Test: `Codes.ExecutedHandlerErrors.DiagnosticsWithExpressionParameter`.
-- **G2. M98 with a path that `FilePathResolver` refuses stops DCS.** Affected are paths like `../../x.g`, `0:/../x.g`, or a drive that does not exist.
-  - Printer, with `M98 P"99:/macros/…"`:
-    - the journal logged `ArgumentException: Invalid drive index` and then `BackgroundServiceExceptionBehavior is configured to StopHost`;
-    - systemd killed DCS after the 15 s stop timeout and restarted it;
-    - RRF stayed halted until M999.
-  - Cause: `Processor.DoMacroFile` calls `ToPhysical` without a try (`Processor.cs:1334`), and nothing in LinkService catches the exception (`LinkService.cs:378-394, 781-796, 176-228`). RRF passes the name on unchanged (`GCodes.cpp:3697-3699`).
-  - Test: `Codes.MacroPaths.MacroPathRefusedByResolver`.
 - **G3. Drive numbers map to every mounted file system** (open question, upstream design).
   - `PeriodicUpdateService` lists every mount as a volume (`PeriodicUpdateService.cs:526-583`), and `n:/` resolves to `volumes[n].path` (`FilePathResolver.cs:80-119`).
   - On the CHX that gives 25 volumes, e.g. `0:` = `/`, `4:` = `/home`, `5:` = `/var`, `6:` = `/etc/ssh`.
   - File codes can therefore reach any mount, as far as the rights of the dsf user allow.
+  - The root check of the H1 fix (#136) refuses only the root of the drive that a path names (`FilePathResolver.cs:64-77`, at 9e6449d1). On the CHX, plugin directories are mounted below `/opt/dsf/sd`. A recursive delete of such a mount, e.g. `DELETE /machine/file/0%3A%2F<mount>?recursive=true`, can therefore still empty it.
 - **G4. A line feed after the drive prefix truncates the path.** The drive regex has no Singleline option (`FilePathResolver.cs:46`). Test: `File.PathResolution.LineFeedAfterDrive`.
 - **G5. `MetaExpressionParser` throws FormatException or OverflowException instead of `CodeParserException`.**
   - Inputs: `1e`, `2E-`, or `0x` with more than 16 digits (`MetaExpressionParser.cs:1345, 1379`).
@@ -237,6 +230,10 @@ Open questions:
   - It does not check skipped elements.
   - It joins `1 2` into 12.
   - Tests: `Codes.MetaExpressions.FileRead*` (6).
+- **G11. M30, M470 and M472 fail with an exception when DSF refuses their path.** Same kind of bug as the fixed G2, but the channel goes on.
+  - They resolve the path before their try (`MCodeHandler.cs:419`, `:850`, `:907`, with the try at `:426`, `:851`, `:914`, at 9e6449d1). M471 resolves inside its try (`:869-871`).
+  - The exception then ends in the catch of the internal processing stage (`ProcessInternally.cs:32-39`): it is logged as "Failed to execute code … on internal processing stage", and the client gets the exception instead of an error reply.
+  - Test (passes and pins today's behaviour): `Codes.FileCodes.DeleteRootDirectory`, which expects the `ArgumentException` "Delete root folder is not allowed" from M472.
 
 Open questions:
 - `fileread` and `echo` file errors reach the client as raw IOException (`Functions.cs:111`, `KeywordHandler.cs:149`).
@@ -246,10 +243,6 @@ Open questions:
 
 ### IPC server (#125)
 
-- **I1. `RequiredPermissionsAttribute.Check` grants every permission.**
-  - It loops over every value of `SbcPermissions`, including `None = 0`, and `HasFlag(None)` is always true (`RequiredPermissionsAttribute.cs:25-38`).
-  - So plugins get every command and the Intercept, Subscribe and CodeStream modes without the permission (`Server.cs:243-261`).
-  - Tests: `IPC.RequiredPermissions.RefusedWithoutRequiredFlag`, `IpcPluginPermissions.PluginIsRefusedModesItHasNoPermissionFor`, and in `IpcCommandMode`: `RefusesCommandsWithoutPermission`, `PluginIsRefusedCommandsItHasNoPermissionFor`, `PluginWithoutPermissionsIsRefusedTheCommandMode`.
 - **I2. A wildcard filter longer than the code breaks short codes.** Printer.
   - With the filter `M10*`, comments and codes like `G4 P0` fail with `ArgumentOutOfRangeException` (`CodeInterception.cs:242-243`).
   - The interceptor stayed registered after its client had exited, until a code matching the filter came along.
@@ -274,6 +267,7 @@ Open questions:
 Open questions:
 - A code stream sends no reply line for exceptions other than `CodeParserException` and `ArgumentException`, e.g. `if true` (`CodeStream.cs:195`).
 - An Executed-stage Cancel is logged as an error (`Executed.cs:235-238`).
+- Upstream doc error: the command table of `src/Documentation/articles/ipc.md` lists `CheckPassword` under `CommandExecution`. The command needs `ObjectModelRead` or `ObjectModelReadWrite` (`IPC.RequiredPermissions.EveryCommandRequiresTheDocumentedPermissions`). #135 corrected only the package row of that table.
 
 ### Object model (#125)
 
@@ -300,21 +294,22 @@ Measured in the fake firmware without link faults:
   - Every later trigger is discarded with "System macro … stack is not empty" (`Processor.cs:1301-1305`), and RRF reports "Macro file triggerN.g not found".
   - Reachable through the IPC InvalidateChannel command or `abort` on the Trigger channel outside a macro.
   - Test: `Codes.TriggerMacros.TriggerChannelWorksAfterInvalidationDuringTriggerRequest`.
-- **T2. An abort just after RRF has requested the macro of an M98 that DSF then cancels blocks the channel for good.** DSF and protocol, upstream.
-  - DSF still starts the macro without a start code (`Processor.cs:1308-1325`).
-  - RRF has dropped the request and warns "Macro file has been started … but none was requested".
-  - The next code on the channel hangs. A job cancelled while its M98 waits for the macro may hit the same; that is not tested.
-  - Test: `Fuzz.TriggerFuzz.ChannelWorksAfterAbortWhileMacroRequestIsUnderway`.
-- **T3. The spare room in RRF's code buffer is not kept for time-critical codes.** Upstream 82d581d1.
-  - `GetMaxBufferSpacePerChannel` subtracts the reserve once but applies the limit to every channel separately (`LinkInterface.cs:40-47`, `Processor.cs:1037`).
-  - A waiting job plus daemon.g reading ahead filled the buffer, so the M98 of trigger2.g and the M112 behind it did not go out while both waited.
-  - Test: `Codes.TriggerMacros.TriggerMacroGetsSpareCodeBufferRoom`.
+  - **Proposed RRF change** (Tim, 2026-11-08; not sent to the RRF session yet): in `SbcInterface.cpp:880-883`, call `gb->MacroRequestSent()` before `ResolveMacroRequest(true, false)`, as `GCodeBuffer::Reset` does (`GCodeBuffer.cpp:131-134, 141`).
+    - DSF then needs the same change in `FakeFirmware.cs`, and the test loses its `[Explicit]`.
+    - The lab test `AbortsCrossingMacroRequests` (#139) of the T2 fix runs only after that, because RRF mp.8 still has T1, whose window lies right before the one of T2.
+    - The same proposal adds RRF's root check of `MassStorage::Delete` before the SBC hand-off (`MassStorage.cpp:822-836` before `:839-857`), as a second layer behind #136.
+  - **Not covered by that change:**
+    - daemon.g, which RRF requests at the base level of the Daemon channel without waiting (`GCodeBuffer.cpp:1258-1260`).
+    - A resent InvalidateChannel (`SbcInterface.cpp:885-897`), whose copy could end a wait that started after the first one.
 - **T4. A missing trigger macro is not shown after DSF has run a code on the Trigger channel.** RRF reports it as a pushed code reply (`GCodes.cpp:3703-3706`), DSF takes it as an out-of-order reply and holds it back (`Processor.cs:1122-1127`, `LinkService.cs:727-733, 762-776`). This fits the field journal line "Trigger: Out-of-order reply: 'Macro file trigger8.g not found'", not proven to be the same event. Test: `Codes.TriggerMacros.MissingTriggerMacroAfterCodeOfDsfOnTriggerChannel`.
 - **T5. M581.1 with SBC fields succeeds and creates the trigger although its expression fails** (upstream 4229f552). RRF returns an error and creates nothing (`TriggerItem.cpp:328-339`, wiki M581.1). Test: `Codes.SbcTriggerEvaluation.ErrorInExpressionIsReported`.
 - **T6. A later evaluation error of such a trigger is only logged, and the trigger stays enabled.** RRF disables it and reports it (`TriggerItem.cpp:133-149`). Test: `ErrorInLaterEvaluationDisablesTheTrigger`.
 - **T7. An SBC trigger T0 runs trigger0.g instead of an emergency stop** (`SbcTriggerService.cs:298-308`; wiki M581; `GCodes.cpp:994-998`). By the code, T1 runs trigger1.g instead of pausing; this is not tested. Test: `TriggerZeroIsAnEmergencyStop`.
 - **T8. M582 never checks a trigger that DSF evaluates**, because it is passed straight to RRF. The wiki says M582 works for M581.1 triggers. Test: `M582ChecksTriggerOfDsf`.
 - **T9. R1 and R2 of SBC triggers count simulating and cancelling as not printing** (`SbcTriggerService.cs:341-344`). RRF's `IsPrinting` counts both as printing (`GCodes.cpp:3993`, `RepRap.cpp:1961-1968`). Test: `EnableConditionWhilePrinting` with Simulating and Cancelling.
+- **T10. "Macro file … not found" after an abort becomes an out-of-order reply.** Cosmetic, from reading the code, not tested.
+  - When InvalidateChannel ends the wait for a macro, RRF still reports the file as missing: for an M98 as an error reply (`GCodes2.cpp:1718-1722`), for a trigger as a pushed warning (`GCodes.cpp:3699-3707`).
+  - DSF has no buffered code for that reply any more, so it holds it back as an out-of-order reply (`Processor.cs:1122-1127`, as in T4).
 
 Open question: the wiki for M581 says polling for further triggers is suspended while a trigger macro runs. RRF keeps checking and marks the trigger as pending (`GCodes.cpp:983-989`).
 
@@ -333,7 +328,7 @@ R10 of `design/sbc-link-requirements.md` asks that a software stop reaches RRF w
 |---|---|---|---|
 | Extended link | 0.05 ms | 0.25 ms (noise) | none |
 | RRF idle, pausing 25 ms between transfers (M576 S default) | 38 ms | 50 ms | none |
-| Plain link with noise | 0.05 ms | 502 ms | 5 of 1000, plus 2 stuck |
+| Plain link with noise | 0.05 ms | 502 ms | 5 of 1000, plus 2 stuck (measured before #137) |
 
 - **Trigger macros:** the first code of a trigger macro reaches RRF within 2.5 ms on the extended link.
 - **RRF restart just before the stop:** the restarted RRF gets the stop in only about half of the cases, because it drops its first transfer by a connection reset. The restart is a stop itself (R6), but the restarted RRF is not halted. Whether that matters is open.
@@ -341,15 +336,6 @@ R10 of `design/sbc-link-requirements.md` asks that a software stop reaches RRF w
 
 Findings:
 
-- **P1. One bit error can leave the plain link stuck until DCS gives up after 60 s.**
-  - Input: `Stop None | Stop 3 ToDsf 130`.
-  - The flip turns RRF's Success after the header into BadHeaderChecksum at DSF, and DSF sends its 16-byte header again.
-  - RRF takes that as the 8 bytes of stop data and answers BadDataChecksum. RRF prefers this over DSF's BadResponse and repeats the data without a limit (`DataTransfer.cpp:1218-1223`).
-  - Exchanges keep coming, so RRF never times out. Only `SbcRestartTimeout` (60 s) ends it.
-  - The census does not cover this, because its DSF data is longer than a header.
-  - Rests on the SPI port; not replayed against the RRF host build.
-  - Test: `SPI.StopPath.EmergencyStopReachesRrfWithin100Ms`.
-- **P2. Two bit errors on the plain link delay the stop to about 500 ms,** through RRF's transfer timeout and disconnect. Input: `Stop None | Stop 3 ToDsf 0 | Stop 6 ToDsf 2`. Same test.
 - **P3. M112 can reply before RRF has processed the stop.**
   - LinkService completes the halt on RRF's Success for the data, and DSF's own last Success is never acknowledged.
   - Inputs:
@@ -357,14 +343,12 @@ Findings:
     - extended link: four bits in one response.
   - The lead was at most 0.05 ms in every case found. This affects the meaning of the reply as #88 intended it, not the delivery of the stop.
   - Test: `M112RepliesOnlyOnceRrfIsStopped`.
-- **P4. A trigger macro can get lost after a reconnect while RRF keeps running.**
-  - **Extended link** (fork code):
-    - Ten data errors make DSF lose the connection. It leaves the extended link with sequence number 0x0000, which follows RRF's last 0xFFFF as a regular number.
-    - So RRF does not reset (`SequenceDistance`, `DataTransfer.cpp:838-852`), although its comment at `:1125-1131` expects a reset.
-    - RRF has processed the codes and waits for a MacroCompleted that DSF dropped with its reset.
-    - This happens only when that transfer has counter value 0; with other counters RRF disconnects and stops. 6 of 223 random reconnects lost the macro.
-  - **Plain link:** two flips, `Trigger None | Code 0 ToDsf 0 | Code 1 ToRrf 0`.
-  - **Effect, read from the RRF source and not modelled:** the open trigger file would keep `IsTriggerBusy` true (`GCodes.cpp:423-431`) and hold back later triggers, trigger2.g included (`GCodes.cpp:999`).
+- **P4. A trigger macro can get lost after a reconnect on the plain link while RRF keeps running.**
+  - Input: two flips, `Trigger None | Code 0 ToDsf 0 | Code 1 ToRrf 0`. DSF repeats a transfer with the same number after "SPI data transfer failed". The fix is case 2 of #57, which is on hold.
+  - The extended-link part (a lost connection in a transfer with counter value 0) is fixed by #138.
+  - **Effect:** the open trigger file keeps `IsTriggerBusy` true (`GCodes.cpp:423-431`) and holds back later triggers, trigger2.g included (`GCodes.cpp:999`).
+    - Shown on the lab printer on 2026-11-08 with the extended-link variant without #138: RRF kept the session, and trigger30.g did not start again for 46 s, although its trigger fires twice per second.
+    - In that state RRF also answered no M409 of a global variable from HTTP. Why has not been checked.
   - Rests on the SPI port; not replayed against the RRF host build.
-  - Test: `TriggerMacroRunsOrRrfStops`.
+  - Test: `TriggerMacroRunsOrRrfStops` (plain-link input, explicit).
 - **Observation:** a trigger request that crosses an emergency stop starts its macro after the stop, but its codes are held back, because the buffer space is 0 after `InvalidateCodes` (`LinkInterface.cs:615`).

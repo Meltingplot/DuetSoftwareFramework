@@ -112,7 +112,7 @@ Evidence comes from two kinds of tests:
 
 | Req. | State | Evidence |
 |---|---|---|
-| R1, R2 | Simulator part met for an activated session; bench test pending | With all capabilities active, no single fault after the activation needs a reconnect, and every repair takes less than 20 ms (`ExtendedLinkRecoversFromEverySingleFault`, also for faults in the transfers of the switch). Still open: 7 faults in the connect transfer, before an activation is possible. The activation transfer itself fails like a stock transfer with DSF data (41), because the guards start with it. Without capabilities, 35 faults still need a reconnect or never recover, against 125 before the DSF fixes (then of 4238 faults). |
+| R1, R2 | Simulator part met for an activated session; bench test pending | With all capabilities active, no single fault after the activation needs a reconnect, and every repair takes less than 20 ms (`ExtendedLinkRecoversFromEverySingleFault`, also for faults in the transfers of the switch). Still open: 7 faults in the connect transfer, before an activation is possible. The activation transfer itself fails like a stock transfer with DSF data (25 since DSF #137, 41 before), because the guards start with it. Without capabilities, 27 faults still need a reconnect or never recover (35 before DSF #137), against 125 before the DSF fixes (then of 4238 faults). Census of 2026-11-08: `LinkRecovery.SingleCorruptedExchange` and `SingleCorruptedExchange_ExtendedActivationTransfer`. |
 | R3 | Not tested | — |
 | R4 | Not measured | — |
 | R5 | Not tested | The capabilities use no timing constant. |

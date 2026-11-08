@@ -85,6 +85,7 @@ The same one-sided outcome happens in the data response, when only one side sees
   - RRF phase guards handle it, but they are only switched on by negotiation. A DSF-only attempt, checking the CRC before adopting the version, broke more cases than it fixed when we tried it.
   - Where the guards cannot help yet (the transfer that negotiates them), DSF #102 ends the livelock. DCS stops when no transfer has completed for 60 s, systemd starts it again, and RRF times out meanwhile.
   - On the MB6HC with a fault injected into that transfer, DCS stopped 60.03 s after the fault in both runs, and the link came back (2026-11-07).
+  - DSF #137 ends the cases where a corrupted response of RRF to the header makes DSF exchange its header again while RRF goes on with the data. On the MB6HC with the plain link kept and RRF 3.7.0+1.mp.8, the 6 cases of that kind in the census (`HeaderResponse ToDsf` with `flip 2`, `word 0x00000005` and `word 0xfefefefe`, transfers with DSF data) broke the link without #137 and recovered by retry with it (2026-11-08).
 
 ### F4. An exchange replaced by the exact BadResponse word
 
@@ -199,11 +200,12 @@ The same one-sided outcome happens in the data response, when only one side sees
 - DSF #59 (F8), #89 (F7), #91 (F1), #92 (F2, and part of F3).
 - DSF #84, #85, #86 (P1–P3).
 - DSF #99 (F9), #102 (F3, the livelock ends with a DCS restart after 60 s) and #105 (F11).
+- DSF #137 (part of F3): when a corrupted response of RRF to the header makes DSF exchange its header again while RRF goes on with the data, DSF now goes on with the data as well once RRF answers BadDataChecksum (`SPI.IsExchangingData`). Before, DSF kept exchanging its header until the 60 s of #102.
 - DSF #115 (O1) and #118 (L1).
 - DSF #98 raises the default of `MaxSbcRetries` from 3 to 10. Under random bit errors in both directions, with the link capabilities active, the retry limit was the only source of resets left in the census.
 - DSF #103 adds recovery counters to DSF's M122: full transfer restarts, header and data retries, transfers sent and requested again, extended link left by RRF, lost connections and connection resets.
 
-With the SPI fixes, the census goes from 125 to 35 single faults that break the link.
+With the SPI fixes, the census goes from 125 to 27 single faults that break the link (35 before #137, census of 2026-11-08). 4 of the 27 are livelocks, 2 of them from the exact BadResponse word (F4).
 
 **A fix that needs RRF only:** RRF Meltingplot/RepRapFirmware#36 (F10).
 
