@@ -119,12 +119,11 @@ public class WebServerFindings : WebServerFixture
     }
 
     /// <summary>
-    /// rr_delete ignores the recursive parameter and deletes directories only when they are empty (RepRapFirmwareEndpoints.cs:354-383).
-    /// The RRF HTTP request docs: "recursive (optional): Set this to yes to delete the directory recursively if applicable. Defaults to no
-    /// (requires 3.5b3 and newer)", and RRF passes it on (HttpResponder.cpp:612-617)
+    /// rr_delete passes recursive=yes on (upstream 5130ca43), as the RRF HTTP request docs say: "recursive (optional): Set this to yes to delete
+    /// the directory recursively if applicable. Defaults to no (requires 3.5b3 and newer)", and as RRF does (HttpResponder.cpp:612-617).
+    /// Before, it deleted directories only when they were empty. The root of the SD card stays refused (SdRootDeletionTests.RootCannotBeDeleted)
     /// </summary>
     [Test]
-    [Explicit("Deviation: rr_delete ignores recursive=yes")]
     public async Task RrDeleteDeletesRecursively()
     {
         string directory = Path.Combine(Dcs.BaseDirectory, "gcodes", "tree");
