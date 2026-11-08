@@ -1330,9 +1330,17 @@ public sealed class Processor
             return;
         }
 
-        // Try to locate the macro file
-        string physicalFile = _filePathResolver.ToPhysical(virtualFile, FileDirectory.System);
-        MacroFile? macro = _macroFileFactory.CreateMacro(virtualFile, physicalFile, Channel, startCode, startCode?.SourceConnection ?? 0);
+        // Try to locate the macro file. A path that cannot be resolved (it leaves its volume or names an unknown drive) cannot be opened either
+        MacroFile? macro = null;
+        try
+        {
+            string physicalFile = _filePathResolver.ToPhysical(virtualFile, FileDirectory.System);
+            macro = _macroFileFactory.CreateMacro(virtualFile, physicalFile, Channel, startCode, startCode?.SourceConnection ?? 0);
+        }
+        catch (ArgumentException e)
+        {
+            _logger.LogError(e, "Failed to start macro file {File}", virtualFile);
+        }
 
         StackState newState = Push(macro);
         newState.StartCode = startCode;

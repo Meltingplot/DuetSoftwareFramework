@@ -590,7 +590,7 @@ public class GCodeExecutionFuzz
 
     /// <summary>
     /// Codes that take file paths, with {0} and {1} for the paths. All of them resolve their paths with FilePathResolver
-    /// (MCodeHandler.cs, KeywordHandler.cs:137-138, Functions.cs:69 and 110, Logger.cs:99, Processor.cs:1334)
+    /// (MCodeHandler.cs, KeywordHandler.cs:137-138, Functions.cs:69 and 110, Logger.cs:99, Processor.cs:1337)
     /// </summary>
     private static readonly string[] PathCodes =
     [
@@ -654,21 +654,6 @@ public class GCodeExecutionFuzz
 
     private async Task CheckPathAsync(Input input)
     {
-        Parse(input.Text, false, out List<Code> codes);
-        FilePathResolver resolver = _host.Services.GetRequiredService<FilePathResolver>();
-        foreach (Code code in codes.Where(code => code.Type == CodeType.MCode && code.MajorNumber == 98 && code.MinorNumber < 0 && code.HasParameter('P')))
-        {
-            try
-            {
-                resolver.ToPhysical(code.GetString('P'), FileDirectory.System);
-            }
-            catch (ArgumentException)
-            {
-                // A refused macro path ends the LinkService thread, see MacroPaths.MacroPathRefusedByResolver
-                return;
-            }
-        }
-
         await ResetAsync();
         try
         {
