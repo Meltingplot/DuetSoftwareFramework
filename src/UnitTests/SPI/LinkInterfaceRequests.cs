@@ -193,6 +193,49 @@ public class LinkInterfaceRequests
     }
 
     /// <summary>
+    /// Link adapter that takes every code
+    /// </summary>
+    public class CodeLinkAdapter : VersionedLinkAdapter
+    {
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) =>
+            (targetMethod!.Name == nameof(ILinkAdapter.WriteCode)) ? true : base.Invoke(targetMethod, args);
+    }
+
+    /// <summary>
+    /// RRF keeps one code buffer of SbcCodeBufferSize (4096) bytes for all channels and stores each code with a BufferedCodeHeader of 4 bytes
+    /// in front of it (SbcInterface.cpp:76, 404-412, SbcMessageFormats.h:31, 47, 368-373). Codes buffered ahead leave room for two codes of
+    /// maximum size free, which only the next code of a channel without buffered codes may use (LinkInterface.SendCode, Processor.BufferCode)
+    /// </summary>
+    [Test]
+    public void CodesBufferedAheadLeaveSpareRoom()
+    {
+        ILinkAdapter adapter = DispatchProxy.Create<ILinkAdapter, CodeLinkAdapter>();
+        using ServiceProvider provider = DcsServices.Build(new Settings(), adapter);
+        LinkInterface link = provider.GetRequiredService<LinkInterface>();
+        Code code = provider.GetRequiredService<CommandFactory>().Create<Code>();
+        const int maxCodeSize = Consts.BufferedCodeHeaderSize + 384, spareRoom = 2 * maxCodeSize;
+
+        // The job streams share what is left of the reported buffer
+        link.MaxReportedBufferSpace = link.BufferSpace = 4096;
+        Assert.That(link.GetMaxBufferSpacePerChannel(1), Is.EqualTo(4096 - spareRoom));
+        Assert.That(link.GetMaxBufferSpacePerChannel(2), Is.EqualTo((4096 - spareRoom) / 2));
+
+        // A code buffered ahead must not take the spare room, whichever channel it is on
+        link.BufferSpace = spareRoom + 100;
+        Assert.That(link.SendCode(code, 100, false), Is.False);
+        Assert.That(link.BufferSpace, Is.EqualTo(spareRoom + 100));
+        Assert.That(link.SendCode(code, 99, false), Is.True);
+        Assert.That(link.BufferSpace, Is.EqualTo(spareRoom + 1));
+        Assert.That(link.SendCode(code, 1, false), Is.False);
+
+        // The next code of two channels without buffered codes still fits, even with the maximum size
+        Assert.That(link.SendCode(code, maxCodeSize, true), Is.True);
+        Assert.That(link.SendCode(code, maxCodeSize, true), Is.True);
+        Assert.That(link.BufferSpace, Is.EqualTo(1));
+        Assert.That(link.BytesReserved, Is.EqualTo(99 + 2 * maxCodeSize));
+    }
+
+    /// <summary>
     /// M122 of DSF shows the space of the code buffer
     /// </summary>
     [Test]

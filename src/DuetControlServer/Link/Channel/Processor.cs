@@ -1033,10 +1033,10 @@ public sealed class Processor
                 return true;
             }
 
-            // Try to send it to RepRapFirmware
+            // Try to send it to RepRapFirmware. Only the next code of a channel without buffered codes may use the spare room
             int maxBufferSpace = _linkInterface.GetMaxBufferSpacePerChannel(_jobProcessor.NumJobStreams);
             if ((BytesBuffered == 0 || BytesBuffered + pendingCode.BinarySize <= maxBufferSpace) &&
-                _linkInterface.SendCode(pendingCode, pendingCode.BinarySize))
+                _linkInterface.SendCode(pendingCode, pendingCode.BinarySize, BytesBuffered == 0))
             {
                 BytesBuffered += pendingCode.BinarySize;
                 BufferedCodes.Add(pendingCode);

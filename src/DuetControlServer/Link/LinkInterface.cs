@@ -38,12 +38,18 @@ public sealed partial class LinkInterface(
     internal int MaxReportedBufferSpace;
 
     /// <summary>
+    /// Spare room in the firmware code buffer for time-critical codes on other channels: two codes of maximum size,
+    /// each stored with its buffered code header
+    /// </summary>
+    private int SpareBufferSpace => 2 * (Consts.BufferedCodeHeaderSize + settings.Value.MaxCodeBufferSize);
+
+    /// <summary>
     /// Get the maximum number of bytes that may be buffered per channel. Shares the reported firmware code buffer among
     /// the active job streams, keeping spare room for time-critical codes on other channels
     /// </summary>
     /// <param name="numJobStreams">Number of active job file streams</param>
     /// <returns>Maximum number of bytes to buffer per channel</returns>
-    internal int GetMaxBufferSpacePerChannel(int numJobStreams) => (MaxReportedBufferSpace > 0) ? (MaxReportedBufferSpace - 2 * settings.Value.MaxCodeBufferSize) / numJobStreams : FallbackBufferSpacePerChannel;
+    internal int GetMaxBufferSpacePerChannel(int numJobStreams) => (MaxReportedBufferSpace > 0) ? (MaxReportedBufferSpace - SpareBufferSpace) / numJobStreams : FallbackBufferSpacePerChannel;
 
     /// <summary>
     /// Fallback buffer space per channel until the firmware has reported its code buffer size
@@ -572,10 +578,13 @@ public sealed partial class LinkInterface(
     /// </summary>
     /// <param name="code">Code to send</param>
     /// <param name="codeLength">Length of the binary code in bytes</param>
+    /// <param name="mayUseSpareRoom">Whether the code may use the spare room for time-critical codes. The firmware shares its code buffer
+    /// among all channels, so codes that are buffered ahead must leave that room free</param>
     /// <returns>Whether the code could be sent</returns>
-    internal bool SendCode(Code code, int codeLength)
+    internal bool SendCode(Code code, int codeLength, bool mayUseSpareRoom)
     {
-        if (BufferSpace > codeLength && linkAdapter.WriteCode(code))
+        int spareRoom = mayUseSpareRoom ? 0 : SpareBufferSpace;
+        if (BufferSpace - spareRoom > codeLength && linkAdapter.WriteCode(code))
         {
             BytesReserved += codeLength;
             BufferSpace -= codeLength;
