@@ -102,8 +102,8 @@ public class SdRootDeletionTests : WebServerFixture
     /// No request may delete the root of the SD card. Each request runs on a freshly restored SD card, so that every variant is judged on
     /// its own. Result in-process (not run on the printer): DELETE /machine/file with recursive=true answers 204 and deletes the whole SD card
     /// directory including the directory itself for 0:/, 0:, 0:/., / and 0:/sys/..; without recursive it is refused with 500 "Directory not
-    /// empty" (which names the physical path). rr_delete is refused with {"err":1} only because it ignores recursive=yes
-    /// (WebServerFindings.RrDeleteDeletesRecursively), so passing the flag on without a root check would open it as well.
+    /// empty" (which names the physical path). rr_delete passes recursive=yes on since upstream 5130ca43 (WebServerFindings.RrDeleteDeletesRecursively),
+    /// so only the root check refuses it.
     /// 0:/sys/../, 0:/./ and ./ resolve to the root with a trailing separator, which Path.GetFullPath keeps
     /// </summary>
     [Test]
