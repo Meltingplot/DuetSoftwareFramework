@@ -303,6 +303,28 @@ public class UpdateOnlyMode
     }
 
     /// <summary>
+    /// A firmware file that cannot be read, here an invalid UF2 file of a tool board that asks for one (ExpansionManager.cpp:478-480), is reported
+    /// and leaves only its boards alone (Firmware.cs:40-76 throws an IOException for it), the main board is still updated
+    /// </summary>
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task InvalidFirmwareFileLeavesOnlyItsBoardAlone(bool remote)
+    {
+        const string uf2File = "Duet3Firmware_TOOL1LC.uf2";
+        FakeFirmwareHost host = await StartAsync(NewVersion, null, ipc: remote, editBoards: boards => boards[1]!["firmwareFileName"] = uf2File);
+        string path = Path.Combine(host.BaseDirectory, "firmware", uf2File);
+        System.IO.File.WriteAllBytes(path, new byte[513]);
+        await RunAsync(remote);
+
+        Assert.That(Output, Does.Contain($"Error: Failed to read firmware version from {path}: UF2 file size must be a multiple of 512 bytes"));
+        Assert.That(Output, Does.Contain($"Warning: Failed to get corresponding firmware version for Duet 3 Tool Board 1LC (fake) @ 121, RRF version {ExpansionVersion}, firmware filename '{uf2File}'"));
+        Assert.That(Output, Does.Contain("There is 1 outdated board:"));
+        Assert.That(Output, Does.Contain("Updating firmware on mainboard... Done!"));
+        Assert.That(ReceivedCodes(), Is.Empty);
+        Assert.That(host.Firmware.IapRebooted, Is.True);
+    }
+
+    /// <summary>
     /// The other boards are still compared and updated
     /// </summary>
     [Test]

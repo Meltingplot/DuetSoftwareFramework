@@ -199,7 +199,8 @@ public class FirmwareFiles
     }
 
     /// <summary>
-    /// GetFirmwareVersionAsync does not catch it, so an invalid .uf2 file fails the version check instead of giving no version
+    /// GetFirmwareVersionAsync does not catch it, so an invalid .uf2 file fails the version check instead of giving no version. FirmwareUpdater
+    /// reports it and leaves the boards of that file alone (UpdateOnlyMode.InvalidFirmwareFileLeavesOnlyItsBoardAlone)
     /// </summary>
     [Test]
     public void VersionOfInvalidUf2File()

@@ -34,6 +34,26 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
     private static readonly TimeSpan ExpansionUpdateTimeout = TimeSpan.FromMinutes(3);
 
     /// <summary>
+    /// Read the firmware version from a firmware file. A file that cannot be read, e.g. an invalid UF2 file, is reported and gives no version,
+    /// so only the boards of that file are left alone
+    /// </summary>
+    /// <param name="filename">Physical path of the firmware file</param>
+    /// <returns>Firmware version or null if none could be read</returns>
+    private async Task<string?> GetFirmwareVersionAsync(string filename)
+    {
+        try
+        {
+            return await Firmware.GetFirmwareVersionAsync(filename, settings.Value.FileBufferSize);
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine("Error: Failed to read firmware version from {0}: {1}", filename, e.Message);
+            logger.LogDebug(e, "Failed to read firmware version from {File}", filename);
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Update the firmware from this instance
     /// </summary>
     /// <param name="cancellationToken">Cancellation token</param>
@@ -64,7 +84,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
 
             if (File.Exists(firmwareFilename))
             {
-                firmwareVersions[firmwareFile] = await Firmware.GetFirmwareVersionAsync(firmwareFilename, settings.Value.FileBufferSize);
+                firmwareVersions[firmwareFile] = await GetFirmwareVersionAsync(firmwareFilename);
             }
         }
 
@@ -296,7 +316,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
 
             if (File.Exists(firmwareFilename))
             {
-                firmwareVersions[firmwareFile] = await Firmware.GetFirmwareVersionAsync(firmwareFilename, settings.Value.FileBufferSize);
+                firmwareVersions[firmwareFile] = await GetFirmwareVersionAsync(firmwareFilename);
             }
         }
 
