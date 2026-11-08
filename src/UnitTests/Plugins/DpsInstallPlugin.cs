@@ -129,6 +129,8 @@ public class DpsInstallPlugin : DpsTestBase
     [TestCase(null, "plugin.json not found in the ZIP file")]
     [TestCase("{\"name\":\"No id\"}", "Plugin manifest must provide an id and a name")]
     [TestCase("{\"id\":\"NoName\"}", "Plugin manifest must provide an id and a name")]
+    [TestCase("{\"id\":\"Absolute\",\"name\":\"Absolute\",\"sbcExecutable\":\"/bin/bash\"}", "Executable must be a relative path")]
+    [TestCase("{\"id\":\"Absolute\",\"name\":\"Absolute\",\"sbcExecutable\":\"file\",\"sbcExtraExecutables\":[\"/bin/bash\"]}", "Executable must be a relative path")]
     [TestCase("{\"id\":\"Reserved\",\"name\":\"Reserved\",\"sbcPermissions\":[\"servicePlugins\"]}", "ServicePlugins permission is reserved for internal purposes")]
     [TestCase("{\"id\":\"Reserved\",\"name\":\"Reserved\",\"sbcPermissions\":[\"superUser\",\"servicePlugins\"]}", "ServicePlugins permission is reserved for internal purposes")]
     [TestCase("{\"id\":\"Quote\",\"name\":\"Quote\",\"sbcExecutableArguments\":\"a\\\"b\"}", "SbcExecutableArguments must not contain shell metacharacters")]

@@ -205,6 +205,25 @@ public class DpsStartStopPlugin : DpsTestBase
         Assert.That(Dps!.Store.Processes, Is.Empty);
     }
 
+    /// <summary>
+    /// The AppArmor profile of a plugin attaches to programs below its directory (apparmor.conf: {pluginDirectory}/**), so a plugin must not be started from
+    /// an executable elsewhere. Path.Combine drops the plugin directory for an absolute SbcExecutable, and a symlinked directory leads elsewhere too
+    /// </summary>
+    [Test]
+    public async Task ExecutableOutsideThePluginDirectoryIsNotStarted()
+    {
+        await StartDpsAsync(register: false);
+        await AddPluginAsync("Absolute", null, plugin => plugin.SbcExecutable = "/bin/bash");
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("Absolute")))!;
+        Assert.That(e.Message, Is.EqualTo("Executable must be a relative path"));
+
+        await AddPluginAsync("Linked2", null, plugin => plugin.SbcExecutable = "bin/bash");
+        Directory.CreateSymbolicLink(Path.Combine(PluginDirectory, "Linked2", "dsf", "bin"), "/bin");
+        e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("Linked2")))!;
+        Assert.That(e.Message, Is.EqualTo($"Refusing to launch plugin Linked2: executable {Path.Combine(PluginDirectory, "Linked2", "dsf", "bin", "bash")} is outside of its directory"));
+        Assert.That(Dps!.Store.Processes, Is.Empty);
+    }
+
     [Test]
     public async Task ExecutableOfTheArchitectureComesFirst()
     {

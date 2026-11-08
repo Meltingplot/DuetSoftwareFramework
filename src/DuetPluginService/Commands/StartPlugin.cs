@@ -116,6 +116,12 @@ public sealed class StartPlugin(PluginStore pluginStore, ServicePrivileges privi
             throw new ArgumentException($"Refusing to launch plugin {plugin.Id}: executable {sbcExecutable} is a symlink");
         }
 
+        // The same holds for an executable whose directory is a symlink that leads out of the plugin directory
+        if (!Path.IsInside(sbcExecutable, Path.Combine(settings.Value.PluginDirectory, plugin.Id, "dsf")))
+        {
+            throw new ArgumentException($"Refusing to launch plugin {plugin.Id}: executable {sbcExecutable} is outside of its directory");
+        }
+
         // The root service starts a plugin only from files that nobody else may change
         if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser))
         {

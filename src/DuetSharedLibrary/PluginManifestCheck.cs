@@ -2,6 +2,7 @@ using DuetAPI.ObjectModel;
 using DuetAPI.Utility;
 using System;
 using System.IO;
+using System.Linq;
 
 namespace DuetSharedLibrary;
 
@@ -51,6 +52,12 @@ public static class PluginManifestCheck
         if (manifest.SbcPermissions.HasFlag(SbcPermissions.ServicePlugins))
         {
             throw new ArgumentException("ServicePlugins permission is reserved for internal purposes");
+        }
+
+        // The executables are files of the plugin. The setter refuses ".." already, an absolute path would replace the plugin directory
+        if ((manifest.SbcExecutable is not null && Path.IsPathRooted(manifest.SbcExecutable)) || manifest.SbcExtraExecutables.Any(Path.IsPathRooted))
+        {
+            throw new ArgumentException("Executable must be a relative path");
         }
 
         // Permit root plugins only if they're enabled
