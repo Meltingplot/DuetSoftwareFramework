@@ -160,13 +160,9 @@ public sealed class StartPlugin(PluginStore pluginStore, ServicePrivileges privi
             plugin.Pid = process.Id;
             pluginStore.Processes[plugin.Id] = process;
             logger.LogInformation("Process started (pid {Pid})", process.Id);
-            using (InternalCommandConnection connection = new())
-            {
-                await connection.ConnectAsync(_settings.SocketPath, cancellationToken);
-                await connection.SetPluginProcessAsync(plugin.Id, process.Id, cancellationToken);
-            }
 
-            // Wait for the plugin to terminate in the background
+            // Wait for the plugin to terminate in the background. This must be set up before DCS is told about the process,
+            // else the process stays registered and blocks the next start if that fails
             _ = Task.Run(async delegate
             {
                 try
@@ -179,9 +175,10 @@ public sealed class StartPlugin(PluginStore pluginStore, ServicePrivileges privi
                         process.OutputDataReceived -= outputHandler;
                     }
 
-                    // Update the PID again
+                    // Forget the process and update the PID again. The process goes first, so that the plugin can be started again as soon as DCS knows it has stopped
                     using (await pluginStore.LockAsync(lifetime.ApplicationStopped))
                     {
+                        pluginStore.Processes.Remove(plugin.Id);
                         foreach (Plugin item in pluginStore.Plugins)
                         {
                             if (item.Id == Plugin)
@@ -202,13 +199,23 @@ public sealed class StartPlugin(PluginStore pluginStore, ServicePrivileges privi
                 }
                 finally
                 {
-                    using (await pluginStore.LockAsync(lifetime.ApplicationStopped))
-                    {
-                        pluginStore.Processes.Remove(plugin.Id);
-                    }
                     process.Dispose();
                 }
             });
+
+            // Tell DCS about the new process. DCS cannot track or stop a plugin process it does not know, so it must not keep running if that fails
+            try
+            {
+                using InternalCommandConnection connection = new();
+                await connection.ConnectAsync(_settings.SocketPath, cancellationToken);
+                await connection.SetPluginProcessAsync(plugin.Id, process.Id, cancellationToken);
+            }
+            catch
+            {
+                logger.LogError("Failed to report the process to DCS, killing it");
+                process.Kill(true);
+                throw;
+            }
         }
     }
 

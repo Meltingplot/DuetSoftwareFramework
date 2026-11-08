@@ -406,19 +406,45 @@ public class DpsStartStopPlugin : DpsTestBase
     }
 
     /// <summary>
-    /// StartPlugin registers the process (StartPlugin.cs:147-149) before it reports the PID to DCS (151-155) and sets up the task that waits for its exit
-    /// only afterwards (157-199). If SetPluginProcess fails, e.g. because DCS does not know the plugin (DuetControlServer/Commands/Plugins/SetPluginProcess.cs
-    /// throws "Plugin ... not found"), the exception leaves StartPlugin with the process still running and registered. Nobody removes it when it exits,
-    /// so every later StartPlugin returns at StartPlugin.cs:113-116 without starting the plugin again, until DPS restarts
+    /// StartPlugin reports the PID to DCS. If SetPluginProcess fails, e.g. because DCS does not know the plugin (DuetControlServer/Commands/Plugins/SetPluginProcess.cs
+    /// throws "Plugin ... not found"), DCS cannot track or stop the process, so StartPlugin kills it again. The task that waits for the exit is set up before, so it
+    /// forgets the process and the next StartPlugin starts the plugin again
     /// </summary>
     [Test]
-    [Explicit("Bug: a failed SetPluginProcess leaves the plugin process registered, so the plugin cannot be started again")]
     public async Task FailedRegistrationAtDcsDoesNotBlockTheNextStart()
     {
         await StartDpsAsync(register: false);
-        Plugin plugin = await AddPluginAsync("Unknown2Dcs", "sleep 0.5", inDcs: false);
+        Plugin plugin = await AddPluginAsync("Unknown2Dcs", "exec sleep 30", inDcs: false);
         await Assert.ThrowsAsync<InternalServerException>(async () => await StartAsync("Unknown2Dcs"));
-        Assert.That(await WaitForAsync(() => !Dps!.Store.Processes.ContainsKey("Unknown2Dcs"), TimeSpan.FromSeconds(5)), Is.True, "The exited process is still registered");
-        Assert.That(plugin.Pid, Is.EqualTo(-1));
+        Assert.That(Dps!.Log.Contains("Failed to report the process to DCS, killing it"), Is.True);
+        Assert.That(await DpsHost.WaitForAsync(async () =>
+        {
+            using (await Dps.Store.LockAsync(default))
+            {
+                return !Dps.Store.Processes.ContainsKey("Unknown2Dcs") && plugin.Pid == -1;
+            }
+        }, TimeSpan.FromSeconds(5)), Is.True, "The exited process is still registered");
+
+        await AddToDcsAsync(plugin);
+        await StartAsync("Unknown2Dcs");
+        Assert.That((await GetFromDcsAsync("Unknown2Dcs"))!.Pid, Is.EqualTo(Dps.Store.Processes["Unknown2Dcs"].Id));
+    }
+
+    [Test]
+    public async Task ExitedProcessIsForgottenBeforeDcsIsTold()
+    {
+        // The plugin can be started again as soon as DCS knows that it has stopped
+        await StartDpsAsync(register: false);
+        Plugin plugin = await AddPluginAsync("Quick", "exit 0");
+        for (int i = 0; i < 3; i++)
+        {
+            await StartAsync("Quick");
+            Assert.That(await DpsHost.WaitForAsync(async () => (await GetFromDcsAsync("Quick"))!.Pid == -1), Is.True);
+            using (await Dps!.Store.LockAsync(default))
+            {
+                Assert.That(Dps.Store.Processes.ContainsKey("Quick"), Is.False);
+            }
+        }
+        Assert.That(Dps!.Log.Entries.Count(entry => entry.Message.StartsWith("Launching")), Is.EqualTo(3));
     }
 }
