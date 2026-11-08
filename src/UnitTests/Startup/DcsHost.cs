@@ -27,7 +27,7 @@ namespace UnitTests.Startup;
 
 /// <summary>
 /// DCS as Program.cs builds it: the generic host of Host.CreateDefaultBuilder with UseSystemd, the config file as JSON source, the shutdown timeout of
-/// Program.cs:188 and the same service registrations in the same order (Program.cs:129-201), so that all hosted services run and the host starts and stops
+/// Program.cs:177 and the same service registrations in the same order (Program.cs:129-190), so that all hosted services run and the host starts and stops
 /// them. Differences to Program.cs:
 /// <list type="bullet">
 /// <item>The link adapter is the <see cref="FakeFirmware.FakeFirmware"/> or an SPI adapter on a fake device instead of the hardware</item>

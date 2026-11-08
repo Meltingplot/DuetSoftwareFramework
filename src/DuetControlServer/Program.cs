@@ -161,20 +161,9 @@ rootCommand.SetAction(async (parserResult) =>
             .UseSystemd()
             .ConfigureAppConfiguration((hostingContext, config) =>
             {
-                try
-                {
-                    config
-                        .AddJsonFile(configFileValue.FullName, optional: true)
-                        .AddCommandLine([.. parserResult.UnmatchedTokens]);
-                }
-                catch (JsonException je)
-                {
-                    Terminate(je, $"Failed to load settings: {je.Message}", ExitCode.Configuration, loggerFactory);
-                }
-                catch (Exception e)
-                {
-                    Terminate(e, $"Failed to initialize settings: {e.Message}", ExitCode.Usage, loggerFactory);
-                }
+                config
+                    .AddJsonFile(configFileValue.FullName, optional: true)
+                    .AddCommandLine([.. parserResult.UnmatchedTokens]);
             })
             .ConfigureServices((context, services) =>
             {
@@ -204,6 +193,12 @@ rootCommand.SetAction(async (parserResult) =>
         loggerFactory = host.Services.GetRequiredService<ILoggerFactory>();
         capturedSettings = host.Services.GetRequiredService<IOptions<Settings>>().Value;
         DuetAPI.Utility.JsonHelper.ReceiveBufferSize = capturedSettings.IpcJsonBufferSize;
+    }
+    catch (InvalidDataException e) when (e.GetBaseException() is JsonException je)
+    {
+        // The config file is read when the host is built, not where it is added to the configuration
+        Terminate(e, $"Failed to load settings: {je.Message}", ExitCode.Configuration, loggerFactory);
+        return;
     }
     catch (Exception e)
     {

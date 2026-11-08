@@ -288,7 +288,7 @@ public class ShutdownHang
 
     /// <summary>
     /// The host gave its services 30 s to stop by default (HostOptions.cs:24), but systemd kills DCS after TimeoutStopSec. With the shorter shutdown timeout
-    /// of Program.cs:188 a service that does not stop still makes the stop slow, but DCS exits on its own before SIGKILL
+    /// of Program.cs:177 a service that does not stop still makes the stop slow, but DCS exits on its own before SIGKILL
     /// </summary>
     [Test]
     public async Task ShutdownTimeoutIsShorterThanTheStopTimeoutOfSystemd()
