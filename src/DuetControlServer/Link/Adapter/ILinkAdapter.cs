@@ -199,7 +199,8 @@ public interface ILinkAdapter
     /// </summary>
     /// <param name="packet">Packet holding the resend request</param>
     /// <param name="sbcRequest">Content of the packet to resend</param>
-    void ResendPacket(PacketHeader packet, out Protocol.SbcRequests.Request sbcRequest);
+    /// <param name="invalidatedChannel">Channel of the resent request if it is an InvalidateChannel, else null</param>
+    void ResendPacket(PacketHeader packet, out Protocol.SbcRequests.Request sbcRequest, out CodeChannel? invalidatedChannel);
 
     /// <summary>
     /// Write another segment of the IAP binary

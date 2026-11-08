@@ -256,6 +256,21 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <summary>
+    /// Let the next attempts of the SBC task to lock the buffer of a channel fail, as when the main task does not release the buffer mutex within
+    /// SbcYieldTimeout (SbcInterface.cpp:45, :888-900). RRF then asks DSF to send the request again (:1338-1341). While an M98 waits for its macro,
+    /// the main task holds the mutex for the whole spin (GCodes.cpp:590, GCodeBuffer::RequestMacroFile releases only its own level)
+    /// </summary>
+    /// <param name="channel">Channel of the buffer</param>
+    /// <param name="count">Number of attempts that fail</param>
+    public void FailBufferLocks(CodeChannel channel, int count)
+    {
+        lock (_lock)
+        {
+            _failedBufferLocks[channel] = count;
+        }
+    }
+
+    /// <summary>
     /// Hold the transfers after the given number of further transfers, so that a test can check what DSF does before its requests reach RRF
     /// </summary>
     /// <param name="transfers">Number of transfers to perform before holding</param>
@@ -522,6 +537,11 @@ public sealed partial class FakeFirmware : ILinkAdapter
     private int _rxIndex;
     private FakePacket? _currentPacket;
     private readonly HashSet<SbcRequest> _requestsBeingResent = [];
+
+    /// <summary>
+    /// Number of further attempts of the SBC task to lock the buffer of a channel that fail
+    /// </summary>
+    private readonly Dictionary<CodeChannel, int> _failedBufferLocks = [];
     private bool _hadReset;
 
     // SBC interface state
@@ -967,6 +987,11 @@ public sealed partial class FakeFirmware : ILinkAdapter
     /// <returns>Whether the mutex could be taken</returns>
     private bool TryLockBuffer(FakeGCodeBuffer gb)
     {
+        if (_failedBufferLocks.TryGetValue(gb.Channel, out int failures) && failures > 0)
+        {
+            _failedBufferLocks[gb.Channel] = failures - 1;
+            return false;
+        }
         if (gb.PendingMacroCall is { HoldsMutex: true })
         {
             if (gb.IsWaitingForMacro)
@@ -1343,7 +1368,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
     public void DumpMalformedPacket() { }
 
     /// <inheritdoc />
-    public void ResendPacket(PacketHeader packet, out DuetControlServer.Link.Protocol.SbcRequests.Request sbcRequest)
+    public void ResendPacket(PacketHeader packet, out DuetControlServer.Link.Protocol.SbcRequests.Request sbcRequest, out CodeChannel? invalidatedChannel)
     {
         lock (_lock)
         {
@@ -1354,6 +1379,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                 _requestsBeingResent.Add(original.Request);
             }
             sbcRequest = original.Request;
+            invalidatedChannel = (original.Request == SbcRequest.InvalidateChannel) ? original.Channel : null;
         }
     }
     #endregion

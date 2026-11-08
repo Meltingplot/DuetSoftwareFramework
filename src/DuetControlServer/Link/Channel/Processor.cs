@@ -124,6 +124,18 @@ public sealed class Processor
     private bool _allFilesAbortedSent;
 
     /// <summary>
+    /// This is set to true while RRF has not answered the notification about aborted files yet. It answers with the data of the transfer
+    /// after the one that brought the notification, by asking for it again if it could not process it (SbcInterface.cpp:1338-1341).
+    /// Nothing else goes out on this channel until then, because a copy that RRF processes later drops the codes it got before (InvalidateBufferedCodes)
+    /// </summary>
+    private bool _allFilesAbortUnconfirmed;
+
+    /// <summary>
+    /// This is set to true if RRF asked for the notification about aborted files again in the data being processed. The copy goes out with the next transfer
+    /// </summary>
+    private bool _allFilesAbortResent;
+
+    /// <summary>
     /// Stack of the different channel states
     /// </summary>
     public Stack<StackState> Stack { get; } = new();
@@ -868,12 +880,29 @@ public sealed class Processor
     /// </summary>
     public void Spin()
     {
-        // The data RRF sent with the notification about aborted files has been processed
-        _allFilesAbortedSent = false;
+        if (_allFilesAbortResent)
+        {
+            // The copy of the notification about aborted files goes out with the next transfer, whose data RRF writes before it reads the copy
+            _allFilesAbortResent = false;
+        }
+        else if (_allFilesAbortedSent)
+        {
+            // The data RRF sent with the notification about aborted files has been processed, its answer comes with the next transfer
+            _allFilesAbortedSent = false;
+        }
+        else
+        {
+            // RRF has processed the notification about aborted files
+            _allFilesAbortUnconfirmed = false;
+        }
 
         // 1. Whole line comments and pending replies
         ResolveCommentCodes();
         ResolvePendingReplies();
+        if (_allFilesAbortUnconfirmed)
+        {
+            return;
+        }
 
         // 2. Lock/Unlock requests
         if (CurrentState.LockRequests.TryPeek(out LockMovementRequest? lockRequest))
@@ -902,7 +931,7 @@ public sealed class Processor
         // 3. Abort requests
         if (_allFilesAborted)
         {
-            _allFilesAbortedSent = _linkAdapter.WriteInvalidateChannel(Channel);
+            _allFilesAbortedSent = _allFilesAbortUnconfirmed = _linkAdapter.WriteInvalidateChannel(Channel);
             _allFilesAborted = !_allFilesAbortedSent;
             return;
         }
@@ -1276,6 +1305,16 @@ public sealed class Processor
     }
 
     /// <summary>
+    /// Called when RRF could not process the notification about aborted files and the link adapter sends it again. RRF wrote the rest of
+    /// this data after it had given up the pending macro request (SbcInterface.cpp:880-886), and it writes the data of the next transfer before
+    /// it reads the copy, so macro requests and closals in both are void as well
+    /// </summary>
+    public void AllFilesAbortResent()
+    {
+        _allFilesAbortedSent = _allFilesAbortUnconfirmed = _allFilesAbortResent = true;
+    }
+
+    /// <summary>
     /// Called when a message has been acknowledged
     /// </summary>
     public void MessageAcknowledged()
@@ -1495,6 +1534,6 @@ public sealed class Processor
 
         // Clear codes that are still pending but have not been fed into the SPI interface yet
         _codeProcessor.CancelPending(Channel);
-        _allFilesAborted = _allFilesAbortedSent = false;
+        _allFilesAborted = _allFilesAbortedSent = _allFilesAbortUnconfirmed = _allFilesAbortResent = false;
     }
 }
