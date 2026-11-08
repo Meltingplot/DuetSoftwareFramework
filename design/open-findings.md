@@ -201,7 +201,6 @@ Open questions:
 - **I5. A failing code in a code stream cancels the next code, and its reply is lost.** The code object is reused (`CodeStream.cs:169, 212-219`, `CodeProcessor.cs:277-285`). Test: `FailedCodeKeepsTheReplyOfTheNextCode`.
 - **I6. `job.layers` still reaches subscribers with API version 10 or older.** `nameof(Layers)` is compared with the JSON name "layers" (`ModelSubscription.cs:495`). Test: `IpcSubscriptionConsistency.JobLayersAreNotSentToOutdatedClients`.
 - **I7. A DPS crash during a command closes the client's connection without a response** (`PluginService.cs:279`, `Command.cs:126-130`). Test: `IpcPluginServiceLifecycle.CommandFailsWithAnErrorWhenThePluginServiceDiesWhileRunningIt`.
-- **I8. `InvalidateChannel` is not in `Command.SupportedCommands`,** so the DuetAPIClient calls always fail. Test: `IpcClientApi.InvalidateChannel`.
 - **I9. A code stream that is refused for its buffer size stays registered.** The constructor registers it first. Test: `IpcCodeStream.RefusedStreamIsNotRegistered`.
 - **I10. A failing command while intercepting ends the connection** instead of returning an error response like the Command mode. Test: `IpcInterception.FailingCommandWhileInterceptingIsReported`.
 - **I11. An undefined interception mode is acknowledged and then ends with a KeyNotFoundException.** Test: `IpcInterception.RefusesUndefinedInterceptionMode`.
@@ -236,17 +235,19 @@ Measured in the fake firmware without link faults:
 
 - **T11. Two cases that the fix of T1 (Meltingplot/RepRapFirmware#43) does not cover.** From reading the RRF code, not tested.
   - daemon.g: at the base level of the Daemon channel, RRF requests daemon.g without waiting (`GCodeBuffer.cpp:1258-1260`). If InvalidateChannel arrives before that request has gone out, RRF closes the file but still sends the request.
-  - A resent InvalidateChannel: if RRF does not get the mutex for it (`SbcInterface.cpp:888-900` at RRF fd4324368), it asks DSF to resend it. The resent copy could end a wait that started after the first one.
-  - The lab test of the T2 fix, `AbortsCrossingMacroRequests` (#139), can run once the printer has an RRF with #43. RRF 3.7.0+1.mp.8 does not have it.
+  - A resent InvalidateChannel: if RRF does not get the mutex for it (`SbcInterface.cpp:888-900` at RRF fd4324368), it asks DSF to resend it. The resent copy could end a wait that started after the first one. The same holds for the closal of T12.
+  - The lab test of the T2 fix, `AbortsCrossingMacroRequests` (#139), ran on 2026-11-08 with RRF 3.7.0+1.mp.9-dev.1 (#43) and stopped DCS after about one second through T12 (fixed with RRF #45, see `design/dsf-findings-upstream.md`). It needs a run with RRF #45.
 - **T4. A missing trigger macro is not shown after DSF has run a code on the Trigger channel.** RRF reports it as a pushed code reply (`GCodes.cpp:3703-3706`), DSF takes it as an out-of-order reply and holds it back (`Processor.cs:1122-1127`, `LinkService.cs:727-733, 762-776`). This fits the field journal line "Trigger: Out-of-order reply: 'Macro file trigger8.g not found'", not proven to be the same event. Test: `Codes.TriggerMacros.MissingTriggerMacroAfterCodeOfDsfOnTriggerChannel`.
 - **T5. M581.1 with SBC fields succeeds and creates the trigger although its expression fails** (upstream 4229f552). RRF returns an error and creates nothing (`TriggerItem.cpp:328-339`, wiki M581.1). Test: `Codes.SbcTriggerEvaluation.ErrorInExpressionIsReported`.
 - **T6. A later evaluation error of such a trigger is only logged, and the trigger stays enabled.** RRF disables it and reports it (`TriggerItem.cpp:133-149`). Test: `ErrorInLaterEvaluationDisablesTheTrigger`.
 - **T7. An SBC trigger T0 runs trigger0.g instead of an emergency stop** (`SbcTriggerService.cs:298-308`; wiki M581; `GCodes.cpp:994-998`). By the code, T1 runs trigger1.g instead of pausing; this is not tested. Test: `TriggerZeroIsAnEmergencyStop`.
 - **T8. M582 never checks a trigger that DSF evaluates**, because it is passed straight to RRF. The wiki says M582 works for M581.1 triggers. Test: `M582ChecksTriggerOfDsf`.
 - **T9. R1 and R2 of SBC triggers count simulating and cancelling as not printing** (`SbcTriggerService.cs:341-344`). RRF's `IsPrinting` counts both as printing (`GCodes.cpp:3993`, `RepRap.cpp:1961-1968`). Test: `EnableConditionWhilePrinting` with Simulating and Cancelling.
-- **T10. "Macro file … not found" after an abort becomes an out-of-order reply.** Cosmetic, from reading the code, not tested.
+- **T10. The reply of an aborted M98 goes to the next code of the channel.** Not cosmetic, as assumed before.
   - When InvalidateChannel ends the wait for a macro, RRF still reports the file as missing: for an M98 as an error reply (`GCodes2.cpp:1718-1722`), for a trigger as a pushed warning (`GCodes.cpp:3699-3707`).
-  - DSF has no buffered code for that reply any more, so it holds it back as an out-of-order reply (`Processor.cs:1122-1127`, as in T4).
+  - DSF has no buffered code for that reply any more, so it holds it back as an out-of-order reply (`Processor.cs:1122-1127`, as in T4). The next code of the channel takes it.
+  - Printer, 2026-11-08 (`AbortsCrossingMacroRequests`): the G4 P0 after an abort finished with "Error: M98: Macro file 0:/macros/lab-tests/abort/short.g not found", and its own empty reply came out of order. The final reply of an M98 whose macro RRF had just closed becomes an out-of-order reply as well (fake firmware log of `TriggerFuzz.DcsKeepsRunningWhenAnAbortCrossesAMacroFileClosal`).
+  - Open: which side drops these replies. RRF answers a code that DSF has cancelled, DSF cannot tell such a reply from the reply of the next code.
 
 Open question: the wiki for M581 says polling for further triggers is suspended while a trigger macro runs. RRF keeps checking and marks the trigger as pending (`GCodes.cpp:983-989`).
 
