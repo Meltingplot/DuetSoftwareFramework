@@ -26,6 +26,11 @@ public sealed class FakePacket
     public int Transfer { get; internal set; }
 
     /// <summary>
+    /// <see cref="System.Diagnostics.Stopwatch"/> timestamp of the transfer that delivered this packet to DSF
+    /// </summary>
+    public long Timestamp { get; internal set; }
+
+    /// <summary>
     /// Code channel of the packet, if any
     /// </summary>
     public CodeChannel Channel { get; init; }

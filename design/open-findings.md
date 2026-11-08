@@ -128,7 +128,7 @@ The census showed it once a restart between two exchanges was added (`SpiFault.R
 
 ## Findings of the fuzz and coverage tests (2026-11-07)
 
-The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations. None is fixed. Each has an `[Explicit]` test in `src/UnitTests` that reproduces it and fails today. Run one by its exact name, e.g. `dotnet test src/UnitTests/bin/Debug/net10.0/UnitTests.dll --filter "FullyQualifiedName=UnitTests.WebServer.SdRootDeletionTests.RootCannotBeDeleted"`. Once a finding is fixed, remove the `[Explicit]` of its test and this entry.
+The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, and the trigger tests of #129 found 9 more. None is fixed. Each has an `[Explicit]` test in `src/UnitTests` that reproduces it and fails today. Run one by its exact name, e.g. `dotnet test src/UnitTests/bin/Debug/net10.0/UnitTests.dll --filter "FullyQualifiedName=UnitTests.WebServer.SdRootDeletionTests.RootCannotBeDeleted"`. Once a finding is fixed, remove the `[Explicit]` of its test and this entry.
 
 - **Line numbers:** DSF `v3.7-dev` at c6d225f2. The production code there is the same as at d576ee9e, where the tests started. RRF `3.7-dev` at cde4e4fa1 (3.7.0+1.mp.8).
 - **Printer:** "printer" marks findings that were confirmed on the lab printer on 2026-11-07, with DSF 3.7.0+mp.13 and RRF 3.7.0+1.mp.8.
@@ -142,6 +142,8 @@ The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations. None i
 4. **I3** An Executed interceptor with filters blocks its channel for good. Printer.
 5. **O2** A value of the wrong type in a firmware response ends the object model update loop.
 6. **O3** and **O4** An out-of-range float or a global string with invalid UTF-8 makes the object model unserializable, so model queries, subscriptions and DWS fail.
+7. **T1** and **T2** An invalidation or abort at the wrong moment leaves the Trigger channel or another channel blocked until DCS restarts. The door and E-stop macros run on the Trigger channel.
+8. **T3** A full code buffer can hold back the M98 and the M112 of trigger2.g.
 
 ### SBC link (#122)
 
@@ -275,3 +277,38 @@ Open questions:
 - **O3. A number beyond the float range is stored as infinity, after which the model cannot be serialized.** GetObjectModel, the subscriptions and DWS then fail. RRF itself reports NaN and infinity as null (`ObjectModel::ReportFloat`). Test: `InfiniteNumberKeepsTheModelSerializable`.
 - **O4. A global string with invalid UTF-8 is stored, after which the model cannot be serialized.** RRF copies string bytes as they are (`OutputBuffer::EncodeChar`). Test: `InvalidUtf8KeepsTheModelSerializable`.
 - **O5. `UpdateFromJsonReader` stores "[" for an array in a property of type object** and reads the array items as members of the parent (`DuetAPI.SourceGenerators/ObjectModel/ModelObject/UpdateFromJsonReader.cs`). Test: `ObjectPropertyWithArrayIsReadLikeUpdateFromJson`.
+
+### Triggers (#129)
+
+How the CHX 350 uses triggers, read from the lab printer:
+- Pin triggers `M581 T2` (external E-stop input) and `T4`/`T9` (doors).
+- Expression triggers (`M581.1` T3, T5-T8, T10) that RRF evaluates itself.
+- Their macros `sys/triggerN.g` run on the Trigger channel, served by DSF. `SbcTriggerService` is not involved there.
+
+Measured in the fake firmware without link faults:
+- DSF starts a trigger macro one transfer after the request.
+- trigger2.g's M112 reaches RRF 22-24 transfers after the request. That is 18-22 ms on the WSL VM, with a three-code stand-in for set-led-color.g.
+
+- **T1. An invalidation of the Trigger channel while RRF's trigger macro request is pending blocks all later triggers until DCS restarts.** RRF, upstream 8207b22cc.
+  - RRF marks the request as failed (`SbcInterface.cpp:880-883`) but still sends it in the same exchange (`:1576-1590`).
+  - DSF then runs a triggerN.g that RRF does not run and never pops it.
+  - Every later trigger is discarded with "System macro … stack is not empty" (`Processor.cs:1301-1305`), and RRF reports "Macro file triggerN.g not found".
+  - Reachable through the IPC InvalidateChannel command or `abort` on the Trigger channel outside a macro.
+  - Test: `Codes.TriggerMacros.TriggerChannelWorksAfterInvalidationDuringTriggerRequest`.
+- **T2. An abort just after RRF has requested the macro of an M98 that DSF then cancels blocks the channel for good.** DSF and protocol, upstream.
+  - DSF still starts the macro without a start code (`Processor.cs:1308-1325`).
+  - RRF has dropped the request and warns "Macro file has been started … but none was requested".
+  - The next code on the channel hangs. A job cancelled while its M98 waits for the macro may hit the same; that is not tested.
+  - Test: `Fuzz.TriggerFuzz.ChannelWorksAfterAbortWhileMacroRequestIsUnderway`.
+- **T3. The spare room in RRF's code buffer is not kept for time-critical codes.** Upstream 82d581d1.
+  - `GetMaxBufferSpacePerChannel` subtracts the reserve once but applies the limit to every channel separately (`LinkInterface.cs:40-47`, `Processor.cs:1037`).
+  - A waiting job plus daemon.g reading ahead filled the buffer, so the M98 of trigger2.g and the M112 behind it did not go out while both waited.
+  - Test: `Codes.TriggerMacros.TriggerMacroGetsSpareCodeBufferRoom`.
+- **T4. A missing trigger macro is not shown after DSF has run a code on the Trigger channel.** RRF reports it as a pushed code reply (`GCodes.cpp:3703-3706`), DSF takes it as an out-of-order reply and holds it back (`Processor.cs:1122-1127`, `LinkService.cs:727-733, 762-776`). This fits the field journal line "Trigger: Out-of-order reply: 'Macro file trigger8.g not found'", not proven to be the same event. Test: `Codes.TriggerMacros.MissingTriggerMacroAfterCodeOfDsfOnTriggerChannel`.
+- **T5. M581.1 with SBC fields succeeds and creates the trigger although its expression fails** (upstream 4229f552). RRF returns an error and creates nothing (`TriggerItem.cpp:328-339`, wiki M581.1). Test: `Codes.SbcTriggerEvaluation.ErrorInExpressionIsReported`.
+- **T6. A later evaluation error of such a trigger is only logged, and the trigger stays enabled.** RRF disables it and reports it (`TriggerItem.cpp:133-149`). Test: `ErrorInLaterEvaluationDisablesTheTrigger`.
+- **T7. An SBC trigger T0 runs trigger0.g instead of an emergency stop** (`SbcTriggerService.cs:298-308`; wiki M581; `GCodes.cpp:994-998`). By the code, T1 runs trigger1.g instead of pausing; this is not tested. Test: `TriggerZeroIsAnEmergencyStop`.
+- **T8. M582 never checks a trigger that DSF evaluates**, because it is passed straight to RRF. The wiki says M582 works for M581.1 triggers. Test: `M582ChecksTriggerOfDsf`.
+- **T9. R1 and R2 of SBC triggers count simulating and cancelling as not printing** (`SbcTriggerService.cs:341-344`). RRF's `IsPrinting` counts both as printing (`GCodes.cpp:3993`, `RepRap.cpp:1961-1968`). Test: `EnableConditionWhilePrinting` with Simulating and Cancelling.
+
+Open question: the wiki for M581 says polling for further triggers is suspended while a trigger macro runs. RRF keeps checking and marks the trigger as pending (`GCodes.cpp:983-989`).

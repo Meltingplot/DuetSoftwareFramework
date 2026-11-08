@@ -41,6 +41,8 @@ CRITICAL = [
     ("Jobs and macros", ["DuetControlServer/Files/CodeBlock.cs", "DuetControlServer/Files/CodeFile.cs", "DuetControlServer/Files/CodeFilePath.cs",
                          "DuetControlServer/Files/FilePathResolver.cs", "DuetControlServer/Files/JobProcessor.cs", "DuetControlServer/Files/MacroFile.cs"], []),
     ("IPC server", ["DuetControlServer/IPC/"], []),
+    # Part of the trigger handling: evaluates M581.1 triggers with SBC fields and starts their macros
+    ("SBC triggers", ["DuetControlServer/Model/SbcTriggerService.cs"], []),
     ("HTTP sessions and API", ["DuetWebServer/Authorization/", "DuetWebServer/Endpoints/", "DuetWebServer/Services/SessionExpiry.cs",
                                "DuetWebServer/Singletons/SessionStorage.cs"], []),
 ]

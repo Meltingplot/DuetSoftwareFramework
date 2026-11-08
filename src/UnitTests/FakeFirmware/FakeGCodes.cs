@@ -123,6 +123,28 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
     private readonly Queue<(CodeChannel channel, string fileName, bool reportMissing)> _macroRequests = new();
 
     /// <summary>
+    /// Number of triggers, see MaxTriggers in Pins_Duet3_MB6HC.h (the bitmap of pending triggers is a uint32_t)
+    /// </summary>
+    public const int MaxTriggers = 32;
+
+    /// <summary>
+    /// Bitmap of triggers that have fired but whose macros have not been started yet, see GCodes::triggersPending
+    /// </summary>
+    public uint TriggersPending { get; private set; }
+
+    /// <summary>
+    /// Mark a trigger as pending like GCodes::CheckTriggers does when TriggerItem::Check reports that it fired (GCodes.cpp:983-989).
+    /// M582 does the same (GCodes3.cpp:421-431) but is not emulated. A trigger that is pending already stays pending only once
+    /// </summary>
+    /// <param name="number">Trigger number from 2 up, because trigger 0 (emergency stop) and trigger 1 (pause) are not emulated</param>
+    public void SetTriggerPending(int number)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(number, 2);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(number, MaxTriggers);
+        TriggersPending |= 1u << number;
+    }
+
+    /// <summary>
     /// Whether the main task is blocked in GCodeBuffer::RequestMacroFile
     /// </summary>
     public bool IsBlocked => Buffers.Any(gb => gb.IsWaitingForMacro);
@@ -163,6 +185,7 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
         MovementLockOwner = null;
         MessageBoxes.Clear();
         _macroRequests.Clear();
+        TriggersPending = 0;
     }
 
     /// <summary>
@@ -212,10 +235,14 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
             }
         }
 
-        // Spin the channels until none of them can make progress
+        // Spin the channels until none of them can make progress. RRF checks the triggers on every spin before it spins a channel (GCodes.cpp:517)
         for (int i = 0; i < 1000; i++)
         {
-            bool progress = false;
+            bool progress = CheckTriggers();
+            if (IsBlocked)
+            {
+                return;
+            }
             foreach (FakeGCodeBuffer gb in Buffers)
             {
                 progress |= SpinGCodeBuffer(gb);
@@ -229,6 +256,43 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// Whether the trigger channel is busy, see GCodes::IsTriggerBusy (GCodes.cpp:423-433).
+    /// Lines that RRF passes on to DSF (IsSendRequested, IsExecutingOnSbc) are not emulated
+    /// </summary>
+    private bool IsTriggerBusy
+    {
+        get
+        {
+            FakeGCodeBuffer gb = this[CodeChannel.Trigger];
+            return gb.IsDoingFile || gb.CurrentCode is not null || gb.MachineState.WaitingForAcknowledgement || gb.IsAbortRequested;
+        }
+    }
+
+    /// <summary>
+    /// Start the macro of the lowest pending trigger once the trigger channel is free, see GCodes::CheckTriggers (GCodes.cpp:991-1056).
+    /// Trigger 0 (emergency stop), trigger 1 (pause) and the one-line actions of M581.1 U are not emulated
+    /// </summary>
+    /// <returns>Whether a trigger macro has been started</returns>
+    private bool CheckTriggers()
+    {
+        if (TriggersPending == 0)
+        {
+            return false;
+        }
+
+        int lowestTriggerPending = System.Numerics.BitOperations.TrailingZeroCount(TriggersPending);
+        FakeGCodeBuffer gb = this[CodeChannel.Trigger];
+        if (IsTriggerBusy || gb.MachineState.State != FakeMachineState.MachineStateKind.Normal || gb.PendingMacroCall is not null)
+        {
+            return false;
+        }
+
+        TriggersPending &= ~(1u << lowestTriggerPending);
+        DoFileMacro(gb, $"trigger{lowestTriggerPending}.g", true, AsyncSystemMacroCode, [], null);
+        return true;
     }
 
     /// <summary>
