@@ -11,8 +11,8 @@ namespace UnitTests.Utility;
 
 /// <summary>
 /// Reading the firmware version from a firmware file and unpacking UF2 files (Firmware.cs). DCS -u compares the version of each board with
-/// the version in its firmware file to decide which boards to update (FirmwareUpdater.cs:56-90), and M997 unpacks a .uf2 file before it
-/// flashes it (MCodeHandler.cs:1272-1276). The files are built by <see cref="FirmwareImage"/>
+/// the version in its firmware file to decide which boards to update (FirmwareUpdater.cs:81-115), and M997 unpacks a .uf2 file before it
+/// flashes it (MCodeHandler.cs:1270-1286). The files are built by <see cref="FirmwareImage"/>
 /// </summary>
 [TestFixture]
 public class FirmwareFiles
@@ -103,18 +103,20 @@ public class FirmwareFiles
 
     /// <summary>
     /// The version of a .uf2 file is read from its unpacked image. The Duet 3 Mini uses one (IAP_FIRMWARE_FILE, Pins_Duet3Mini.h:18-27), and so do
-    /// expansion boards that ask for it (ExpansionManager.cpp:57-60 and 479-480)
+    /// expansion boards that ask for it (ExpansionManager.cpp:57-60 and 479-480). The extension is compared without regard to case, like the
+    /// SD card IAP program does (Duet3D/DuetIAP 3.7-dev src/iap_sd.cpp:133)
     /// </summary>
-    [Test]
-    public async Task VersionOfUf2File()
+    [TestCase("Duet3Firmware_Mini5plus.uf2")]
+    [TestCase("Duet3Firmware_Mini5plus.UF2")]
+    public async Task VersionOfUf2File(string fileName)
     {
         byte[] image = FirmwareImage.Build("RepRapFirmware for Duet 3 Mini 5+ version 3.7.0+1.mp.8", length: 3000, loadAddress: 0);
-        string path = Write("Duet3Firmware_Mini5plus.uf2", FirmwareImage.ToUf2(image, targetAddress: 0));
+        string path = Write(fileName, FirmwareImage.ToUf2(image, targetAddress: 0));
         Assert.That(await GetVersionAsync(path), Is.EqualTo("3.7.0+1.mp.8"));
     }
 
     /// <summary>
-    /// A missing file is reported as such, only FirmwareUpdater checks for its existence first (FirmwareUpdater.cs:60-68)
+    /// A missing file is reported as such, only FirmwareUpdater checks for its existence first (FirmwareUpdater.cs:84-93)
     /// </summary>
     [Test]
     public void MissingFile()
@@ -197,7 +199,8 @@ public class FirmwareFiles
     }
 
     /// <summary>
-    /// GetFirmwareVersionAsync does not catch it, so an invalid .uf2 file fails the version check instead of giving no version
+    /// GetFirmwareVersionAsync does not catch it, so an invalid .uf2 file fails the version check instead of giving no version. FirmwareUpdater
+    /// reports it and leaves the boards of that file alone (UpdateOnlyMode.InvalidFirmwareFileLeavesOnlyItsBoardAlone)
     /// </summary>
     [Test]
     public void VersionOfInvalidUf2File()
@@ -210,12 +213,11 @@ public class FirmwareFiles
     /// The extension decides whether a file is unpacked (Firmware.cs:117), so UF2 content in a file named otherwise is read as a binary,
     /// whose words at 0x20 and 0x24 are then the first payload bytes of the first block
     /// </summary>
-    [TestCase("Duet3Firmware_Mini5plus.bin")]
-    [TestCase("Duet3Firmware_Mini5plus.UF2")]
-    public async Task Uf2ContentNotUnpacked(string fileName)
+    [Test]
+    public async Task Uf2ContentNotUnpacked()
     {
         byte[] image = FirmwareImage.Build("RepRapFirmware for Duet 3 Mini 5+ version 3.7.0", length: 3000, loadAddress: 0);
-        string path = Write(fileName, FirmwareImage.ToUf2(image, targetAddress: 0));
+        string path = Write("Duet3Firmware_Mini5plus.bin", FirmwareImage.ToUf2(image, targetAddress: 0));
         Assert.That(await GetVersionAsync(path), Is.Not.EqualTo("3.7.0"));
     }
     #endregion

@@ -299,7 +299,8 @@ public class IapOverSpi
 
     /// <summary>
     /// When the IAP program stops raising TfrRdy, DSF times out after Consts.IapTimeout with an OperationCanceledException that names no transfer
-    /// phase, since the transfer is not one of RRF's (SPI.cs:1741-1780), and the update fails with it (LinkService.cs:134-139 and 319-324)
+    /// phase, since the transfer is not one of RRF's (SPI.cs:1741-1780). The update fails with it as an IOException, because M997 would take an
+    /// OperationCanceledException for its own cancellation and drop the reason (LinkService.cs:134-139 and 319-326, MCodeHandler.cs:1304)
     /// </summary>
     [Test]
     public async Task IapProgramStopsAnswering()
@@ -308,7 +309,8 @@ public class IapOverSpi
         await using (host)
         {
             await Assert.ThatAsync(() => host.Link.UpdateFirmware(new MemoryStream(IapBinary), new MemoryStream(FirmwareBinary)).WaitAsync(LinkServiceOverSpi.Timeout),
-                Throws.InstanceOf<OperationCanceledException>().With.Message.StartsWith("Transfer timeout while waiting for TfrRdy pin (waited "));
+                Throws.InstanceOf<IOException>().With.Message.StartsWith("Transfer timeout while waiting for TfrRdy pin (waited ")
+                    .And.InnerException.InstanceOf<OperationCanceledException>());
             Assert.That(iap.TransferSizes, Is.EqualTo(new[] { Consts.FirmwareSegmentSize }));
             Assert.That(iap.Rebooted, Is.False);
         }
@@ -326,7 +328,7 @@ public class IapOverSpi
         await using (host)
         {
             await Assert.ThatAsync(() => host.Link.UpdateFirmware(new MemoryStream(IapBinary), new MemoryStream()).WaitAsync(LinkServiceOverSpi.Timeout),
-                Throws.InstanceOf<OperationCanceledException>());
+                Throws.InstanceOf<IOException>().With.InnerException.InstanceOf<OperationCanceledException>());
             Assert.That(iap.TransferSizes, Is.Empty);
             Assert.That(iap.Verifications, Is.Empty);
         }

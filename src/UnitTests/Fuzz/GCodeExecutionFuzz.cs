@@ -65,8 +65,8 @@ public class GCodeExecutionFuzz
     /// Codes that are left out because they leave the sandbox or block by design, with the reason from the source:
     /// <list type="bullet">
     /// <item>M112: emergency stop. Afterwards no code reaches the firmware until M999 (wiki M112, MCodeHandler.cs:748-772)</item>
-    /// <item>M999: resets the firmware and stops DCS after its reply (MCodeHandler.cs:1341-1375)</item>
-    /// <item>M997: updates the firmware, stops the plugins and DCS, or the DSF packages with S2 (MCodeHandler.cs:1202-1335)</item>
+    /// <item>M999: resets the firmware and stops DCS after its reply (MCodeHandler.cs:1358-1392)</item>
+    /// <item>M997: updates the firmware, stops the plugins and DCS, or the DSF packages with S2 (MCodeHandler.cs:1202-1352)</item>
     /// <item>M291: a message box with S2 or S3 blocks the channel until it is acknowledged (wiki M291, FakeGCodes.DoMessageBox)</item>
     /// <item>M581/M582: SBC triggers configured by DSF start trigger macros later on their own (MCodeHandler.cs:1050-1061, SbcTriggerService)</item>
     /// <item>M586: P4 and M586.4 make DCS connect to an MQTT broker over the network, also if P is an expression (MCodeHandler.cs:1063-1097).

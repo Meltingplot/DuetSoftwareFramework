@@ -31,7 +31,32 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
     /// <summary>
     /// How long to wait for an expansion board to report the firmware version it was updated to
     /// </summary>
-    private static readonly TimeSpan ExpansionUpdateTimeout = TimeSpan.FromMinutes(3);
+    internal TimeSpan ExpansionUpdateTimeout { get; set; } = TimeSpan.FromMinutes(3);
+
+    /// <summary>
+    /// Questions asked before outdated boards are updated
+    /// </summary>
+    internal FirmwareUpdatePrompt Prompt { get; set; } = new();
+
+    /// <summary>
+    /// Read the firmware version from a firmware file. A file that cannot be read, e.g. an invalid UF2 file, is reported and gives no version,
+    /// so only the boards of that file are left alone
+    /// </summary>
+    /// <param name="filename">Physical path of the firmware file</param>
+    /// <returns>Firmware version or null if none could be read</returns>
+    private async Task<string?> GetFirmwareVersionAsync(string filename)
+    {
+        try
+        {
+            return await Firmware.GetFirmwareVersionAsync(filename, settings.Value.FileBufferSize);
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine("Error: Failed to read firmware version from {0}: {1}", filename, e.Message);
+            logger.LogDebug(e, "Failed to read firmware version from {File}", filename);
+            return null;
+        }
+    }
 
     /// <summary>
     /// Update the firmware from this instance
@@ -64,7 +89,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
 
             if (File.Exists(firmwareFilename))
             {
-                firmwareVersions[firmwareFile] = await Firmware.GetFirmwareVersionAsync(firmwareFilename, settings.Value.FileBufferSize);
+                firmwareVersions[firmwareFile] = await GetFirmwareVersionAsync(firmwareFilename);
             }
         }
 
@@ -74,7 +99,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
         {
             foreach (Board board in model.Boards)
             {
-                if (!string.IsNullOrEmpty(board.FirmwareFileName) && firmwareVersions.TryGetValue(board.FirmwareFileName, out string? newVersion))
+                if (!string.IsNullOrEmpty(board.FirmwareFileName) && firmwareVersions.TryGetValue(board.FirmwareFileName, out string? newVersion) && newVersion is not null)
                 {
                     if (board.FirmwareVersion != newVersion)
                     {
@@ -106,27 +131,15 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
 
         // Determine which boards are supposed to be updated
         List<Board> boardsToUpdate = [];
-        if (Console.IsInputRedirected)
+        if (!Prompt.IsInteractive)
         {
             // DCS does not start in update-only mode if Settings.AutoUpdateFirmware is false
             boardsToUpdate.AddRange(outdatedBoards);
         }
         else
         {
-            while (Console.KeyAvailable)
-            {
-                Console.ReadKey(true);
-            }
-
-            Console.Write("Would you like to update them all (Y/n)? ");
-
-            char key = char.ToUpper(Console.ReadKey().KeyChar);
-            if (key != '\r')
-            {
-                Console.WriteLine();
-            }
-
-            if (key == '\r' || key == 'Y')
+            Prompt.DiscardPendingKeys();
+            if (Prompt.Ask("Would you like to update them all (Y/n)? "))
             {
                 boardsToUpdate.AddRange(outdatedBoards);
             }
@@ -136,14 +149,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
                 {
                     string newVersion = firmwareVersions[board.FirmwareFileName!] ?? "n/a";
                     string boardName = string.IsNullOrEmpty(board.Name) ? $"Duet 3 Expansion {board.ShortName}" : board.Name;
-                    Console.Write("Would you like to update {0} ({1} -> {2}){3} (Y/n)? ", boardName, board.FirmwareVersion, newVersion, (board.CanAddress ?? 0) > 0 ? $" @ CAN address {board.CanAddress}" : string.Empty);
-                    key = char.ToUpper(Console.ReadKey().KeyChar);
-                    if (key != '\r')
-                    {
-                        Console.WriteLine();
-                    }
-
-                    if (key == '\r' || key == 'Y')
+                    if (Prompt.Ask(string.Format("Would you like to update {0} ({1} -> {2}){3} (Y/n)? ", boardName, board.FirmwareVersion, newVersion, (board.CanAddress ?? 0) > 0 ? $" @ CAN address {board.CanAddress}" : string.Empty)))
                     {
                         boardsToUpdate.Add(board);
                     }
@@ -152,6 +158,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
         }
 
         // Update expansion boards
+        bool expansionUpdateStarted = false;
         foreach (Board board in boardsToUpdate)
         {
             if (board.CanAddress > 0)
@@ -171,6 +178,13 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
                     ];
 
                     Message result = await updateCode.ExecuteAsync(cancellationToken) ?? new Message();
+                    if (result.Type == MessageType.Error)
+                    {
+                        // RRF replies at once and has not started the update (ExpansionManager.cpp:447-505), so there is nothing to wait for
+                        Console.WriteLine(result.ToString());
+                        continue;
+                    }
+                    expansionUpdateStarted = true;
 
                     // Unlike with M997, we need to wait for RRF to complete the update process. The machine
                     // status cannot be used for that because a package upgrade in progress pins it to
@@ -226,7 +240,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
                 logger.LogDebug(e, "Failed to update firmware on mainboard");
             }
         }
-        else if (boardsToUpdate.Count > 0)
+        else if (expansionUpdateStarted)
         {
             Console.Write("Resetting mainboard... ");
             try
@@ -296,7 +310,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
 
             if (File.Exists(firmwareFilename))
             {
-                firmwareVersions[firmwareFile] = await Firmware.GetFirmwareVersionAsync(firmwareFilename, settings.Value.FileBufferSize);
+                firmwareVersions[firmwareFile] = await GetFirmwareVersionAsync(firmwareFilename);
             }
         }
 
@@ -304,7 +318,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
         List<Board> outdatedBoards = [];
         foreach (Board board in objectModel.Boards)
         {
-            if (!string.IsNullOrEmpty(board.FirmwareFileName) && firmwareVersions.TryGetValue(board.FirmwareFileName, out string? newVersion))
+            if (!string.IsNullOrEmpty(board.FirmwareFileName) && firmwareVersions.TryGetValue(board.FirmwareFileName, out string? newVersion) && newVersion is not null)
             {
                 if (board.FirmwareVersion != newVersion)
                 {
@@ -334,22 +348,14 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
 
         // Determine which boards are supposed to be updated
         List<Board> boardsToUpdate = [];
-        if (Console.IsInputRedirected)
+        if (!Prompt.IsInteractive)
         {
             // DCS does not start in update-only mode if Settings.AutoUpdateFirmware is false
             boardsToUpdate.AddRange(outdatedBoards);
         }
         else
         {
-            Console.Write("Would you like to update them all (Y/n)? ");
-
-            char key = char.ToUpper(Console.ReadKey().KeyChar);
-            if (key != '\r')
-            {
-                Console.WriteLine();
-            }
-
-            if (key == '\r' || key == 'Y')
+            if (Prompt.Ask("Would you like to update them all (Y/n)? "))
             {
                 boardsToUpdate.AddRange(outdatedBoards);
             }
@@ -359,14 +365,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
                 {
                     string newVersion = firmwareVersions[board.FirmwareFileName!] ?? "n/a";
                     string boardName = string.IsNullOrEmpty(board.Name) ? $"Duet 3 Expansion {board.ShortName}" : board.Name;
-                    Console.Write("Would you like to update {0} ({1} -> {2}){3} (Y/n)? ", boardName, board.FirmwareVersion, newVersion, (board.CanAddress ?? 0) > 0 ? $" @ CAN address {board.CanAddress}" : string.Empty);
-                    key = char.ToUpper(Console.ReadKey().KeyChar);
-                    if (key != '\r')
-                    {
-                        Console.WriteLine();
-                    }
-
-                    if (key == '\r' || key == 'Y')
+                    if (Prompt.Ask(string.Format("Would you like to update {0} ({1} -> {2}){3} (Y/n)? ", boardName, board.FirmwareVersion, newVersion, (board.CanAddress ?? 0) > 0 ? $" @ CAN address {board.CanAddress}" : string.Empty)))
                     {
                         boardsToUpdate.Add(board);
                     }
@@ -375,6 +374,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
         }
 
         // Update expansion boards
+        bool expansionUpdateStarted = false;
         foreach (Board board in boardsToUpdate)
         {
             if (board.CanAddress > 0)
@@ -395,6 +395,13 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
                         ]
                     };
                     Message result = await commandConnection.PerformCodeAsync(updateCode, cancellationToken);
+                    if (result.Type == MessageType.Error)
+                    {
+                        // RRF replies at once and has not started the update (ExpansionManager.cpp:447-505), so there is nothing to wait for
+                        Console.WriteLine(result.ToString());
+                        continue;
+                    }
+                    expansionUpdateStarted = true;
 
                     // Unlike with M997, we need to wait for RRF to complete the update process. The machine
                     // status cannot be used for that because a package upgrade in progress pins it to
@@ -451,7 +458,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
                 logger.LogDebug(e, "Failed to update firmware on mainboard");
             }
         }
-        else if (boardsToUpdate.Count > 0)
+        else if (expansionUpdateStarted)
         {
             Console.Write("Resetting mainboard... ");
             try
