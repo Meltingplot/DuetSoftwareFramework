@@ -254,13 +254,14 @@ PER_REBOOT = ['Connection to controller has been reset', 'RepRapFirmware has lef
 # Expected in some test cases
 IN_SOME_TESTS = ['Failed to find corresponding state for code M291 P"never"', 'Machine is halted', 'SPI fault injected', 'Bad header CRC',
                  'Bad data CRC', 'Sending transfer #']
-# Lines that RefusedMacroPaths causes on purpose, with the refused paths it uses. They are counted here and left out of the findings
-REFUSED_PATH_TESTS = ['Failed to start macro file 99:/macros/lab-tests/refused/', 'Failed to start macro file 0:/../lab-tests-refused-']
 # Known, cause or assessment open
 KNOWN_OPEN = ["State 'stop-sigterm' timed out", 'Failed to find query for object model response', 'Aborting orphaned macro file daemon.g',
               "Daemon: Out-of-order reply"]
 # Outside the plan, only noted
 NOTED = ['Client with outdated protocol version', 'has no value', 'predicted maximum temperature']
+# Expected in some test cases as well: lines that RefusedMacroPaths causes on purpose, with the refused paths it uses. They are left out of
+# the findings
+REFUSED_PATH_TESTS = ['Failed to start macro file 99:/macros/lab-tests/refused/', 'Failed to start macro file 0:/../lab-tests-refused-']
 
 
 def count_lines(journal: str, pattern: str) -> int:
