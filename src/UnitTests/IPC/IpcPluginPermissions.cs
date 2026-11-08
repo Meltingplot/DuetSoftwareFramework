@@ -1,21 +1,22 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text.Json;
 using System.Threading.Tasks;
 using DuetAPI.ObjectModel;
 using DuetAPI.Utility;
 using DuetAPIClient;
 using DuetControlServer.IPC;
+using DuetControlServer.IPC.Processors;
 using NUnit.Framework;
 using UnitTests.FakeFirmware;
 
 namespace UnitTests.IPC;
 
 /// <summary>
-/// Permissions of plugin connections as Connection.AssignPermissionsAsync assigns them (DuetControlServer/IPC/Connection.cs) and the checks
-/// that commands make themselves. The check of the RequiredPermissions attribute grants everything (see
-/// <see cref="RequiredPermissions.RefusedWithoutRequiredFlag"/>), so refusals by the attribute are only covered by explicit tests
+/// Permissions of plugin connections as Connection.AssignPermissionsAsync assigns them (DuetControlServer/IPC/Connection.cs), the checks
+/// of the RequiredPermissions attributes (Connection.CheckPermissions and CheckCommandPermissions) and the checks that commands make themselves
 /// </summary>
 [TestFixture]
 public class IpcPluginPermissions
@@ -26,7 +27,7 @@ public class IpcPluginPermissions
     [OneTimeSetUp]
     public async Task StartHost()
     {
-        _host = await FakeFirmwareHost.StartAsync(configureSettings: settings =>
+        _host = await FakeFirmwareHost.StartAsync(firmware => firmware.OnCode("M7703", _ => FakeReply.Ok("from firmware")), settings =>
         {
             settings.PluginDirectory = Path.Combine(settings.BaseDirectory, "plugins");
             settings.PluginsFilename = Path.Combine(settings.BaseDirectory, "plugins.txt");
@@ -111,6 +112,83 @@ public class IpcPluginPermissions
     }
 
     [Test]
+    public async Task ExternalProgramIsRefusedOnlyTheSuperUserAndServicePluginsCommands()
+    {
+        // Of the commands of the four client modes only these need SuperUser or ServicePlugins (DuetAPI/Commands attributes), so an external
+        // program keeps every other command. The DSF command-line tools (CodeConsole, CodeLogger, CodeStream, CustomHttpEndpoint, ModelObserver,
+        // PluginManager) use none of these four
+        using RawIpcClient client = await RawIpcClient.ConnectAsync(_host.SocketPath!, InitMessageFor(SbcPermissions.ObjectModelRead));
+        Connection? connection = IpcStatics.FindConnection(client.Id);
+        Assert.That(connection, Is.Not.Null);
+
+        // Same lookup as Connection.GetRequiredPermissions, a command without the attribute is not checked
+        string[] refused = [.. Command.SupportedCommands.Concat(CodeInterception.SupportedCommands).Concat(ModelSubscription.SupportedCommands).Concat(CodeStream.SupportedCommands)
+            .Where(command => command.Type.GetCustomAttribute<RequiredPermissionsAttribute>()?.Check(connection!.Permissions) == false)
+            .Select(command => command.Name).Distinct().Order()];
+        Assert.That(refused, Is.EqualTo(new[] { "InstallSystemPackage", "SetNetworkProtocol", "SetPluginProcess", "UninstallSystemPackage" }));
+    }
+
+    /// <summary>
+    /// An interceptor with CodeInterceptionRead may only ignore codes. Resolve, Cancel and Rewrite need CodeInterceptionReadWrite (DuetAPI/Commands/CodeInterception),
+    /// which Connection.ReceiveCommandAsync checks before CodeInterception.ProcessAsync hands the command to the intercepted code
+    /// </summary>
+    [TestCase(SbcPermissions.CodeInterceptionRead)]
+    [TestCase(SbcPermissions.CodeInterceptionReadWrite)]
+    public async Task InterceptorNeedsReadWriteToResolve(SbcPermissions permissions)
+    {
+        // The code is started by an external program that connected before the plugin was registered, since every later connection of this
+        // process is taken for the plugin
+        using CommandConnection command = new();
+        await command.ConnectAsync(_host.SocketPath);
+        await using FakePluginService service = await FakePluginService.StartAsync(_host);
+        await AddPluginAsync("Interceptor", Environment.ProcessId, permissions);
+
+        using RawIpcClient interceptor = await RawIpcClient.ConnectAsync(_host.SocketPath!, "{\"mode\":\"Intercept\",\"version\":13,\"interceptionMode\":\"Pre\",\"channels\":[\"SBC\"],\"filters\":[\"M7703\"]}");
+        Task<string> reply = command.PerformSimpleCodeAsync("M7703", DuetAPI.CodeChannel.SBC);
+        using (JsonDocument code = await interceptor.ReceiveAsync() ?? throw new AssertionException("No code"))
+        {
+            Assert.That(code.RootElement.GetProperty("majorNumber").GetInt32(), Is.EqualTo(7703));
+        }
+        await interceptor.SendAsync("{\"command\":\"Resolve\",\"type\":0,\"content\":\"from plugin\"}");
+        if (permissions == SbcPermissions.CodeInterceptionReadWrite)
+        {
+            Assert.That(await reply.WaitAsync(FakeFirmwareHost.DefaultTimeout), Is.EqualTo("from plugin\n"));
+            return;
+        }
+
+        // The refused Resolve never reaches the code. Like an unsupported command it ends the interception, the server closes the connection
+        // after logging the exception, and the code carries on as if it had been ignored (see IpcInterception.UnsupportedCommandEndsTheInterception
+        // and FailingCommandWhileInterceptingIsReported)
+        (_, bool closed) = await interceptor.ReceiveUntilClosedAsync(TimeSpan.FromSeconds(5));
+        Assert.That(closed, Is.True);
+        Assert.That(await reply.WaitAsync(FakeFirmwareHost.DefaultTimeout), Is.EqualTo("from firmware\n"));
+        Assert.That(_log.UnexpectedExceptions.Select(entry => entry.Exception?.GetType()), Is.EqualTo(new[] { typeof(UnauthorizedAccessException) }));
+        _log.Clear();
+    }
+
+    [Test]
+    public async Task PluginWithOnlyOsPermissionsGetsNoConnectionMode()
+    {
+        // Permissions that AppArmor enforces grant no IPC command, so such a plugin gets none of the four client modes (Server.GetConnectionProcessorAsync).
+        // NotifyPluginStarted has no attribute and does not count (Connection.CheckCommandPermissions), so such a plugin cannot report its start either.
+        // ReadGCodes is the exception, it grants GetFileInfo and with it the Command mode
+        await using FakePluginService service = await FakePluginService.StartAsync(_host);
+        await AddPluginAsync("OsOnly", Environment.ProcessId, SbcPermissions.NetworkAccess | SbcPermissions.LaunchProcesses | SbcPermissions.WebcamAccess | SbcPermissions.ReadMacros);
+        foreach (string initMessage in new[]
+        {
+            "{\"mode\":\"Command\",\"version\":13}",
+            "{\"mode\":\"Intercept\",\"version\":13,\"interceptionMode\":\"Pre\",\"channels\":[\"SBC\"],\"filters\":[\"M7702\"]}",
+            "{\"mode\":\"Subscribe\",\"version\":13,\"subscriptionMode\":\"Patch\"}",
+            "{\"mode\":\"CodeStream\",\"version\":13,\"bufferSize\":1,\"channel\":\"SBC\"}"
+        })
+        {
+            using RawIpcClient plugin = await RawIpcClient.ConnectAsync(_host.SocketPath!);
+            using JsonDocument response = await plugin.RequestAsync(initMessage);
+            Assert.That(RawIpcClient.GetErrorType(response.RootElement), Is.EqualTo(nameof(UnauthorizedAccessException)), initMessage);
+        }
+    }
+
+    [Test]
     public async Task PluginMayOnlyNotifyItsOwnStart()
     {
         // NotifyPluginStarted for another plugin needs ManagePlugins (NotifyPluginStarted.cs:39-43)
@@ -159,12 +237,11 @@ public class IpcPluginPermissions
 
     /// <summary>
     /// A plugin must only get the connection modes of which it may run at least one command (Server.GetConnectionProcessorAsync with
-    /// Connection.CheckCommandPermissions, Server.cs:243-261). RequiredPermissionsAttribute.Check grants everything, so every mode is granted
+    /// Connection.CheckCommandPermissions, Server.cs:243-261)
     /// </summary>
     [TestCase("{\"mode\":\"Intercept\",\"version\":13,\"interceptionMode\":\"Pre\",\"channels\":[\"SBC\"],\"filters\":[\"M7702\"]}", SbcPermissions.ObjectModelRead, Description = "Interception needs CodeInterceptionRead(Write)")]
     [TestCase("{\"mode\":\"Subscribe\",\"version\":13,\"subscriptionMode\":\"Patch\"}", SbcPermissions.CodeInterceptionRead, Description = "Subscriptions need ObjectModelRead(Write)")]
     [TestCase("{\"mode\":\"CodeStream\",\"version\":13,\"bufferSize\":1,\"channel\":\"SBC\"}", SbcPermissions.ObjectModelRead, Description = "Code streams need CommandExecution")]
-    [Explicit("Bug: RequiredPermissionsAttribute.Check grants every permission, so a plugin gets connection modes it has no permission for")]
     public async Task PluginIsRefusedModesItHasNoPermissionFor(string initMessage, SbcPermissions permissions)
     {
         await using FakePluginService service = await FakePluginService.StartAsync(_host);

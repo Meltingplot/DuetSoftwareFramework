@@ -168,7 +168,8 @@ public sealed class Connection(Socket socket, CommandFactory commandFactory, ILo
             }
             logger.LogDebug("IPC#{Id}: Granting permissions to sibling DSF service (pid {Pid})", Id, pid);
 
-            // Sibling DSF services additionally need the internal ServicePlugins permission (e.g. DPS calls SetPluginProcess)
+            // Sibling DSF services additionally need the internal ServicePlugins permission (e.g. DPS calls SetPluginProcess,
+            // DWS forwards InstallSystemPackage and UninstallSystemPackage from PUT/DELETE /machine/systemPackage)
             Permissions |= SbcPermissions.ServicePlugins;
         }
 

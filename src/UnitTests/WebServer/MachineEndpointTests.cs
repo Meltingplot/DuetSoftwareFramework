@@ -202,7 +202,8 @@ public class MachineEndpointTests : WebServerFixture
     public async Task PluginsAndSystemPackages()
     {
         // The fake host runs no plugin service and DCS has no root plugin support (Settings.RootPluginSupport defaults to false), so these
-        // commands fail in DCS and DWS reports "500: Generic error"
+        // commands fail in DCS and DWS reports "500: Generic error". The DWS of this test runs in the test process, which DCS treats as an
+        // external program without SuperUser and ServicePlugins, so the system package commands are already refused by their permission check
         Assert.That((await SendAsync(HttpMethod.Put, "machine/plugin", new ByteArrayContent(Encoding.UTF8.GetBytes("no zip file")))).StatusCode, Is.EqualTo(HttpStatusCode.InternalServerError));
         Assert.That((await SendAsync(HttpMethod.Delete, "machine/plugin", new StringContent("MissingPlugin"))).StatusCode, Is.EqualTo(HttpStatusCode.InternalServerError));
         Assert.That((await SendAsync(HttpMethod.Post, "machine/startPlugin", new StringContent("MissingPlugin"))).StatusCode, Is.EqualTo(HttpStatusCode.InternalServerError));

@@ -21,20 +21,6 @@ public sealed class RequiredPermissionsAttribute(SbcPermissions requiredPermissi
     /// Check if the given permissions are sufficient
     /// </summary>
     /// <param name="permissions">Permissions to check</param>
-    /// <returns>True if permission is granted</returns>
-    public bool Check(SbcPermissions permissions)
-    {
-#if NET5_0_OR_GREATER
-        foreach (SbcPermissions value in Enum.GetValues<SbcPermissions>())
-#else
-        foreach (Enum value in Enum.GetValues(typeof(SbcPermissions)))
-#endif
-        {
-            if (_requiredPermissions.HasFlag(value) && permissions.HasFlag(value))
-            {
-                return true;
-            }
-        }
-        return false;
-    }
+    /// <returns>True if at least one of the required permissions is granted</returns>
+    public bool Check(SbcPermissions permissions) => (_requiredPermissions & permissions) != SbcPermissions.None;
 }
