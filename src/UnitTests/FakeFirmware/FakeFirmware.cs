@@ -1407,7 +1407,7 @@ public sealed class FakeFirmware : ILinkAdapter
     public bool WriteGetObjectModel(string key, string flags) => AddRequest(new FakeSbcRequest { Request = SbcRequest.GetObjectModel, Text = key, Argument = flags });
 
     /// <inheritdoc />
-    public LinkCapabilities SupportedLinkCapabilities => LinkCapabilities.All;
+    public LinkCapabilities SupportedLinkCapabilities { get; set; } = LinkCapabilities.All;
 
     /// <inheritdoc />
     public bool WriteActivateLinkCapabilities(LinkCapabilities capabilities) => AddRequest(new FakeSbcRequest { Request = SbcRequest.ActivateLinkCapabilities, LinkCapabilities = capabilities });

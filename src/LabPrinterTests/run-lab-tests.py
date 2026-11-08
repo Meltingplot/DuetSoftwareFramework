@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Run the lab printer tests through a plink tunnel, show each result as it comes and evaluate the run at the end, see README.md
 
-Usage: run-lab-tests.py [--side-load [--fault-injection]] [dotnet test arguments...]
+Usage: run-lab-tests.py [--side-load [--fault-injection [--plain-link]]] [dotnet test arguments...]
   --side-load        publish DCS from this tree and bind-mount its DLLs over the image's copies for the run
   --fault-injection  publish the test-only build that corrupts single SPI exchanges on request (SpiFaultInjection.cs)
+  --plain-link       make that build keep the plain link: it does not ask RRF for the link capabilities (SPI.PlainLinkFile)
   Example:           run-lab-tests.py --side-load --filter "TestCategory!=Restart"
 
 The evaluation follows sections 9 and 10 of design/lab-test-plan.md. The raw test output, the TRX file and the journal of the run
@@ -33,6 +34,8 @@ SBC_USER = os.environ.get('SBC_USER', 'mpadmin')
 TUNNEL_PORT = int(os.environ.get('TUNNEL_PORT', '18080'))
 SIDE_LOAD_DIR = '/var/tmp/lab-tests'
 SIDE_LOAD_DLLS = ['DuetAPI.dll', 'DuetControlServer.dll', 'DuetSharedLibrary.dll']
+# Read by the fault injection build when DCS starts, see SPI.PlainLinkFile
+PLAIN_LINK_FILE = f'{SIDE_LOAD_DIR}/spi-plain-link'
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -253,7 +256,7 @@ FINDINGS = [
 PER_REBOOT = ['Connection to controller has been reset', 'RepRapFirmware has left the extended link', 'Restarting full transfer because']
 # Expected in some test cases
 IN_SOME_TESTS = ['Failed to find corresponding state for code M291 P"never"', 'Machine is halted', 'SPI fault injected', 'Bad header CRC',
-                 'Bad data CRC', 'Sending transfer #']
+                 'Bad data CRC', 'Sending transfer #', 'keeping the plain link', 'RepRapFirmware is exchanging the data']
 # Known, cause or assessment open
 KNOWN_OPEN = ["State 'stop-sigterm' timed out", 'Failed to find query for object model response', 'Aborting orphaned macro file daemon.g',
               "Daemon: Out-of-order reply"]
@@ -295,11 +298,12 @@ def counts_line(journal: str, patterns: list, bad: bool) -> list:
     return lines
 
 
-def evaluate(start: dict, end: dict, journal: str, results: list, output_log: Path, results_dir: Path, rc: int, side_load: bool, fault: bool):
+def evaluate(start: dict, end: dict, journal: str, results: list, output_log: Path, results_dir: Path, rc: int, side_load: bool, fault: bool,
+             plain: bool):
     say()
     say(bold('=== Evaluation (design/lab-test-plan.md, sections 9 and 10) ==='))
     say(f'Run: {start.get("time", "?")} to {end.get("time", "?")} UTC, DSF {start.get("dsf", "?")}, RRF {start.get("rrf", "?")}' +
-        (', side-load' + (' with fault injection' if fault else '') if side_load else ', image DCS'))
+        (', side-load' + (' with fault injection' + (' on the plain link' if plain else '') if fault else '') if side_load else ', image DCS'))
 
     # Tests
     passed = [r for r in results if r['outcome'] == 'Passed']
@@ -389,13 +393,16 @@ def evaluate(start: dict, end: dict, journal: str, results: list, output_log: Pa
 
 def main() -> int:
     arguments = sys.argv[1:]
-    side_load = fault = False
+    side_load = fault = plain = False
     if arguments[:1] == ['--side-load']:
         side_load = True
         arguments = arguments[1:]
         if arguments[:1] == ['--fault-injection']:
             fault = True
             arguments = arguments[1:]
+            if arguments[:1] == ['--plain-link']:
+                plain = True
+                arguments = arguments[1:]
 
     results_dir = Path(os.environ.get('LAB_RESULTS_DIR', HERE / 'TestResults')) / datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S')
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -434,14 +441,17 @@ def main() -> int:
                     data = base64.b64encode((Path(out) / dll).read_bytes()).decode()
                     if not sbc_ok(f"sudo -n mkdir -p {SIDE_LOAD_DIR}\nbase64 -d <<'DLL' | sudo -n tee {SIDE_LOAD_DIR}/{dll} > /dev/null\n{data}\nDLL\n"):
                         raise RuntimeError(f'Uploading {dll} failed')
+            # The flag must be there before DCS starts, and a run without it must not find one that an interrupted run left behind
             sbc_ok(''.join(f'sudo -n mount --bind {SIDE_LOAD_DIR}/{dll} /opt/dsf/bin/{dll}\n' for dll in SIDE_LOAD_DLLS) +
+                   (f'sudo -n touch {PLAIN_LINK_FILE}\n' if plain else f'sudo -n rm -f {PLAIN_LINK_FILE}\n') +
                    'sudo -n systemctl restart duetcontrolserver || true\n')
             side_loaded = True
             if not sbc_ok(RESET_FIRMWARE):
                 raise RuntimeError('The printer did not become idle after the side-load')
             revision = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True).stdout.strip()
             dirty = subprocess.run(['git', '-C', str(ROOT), 'diff', '--quiet', 'HEAD', '--', 'src']).returncode != 0
-            say(f'Side-loaded {" ".join(SIDE_LOAD_DLLS)} from {revision}{" with uncommitted changes" if dirty else ""}{", fault injection build" if fault else ""}')
+            say(f'Side-loaded {" ".join(SIDE_LOAD_DLLS)} from {revision}{" with uncommitted changes" if dirty else ""}{", fault injection build" if fault else ""}'
+                f'{" on the plain link" if plain else ""}')
 
         tunnel = subprocess.Popen([sys.executable, '-I', str(HERE / 'tunnel.py'), PLINK, JUMP_HOST, f'{SBC}:80', str(TUNNEL_PORT)])
         url = f'http://127.0.0.1:{TUNNEL_PORT}'
@@ -480,7 +490,7 @@ def main() -> int:
     end = snapshot()
     journal = journal_since(start['cursor']) if start.get('cursor') else ''
     (results_dir / 'journal.txt').write_text(journal)
-    evaluate(start, end, journal, read_trx(results_dir / 'results.trx'), results_dir / 'test-output.log', results_dir, rc, side_load, fault)
+    evaluate(start, end, journal, read_trx(results_dir / 'results.trx'), results_dir / 'test-output.log', results_dir, rc, side_load, fault, plain)
     return rc
 
 

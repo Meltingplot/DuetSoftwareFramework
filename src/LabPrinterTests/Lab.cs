@@ -178,6 +178,24 @@ public static class Lab
         (await RunOnSbcAsync("systemctl show -p MainPID --value duetcontrolserver")).Trim();
 
     /// <summary>
+    /// Get the SPI link the running DCS uses: "plain" when the fault injection build keeps the plain link (run-lab-tests.sh --plain-link,
+    /// SPI.PlainLinkFile), "extended" once DCS reports the link capabilities active (LinkService.UpdateLinkCapabilities), or null if the journal
+    /// of the instance shows neither within 20 s. The instance starts with its version line (Program.cs), which comes before both
+    /// </summary>
+    public static async Task<string?> GetLinkModeAsync()
+    {
+        string output = await RunOnSbcAsync("""
+            for i in $(seq 40); do
+              line=$(sudo -n journalctl -u duetcontrolserver -n 20000 -o cat --no-pager | tac | sed '/Duet Control Server v/q' | grep -E -m1 'keeping the plain link|Link capabilities .* are active')
+              [ -n "$line" ] && echo "$line" && exit 0
+              sleep 0.5
+            done
+            exit 0
+            """);
+        return output.Contains("keeping the plain link") ? "plain" : output.Contains("Link capabilities All are active") ? "extended" : null;
+    }
+
+    /// <summary>
     /// Wait until systemd runs a new DCS instance
     /// </summary>
     public static Task WaitForControlServerRestartAsync(string oldPid) =>

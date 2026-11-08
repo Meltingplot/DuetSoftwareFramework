@@ -50,6 +50,27 @@ public class LinkCapabilityHandshake
         Assert.That(Queries("state.sbcLinkCapabilities"), Is.Zero);
     }
 
+    /// <summary>
+    /// An adapter that supports no capabilities keeps the plain link with RRF that offers them, so DCS does not even query them. The fault injection
+    /// build of the SPI adapter does that when /var/tmp/lab-tests/spi-plain-link exists, so that the lab tests can check the plain link
+    /// </summary>
+    [Test]
+    public async Task AdapterWithoutCapabilitiesKeepsThePlainLink()
+    {
+        _host = await FakeFirmwareHost.StartAsync(firmware =>
+        {
+            firmware.OfferedLinkCapabilities = LinkCapabilities.All;
+            firmware.SupportedLinkCapabilities = LinkCapabilities.None;
+        });
+
+        // A code goes through, so the transfers after the connect have been processed
+        Assert.That(await _host.ExecuteAsync("G4 P1"), Is.EqualTo("\n"));
+        Assert.That(await _host.ExecuteAsync("G4 P1"), Is.EqualTo("\n"));
+        Assert.That(Queries("limits.sbcLinkCapabilities"), Is.Zero);
+        Assert.That(_host.Firmware.LinkCapabilityRequests, Is.Empty);
+        Assert.That(_host.Firmware.ActiveLinkCapabilities, Is.EqualTo(LinkCapabilities.None));
+    }
+
     [Test]
     public async Task OfferedCapabilitiesAreActivated()
     {

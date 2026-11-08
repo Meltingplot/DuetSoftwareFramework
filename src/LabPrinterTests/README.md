@@ -5,7 +5,7 @@ Hardware tests that run against the CHX 350 lab printer (Pi 5 + Duet 3 MB6HC, si
 ## Running
 
 ```
-src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection]] [dotnet test arguments]
+src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-link]]] [dotnet test arguments]
 ```
 
 - `run-lab-tests.sh` starts `run-lab-tests.py`, which does the work.
@@ -21,7 +21,8 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection]] [dotnet t
 - The script stops `mp-ota-gate.timer`, so that no update starts, and starts it again at the end, also after Ctrl+C.
 - `tunnel.py` forwards `127.0.0.1:18080` in WSL to the SBC's HTTP API, with one `plink -nc` per connection. A plink listener on Windows does not work reliably, because Windows may drop connections from WSL to it.
 - `--side-load` publishes DCS from this tree and bind-mounts `DuetAPI.dll`, `DuetControlServer.dll` and `DuetSharedLibrary.dll` over the image's copies for the run. It removes them again at the end. Both steps restart DCS and send M999.
-- `--fault-injection` side-loads the test-only build that corrupts a single SPI exchange when one is written to `/var/tmp/lab-tests/spi-fault` (`DuetControlServer/Link/Adapter/SpiFaultInjection.cs`). Only `SpiFaultInjection` uses it; see below.
+- `--fault-injection` side-loads the test-only build that corrupts a single SPI exchange when one is written to `/var/tmp/lab-tests/spi-fault` (`DuetControlServer/Link/Adapter/SpiFaultInjection.cs`). Only the `FaultInjection` tests use it; see below.
+- `--plain-link` creates `/var/tmp/lab-tests/spi-plain-link` before DCS starts. The fault injection build then keeps the plain link: it supports no link capabilities, so it neither queries nor activates them, as with an RRF that offers none. The RRF on the printer offers them, and the production build always activates them. The file goes with the side-load directory at the end.
 - Examples: `--filter "TestCategory!=Restart"` skips the restarts. `--filter "FullyQualifiedName~LinkSoak"` runs the 30-minute soak.
 - `LAB_WATCHDOG_RESTARTS` sets the number of watchdog resets of `FirmwareRestart.LinkRecoversAfterWatchdogReset` (default 5), e.g. 40 to look for a reboot race that hits about one restart in 40.
 - Without `LAB_PRINTER_URL` and `LAB_PRINTER_SHELL`, which the script sets, every test is skipped.
@@ -65,6 +66,8 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection]] [dotnet t
 | `LinkSoak.NoLostConnectionWhileIdle` (explicit) | TfrRdy timeouts every 15 to 30 minutes (DSF 3.7.0-rc.1) | Upstream 46886f5d |
 | `SpiFaultRestarts.StuckLinkRestartsDcs` (explicit) | A stuck link needed a manual restart of DCS | DSF #102 |
 | `SpiFaultRestarts.DcsStartsWhileTfrRdyIsLow` (explicit) | A new DCS failed its first start when a recovered fault left TfrRdy low | DSF #99 |
+| `SpiFaultLostConnection.RrfStopsWhenDsfLosesTheConnectionInATriggerMacro` (explicit) | After a lost connection on the extended link in a transfer with counter value 0, RRF kept the session while DSF dropped the trigger macro (P4) | DSF #138 |
+| `SpiFaultInjection` with the plain-link cases of P1 (explicit) | One bit error left the plain link stuck until DCS restarted when RRF answered the header with a header response while DSF had data (P1) | DSF #137 |
 | `IntrusiveCodes.M112StaysHaltedUntilM999` (explicit) | M112 completed before the emergency stop reached RRF | DSF #88 |
 | `IntrusiveCodes.M111OutputDoesNotCrashDcs` (explicit) | DCS crashed with a stack overflow while `M111 P-1 O1` was active | DSF #70 |
 | `IntrusiveCodes.M30AndM472Delete` (explicit) | M30 used the wrong folder for a relative name, M30 and M472 reported success for a missing file | DSF #74, #80 |
@@ -74,17 +77,36 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection]] [dotnet t
 ## SPI fault injection
 
 `SpiFaultInjection.SingleFaultsMatchCensus` checks the link census of `src/UnitTests/SPI/LinkRecovery.cs` on the real link. The census
-writes its cases with the predicted outcome per kind of transfer, for the firmware on the printer:
+writes its cases with the predicted outcome per kind of transfer. `_Extended` is for the extended link, which DCS uses with the RRF on the printer.
+`_RrfOfToday` is for the plain link, which needs `--plain-link`:
 
 ```
-LAB_SPI_FAULT_CASES=/tmp/cases.json dotnet test src/UnitTests --filter "Name=WriteHardwareCases_RrfOfToday"   # or _Extended
+LAB_SPI_FAULT_CASES=/tmp/cases.json dotnet test src/UnitTests --filter "Name=WriteHardwareCases_Extended"   # or _RrfOfToday
 LAB_SPI_FAULT_CASES=/tmp/cases.json src/LabPrinterTests/run-lab-tests.sh --side-load --fault-injection --filter "FullyQualifiedName~SpiFaultInjection"
+LAB_SPI_FAULT_CASES=/tmp/plain.json src/LabPrinterTests/run-lab-tests.sh --side-load --fault-injection --plain-link --filter "FullyQualifiedName~SpiFaultInjection"
 ```
 
+- The test fails at once if DCS uses another link than the case file is for. It reads that from the journal of the running DCS (`Lab.GetLinkModeAsync`).
 - Each case arms one fault and waits until it hits the next transfer of the requested kind. It then sorts the result as `Retry` (repaired by the protocol), `Reconnect`, `DcsRestart` or `NoRecovery` (no answer to `M409 ... R1` after 2 s), and compares it with the census prediction for the kind of transfer that was hit.
-- `LAB_SPI_FAULT_SELECT`: `failures` (predicted to break the link), `responses` (every fault in a response word, where the census finds all failing single bits), or `all`. The default is `failures,responses`.
+- `LAB_SPI_FAULT_SELECT`: `failures` (predicted to break the link), `responses` (every fault in a response word, where the census finds all failing single bits), or `all`. The default is `failures,responses`. Use `all` for a case file that has been cut down to the cases of interest.
 - `LAB_SPI_FAULT_MAX` limits the number of cases.
 - `UnitTests` `InjectorMatchesCensus` checks that the injector hits the same exchanges as the census.
+
+A fault can take two options between the direction and the mutation, e.g. `Any Header ToRrf times=1000 counter=0 flip 96`:
+
+- `times=N` corrupts up to N exchanges of the transfer the fault hits first, such as its retries. The injector tells the transfer by the sequence number in the header of DSF, so the fault ends when DSF goes on with another transfer or loses the connection on the extended link.
+- `counter=N` hits only a transfer whose header from DSF has an extended sequence number with counter value N, so it never hits on the plain link.
+
+`SpiFaultLostConnection` makes DSF lose the connection on the extended link with such a fault while trigger 30 runs a long macro, and checks that RRF stops. It needs no case file and runs without `--plain-link`:
+
+```
+src/LabPrinterTests/run-lab-tests.sh --side-load --fault-injection --filter "FullyQualifiedName~SpiFaultLostConnection"
+```
+
+- The fault corrupts each header of DSF on its way to RRF, so DSF gives up after 110 header exchanges (`MaxSbcRetries` of 10 in `SPI.ExchangeHeader` and `SPI.PerformFullTransfer`) and loses the connection.
+- Case 0 puts that on counter value 0, where DSF before #138 left the extended link with a sequence number that follows the last one of RRF. Case 16 is the control, which worked before.
+- Each case costs an emergency stop of RRF (on the fork also ATX off) and M999. When RRF does not stop, the test reports whether trigger 30 still runs and restarts DCS and sends M999.
+- `LinkRecovery.LabFaultLosesConnectionAndRrfStops` checks the fault offline. Keep it in line with the lab test.
 
 `SpiFaultRestarts` uses the same build for two checks on the firmware that is on the printer. They need no case file:
 
