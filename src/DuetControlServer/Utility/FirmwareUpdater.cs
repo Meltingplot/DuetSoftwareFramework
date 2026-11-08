@@ -31,7 +31,12 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
     /// <summary>
     /// How long to wait for an expansion board to report the firmware version it was updated to
     /// </summary>
-    private static readonly TimeSpan ExpansionUpdateTimeout = TimeSpan.FromMinutes(3);
+    internal TimeSpan ExpansionUpdateTimeout { get; set; } = TimeSpan.FromMinutes(3);
+
+    /// <summary>
+    /// Questions asked before outdated boards are updated
+    /// </summary>
+    internal FirmwareUpdatePrompt Prompt { get; set; } = new();
 
     /// <summary>
     /// Read the firmware version from a firmware file. A file that cannot be read, e.g. an invalid UF2 file, is reported and gives no version,
@@ -126,27 +131,15 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
 
         // Determine which boards are supposed to be updated
         List<Board> boardsToUpdate = [];
-        if (Console.IsInputRedirected)
+        if (!Prompt.IsInteractive)
         {
             // DCS does not start in update-only mode if Settings.AutoUpdateFirmware is false
             boardsToUpdate.AddRange(outdatedBoards);
         }
         else
         {
-            while (Console.KeyAvailable)
-            {
-                Console.ReadKey(true);
-            }
-
-            Console.Write("Would you like to update them all (Y/n)? ");
-
-            char key = char.ToUpper(Console.ReadKey().KeyChar);
-            if (key != '\r')
-            {
-                Console.WriteLine();
-            }
-
-            if (key == '\r' || key == 'Y')
+            Prompt.DiscardPendingKeys();
+            if (Prompt.Ask("Would you like to update them all (Y/n)? "))
             {
                 boardsToUpdate.AddRange(outdatedBoards);
             }
@@ -156,14 +149,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
                 {
                     string newVersion = firmwareVersions[board.FirmwareFileName!] ?? "n/a";
                     string boardName = string.IsNullOrEmpty(board.Name) ? $"Duet 3 Expansion {board.ShortName}" : board.Name;
-                    Console.Write("Would you like to update {0} ({1} -> {2}){3} (Y/n)? ", boardName, board.FirmwareVersion, newVersion, (board.CanAddress ?? 0) > 0 ? $" @ CAN address {board.CanAddress}" : string.Empty);
-                    key = char.ToUpper(Console.ReadKey().KeyChar);
-                    if (key != '\r')
-                    {
-                        Console.WriteLine();
-                    }
-
-                    if (key == '\r' || key == 'Y')
+                    if (Prompt.Ask(string.Format("Would you like to update {0} ({1} -> {2}){3} (Y/n)? ", boardName, board.FirmwareVersion, newVersion, (board.CanAddress ?? 0) > 0 ? $" @ CAN address {board.CanAddress}" : string.Empty)))
                     {
                         boardsToUpdate.Add(board);
                     }
@@ -362,22 +348,14 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
 
         // Determine which boards are supposed to be updated
         List<Board> boardsToUpdate = [];
-        if (Console.IsInputRedirected)
+        if (!Prompt.IsInteractive)
         {
             // DCS does not start in update-only mode if Settings.AutoUpdateFirmware is false
             boardsToUpdate.AddRange(outdatedBoards);
         }
         else
         {
-            Console.Write("Would you like to update them all (Y/n)? ");
-
-            char key = char.ToUpper(Console.ReadKey().KeyChar);
-            if (key != '\r')
-            {
-                Console.WriteLine();
-            }
-
-            if (key == '\r' || key == 'Y')
+            if (Prompt.Ask("Would you like to update them all (Y/n)? "))
             {
                 boardsToUpdate.AddRange(outdatedBoards);
             }
@@ -387,14 +365,7 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
                 {
                     string newVersion = firmwareVersions[board.FirmwareFileName!] ?? "n/a";
                     string boardName = string.IsNullOrEmpty(board.Name) ? $"Duet 3 Expansion {board.ShortName}" : board.Name;
-                    Console.Write("Would you like to update {0} ({1} -> {2}){3} (Y/n)? ", boardName, board.FirmwareVersion, newVersion, (board.CanAddress ?? 0) > 0 ? $" @ CAN address {board.CanAddress}" : string.Empty);
-                    key = char.ToUpper(Console.ReadKey().KeyChar);
-                    if (key != '\r')
-                    {
-                        Console.WriteLine();
-                    }
-
-                    if (key == '\r' || key == 'Y')
+                    if (Prompt.Ask(string.Format("Would you like to update {0} ({1} -> {2}){3} (Y/n)? ", boardName, board.FirmwareVersion, newVersion, (board.CanAddress ?? 0) > 0 ? $" @ CAN address {board.CanAddress}" : string.Empty)))
                     {
                         boardsToUpdate.Add(board);
                     }

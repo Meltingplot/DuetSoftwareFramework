@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -22,7 +23,7 @@ namespace UnitTests.Utility;
 /// connects to RRF itself and updates them once it has the object model (FirmwareUpdater.UpdateFirmwareAsync, UpdateService.cs:339-357).
 /// Both compare boards[].firmwareVersion with the version in boards[].firmwareFileName, update the outdated expansion boards with M997 B, which RRF
 /// carries out, and then the main board with M997, which DCS carries out. When only expansion boards were updated, the main board is reset with M999.
-/// The tests run without a console, so FirmwareUpdater updates every outdated board without asking (FirmwareUpdater.cs:109-113)
+/// The tests run without a console, so FirmwareUpdater updates every outdated board without asking (FirmwareUpdater.cs:134-138), the questions are tested with scripted keys
 /// </summary>
 [TestFixture]
 public class UpdateOnlyMode
@@ -37,7 +38,7 @@ public class UpdateOnlyMode
     [SetUp]
     public void CaptureConsole()
     {
-        // Without a redirected input, FirmwareUpdater would wait for a key press (FirmwareUpdater.cs:114-152)
+        // Without a redirected input, FirmwareUpdater would wait for a key press (FirmwareUpdatePrompt.cs)
         Assert.That(Console.IsInputRedirected, Is.True, "The test runner must not give the tests a console input");
         _console = Console.Out;
         _output = new StringWriter();
@@ -486,6 +487,122 @@ public class UpdateOnlyMode
         Assert.That(ReceivedCodes(), Is.EqualTo(new[] { "M997 B121" }));
         Assert.That(MainBoardWasReset(), Is.True);
         Assert.That(host.Firmware.GetIapSegments(), Is.Empty);
+    }
+    #endregion
+
+    #region Questions
+    /// <summary>
+    /// Console input with the given keys, as if somebody answered the questions on the console (FirmwareUpdatePrompt.cs)
+    /// </summary>
+    private sealed class ScriptedKeys(string keys) : FirmwareUpdatePrompt
+    {
+        private readonly Queue<char> _keys = new(keys);
+
+        public int Discarded { get; private set; }
+
+        public int KeysLeft => _keys.Count;
+
+        public override bool IsInteractive => true;
+
+        public override void DiscardPendingKeys() => Discarded++;
+
+        public override char ReadKey() => _keys.Dequeue();
+    }
+
+    private const string AllQuestion = "Would you like to update them all (Y/n)? ";
+    private const string MainQuestion = $"Would you like to update Duet 3 MB6HC (fake) ({MainVersion} -> {NewVersion}) (Y/n)? ";
+    private const string ExpansionQuestion = $"Would you like to update Duet 3 Tool Board 1LC (fake) ({ExpansionVersion} -> {NewVersion}) @ CAN address 121 (Y/n)? ";
+
+    /// <summary>
+    /// With a console FirmwareUpdater asks whether to update all outdated boards. Enter and Y in either case mean yes, every key but Enter is
+    /// followed by a line break. Keys pressed before the question are discarded in the local update only (FirmwareUpdater.cs:132-158 and 349-374,
+    /// FirmwareUpdatePrompt.cs)
+    /// </summary>
+    [TestCase(false, '\r'), TestCase(false, 'y'), TestCase(false, 'Y')]
+    [TestCase(true, '\r'), TestCase(true, 'y')]
+    public async Task QuestionUpdateAll(bool remote, char key)
+    {
+        FakeFirmwareHost host = await StartAsync(NewVersion, NewVersion, ipc: remote, configure: firmware => UpdateExpansionBoardOnM997(firmware, NewVersion));
+        ScriptedKeys keys = new(key.ToString());
+        Updater.Prompt = keys;
+        await RunAsync(remote);
+
+        Assert.That(Output, Does.Contain(AllQuestion + ((key == '\r') ? string.Empty : Environment.NewLine) + "Updating firmware on board #121... Done!"));
+        Assert.That(Output, Does.Contain("Updating firmware on mainboard... Done!"));
+        Assert.That(ReceivedCodes(), Is.EqualTo(new[] { "M997 B121" }));
+        Assert.That(host.Firmware.IapRebooted, Is.True);
+        Assert.That(keys.Discarded, Is.EqualTo(remote ? 0 : 1));
+    }
+
+    /// <summary>
+    /// Any other answer leads to one question per outdated board, in the order of boards[]
+    /// </summary>
+    [TestCase(false, "n\rn", true, false)]
+    [TestCase(false, "Nny", false, true)]
+    [TestCase(false, "xnq", false, false)]
+    [TestCase(true, "nyn", true, false)]
+    [TestCase(true, "nn\r", false, true)]
+    public async Task QuestionPerBoard(bool remote, string answers, bool updateMain, bool updateExpansion)
+    {
+        FakeFirmwareHost host = await StartAsync(NewVersion, NewVersion, ipc: remote, configure: firmware => UpdateExpansionBoardOnM997(firmware, NewVersion));
+        ScriptedKeys keys = new(answers);
+        Updater.Prompt = keys;
+        await RunAsync(remote);
+
+        Assert.That(Output, Does.Contain(AllQuestion + Environment.NewLine + MainQuestion));
+        Assert.That(Output, Does.Contain(ExpansionQuestion));
+        Assert.That(keys.KeysLeft, Is.Zero);
+        Assert.That(ReceivedCodes(), updateExpansion ? Is.EqualTo(new[] { "M997 B121" }) : Is.Empty);
+        Assert.That(host.Firmware.IapRebooted, Is.EqualTo(updateMain));
+        Assert.That(Output, updateMain ? Does.Contain("Updating firmware on mainboard... Done!") : Does.Not.Contain("Updating firmware on mainboard"));
+
+        // The main board is reset only after expansion boards were updated without it
+        Assert.That(MainBoardWasReset(), Is.EqualTo(updateExpansion && !updateMain));
+    }
+
+    /// <summary>
+    /// Without a console, as when the reprapfirmware package runs DCS -u, nothing is asked (FirmwareUpdater.cs:134-138)
+    /// </summary>
+    [Test]
+    public async Task NoQuestionWithoutConsole()
+    {
+        await StartAsync(NewVersion, ExpansionVersion);
+        Assert.That(Updater.Prompt.IsInteractive, Is.False);
+        await Updater.UpdateFirmwareAsync().WaitAsync(UpdateTimeout);
+
+        Assert.That(Output, Does.Not.Contain("Would you like"));
+        Assert.That(Output, Does.Contain("Updating firmware on mainboard... Done!"));
+    }
+    #endregion
+
+    #region Timeout
+    /// <summary>
+    /// FirmwareUpdater waits 3 minutes for an expansion board to report the new version (FirmwareUpdater.cs:34)
+    /// </summary>
+    [Test]
+    public async Task ExpansionUpdateTimeoutIsThreeMinutes()
+    {
+        await StartAsync(MainVersion, ExpansionVersion);
+        Assert.That(Updater.ExpansionUpdateTimeout, Is.EqualTo(TimeSpan.FromMinutes(3)));
+    }
+
+    /// <summary>
+    /// A tool board that does not report the new version in time is reported, polled every 2 s, and the main board is still reset because RRF has
+    /// started the update (FirmwareUpdater.cs:190-260). Only the local update is tested: the remote one waits for an object model patch in every
+    /// poll (FirmwareUpdater.cs:412-418), which comes only when something under boards/**, directories/** or state/status changes, and the values of
+    /// the fake firmware stay the same
+    /// </summary>
+    [Test]
+    public async Task ExpansionUpdateTimesOut()
+    {
+        await StartAsync(MainVersion, NewVersion, configure: firmware => firmware.OnCode("M997", code => FakeReply.Ok()));
+        Updater.ExpansionUpdateTimeout = TimeSpan.FromMilliseconds(100);
+        await Updater.UpdateFirmwareAsync().WaitAsync(UpdateTimeout);
+
+        Assert.That(Output, Does.Contain($"Updating firmware on board #121... Timed out waiting for board #121 to report version {NewVersion}" + Environment.NewLine));
+        Assert.That(Output, Does.Contain("Resetting mainboard... Done!"));
+        Assert.That(ReceivedCodes(), Is.EqualTo(new[] { "M997 B121" }));
+        Assert.That(MainBoardWasReset(), Is.True);
     }
     #endregion
 }
