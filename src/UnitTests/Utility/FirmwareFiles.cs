@@ -119,9 +119,9 @@ public class FirmwareFiles
     /// A missing file is reported as such, only FirmwareUpdater checks for its existence first (FirmwareUpdater.cs:84-93)
     /// </summary>
     [Test]
-    public void MissingFile()
+    public async Task MissingFile()
     {
-        Assert.ThatAsync(() => GetVersionAsync(Path.Combine(_directory, "missing.bin")), Throws.InstanceOf<FileNotFoundException>());
+        await Assert.ThatAsync(() => GetVersionAsync(Path.Combine(_directory, "missing.bin")), Throws.InstanceOf<FileNotFoundException>());
     }
     #endregion
 
@@ -193,9 +193,9 @@ public class FirmwareFiles
     /// An invalid UF2 file throws an IOException (Firmware.cs:40-76)
     /// </summary>
     [TestCaseSource(nameof(InvalidUf2Files))]
-    public void InvalidUf2(byte[] uf2, string message)
+    public async Task InvalidUf2(byte[] uf2, string message)
     {
-        Assert.ThatAsync(() => UnpackAsync(uf2), Throws.InstanceOf<IOException>().With.Message.EqualTo(message));
+        await Assert.ThatAsync(() => UnpackAsync(uf2), Throws.InstanceOf<IOException>().With.Message.EqualTo(message));
     }
 
     /// <summary>
@@ -203,10 +203,10 @@ public class FirmwareFiles
     /// reports it and leaves the boards of that file alone (UpdateOnlyMode.InvalidFirmwareFileLeavesOnlyItsBoardAlone)
     /// </summary>
     [Test]
-    public void VersionOfInvalidUf2File()
+    public async Task VersionOfInvalidUf2File()
     {
         string path = Write("Duet3Firmware_Mini5plus.uf2", new byte[513]);
-        Assert.ThatAsync(() => GetVersionAsync(path), Throws.InstanceOf<IOException>());
+        await Assert.ThatAsync(() => GetVersionAsync(path), Throws.InstanceOf<IOException>());
     }
 
     /// <summary>

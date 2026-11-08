@@ -61,7 +61,7 @@ public class DcsPluginManifests : DpsTestBase
 
         // A known plugin is left as it was
         await AddToDcsAsync(new Plugin { Id = "Invalid", Name = "Invalid", Version = "1.0", Pid = -1 });
-        Assert.ThrowsAsync<ArgumentException>(async () => await ReloadAsync("Invalid"));
+        await Assert.ThrowsAsync<ArgumentException>(async () => await ReloadAsync("Invalid"));
         Plugin plugin = (await GetFromDcsAsync("Invalid"))!;
         Assert.That((plugin.Name, plugin.Version), Is.EqualTo(("Invalid", "1.0")));
     }

@@ -299,7 +299,7 @@ public class DpsUninstallReloadPlugin : DpsTestBase
         Assert.That((await Dps!.GetPluginAsync("Changed"))!.Version, Is.EqualTo("1.0"), "The plugin was changed");
 
         File.WriteAllText(Path.Combine(PluginDirectory, "New.json"), "{\"name\":\"New\"}");
-        Assert.ThrowsAsync<ArgumentException>(async () => await ReloadAsync("New"));
+        await Assert.ThrowsAsync<ArgumentException>(async () => await ReloadAsync("New"));
         Assert.That(Dps.Store.Plugins.ConvertAll(item => item.Id), Is.EqualTo(new[] { "Changed" }), "An empty plugin was added");
     }
 
