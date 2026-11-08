@@ -309,12 +309,12 @@ public class SettingsParsing
             .Select(key => $"{key}: packaged {actual[key]?.ToJsonString() ?? "missing"}, default {expected[key]?.ToJsonString() ?? "missing"}");
 
     /// <summary>
-    /// Configuration keys are case-insensitive, and DCS reads the log level case-insensitively (Settings.cs:488). The key is taken out of the binding with
-    /// a case-sensitive comparison though (Settings.cs:497), so "logLevel" goes to the binder as well, which cannot convert "info" to <see cref="LogLevel"/>.
-    /// DCS then does not start: "Failed to initialize environment" (Program.cs:197, 200-202)
+    /// Configuration keys are case-insensitive, and DCS reads the log level case-insensitively (Settings.cs:488). The key was taken out of the binding with
+    /// a case-sensitive comparison though, so "logLevel" went to the binder as well, which cannot convert "info" to <see cref="LogLevel"/>, and DCS did not
+    /// start: "Failed to initialize environment" (Program.cs:197, 200-202). Now it is compared case-insensitively (Settings.cs:497), like the other keys
+    /// (Settings.cs:459, 493-494)
     /// </summary>
     [Test]
-    [Explicit("Bug: a config.json with \"logLevel\": \"info\" (lower-case key) stops DCS from starting")]
     public void LogLevelKeyIsCaseInsensitive()
     {
         Settings? settings = null;

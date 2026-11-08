@@ -494,7 +494,7 @@ public static class ServiceCollectionExtensions
         var legacyData = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         foreach (var kvp in configuration.AsEnumerable())
         {
-            if (kvp.Value is null || kvp.Key == "LogLevel")
+            if (kvp.Value is null || string.Equals(kvp.Key, "LogLevel", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
