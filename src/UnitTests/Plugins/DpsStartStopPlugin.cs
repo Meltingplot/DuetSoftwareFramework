@@ -6,7 +6,10 @@ using System.Threading.Tasks;
 using DuetAPI;
 using DuetAPI.ObjectModel;
 using DuetAPI.Utility;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NUnit.Framework;
 
 namespace UnitTests.Plugins;
@@ -302,6 +305,25 @@ public class DpsStartStopPlugin : DpsTestBase
         DuetPluginService.Settings defaults = new();
         Assert.That(shipped.RootElement.GetProperty("PythonLaunchCommand").GetString(), Is.EqualTo(defaults.PythonLaunchCommand));
         Assert.That(shipped.RootElement.GetProperty("PythonLaunchArguments").GetString(), Is.EqualTo(defaults.PythonLaunchArguments));
+    }
+
+    [TestCase("-c \"{pluginDir}/venv/bin/python {command} {args}\"", DuetPluginService.Settings.DefaultPythonLaunchArguments)]
+    [TestCase("-c \"{pluginDir}/venv/bin/python {command} {args} --verbose\"", "-c \"{pluginDir}/venv/bin/python {command} {args} --verbose\"")]
+    public void OldShippedPythonLaunchArgumentsAreReplaced(string configured, string expected)
+    {
+        // A plugins.json that was changed in another setting keeps the old PythonLaunchArguments on a package upgrade (conffile, --force-confold).
+        // The value that DSF shipped before is replaced when the configuration is bound like in Program.cs, any other value is kept
+        Microsoft.Extensions.Configuration.IConfiguration configuration = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .AddInMemoryCollection(new System.Collections.Generic.Dictionary<string, string?> { ["PythonLaunchArguments"] = configured, ["StopTimeout"] = "1234" })
+            .Build();
+        using Microsoft.Extensions.DependencyInjection.ServiceProvider services = new Microsoft.Extensions.DependencyInjection.ServiceCollection()
+            .Configure<DuetPluginService.Settings>(configuration)
+            .BuildServiceProvider();
+        DuetPluginService.Settings settings = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions
+            .GetRequiredService<Microsoft.Extensions.Options.IOptions<DuetPluginService.Settings>>(services).Value;
+        Assert.That(settings.PythonLaunchArguments, Is.EqualTo(expected));
+        Assert.That(settings.StopTimeout, Is.EqualTo(1234));
+        Assert.That(DuetPluginService.Settings.UnsafePythonLaunchArguments, Is.EqualTo("-c \"{pluginDir}/venv/bin/python {command} {args}\""));
     }
 
     [Test]

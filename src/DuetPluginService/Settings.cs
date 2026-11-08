@@ -122,9 +122,26 @@ public sealed class Settings
     /// </summary>
     /// <remarks>
     /// The script of bash -c is fixed and gets the interpreter, the executable and the arguments as positional parameters, so bash does not interpret the
-    /// arguments of the plugin. Systems may rely on the launch through bash, e.g. for an AppArmor transition of the shell
+    /// arguments of the plugin. Systems may rely on the launch through bash, e.g. for an AppArmor transition of the shell.
+    /// The value that DSF shipped before is replaced by the default when it is set, see <see cref="UnsafePythonLaunchArguments"/>
     /// </remarks>
-    public string PythonLaunchArguments { get; set; } = "-c \"exec \\\"$0\\\" \\\"$@\\\"\" {pluginDir}/venv/bin/python {command} {args}";
+    public string PythonLaunchArguments
+    {
+        get => _pythonLaunchArguments;
+        set => _pythonLaunchArguments = (value == UnsafePythonLaunchArguments) ? DefaultPythonLaunchArguments : value;
+    }
+    private string _pythonLaunchArguments = DefaultPythonLaunchArguments;
+
+    /// <summary>
+    /// Default value of <see cref="PythonLaunchArguments"/>
+    /// </summary>
+    public const string DefaultPythonLaunchArguments = "-c \"exec \\\"$0\\\" \\\"$@\\\"\" {pluginDir}/venv/bin/python {command} {args}";
+
+    /// <summary>
+    /// Value of <see cref="PythonLaunchArguments"/> that DSF shipped from v3.6.0-beta.3 on (5c3f84fd), with which bash interpreted the arguments of the plugin.
+    /// plugins.json is a conffile and DSF upgrades keep a changed one (--force-confold), so a plugins.json that was changed in another setting keeps this value
+    /// </summary>
+    public const string UnsafePythonLaunchArguments = "-c \"{pluginDir}/venv/bin/python {command} {args}\"";
 
     /// <summary>
     /// Timeout in ms for SIGTERM requests. When it expires plugin processes are forcefully killed
