@@ -1208,30 +1208,33 @@ public partial class StopPath
     /// Ten bit errors in the data of the transfer that carries the codes of the macro use up the retries of DSF (Settings.MaxSbcRetries), so DSF loses the
     /// connection, leaves the extended link (SPI.EndSession) and drops the macro once it is connected again (SPI.PerformFullTransfer sets _hadReset,
     /// LinkService.Invalidate). RRF has got the codes by then, so it must notice the end of the session and stop, because the macro will never end.
-    /// It does: DSF numbers from the counter on with status 0, which does not follow the extended numbers of RRF, so RRF resets the connection when
-    /// the transfer ends (DataTransfer.cpp:1125-1131 and 852, DataTransfer.h:212-215) and performs an emergency stop (SbcInterface.cpp:194-230)
+    /// It does: DSF exchanges the transfer again with the number after its counter and status 0 (SPI.PerformFullTransfer), which never follows an extended
+    /// number of RRF, so RRF resets the connection when the transfer ends (DataTransfer.cpp:1125-1131 and 852, DataTransfer.h:212-215) and performs an
+    /// emergency stop (SbcInterface.cpp:194-230). Before, DSF used the counter itself, and with counter value 0 its 0x0000 followed the 0xFFFF of RRF
     /// </summary>
     /// <param name="offset">Idle transfers before the scenario, which puts the transfer of the codes on counter value <paramref name="offset"/></param>
-    [TestCase(1), TestCase(16), TestCase(31)]
-    public async Task RrfStopsWhenDsfDropsTheTriggerMacro(int offset)
+    [Test]
+    public async Task RrfStopsWhenDsfDropsTheTriggerMacro([Range(0, ExtendedLink.CounterMask)] int offset)
     {
         StopResult result = await RunAsync(StopCase.Parse($"Trigger All offset={offset} | Code 2 ToRrf 0 | Code 4 ToRrf 0 | Code 6 ToRrf 0 | Code 8 ToRrf 0 | Code 10 ToRrf 0 | Code 12 ToRrf 0 | Code 14 ToRrf 0 | Code 16 ToRrf 0 | Code 18 ToRrf 0 | Code 20 ToRrf 0"));
         Assert.That(result.TriggerOutcome, Is.EqualTo("RRF stopped"), result.Details);
     }
 
     /// <summary>
-    /// The faults of <see cref="RrfStopsWhenDsfDropsTheTriggerMacro"/> when the transfer of the codes has counter value 0. DSF then leaves the extended link
-    /// with sequence number 0x0000, which follows the 0xFFFF RRF saw last as a regular number, so SequenceDistance is 1 once RRF has left the extended link
-    /// as well (DataTransfer.cpp:852) and RRF does not reset the connection. RRF has processed the codes and waits for the end of the macro that DSF has
-    /// dropped, and it keeps running. On RRF the trigger file then stays open, so IsTriggerBusy (GCodes.cpp:423-431) would hold back the next trigger
-    /// macros (GCodes.cpp:999); the port does not model that part of RRF. On the plain link two bit errors around the header of the transfer of the codes are
-    /// enough: the phases of both sides shift, DSF counts a lost connection and a reset (M122 of DSF, SPI.PrintDiagnostics) and drops the macro
-    /// (LinkService.cs:333-340), while RRF completes the transfer, processes the codes and counts neither a disconnect nor a reset
+    /// The trigger macro is never lost: it completes, or RRF stops because the connection was reset. The first input are the faults of
+    /// <see cref="RrfStopsWhenDsfDropsTheTriggerMacro"/> when the transfer of the codes has counter value 0. DSF used to leave the extended link with sequence
+    /// number 0x0000 there, which follows the 0xFFFF RRF saw last as a regular number, so SequenceDistance was 1 once RRF had left the extended link as well
+    /// (DataTransfer.cpp:852) and RRF did not reset the connection. RRF processed the codes and waited for the end of the macro that DSF had dropped, and it
+    /// kept running. On RRF the trigger file then stays open, so IsTriggerBusy (GCodes.cpp:423-431) would hold back the next trigger macros (GCodes.cpp:999);
+    /// the port does not model that part of RRF. On the plain link two bit errors around the header of the transfer of the codes are enough: DSF loses the
+    /// connection (SPI.ExchangeHeader, "SPI data transfer failed"), counts a reset (SPI.PerformFullTransfer sets _hadReset after every lost connection) and drops
+    /// the macro (LinkService.cs:333-340), while RRF had not completed the transfer, so it takes the same transfer with the same number in sequence, processes
+    /// the codes and counts neither a disconnect nor a reset. That is case 2 of fork PR #57, which waits for upstream
     /// </summary>
     /// <param name="text">Input as the tests print it</param>
     [TestCase("Trigger All | Code 2 ToRrf 0 | Code 4 ToRrf 0 | Code 6 ToRrf 0 | Code 8 ToRrf 0 | Code 10 ToRrf 0 | Code 12 ToRrf 0 | Code 14 ToRrf 0 | Code 16 ToRrf 0 | Code 18 ToRrf 0 | Code 20 ToRrf 0")]
-    [TestCase("Trigger None | Code 0 ToDsf 0 | Code 1 ToRrf 0")]
-    [Explicit("DSF drops a trigger macro after a reset RRF does not see: the macro is lost and RRF does not stop")]
+    [TestCase("Trigger None | Code 0 ToDsf 0 | Code 1 ToRrf 0", Explicit = true,
+        Reason = "Plain link: DSF drops the macro after a lost connection that RRF does not see, because RRF takes the repeated transfer in sequence (fork PR #57, case 2)")]
     public async Task TriggerMacroRunsOrRrfStops(string text)
     {
         StopResult result = await RunAsync(StopCase.Parse(text));
