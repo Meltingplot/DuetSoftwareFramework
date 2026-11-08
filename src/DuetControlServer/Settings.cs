@@ -430,8 +430,8 @@ public sealed class Settings
     {
         if (!File.Exists(ConfigFile) && Directory.Exists(Path.GetDirectoryName(ConfigFile)))
         {
-            // Save default settings to the config file
-            SaveToFile(ConfigFile);
+            // Save default settings to the config file, not the ones of this start, which may come from the command line
+            new Settings().SaveToFile(ConfigFile);
         }
     }
 
@@ -494,7 +494,7 @@ public static class ServiceCollectionExtensions
         var legacyData = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         foreach (var kvp in configuration.AsEnumerable())
         {
-            if (kvp.Value is null || kvp.Key == "LogLevel")
+            if (kvp.Value is null || string.Equals(kvp.Key, "LogLevel", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }

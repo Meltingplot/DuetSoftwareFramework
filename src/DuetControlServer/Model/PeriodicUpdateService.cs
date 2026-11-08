@@ -82,8 +82,8 @@ public partial class PeriodicUpdateService(CodeFactory codeFactory, LinkInterfac
     /// <inheritdoc />
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
-        // Load plugin manifests
-        if (settings.Value.PluginSupport)
+        // Load plugin manifests. The directory does not come with DCS (Settings.PluginDirectory), so without it there are no plugins
+        if (settings.Value.PluginSupport && Directory.Exists(settings.Value.PluginDirectory))
         {
             foreach (string file in Directory.GetFiles(settings.Value.PluginDirectory))
             {

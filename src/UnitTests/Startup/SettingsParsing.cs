@@ -18,7 +18,7 @@ namespace UnitTests.Startup;
 
 /// <summary>
 /// How DCS turns config.json and the command line into its settings: Program.cs adds the config file as a JSON configuration source
-/// (Program.cs:158-160) and passes the options to <see cref="ServiceCollectionExtensions.AddSettings"/> (Program.cs:183, Settings.cs:481-570)
+/// (Program.cs:164-166) and passes the options to <see cref="ServiceCollectionExtensions.AddSettings"/> (Program.cs:180, Settings.cs:481-570)
 /// </summary>
 [TestFixture]
 public class SettingsParsing
@@ -290,10 +290,9 @@ public class SettingsParsing
 
     /// <summary>
     /// The config.json of the package holds the defaults of <see cref="Settings"/>, so that a new installation behaves like a restored config file.
-    /// SbcRestartTimeout (Settings.cs:185-188, fork commit f5595e28) is missing there; DCS then uses the default, so only the file differs
+    /// SbcRestartTimeout (Settings.cs:185-188, fork commit f5595e28) was missing there; DCS used the default then, so only the file differed
     /// </summary>
     [Test]
-    [Explicit("Bug: the packaged config.json (pkg/common/duetcontrolserver/opt/dsf/conf/config.json) lacks SbcRestartTimeout")]
     public void PackagedConfigFileHoldsTheDefaults()
     {
         string packaged = Path.Combine(TestContext.CurrentContext.TestDirectory, "..", "..", "..", "..", "..", "pkg", "common", "duetcontrolserver", "opt", "dsf", "conf", "config.json");
@@ -309,12 +308,12 @@ public class SettingsParsing
             .Select(key => $"{key}: packaged {actual[key]?.ToJsonString() ?? "missing"}, default {expected[key]?.ToJsonString() ?? "missing"}");
 
     /// <summary>
-    /// Configuration keys are case-insensitive, and DCS reads the log level case-insensitively (Settings.cs:488). The key is taken out of the binding with
-    /// a case-sensitive comparison though (Settings.cs:497), so "logLevel" goes to the binder as well, which cannot convert "info" to <see cref="LogLevel"/>.
-    /// DCS then does not start: "Failed to initialize environment" (Program.cs:197, 200-202)
+    /// Configuration keys are case-insensitive, and DCS reads the log level case-insensitively (Settings.cs:488). The key was taken out of the binding with
+    /// a case-sensitive comparison though, so "logLevel" went to the binder as well, which cannot convert "info" to <see cref="LogLevel"/>, and DCS did not
+    /// start: "Failed to initialize environment" (Program.cs:194, 203-205). Now it is compared case-insensitively (Settings.cs:497), like the other keys
+    /// (Settings.cs:459, 493-494)
     /// </summary>
     [Test]
-    [Explicit("Bug: a config.json with \"logLevel\": \"info\" (lower-case key) stops DCS from starting")]
     public void LogLevelKeyIsCaseInsensitive()
     {
         Settings? settings = null;
@@ -324,22 +323,28 @@ public class SettingsParsing
 
     /// <summary>
     /// The wiki says DCS restores the factory defaults when config.json is deleted (User_manual/Machine_configuration/DSF_Other.md:204).
-    /// The file is written from the settings after the command-line options are applied (Settings.cs:539-568), so the first start after the
-    /// deletion decides what is saved. `DuetControlServer -u`, which the postinst of the reprapfirmware package runs
-    /// (pkg/deb/reprapfirmware/DEBIAN/postinst:11), sets the log level to error (Program.cs:94-98), and every later start then logs only errors
+    /// The file was written from the settings after the command-line options are applied (Settings.cs:539-568), so the first start after the
+    /// deletion decided what was saved. `DuetControlServer -u`, which the postinst of the reprapfirmware package runs
+    /// (pkg/deb/reprapfirmware/DEBIAN/postinst:11), sets the log level to error (Program.cs:102-106), and every later start then logged only errors.
+    /// Now the defaults of <see cref="Settings"/> are written (Settings.cs:431-435)
     /// </summary>
     [Test]
-    [Explicit("Bug: a config.json restored by DuetControlServer -u or -l/-b/-S/-s holds the command-line values instead of the defaults")]
     public void RestoredConfigFileHoldsTheDefaults()
     {
         FileInfo configFile = new(Path.Combine(_directory, "config.json"));
-        Bind(configFile: configFile, updateOnly: true, logLevel: LogLevel.Error, baseDirectory: new DirectoryInfo(Path.Combine(_directory, "sd")));
+        (Settings settings, _) = Bind(configFile: configFile, updateOnly: true, logLevel: LogLevel.Error, baseDirectory: new DirectoryInfo(Path.Combine(_directory, "sd")));
 
         JsonObject json = JsonNode.Parse(System.IO.File.ReadAllText(configFile.FullName))!.AsObject();
         Assert.Multiple(() =>
         {
             Assert.That((string?)json["LogLevel"], Is.EqualTo("info"));
             Assert.That((string?)json["BaseDirectory"], Is.EqualTo(new Settings().BaseDirectory));
+            JsonNode expected = JsonNode.Parse(JsonSerializer.Serialize(new Settings(), SettingsContext.Default.Settings))!;
+            Assert.That(JsonNode.DeepEquals(json, expected), Is.True, $"Differences: {string.Join(", ", Differences(json, expected.AsObject()))}");
         });
+
+        // The options still apply to this start
+        Assert.That(settings.LogLevel, Is.EqualTo(LogLevel.Error));
+        Assert.That(settings.BaseDirectory, Is.EqualTo(Path.Combine(_directory, "sd")));
     }
 }

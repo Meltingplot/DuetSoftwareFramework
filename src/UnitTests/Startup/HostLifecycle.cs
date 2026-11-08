@@ -24,7 +24,7 @@ public class HostLifecycle
     /// <summary>
     /// The host starts the hosted services in the order of their registration and stops them in reverse (Host.cs of Microsoft.Extensions.Hosting,
     /// StartAsync and StopAsync, "Ensure hosted services are stopped in LIFO order"). Program.cs registers the services with AddCodes, AddFiles, AddIPC,
-    /// AddModel and AddLinkAdapter in this order (Program.cs:182-191), so the IPC server listens before the LinkService connects to RRF, and the
+    /// AddModel and AddLinkAdapter in this order (Program.cs:179-188), so the IPC server listens before the LinkService connects to RRF, and the
     /// LinkService is the first to stop while the IPC server still accepts connections
     /// </summary>
     [Test]
@@ -46,7 +46,7 @@ public class HostLifecycle
     }
 
     /// <summary>
-    /// Program.cs sets the shutdown timeout to 10 s instead of the 30 s of HostOptions.cs of Microsoft.Extensions.Hosting (Program.cs:180), see
+    /// Program.cs sets the shutdown timeout to 10 s instead of the 30 s of HostOptions.cs of Microsoft.Extensions.Hosting (Program.cs:177), see
     /// <see cref="ShutdownHang.ShutdownTimeoutIsShorterThanTheStopTimeoutOfSystemd"/>. The other options are the defaults, so the host stops when a background
     /// service fails (BackgroundServiceExceptionBehavior.StopHost)
     /// </summary>
@@ -125,14 +125,19 @@ public class HostLifecycle
     /// The PeriodicUpdateService reads the plugin manifests from the plugin directory when it starts, if PluginSupport is on (PeriodicUpdateService.cs:85-88).
     /// Settings.cs:127-129 says the directory is provided by DPS, not by the DCS package. DCS does not depend on DPS (pkg/deb/duetcontrolserver/DEBIAN/control:6),
     /// the meta package only recommends it (pkg/deb/duetsoftwareframework/DEBIAN/control:7), and only the DuetPiManagementPlugin package ships /opt/dsf/plugins.
-    /// Directory.GetFiles throws for a missing directory outside the try block of the loop, so the start of the host fails
+    /// Directory.GetFiles threw for a missing directory outside the try block of the loop, so the start of the host failed. Now a missing directory means
+    /// that no plugin is installed
     /// </summary>
     [Test]
-    [Explicit("Bug: DCS does not start when the plugin directory is missing, e.g. without DPS, while PluginSupport is on (the default)")]
     public async Task StartsWithoutPluginDirectory()
     {
         await using DcsHost host = DcsHost.Create(configure: config => config["PluginDirectory"] = (string)config["PluginDirectory"]! + "-missing");
-        Assert.DoesNotThrowAsync(host.StartAsync);
+        await host.StartAsync();
+        Assert.That(host.RunningServices, Does.Contain("PeriodicUpdateService"));
+        using (host.Model.AccessReadOnly())
+        {
+            Assert.That(host.Model.Plugins, Is.Empty);
+        }
     }
 
     /// <summary>

@@ -43,7 +43,15 @@ void Terminate(Exception e, string reason, int exitCode, ILoggerFactory? loggerF
         Console.Error.WriteLine($"[fatal] {reason}");
         Console.Error.WriteLine($"   {e}");
     }
-    File.WriteAllText(startErrorFile, reason);
+    try
+    {
+        File.WriteAllText(startErrorFile, reason);
+    }
+    catch (Exception fe) when (fe is IOException or UnauthorizedAccessException)
+    {
+        // The directory may not exist, e.g. /run/dsf, which only the tmpfiles.d entry of the package creates, but the exit code must still be reported
+        Console.Error.WriteLine($"[error] Failed to write the start error file {startErrorFile}: {fe.Message}");
+    }
     Environment.Exit(exitCode);
 }
 
@@ -153,20 +161,9 @@ rootCommand.SetAction(async (parserResult) =>
             .UseSystemd()
             .ConfigureAppConfiguration((hostingContext, config) =>
             {
-                try
-                {
-                    config
-                        .AddJsonFile(configFileValue.FullName, optional: true)
-                        .AddCommandLine([.. parserResult.UnmatchedTokens]);
-                }
-                catch (JsonException je)
-                {
-                    Terminate(je, $"Failed to load settings: {je.Message}", ExitCode.Configuration, loggerFactory);
-                }
-                catch (Exception e)
-                {
-                    Terminate(e, $"Failed to initialize settings: {e.Message}", ExitCode.Usage, loggerFactory);
-                }
+                config
+                    .AddJsonFile(configFileValue.FullName, optional: true)
+                    .AddCommandLine([.. parserResult.UnmatchedTokens]);
             })
             .ConfigureServices((context, services) =>
             {
@@ -196,6 +193,12 @@ rootCommand.SetAction(async (parserResult) =>
         loggerFactory = host.Services.GetRequiredService<ILoggerFactory>();
         capturedSettings = host.Services.GetRequiredService<IOptions<Settings>>().Value;
         DuetAPI.Utility.JsonHelper.ReceiveBufferSize = capturedSettings.IpcJsonBufferSize;
+    }
+    catch (InvalidDataException e) when (e.GetBaseException() is JsonException je)
+    {
+        // The config file is read when the host is built, not where it is added to the configuration
+        Terminate(e, $"Failed to load settings: {je.Message}", ExitCode.Configuration, loggerFactory);
+        return;
     }
     catch (Exception e)
     {
@@ -250,4 +253,6 @@ rootCommand.SetAction(async (parserResult) =>
     }
 });
 
+// Tokens that are no option are settings for the configuration, e.g. --SpiDevice=/dev/spidev1.0 (AddCommandLine above)
+rootCommand.TreatUnmatchedTokensAsErrors = false;
 return rootCommand.Parse(args).Invoke();
