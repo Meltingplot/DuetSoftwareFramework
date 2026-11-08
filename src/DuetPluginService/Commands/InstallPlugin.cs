@@ -78,11 +78,36 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
                 logger.LogInformation("Security profile installed");
             }
         }
-        else
+
+        // The service that runs a plugin installs its files in the plugin directory and its manifest, so the files of a plugin with super-user permissions
+        // belong to root and the root service starts it only from files nobody else may change (StartPlugin). The files on the virtual SD card and the links
+        // to the web files belong to the dsf user, so that they can be edited like the other files there
+        bool installsPluginDirectory = plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser) == privileges.IsPrivileged;
+        bool installsSdFiles = !privileges.IsPrivileged;
+        if (installsPluginDirectory || installsSdFiles)
         {
-            // Delete old files
+            // The files of the root service must not be writable by others, whatever the umask is
+            UnixFileMode? fileMode = privileges.IsPrivileged ? UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead : null;
+            UnixFileMode directoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+            UnixFileMode executableMode = UnixFileMode.UserWrite | UnixFileMode.UserRead | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                (privileges.IsPrivileged ? UnixFileMode.None : UnixFileMode.GroupWrite);
+            void CreateDirectory(string directory)
+            {
+                logger.LogDebug("Creating new directory {Directory}", directory);
+                if (privileges.IsPrivileged)
+                {
+                    Directory.CreateDirectory(directory, directoryMode);
+                }
+                else
+                {
+                    Directory.CreateDirectory(directory);
+                }
+            }
+
+            // Delete old files. The root service also deletes an old installation that others may change, it would not start the plugin from there
             string pluginBase = Path.Combine(settings.Value.PluginDirectory, plugin.Id);
-            if (!Upgrade && Directory.Exists(pluginBase))
+            if (installsPluginDirectory && Directory.Exists(pluginBase) && (!Upgrade || (privileges.IsPrivileged && !FileExtensions.IsProtected(pluginBase, privileges.UserId))))
             {
                 try
                 {
@@ -103,10 +128,9 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
             logger.LogInformation("Installing files");
 
             // Make plugin directory
-            if (!Directory.Exists(pluginBase))
+            if (installsPluginDirectory && !Directory.Exists(pluginBase))
             {
-                logger.LogDebug("Creating plugin base directory {Directory}", pluginBase);
-                Directory.CreateDirectory(pluginBase);
+                CreateDirectory(pluginBase);
             }
 
             // Install new plugin files
@@ -130,11 +154,13 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
 
                 string fileName;
                 string allowedBase;
+                bool installsEntry;
                 if (entry.FullName.StartsWith("dsf/"))
                 {
                     // Put DSF plugin files into <PluginDirectory>/<PluginName>/dsf
                     fileName = Path.Combine(pluginBase, entry.FullName);
                     allowedBase = pluginBase;
+                    installsEntry = installsPluginDirectory;
                     plugin.DsfFiles.Add(entry.FullName[4..]);
                 }
                 else if (entry.FullName.StartsWith("dwc/"))
@@ -142,6 +168,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
                     // Put DWC plugin files into <PluginDirectory>/<PluginName>/dwc
                     fileName = Path.Combine(pluginBase, entry.FullName);
                     allowedBase = pluginBase;
+                    installsEntry = installsPluginDirectory;
                     plugin.DwcFiles.Add(entry.FullName[4..]);
                 }
                 else if (entry.FullName.StartsWith("sd/"))
@@ -149,12 +176,16 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
                     // Put SD files into 0:/
                     fileName = Path.Combine(sdPath, entry.FullName[3..]);
                     allowedBase = sdPath;
+                    installsEntry = installsSdFiles;
                     plugin.SdFiles.Add(entry.FullName[3..]);
                 }
                 else
                 {
                     // Skip other files
-                    logger.LogWarning("Skipping installation of file {File}", entry.FullName);
+                    if (installsPluginDirectory)
+                    {
+                        logger.LogWarning("Skipping installation of file {File}", entry.FullName);
+                    }
                     continue;
                 }
 
@@ -164,13 +195,16 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
                 {
                     throw new ArgumentException($"Refusing to install entry {entry.FullName}: path escapes plugin directory");
                 }
+                if (!installsEntry)
+                {
+                    continue;
+                }
 
                 // Make sure the parent directory exists
                 string parentDirectory = Path.GetDirectoryName(fileName)!;
                 if (!Directory.Exists(parentDirectory))
                 {
-                    logger.LogDebug("Creating new directory {Directory}", parentDirectory);
-                    Directory.CreateDirectory(parentDirectory);
+                    CreateDirectory(parentDirectory);
                 }
 
                 // Extract the file
@@ -184,7 +218,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
                     // CreateNew does not follow a symlink that shows up in the meantime either
                     logger.LogDebug("Extracting {CompressedFile} to {File}", entry.FullName, fileName);
                     File.Delete(fileName);
-                    await using FileStream fileStream = new(fileName, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                    await using FileStream fileStream = new(fileName, new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None, UnixCreateMode = fileMode });
                     await using Stream zipFileStream = entry.Open();
                     await zipFileStream.CopyToAsync(fileStream);
 
@@ -193,16 +227,14 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
                         (entry.FullName == "dsf/" + plugin.SbcExecutable || entry.FullName == $"dsf/{architecture}/{plugin.SbcExecutable}" ||
                             plugin.SbcExtraExecutables.Any(executable => (entry.FullName == "dsf/" + executable) || (entry.FullName == $"dsf/{architecture}/{executable}"))))
                     {
-                        logger.LogDebug("Changing mode of {File} to 770", fileName);
-                        File.SetUnixFileMode(fileStream.SafeFileHandle,
-                            UnixFileMode.UserWrite | UnixFileMode.UserRead | UnixFileMode.UserExecute |
-                            UnixFileMode.GroupWrite | UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
+                        logger.LogDebug("Changing mode of {File} to {Mode}", fileName, executableMode);
+                        File.SetUnixFileMode(fileStream.SafeFileHandle, executableMode);
                     }
                 }
             }
 
             // Retrieve the SBC executable
-            if (!string.IsNullOrEmpty(plugin.SbcExecutable))
+            if (installsPluginDirectory && !string.IsNullOrEmpty(plugin.SbcExecutable))
             {
                 string sbcExecutable = Path.Combine(pluginBase, "dsf", architecture, plugin.SbcExecutable);
                 if (!File.Exists(sbcExecutable))
@@ -218,7 +250,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
 
             // Install the web files. Try to use a symlink or copy the files if that failed
             string wwwDirectory = Path.Combine(sdPath, "www");
-            foreach (string dwcFile in plugin.DwcFiles)
+            foreach (string dwcFile in installsSdFiles ? plugin.DwcFiles : [])
             {
                 string pluginWwwPath = Path.Combine(pluginBase, "dwc", dwcFile);
                 string installWwwPath = Path.Combine(wwwDirectory, dwcFile);
@@ -241,7 +273,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
                     File.Delete(installWwwPath);
                 }
 
-                // Attempt to symlink or copy the file
+                // Attempt to symlink or copy the file. The web files of a root plugin are installed by the root service after this
                 try
                 {
                     logger.LogDebug("Trying to create symlink {SourceFile} -> {File}", pluginWwwPath, installWwwPath);
@@ -254,20 +286,23 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
                 }
             }
 
-            // Install refreshed plugin manifest
-            logger.LogDebug("Installing plugin manifest");
-            string manifestFilename = Path.Combine(settings.Value.PluginDirectory, $"{plugin.Id}.json");
-            File.Delete(manifestFilename);
-            await using (FileStream manifestFile = new(manifestFilename, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            if (installsPluginDirectory)
             {
-                await JsonSerializer.SerializeAsync(manifestFile, plugin, ObjectModelContext.Default.Plugin);
-            }
+                // Install refreshed plugin manifest
+                logger.LogDebug("Installing plugin manifest");
+                string manifestFilename = Path.Combine(settings.Value.PluginDirectory, $"{plugin.Id}.json");
+                File.Delete(manifestFilename);
+                await using (FileStream manifestFile = new(manifestFilename, new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None, UnixCreateMode = fileMode }))
+                {
+                    await JsonSerializer.SerializeAsync(manifestFile, plugin, ObjectModelContext.Default.Plugin);
+                }
 
-            // Install Python packages. Because we're using a venv, this must happen after all other installation steps
-            if (plugin.SbcPythonDependencies.Count > 0)
-            {
-                logger.LogDebug("Installing Python dependencies");
-                await InstallPythonPackages(plugin.Id, cancellationToken);
+                // Install Python packages. Because we're using a venv, this must happen after all other installation steps
+                if (plugin.SbcPythonDependencies.Count > 0)
+                {
+                    logger.LogDebug("Installing Python dependencies");
+                    await InstallPythonPackages(plugin, cancellationToken);
+                }
             }
         }
 
@@ -346,14 +381,15 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
     }
 
     /// <summary>
-    /// Install a Python package
+    /// Install the Python packages of a plugin in its virtual environment
     /// </summary>
-    /// <param name="plugin">Plugin identifier</param>
-    private async Task InstallPythonPackages(string plugin, CancellationToken cancellationToken)
+    /// <param name="plugin">Plugin</param>
+    private async Task InstallPythonPackages(Plugin plugin, CancellationToken cancellationToken)
     {
-        if (privileges.IsPrivileged)
+        // The venv belongs to the service that runs the plugin
+        if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser) != privileges.IsPrivileged)
         {
-            throw new ArgumentException("Cannot install Python packages as root");
+            throw new ArgumentException(privileges.IsPrivileged ? "Cannot install Python packages of a regular plugin as root" : "Cannot install Python packages of a root plugin as regular user");
         }
 
         using (await _packageLock.LockAsync(cancellationToken))
@@ -362,8 +398,8 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
             {
                 FileName = _settings.InstallPythonPackageCommand,
                 Arguments = _settings.InstallPythonPackageArguments
-                    .Replace("{manifestFile}", Path.Combine(settings.Value.PluginDirectory, plugin + ".json"))
-                    .Replace("{pluginPath}", Path.Combine(settings.Value.PluginDirectory, plugin))
+                    .Replace("{manifestFile}", Path.Combine(settings.Value.PluginDirectory, plugin.Id + ".json"))
+                    .Replace("{pluginPath}", Path.Combine(settings.Value.PluginDirectory, plugin.Id))
             };
             foreach (var kv in _settings.InstallPackageEnvironment)
             {
@@ -376,7 +412,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
                 await process.WaitForExitAsync(cancellationToken);
                 if (process.ExitCode != 0)
                 {
-                    throw new ArgumentException($"Failed to install packages for plugin {plugin}, package manager exited with code {process.ExitCode}");
+                    throw new ArgumentException($"Failed to install packages for plugin {plugin.Id}, package manager exited with code {process.ExitCode}");
                 }
             }
         }

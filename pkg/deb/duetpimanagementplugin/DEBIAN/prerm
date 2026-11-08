@@ -20,6 +20,6 @@ elif ([[ -e /opt/dsf/conf/plugins.txt ]] && grep -q -e "^DuetPiManagementPlugin$
 	fi
 fi
 
-# Make manifest writable again
-chmod 660 /opt/dsf/plugins/DuetPiManagementPlugin.json
+# Make manifest writable again, by its owner only
+chmod 640 /opt/dsf/plugins/DuetPiManagementPlugin.json
 

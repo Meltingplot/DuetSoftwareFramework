@@ -1,3 +1,4 @@
+using DuetSharedLibrary;
 using System;
 
 namespace DuetPluginService;
@@ -15,4 +16,9 @@ public sealed class ServicePrivileges
     /// Whether this instance runs with root privileges
     /// </summary>
     public bool IsPrivileged { get; init; } = Environment.IsPrivilegedProcess;
+
+    /// <summary>
+    /// User ID this instance runs as. The root service starts a plugin with super-user permissions only from files owned by this user
+    /// </summary>
+    public int UserId { get; init; } = ProcessHelpers.GetEffectiveUserID();
 }

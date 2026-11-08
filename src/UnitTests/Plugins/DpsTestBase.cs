@@ -143,10 +143,11 @@ public abstract class DpsTestBase
     /// <param name="register">Whether to register DPS as plugin service of DCS</param>
     /// <param name="asRoot">Whether DCS treats DPS as root plugin service</param>
     /// <param name="privileged">Whether DPS takes the code paths of the root plugin service</param>
+    /// <param name="userId">User ID that DPS assumes to run as or null for the one of the test</param>
     /// <returns>Started DPS</returns>
-    protected async Task<DpsHost> StartDpsAsync(Action<Settings>? configure = null, bool register = true, bool asRoot = false, bool privileged = false)
+    protected async Task<DpsHost> StartDpsAsync(Action<Settings>? configure = null, bool register = true, bool asRoot = false, bool privileged = false, int? userId = null)
     {
-        Dps = await DpsHost.StartAsync(Dcs, PluginDirectory, configure, register, asRoot, privileged);
+        Dps = await DpsHost.StartAsync(Dcs, PluginDirectory, configure, register, asRoot, privileged, userId);
         return Dps;
     }
 

@@ -111,6 +111,12 @@ public sealed class StartPlugin(PluginStore pluginStore, ServicePrivileges privi
             throw new ArgumentException($"Refusing to launch plugin {plugin.Id}: executable {sbcExecutable} is a symlink");
         }
 
+        // The root service starts a plugin only from files that nobody else may change
+        if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser))
+        {
+            RootPluginFiles.CheckStart(plugin, settings.Value.PluginDirectory, sbcExecutable, privileges);
+        }
+
         // Python plugins get their executable as one argument of PythonLaunchArguments, so the executable path must not be able
         // to split or end it. SbcExecutableArguments is restricted the same way by PluginManifestCheck, but the
         // executable filename is plugin-controlled and only checked against ".." so far

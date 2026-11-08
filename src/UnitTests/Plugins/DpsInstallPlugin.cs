@@ -305,20 +305,30 @@ public class DpsInstallPlugin : DpsTestBase
     }
 
     [Test]
-    public async Task FilesOfRootPluginsAreInstalledByTheRegularService()
+    public async Task RegularServiceInstallsOnlyTheSdFilesOfRootPlugins()
     {
-        // InstallPlugin.cs:80-264 runs for every plugin in the service that is not privileged, also for plugins with SuperUser, so the files of a root plugin
-        // belong to the dsf user. The root service only installs packages and profiles (InstallPlugin.cs:54-79) and starts the plugin from this directory
-        // (StartPlugin.cs:84-92)
+        // The files in the plugin directory and the manifest of a plugin with SuperUser are up to the root service, which starts it only from files nobody
+        // else may change (RootPluginFiles). The files on the virtual SD card and the links to the web files belong to the dsf user (InstallPlugin.cs)
         await StartDpsAsync(register: false);
         await InstallAsync(Package(Manifest("Root", manifest =>
         {
             manifest["sbcExecutable"] = "root";
             manifest["sbcPermissions"] = new JsonArray("superUser");
-        }), ("dsf/root", "binary")));
-        Assert.That(File.Exists(Path.Combine(PluginDirectory, "Root/dsf/root")), Is.True);
-        Assert.That(ReadManifest("Root").SbcPermissions, Is.EqualTo(SbcPermissions.SuperUser));
-        Assert.That(File.Exists(Dps!.ProfilePath("Root")), Is.False);
+            manifest["sbcPythonDependencies"] = new JsonArray("requests");
+        }), ("dsf/root", "binary"), ("dwc/Root.js", "js"), ("sd/macros/root.g", "M117")));
+
+        Assert.That(Directory.Exists(Path.Combine(PluginDirectory, "Root")), Is.False);
+        Assert.That(File.Exists(Path.Combine(PluginDirectory, "Root.json")), Is.False);
+        Assert.That(File.ReadAllText(Path.Combine(SdDirectory, "macros/root.g")), Is.EqualTo("M117"));
+        Assert.That(new FileInfo(Path.Combine(SdDirectory, "www/Root.js")).LinkTarget, Is.EqualTo(Path.Combine(PluginDirectory, "Root/dwc/Root.js")),
+            "The link to the web file is created before the root service installs the file");
+        Assert.That(FakeTool.Calls(Dps!.Settings.InstallPythonPackageCommand), Is.Empty, "The venv of a root plugin is up to the root service");
+
+        // Both services know the full file lists
+        Plugin plugin = (await Dps.GetPluginAsync("Root"))!;
+        Assert.That(plugin.DsfFiles, Is.EqualTo(new[] { "root" }));
+        Assert.That(plugin.DwcFiles, Is.EqualTo(new[] { "Root.js" }));
+        Assert.That(plugin.SdFiles, Is.EqualTo(new[] { "macros/root.g" }));
     }
 
     /// <summary>

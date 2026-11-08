@@ -125,16 +125,34 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     }
 
     [Test]
-    public async Task FilesOfRootPluginsAreLeftToTheRootService()
+    public async Task FilesOfRootPluginsAreSplitBetweenTheServices()
     {
-        // "Root plugins are deleted by the root service" (UninstallPlugin.cs:66-67), the regular service only forgets the plugin
+        // Each service removes what it installed: the regular service the SD files and the links to the web files, the root service the manifest and the
+        // plugin directory of a plugin with SuperUser (UninstallPlugin.cs), which it installed itself
         await StartDpsAsync(register: false);
-        await InstallAsync("RootFiles", manifest => manifest["sbcPermissions"] = new JsonArray("superUser"), ("dsf/root", "x"), ("sd/macros/root.g", "M117"));
+        Plugin plugin = await InstallAsync("RootFiles", manifest => manifest["sbcPermissions"] = new JsonArray("superUser"),
+            ("dsf/root", "x"), ("dwc/RootFiles.js", "js"), ("sd/macros/root.g", "M117"));
+        Dps!.WritePlugin(plugin, "exit 0", profile: false);
         await UninstallAsync("RootFiles");
+        Assert.That(File.Exists(Sd("macros/root.g")), Is.False);
+        Assert.That(Path.Exists(Sd("www/RootFiles.js")), Is.False);
         Assert.That(File.Exists(Path.Combine(PluginDirectory, "RootFiles.json")), Is.True);
-        Assert.That(File.Exists(Path.Combine(PluginDirectory, "RootFiles/dsf/root")), Is.True);
-        Assert.That(File.Exists(Sd("macros/root.g")), Is.True);
-        Assert.That(await Dps!.GetPluginAsync("RootFiles"), Is.Null);
+        Assert.That(Directory.Exists(Path.Combine(PluginDirectory, "RootFiles/dsf")), Is.True);
+        Assert.That(await Dps.GetPluginAsync("RootFiles"), Is.Null);
+    }
+
+    [Test]
+    public async Task RootPluginOfASystemPackageIsNotUninstalledByEitherService()
+    {
+        // The read-only manifest is checked by both services before either deletes anything, here by the regular service that comes first
+        await StartDpsAsync(register: false);
+        Plugin plugin = await InstallAsync("Packaged", manifest => manifest["sbcPermissions"] = new JsonArray("superUser"), ("sd/macros/packaged.g", "M117"));
+        Dps!.WritePlugin(plugin, "exit 0", profile: false);
+        File.SetUnixFileMode(Path.Combine(PluginDirectory, "Packaged.json"), UnixFileMode.UserRead | UnixFileMode.GroupRead);
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await UninstallAsync("Packaged")))!;
+        Assert.That(e.Message, Is.EqualTo("Plugin cannot be uninstalled via API"));
+        Assert.That(File.Exists(Sd("macros/packaged.g")), Is.True);
+        Assert.That(await Dps.GetPluginAsync("Packaged"), Is.Not.Null);
     }
 
     /// <summary>

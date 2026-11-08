@@ -61,7 +61,7 @@ internal struct statxbuf {
 internal struct statx_timestamp {
     public long tv_sec;
     public uint tv_nsec;
-    public long __reserved;
+    public int __reserved;
 }
 
 internal static partial class Interop

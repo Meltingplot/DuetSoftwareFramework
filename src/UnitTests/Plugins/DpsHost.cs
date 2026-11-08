@@ -101,8 +101,10 @@ public sealed class DpsHost : IAsyncDisposable
     /// <param name="register">Whether to start CommandService, which registers DPS as plugin service of DCS</param>
     /// <param name="asRoot">Whether DCS treats the connections of DPS as the ones of the root plugin service (DPS itself still runs as regular user)</param>
     /// <param name="privileged">Whether DPS takes the code paths of the root plugin service (<see cref="ServicePrivileges.IsPrivileged"/>)</param>
+    /// <param name="userId">User ID that DPS assumes to run as (<see cref="ServicePrivileges.UserId"/>) or null for the one of the test</param>
     /// <returns>Started DPS</returns>
-    public static async Task<DpsHost> StartAsync(FakeFirmwareHost? dcs, string pluginDirectory, Action<Settings>? configure = null, bool register = true, bool asRoot = false, bool privileged = false)
+    public static async Task<DpsHost> StartAsync(FakeFirmwareHost? dcs, string pluginDirectory, Action<Settings>? configure = null, bool register = true, bool asRoot = false,
+        bool privileged = false, int? userId = null)
     {
         string directory = Path.Combine(Path.GetTempPath(), "dsf-dps-" + Guid.NewGuid().ToString("N"));
         System.IO.Directory.CreateDirectory(Path.Combine(directory, "apparmor.d"));
@@ -134,7 +136,7 @@ public sealed class DpsHost : IAsyncDisposable
             .AddSingleton<IHostApplicationLifetime, ApplicationLifetime>()
             // Program.cs:91-99
             .AddSingleton<CommandFactory>()
-            .AddSingleton(new ServicePrivileges { IsPrivileged = privileged })
+            .AddSingleton((userId is null) ? new ServicePrivileges { IsPrivileged = privileged } : new ServicePrivileges { IsPrivileged = privileged, UserId = userId.Value })
             .AddSingleton<IPermissionManager, AppArmorPermissionManager>()
             .AddSingleton<PluginStore>()
             .AddHostedService<PluginService>()
@@ -200,7 +202,8 @@ public sealed class DpsHost : IAsyncDisposable
 
     /// <summary>
     /// Write a plugin manifest and the plugin executable to the plugin directory, like a completed installation leaves them behind,
-    /// optionally with an AppArmor profile, which the root service would have written
+    /// optionally with an AppArmor profile, which the root service would have written. Nobody but the user of the test may write the files,
+    /// like the root service installs them, so the root service may start a plugin with SuperUser from them (RootPluginFiles)
     /// </summary>
     /// <param name="plugin">Plugin manifest</param>
     /// <param name="script">Shell script to use as the SBC executable or null for none</param>
@@ -208,17 +211,21 @@ public sealed class DpsHost : IAsyncDisposable
     /// <returns>Path of the executable or null</returns>
     public string? WritePlugin(Plugin plugin, string? script = null, bool profile = true)
     {
+        const UnixFileMode DirectoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+            UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
         string pluginBase = Path.Combine(Settings.PluginDirectory, plugin.Id);
-        System.IO.Directory.CreateDirectory(Path.Combine(pluginBase, "dsf"));
+        System.IO.Directory.CreateDirectory(Path.Combine(pluginBase, "dsf"), DirectoryMode);
         string? executable = null;
         if (script is not null && plugin.SbcExecutable is not null)
         {
             executable = Path.Combine(pluginBase, "dsf", plugin.SbcExecutable);
-            System.IO.Directory.CreateDirectory(Path.GetDirectoryName(executable)!);
+            System.IO.Directory.CreateDirectory(Path.GetDirectoryName(executable)!, DirectoryMode);
             File.WriteAllText(executable, "#!/bin/sh\n" + script + "\n");
             File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
-        File.WriteAllText(Path.Combine(Settings.PluginDirectory, plugin.Id + ".json"), JsonSerializer.Serialize(plugin, ObjectModelContext.Default.Plugin));
+        string manifestFile = Path.Combine(Settings.PluginDirectory, plugin.Id + ".json");
+        File.WriteAllText(manifestFile, JsonSerializer.Serialize(plugin, ObjectModelContext.Default.Plugin));
+        File.SetUnixFileMode(manifestFile, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
         if (profile)
         {
             File.WriteAllText(ProfilePath(plugin.Id), "# profile of " + plugin.Id);

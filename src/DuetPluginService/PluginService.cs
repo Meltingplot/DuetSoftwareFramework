@@ -48,10 +48,15 @@ public sealed class PluginService(CommandFactory commandFactory, IPermissionMana
                     plugin.UpdateFromJson(manifestJson.RootElement, false);
                     plugin.Pid = -1;
 
-                    // Do not load manifests that could not be installed either
+                    // Do not load manifests that could not be installed either. The root service loads the manifest of a plugin with super-user
+                    // permissions only if nobody else may change it
                     try
                     {
                         PluginManifestCheck.Check(plugin, null);
+                        if (privileges.IsPrivileged && plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser))
+                        {
+                            RootPluginFiles.CheckManifest(file, privileges);
+                        }
                     }
                     catch (ArgumentException e)
                     {

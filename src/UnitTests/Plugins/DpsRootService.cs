@@ -243,6 +243,168 @@ public class DpsRootService : DpsTestBase
         Assert.That(await DpsHost.WaitForAsync(async () => (await GetFromDcsAsync("Root"))!.Pid == -1), Is.True);
     }
 
+    private const UnixFileMode RootFile = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
+    private const UnixFileMode RootDirectory = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+        UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+    private const UnixFileMode RootExecutable = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupExecute;
+
+    [Test]
+    public async Task RootServiceInstallsTheFilesOfRootPlugins()
+    {
+        // The root service installs the plugin directory and the manifest of a plugin with SuperUser, with modes that let nobody else write them
+        // whatever the umask is. The SD files and the links to the web files are up to the regular service (InstallPlugin.cs)
+        await StartRootDpsAsync();
+        await InstallAsync(Package(Manifest("Root", manifest =>
+        {
+            manifest["sbcExecutable"] = "root";
+            manifest["sbcExtraExecutables"] = new JsonArray("tool");
+            manifest["sbcPermissions"] = new JsonArray("superUser");
+            manifest["sbcPythonDependencies"] = new JsonArray("requests");
+        }), ("dsf/root", "#!/bin/sh\nexec sleep 30\n"), ("dsf/tool", "tool"), ("dsf/sub/data.txt", "data"), ("dwc/Root.js", "js"), ("sd/macros/root.g", "M117")));
+
+        string pluginBase = Path.Combine(PluginDirectory, "Root");
+        Assert.That(File.GetUnixFileMode(Path.Combine(pluginBase, "dsf/root")), Is.EqualTo(RootExecutable));
+        Assert.That(File.GetUnixFileMode(Path.Combine(pluginBase, "dsf/tool")), Is.EqualTo(RootExecutable));
+        Assert.That(File.GetUnixFileMode(Path.Combine(pluginBase, "dsf/sub/data.txt")), Is.EqualTo(RootFile));
+        Assert.That(File.GetUnixFileMode(Path.Combine(pluginBase, "dwc/Root.js")), Is.EqualTo(RootFile));
+        Assert.That(File.GetUnixFileMode(Path.Combine(PluginDirectory, "Root.json")), Is.EqualTo(RootFile));
+        foreach (string directory in new[] { pluginBase, Path.Combine(pluginBase, "dsf"), Path.Combine(pluginBase, "dsf/sub"), Path.Combine(pluginBase, "dwc") })
+        {
+            Assert.That(File.GetUnixFileMode(directory), Is.EqualTo(RootDirectory), directory);
+        }
+        Assert.That(File.Exists(Path.Combine(SdDirectory, "macros/root.g")), Is.False);
+        Assert.That(Path.Exists(Path.Combine(SdDirectory, "www/Root.js")), Is.False);
+
+        // The venv belongs to the root service as well, the installer runs after the manifest has been written
+        Assert.That(FakeTool.Calls(Dps!.Settings.InstallPythonPackageCommand), Is.EqualTo(new[] { $"-m {Path.Combine(PluginDirectory, "Root.json")} -p {pluginBase}" }));
+        Plugin plugin = (await Dps.GetPluginAsync("Root"))!;
+        Assert.That(plugin.DsfFiles, Is.EquivalentTo(new[] { "root", "tool", "sub/data.txt" }));
+        Assert.That(plugin.SdFiles, Is.EqualTo(new[] { "macros/root.g" }));
+    }
+
+    [Test]
+    public async Task InstalledRootPluginIsStarted()
+    {
+        await StartRootDpsAsync();
+        await EnableRootPluginSupportAsync();
+        await InstallAsync(Package(Manifest("Installed", manifest =>
+        {
+            manifest["sbcExecutable"] = "root";
+            manifest["sbcPermissions"] = new JsonArray("superUser");
+        }), ("dsf/root", "#!/bin/sh\nexec sleep 30\n")));
+        await AddToDcsAsync((await Dps!.GetPluginAsync("Installed"))!);
+        await StartAsync("Installed");
+        Assert.That(Dps.Store.Processes.ContainsKey("Installed"), Is.True);
+    }
+
+    [TestCase(true)]
+    [TestCase(false)]
+    public async Task UpgradeReplacesARootPluginDirectoryThatOthersMayChange(bool othersMayChange)
+    {
+        // An upgrade keeps the plugin directory, unless the root service would not start the plugin from it, e.g. after an installation by the regular
+        // service of an older version
+        await StartRootDpsAsync();
+        string pluginBase = Path.Combine(PluginDirectory, "Old");
+        Directory.CreateDirectory(pluginBase, othersMayChange ? RootDirectory | UnixFileMode.GroupWrite : RootDirectory);
+        File.SetUnixFileMode(pluginBase, othersMayChange ? RootDirectory | UnixFileMode.GroupWrite : RootDirectory);
+        File.WriteAllText(Path.Combine(pluginBase, "custom"), "written by the plugin");
+
+        DuetPluginService.IPC.InstallPlugin command = Dps!.Create<DuetPluginService.IPC.InstallPlugin>();
+        command.PluginFile = Package(Manifest("Old", manifest => manifest["sbcPermissions"] = new JsonArray("superUser")), ("dsf/new", "new"));
+        command.Upgrade = true;
+        await command.ExecuteAsync();
+
+        Assert.That(File.Exists(Path.Combine(pluginBase, "custom")), Is.EqualTo(!othersMayChange));
+        Assert.That(File.GetUnixFileMode(pluginBase), Is.EqualTo(RootDirectory));
+        Assert.That(File.Exists(Path.Combine(pluginBase, "dsf/new")), Is.True);
+    }
+
+    /// <summary>
+    /// Ways in which others than the root service could change what a plugin with SuperUser runs. The plugin directory belongs to the dsf user
+    /// </summary>
+    private static readonly (string Description, Action<string, string> Change)[] Tampering =
+    [
+        ("executable writable by the group", (pluginBase, manifest) => File.SetUnixFileMode(Path.Combine(pluginBase, "dsf/plugin.sh"), RootExecutable | UnixFileMode.GroupWrite)),
+        ("dsf directory writable by others", (pluginBase, manifest) => File.SetUnixFileMode(Path.Combine(pluginBase, "dsf"), RootDirectory | UnixFileMode.OtherWrite)),
+        ("plugin directory writable by the group", (pluginBase, manifest) => File.SetUnixFileMode(pluginBase, RootDirectory | UnixFileMode.GroupWrite)),
+        ("manifest writable by others", (pluginBase, manifest) => File.SetUnixFileMode(manifest, RootFile | UnixFileMode.OtherWrite)),
+        ("dsf directory replaced by a symlink", (pluginBase, manifest) =>
+        {
+            string elsewhere = Path.Combine(Path.GetDirectoryName(pluginBase)!, "Elsewhere");
+            Directory.Move(Path.Combine(pluginBase, "dsf"), elsewhere);
+            Directory.CreateSymbolicLink(Path.Combine(pluginBase, "dsf"), elsewhere);
+        }),
+        ("venv writable by the group", (pluginBase, manifest) =>
+        {
+            Directory.CreateDirectory(Path.Combine(pluginBase, "venv/bin"), RootDirectory);
+            File.SetUnixFileMode(Path.Combine(pluginBase, "venv/bin"), RootDirectory | UnixFileMode.GroupWrite);
+        })
+    ];
+
+    private static readonly string[] TamperingCases = [.. Tampering.Select(item => item.Description)];
+
+    [TestCaseSource(nameof(TamperingCases))]
+    public async Task RootPluginIsStartedOnlyFromFilesNobodyElseMayChange(string description)
+    {
+        // RootPluginFiles.CheckStart checks the manifest and each entry from the plugin directory down to the executable, and the venv of a Python plugin
+        await StartDpsAsync(register: false, privileged: true);
+        await EnableRootPluginSupportAsync();
+        Plugin plugin = new() { Id = "Root", Name = "Root", SbcExecutable = "plugin.sh", SbcPermissions = SbcPermissions.SuperUser, Pid = -1 };
+        if (description.StartsWith("venv"))
+        {
+            plugin.SbcPythonDependencies.Add("requests");
+        }
+        Dps!.WritePlugin(plugin, "exec sleep 30", profile: false);
+        await Dps.AddToStoreAsync(plugin);
+        await AddToDcsAsync(plugin);
+        Tampering.Single(item => item.Description == description).Change(Path.Combine(PluginDirectory, "Root"), Path.Combine(PluginDirectory, "Root.json"));
+
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("Root")))!;
+        Assert.That(e.Message, Does.StartWith("Refusing to start plugin Root: ").And.EndWith(" may be changed by others than the root service"));
+        Assert.That(Dps.Store.Processes, Is.Empty);
+    }
+
+    [Test]
+    public async Task RootPluginOfAnotherUserIsNotStarted()
+    {
+        // The files must belong to the user of the root service (root), here DPS assumes another user ID than the one of the test
+        await StartDpsAsync(register: false, privileged: true, userId: DuetSharedLibrary.ProcessHelpers.GetEffectiveUserID() + 1);
+        await EnableRootPluginSupportAsync();
+        Plugin plugin = new() { Id = "Foreign", Name = "Foreign", SbcExecutable = "plugin.sh", SbcPermissions = SbcPermissions.SuperUser, Pid = -1 };
+        Dps!.WritePlugin(plugin, "exec sleep 30", profile: false);
+        await Dps.AddToStoreAsync(plugin);
+        await AddToDcsAsync(plugin);
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await StartAsync("Foreign")))!;
+        Assert.That(e.Message, Is.EqualTo($"Refusing to start plugin Foreign: {Path.Combine(PluginDirectory, "Foreign.json")} may be changed by others than the root service"));
+    }
+
+    [Test]
+    public async Task RootManifestThatOthersMayChangeIsNotLoaded()
+    {
+        // PluginService and ReloadPlugin of the root service load the manifest of a plugin with SuperUser only if nobody else may change it,
+        // the regular service does not start such plugins and loads them as before
+        File.WriteAllText(Path.Combine(PluginDirectory, "Shared.json"), "{\"id\":\"Shared\",\"name\":\"Shared\",\"sbcPermissions\":[\"superUser\"]}");
+        File.SetUnixFileMode(Path.Combine(PluginDirectory, "Shared.json"), RootFile | UnixFileMode.GroupWrite);
+        File.WriteAllText(Path.Combine(PluginDirectory, "Target.json"), "{\"id\":\"Linked\",\"name\":\"Linked\",\"sbcPermissions\":[\"superUser\"]}");
+        File.SetUnixFileMode(Path.Combine(PluginDirectory, "Target.json"), RootFile);
+        File.CreateSymbolicLink(Path.Combine(PluginDirectory, "Linked.json"), Path.Combine(PluginDirectory, "Target.json"));
+        File.WriteAllText(Path.Combine(PluginDirectory, "Regular.json"), "{\"id\":\"Regular\",\"name\":\"Regular\"}");
+        File.SetUnixFileMode(Path.Combine(PluginDirectory, "Regular.json"), RootFile | UnixFileMode.GroupWrite);
+        await StartDpsAsync(register: false, privileged: true, configure: settings => settings.DisableAppArmor = true);
+
+        Assert.That(Dps!.Store.Plugins.ConvertAll(item => item.Id), Is.EquivalentTo(new[] { "Regular", "Linked" }), "Target.json is protected and loaded as Linked");
+        Assert.That(Dps.Log.Contains($"Skipping plugin manifest Shared.json: {Path.Combine(PluginDirectory, "Shared.json")} may be changed by others than the root service, the plugin must be installed again"), Is.True);
+        Assert.That(Dps.Log.Contains("Skipping plugin manifest Linked.json"), Is.True, "A symlink is refused");
+
+        DuetPluginService.IPC.ReloadPlugin reload = Dps.Create<DuetPluginService.IPC.ReloadPlugin>();
+        reload.Plugin = "Shared";
+        ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await reload.ExecuteAsync()))!;
+        Assert.That(e.Message, Does.EndWith("may be changed by others than the root service, the plugin must be installed again"));
+
+        await using DpsHost regular = await DpsHost.StartAsync(Dcs, PluginDirectory, register: false);
+        Assert.That(regular.Store.Plugins.ConvertAll(item => item.Id), Does.Contain("Shared"));
+    }
+
     [Test]
     public async Task RootPluginIsNotStartedWithoutRootPluginSupportInDcs()
     {
@@ -302,7 +464,7 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task RootServiceUninstallsTheFilesOfRootPlugins()
     {
-        // "Root plugins are deleted by the root service" (UninstallPlugin.cs:66-67)
+        // The root service removes the manifest and the plugin directory of a plugin with SuperUser, the SD files are up to the regular service (UninstallPlugin.cs)
         await StartDpsAsync(register: false, privileged: true);
         Plugin plugin = new() { Id = "RootFiles", Name = "RootFiles", SbcExecutable = "root", SbcPermissions = SbcPermissions.SuperUser, Pid = -1 };
         plugin.DsfFiles.Add("root");
@@ -314,7 +476,7 @@ public class DpsRootService : DpsTestBase
         await UninstallAsync("RootFiles");
         Assert.That(File.Exists(Path.Combine(PluginDirectory, "RootFiles.json")), Is.False);
         Assert.That(Directory.Exists(Path.Combine(PluginDirectory, "RootFiles")), Is.False);
-        Assert.That(File.Exists(Path.Combine(SdDirectory, "macros/root.g")), Is.False);
+        Assert.That(File.Exists(Path.Combine(SdDirectory, "macros/root.g")), Is.True);
         Assert.That(FakeTool.Calls(Dps.Settings.AppArmorParser), Is.Empty, "A root plugin has no profile to remove");
         Assert.That(await Dps.GetPluginAsync("RootFiles"), Is.Null);
     }
