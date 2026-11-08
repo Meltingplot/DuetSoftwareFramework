@@ -118,6 +118,26 @@ public class FirmwareUpdates
         Assert.That(Received(), Is.Empty);
     }
 
+    /// <summary>
+    /// DCS updates module 0 itself and the update restarts RRF and DCS, so other modules given with it are refused before anything is updated,
+    /// as RRF refuses a module it cannot update (GCodes3.cpp:816-836). The wiki lists M997 S0:1 as standalone only
+    /// </summary>
+    [TestCase("M997 S0:4", "4")]
+    [TestCase("M997 S4:0", "4")]
+    [TestCase("M997 S0:1:4:1", "1:4")]
+    [TestCase("M997 S0:2", "2")]
+    public async Task UpdateOfMainBoardWithOtherModules(string code, string modules)
+    {
+        FakeFirmwareHost host = await StartAsync(IapFile);
+        System.IO.File.WriteAllText(Path.Combine(host.BaseDirectory, "firmware", IapFile), "iap");
+        System.IO.File.WriteAllText(Path.Combine(host.BaseDirectory, "firmware", FirmwareFile), "firmware");
+
+        Assert.That(await host.ExecuteAsync(code), Is.EqualTo($"Error: M997: Module 0 cannot be updated together with other modules in SBC mode, update module {modules} separately\n"));
+        Assert.That(Received(), Is.Empty);
+        Assert.That(host.Firmware.GetIapSegments(), Is.Empty);
+        Assert.That(System.IO.File.Exists(Path.Combine(host.BaseDirectory, "startError.txt")), Is.False);
+    }
+
     [TestCase("M997 S1")]
     [TestCase("M997 B121")]
     [TestCase("M997 S3 B121")]

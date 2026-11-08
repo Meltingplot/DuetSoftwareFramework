@@ -1205,6 +1205,14 @@ public class MCodeHandler(
                 {
                     if (await codeProcessor.FlushAsync(code, cancellationToken: cancellationToken))
                     {
+                        // DCS updates the main firmware itself and the update restarts RRF and DCS, so other modules given with it would
+                        // be dropped. Refuse them before anything is updated, as RRF does for a module it cannot update (GCodes3.cpp:816-836)
+                        int[] otherModules = [.. code.GetIntArray('S', [0]).Where(module => module != 0).Distinct()];
+                        if (otherModules.Length > 0)
+                        {
+                            return new Message(MessageType.Error, $"Module 0 cannot be updated together with other modules in SBC mode, update module {string.Join(':', otherModules)} separately");
+                        }
+
                         // Get the IAP and Firmware files
                         string? iapFile, firmwareFile;
                         using (await model.AccessReadOnlyAsync(cancellationToken))
