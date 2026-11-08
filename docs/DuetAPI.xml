@@ -18179,7 +18179,7 @@
             Check if the given permissions are sufficient
             </summary>
             <param name="permissions">Permissions to check</param>
-            <returns>True if permission is granted</returns>
+            <returns>True if at least one of the required permissions is granted</returns>
         </member>
         <member name="T:DuetAPI.Utility.SbcPermissions">
             <summary>
