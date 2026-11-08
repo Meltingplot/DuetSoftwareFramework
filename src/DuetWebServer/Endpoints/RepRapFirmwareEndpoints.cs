@@ -358,7 +358,7 @@ public class RepRapFirmwareEndpoints
         {
             if (!string.IsNullOrWhiteSpace(name))
             {
-                string resolvedPath = await EndpointHelper.ResolvePathAsync(settings.SocketPath, name);
+                string resolvedPath = await EndpointHelper.ResolvePathAsync(settings.SocketPath, name, forDeletion: true);
 
                 if (Directory.Exists(resolvedPath))
                 {

@@ -525,6 +525,37 @@ public partial class LinkServiceOverSpi
     }
 
     /// <summary>
+    /// In SBC mode MassStorage::Delete hands every delete to DSF before its check for the root folder (MassStorage.cpp:822-836, 840-858), e.g.
+    /// for M472 P"0:/" R1 that RRF runs itself (GCodes2.cpp:3425-3440). DSF refuses to delete the root of a volume as well, so RRF gets false and
+    /// reports that the delete failed
+    /// </summary>
+    [Test]
+    public async Task RootIsNotDeleted()
+    {
+        await using Host host = await Host.StartAsync();
+        FakeRrfSpi rrf = host.Rrf;
+        string config = Path.Combine(host.BaseDirectory, "sys", "config.g");
+        System.IO.File.WriteAllText(config, "M550 P\"test\"");
+
+        foreach (string path in new[] { "0:/", "0:", "/", "0:/sys/..", "0:/.", "0:/sys/../", "0:/./", "./" })
+        {
+            rrf.SendPacket(FirmwareRequest.DeleteFileOrDirectoryRecursively, RrfPackets.String(path));
+            Assert.That(SbcPackets.Boolean(host.WaitFor(SbcRequest.FileDeleteResult)), Is.False, path);
+            Assert.That(System.IO.File.Exists(config), Is.True, path);
+        }
+
+        // Without recursion the root is refused the same way, even if it is empty
+        foreach (string directory in Directory.GetDirectories(host.BaseDirectory))
+        {
+            Directory.Delete(directory, true);
+        }
+        rrf.SendPacket(FirmwareRequest.DeleteFileOrDirectory, RrfPackets.String("0:/"));
+        Assert.That(SbcPackets.Boolean(host.WaitFor(SbcRequest.FileDeleteResult)), Is.False);
+        Assert.That(Directory.Exists(host.BaseDirectory), Is.True);
+        Assert.That(host.Fault, Is.Null);
+    }
+
+    /// <summary>
     /// RRF pages through a directory listing by entry index and tells how much room it has (DataTransfer::WriteGetFileList). DSF sorts the entries
     /// by name so that every page sees the same order, sends as many as fit and tells whether the last one is among them (LinkService.HandleGetFileList)
     /// </summary>

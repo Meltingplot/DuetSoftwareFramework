@@ -443,6 +443,40 @@ public class FileCodes
         Assert.That(Received(), Is.Empty);
     }
 
+    [TestCase("M472 P\"0:/\" R1")]
+    [TestCase("M472 P\"/\" R1")]
+    [TestCase("M472 P\"0:/sys/..\" R1")]
+    [TestCase("M472 P\"0:/sys/../\" R1")]
+    [TestCase("M472 P\"0:/./\" R1")]
+    [TestCase("M472 P\"./\" R1")]
+    [TestCase("M472 P\"0:/\"")]
+    public async Task DeleteRootDirectory(string code)
+    {
+        string config = WriteFile("M550 P\"test\"\n", "sys", "config.g");
+
+        // RRF refuses to delete the root folder (MassStorage.cpp:840-858). M472 resolves its path outside its try block (MCodeHandler.cs:907), so
+        // the refusal fails the code like every other path that FilePathResolver refuses
+        Assert.That(async () => await _host.ExecuteCodeAsync(code), Throws.ArgumentException.With.Message.EqualTo("Delete root folder is not allowed"));
+        Assert.That(System.IO.File.Exists(config), Is.True);
+
+        // The channel goes on
+        Assert.That(await _host.ExecuteAsync("M472 P\"/sys/config.g\""), Is.EqualTo("\n"));
+        Assert.That(System.IO.File.Exists(config), Is.False);
+        Assert.That(Received(), Is.Empty);
+    }
+
+    [Test]
+    public async Task DeleteRootDirectoryAsFile()
+    {
+        string config = WriteFile("M550 P\"test\"\n", "sys", "config.g");
+
+        // M30 deletes files only (MCodeHandler.cs:428), and File.Delete does not remove a directory
+        Message? result = await _host.ExecuteCodeAsync("M30 \"0:/\"");
+        Assert.That(result?.Type, Is.EqualTo(MessageType.Error));
+        Assert.That(System.IO.File.Exists(config), Is.True);
+        Assert.That(Received(), Is.Empty);
+    }
+
     [TestCase("M472 P\"/sys/missing.g\"")]
     [TestCase("M472 P\"/sys/missing\" R1")]
     public async Task DeleteMissingFileOrDirectory(string code)
