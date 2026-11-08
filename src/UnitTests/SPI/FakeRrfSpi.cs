@@ -237,8 +237,9 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     private byte _pendingPacketId;
     private bool _resending;
     private readonly byte _underrunByte;
-    private List<SpiFault> _faults = [];
-    private int _faultArmedAt;
+
+    // Armed faults, each with the exchange from which its number counts
+    private List<(SpiFault Fault, int ArmedAt)> _faults = [];
     private bool _faultTimeTaken;
     private int _transfersStarted, _payloadId;
 
@@ -313,6 +314,11 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     public List<double> Restarts { get; } = [];
 
     /// <summary>
+    /// Virtual times at which RRF restarted
+    /// </summary>
+    public List<double> RestartTimes { get; } = [];
+
+    /// <summary>
     /// Boot time of a restart to perform after the first transfer of the restarted RRF
     /// </summary>
     private double? _restartAgainBootTime;
@@ -350,7 +356,14 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     {
         Trace?.Add($"   {Now,9:F3} ms: RRF restarts, booting for {bootTime} ms");
         Restarts.Add(exchanges);
+        RestartTimes.Add(Now);
+        _paceUntil = null;
         _dmaActive = false;
+        lock (_packetLock)
+        {
+            // The requests SbcInterface had not written yet are gone with the RAM
+            _packetsToSend.Clear();
+        }
         _isConnected = false;
 
         _state = InternalTransferState.ExchangingData;
@@ -454,6 +467,21 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     public int Disconnects { get; private set; }
 
     /// <summary>
+    /// Virtual times at which RRF lost an established connection, so when it performed an emergency stop for that (SbcInterface.cpp:194-230)
+    /// </summary>
+    public List<double> DisconnectTimes { get; } = [];
+
+    /// <summary>
+    /// Whether the last header RRF completed a transfer with had an extended sequence number, so DSF uses the extended link
+    /// </summary>
+    public bool DsfUsesExtendedLink => ExtendedLink.IsExtended(_lastTransferNumber);
+
+    /// <summary>
+    /// Number of transfers RRF completed and processed
+    /// </summary>
+    public int CompletedTransfers { get; private set; }
+
+    /// <summary>
     /// Number of times RRF reset the connection, including those before a connection was established
     /// </summary>
     public int ConnectionResets { get; private set; }
@@ -545,10 +573,15 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// <param name="faults">Faults to inject</param>
     public void Arm(IReadOnlyList<SpiFault> faults)
     {
-        _faults = [.. faults];
-        _faultArmedAt = Exchanges;
+        _faults = [.. faults.Select(fault => (fault, Exchanges))];
         _faultTimeTaken = false;
     }
+
+    /// <summary>
+    /// Corrupt more exchanges, counted from now, while the faults armed before stay armed with their own counting
+    /// </summary>
+    /// <param name="faults">Faults to inject</param>
+    public void ArmAlso(IReadOnlyList<SpiFault> faults) => _faults.AddRange(faults.Select(fault => (fault, Exchanges)));
 
     /// <summary>
     /// Check every transfer RRF processes against the data DSF clocked out before any corruption, see <see cref="CorruptedTransfers"/>
@@ -591,7 +624,12 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// so that only the bit errors cost random numbers
     /// </summary>
     /// <param name="buffer">Bytes of the exchange</param>
-    private void AddBitErrors(Span<byte> buffer)
+    /// <summary>
+    /// Bits that <see cref="BitErrorRate"/> flipped, as exchange, direction and bit, recorded if set. Arming them as faults repeats the run without the noise
+    /// </summary>
+    public List<(int Exchange, ExchangeDirection Direction, int Bit)>? NoiseLog { get; set; }
+
+    private void AddBitErrors(Span<byte> buffer, int exchange, ExchangeDirection direction)
     {
         if (BitErrorRate <= 0)
         {
@@ -612,6 +650,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             }
             position += _bitsToNextError;
             buffer[(int)(position / 8)] ^= (byte)(1 << (int)(position % 8));
+            NoiseLog?.Add((exchange, direction, (int)position));
             position++;
             _bitsToNextError = -1;
         }
@@ -670,6 +709,30 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         lock (_packetLock)
         {
             return [.. _receivedPackets];
+        }
+    }
+
+    /// <summary>
+    /// Packet from DSF that RRF processed
+    /// </summary>
+    /// <param name="Request">Request of the packet</param>
+    /// <param name="Id">Identifier of the packet</param>
+    /// <param name="Payload">Packet data</param>
+    /// <param name="Time">Virtual time at which RRF processed it</param>
+    /// <param name="Exchange">Number of exchanges at that time</param>
+    public sealed record ProcessedPacket(SbcRequest Request, ushort Id, byte[] Payload, double Time, int Exchange);
+
+    private readonly List<ProcessedPacket> _processedPackets = [];
+
+    /// <summary>
+    /// Every packet that DSF sent and RRF processed so far, in order and with the time, if <see cref="RecordPackets"/> is set.
+    /// Unlike <see cref="GetReceivedPackets"/>, <see cref="WaitForPacket"/> does not take packets from this list. Thread-safe
+    /// </summary>
+    public List<ProcessedPacket> GetProcessedPackets()
+    {
+        lock (_packetLock)
+        {
+            return [.. _processedPackets];
         }
     }
 
@@ -1085,6 +1148,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
                     break;
                 }
 
+                DataAccepted?.Invoke(_rxBuffer.AsSpan(0, _rxHeader.DataLength).ToArray());
                 ExchangeResponse(TransferResponse.Success);
                 break;
             }
@@ -1235,16 +1299,26 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             {
                 _isConnected = false;
                 Disconnects++;
+                DisconnectTimes.Add(Now);
             }
 
             if (transferComplete)
             {
                 _isConnected = true;
+                CompletedTransfers++;
 
                 // Handle exchanged data and kick off the next transfer
                 ProcessData();
-                WritePayload();
-                StartNextTransfer();
+                if (TransferDelay > 0)
+                {
+                    // SbcInterface::ExchangeData waits after it has processed the data, before it writes the next data
+                    _paceUntil = Now + TransferDelay;
+                }
+                else
+                {
+                    WritePayload();
+                    StartNextTransfer();
+                }
             }
             else
             {
@@ -1261,8 +1335,42 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         }
 
         // Wait for the next DMA transfer
-        _deadline = (_state != InternalTransferState.ExchangingHeader) ? Now + SbcTransferTimeout :
+        _deadline = (_paceUntil is not null) ? double.PositiveInfinity : (_state != InternalTransferState.ExchangingHeader) ? Now + SbcTransferTimeout :
             (_isConnected || _pollWhileDisconnected) ? Now + SbcConnectionTimeout : double.PositiveInfinity;
+    }
+
+    /// <summary>
+    /// Time RRF waits after it has processed a transfer before it writes its next data and arms the next transfer, in ms. SbcInterface::ExchangeData
+    /// waits maxDelayBetweenTransfers (M576 S, default SbcTransferDelay = 25 ms) while fewer than numMaxEvents events happened, outside burst mode and
+    /// without a file operation (SbcInterface.cpp:1340-1350, SbcMessageFormats.h:37). Events, burst mode and file operations are not modelled, so
+    /// this is the wait of an idle RRF. 0 leaves the wait out, as the census does
+    /// </summary>
+    public double TransferDelay { get; init; }
+
+    /// <summary>
+    /// Default of <see cref="TransferDelay"/> (SbcMessageFormats.h:37, SbcTransferDelay)
+    /// </summary>
+    public const double DefaultTransferDelay = 25;
+
+    /// <summary>
+    /// Virtual time at which the wait of <see cref="TransferDelay"/> ends, or null if RRF does not wait
+    /// </summary>
+    private double? _paceUntil;
+
+    /// <summary>
+    /// Whether RRF waits between two transfers, see <see cref="TransferDelay"/>
+    /// </summary>
+    public bool IsPacing => _paceUntil is not null;
+
+    /// <summary>
+    /// The wait of <see cref="TransferDelay"/> ends: RRF writes its data and arms the next transfer
+    /// </summary>
+    private void EndPacing()
+    {
+        _paceUntil = null;
+        WritePayload();
+        StartNextTransfer();
+        _deadline = (_isConnected || _pollWhileDisconnected) ? Now + SbcConnectionTimeout : double.PositiveInfinity;
     }
 
     /// <summary>
@@ -1291,6 +1399,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
                     if (RecordPackets)
                     {
                         _receivedPackets.Add(((SbcRequest)packet.Request, packet.Id, payload));
+                        _processedPackets.Add(new((SbcRequest)packet.Request, packet.Id, payload, Now, Exchanges));
                         Monitor.PulseAll(_packetLock);
                     }
                     foreach (var answer in Respond?.Invoke((SbcRequest)packet.Request, packet.Id, payload) ?? [])
@@ -1345,6 +1454,13 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
             ArmFirstHeader();
             return true;
         }
+        if (_paceUntil is double paceUntil && paceUntil <= end)
+        {
+            Trace?.Add($"   {paceUntil,9:F3} ms: RRF arms the next transfer after its delay");
+            Now = paceUntil;
+            EndPacing();
+            return true;
+        }
         if (_deadline < end || (_deadline == end && _rrfFirstOnTie))
         {
             Trace?.Add($"   {_deadline,9:F3} ms: RRF timeout in {_state}{(_isConnected ? ", disconnect" : "")}");
@@ -1372,14 +1488,205 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     }
     #endregion
 
+    #region Holding DSF
+    // Test control, not part of RRF: DSF can be held at a known point of the link while a test makes a request, and virtual time stands still meanwhile
+    private readonly object _holdLock = new();
+    private int _holdFromExchange = int.MaxValue, _holds, _holdsWhenRequested;
+    private bool _holdWhilePacing, _holdAnyExchange, _held;
+
+    /// <summary>
+    /// Hold DSF before the first header exchange whose number is at least the given one, until <see cref="Release"/>. A DSF that is held already
+    /// for an earlier exchange goes on until then. Thread-safe
+    /// </summary>
+    /// <param name="exchange">Number of the exchange, <see cref="Exchanges"/> for the next header</param>
+    public void HoldBeforeHeader(int exchange) => HoldBefore(exchange, false);
+
+    /// <summary>
+    /// Hold DSF before the first exchange of any kind whose number is at least the given one, like <see cref="HoldBeforeHeader"/>
+    /// </summary>
+    /// <param name="exchange">Number of the exchange</param>
+    public void HoldBeforeExchange(int exchange) => HoldBefore(exchange, true);
+
+    private void HoldBefore(int exchange, bool anyExchange)
+    {
+        lock (_holdLock)
+        {
+            _holdFromExchange = exchange;
+            _holdAnyExchange = anyExchange;
+            _holdsWhenRequested = _holds;
+            Monitor.PulseAll(_holdLock);
+        }
+    }
+
+    /// <summary>
+    /// Hold DSF the next time it waits for the transfer ready pin while RRF waits between two transfers (<see cref="TransferDelay"/>),
+    /// so when DSF has set up its next transfer already, until <see cref="Release"/>. Thread-safe
+    /// </summary>
+    public void HoldWhenPacing()
+    {
+        lock (_holdLock)
+        {
+            _holdWhilePacing = true;
+            _holdsWhenRequested = _holds;
+        }
+    }
+
+    /// <summary>
+    /// Wait until DSF is held for the last hold requested
+    /// </summary>
+    /// <param name="timeout">Maximum time to wait in real time</param>
+    /// <returns>Whether DSF is held</returns>
+    public bool WaitUntilHeld(TimeSpan timeout)
+    {
+        DateTime end = DateTime.UtcNow + timeout;
+        lock (_holdLock)
+        {
+            while (!_held || _holds == _holdsWhenRequested)
+            {
+                TimeSpan left = end - DateTime.UtcNow;
+                if (left <= TimeSpan.Zero)
+                {
+                    return false;
+                }
+                Monitor.Wait(_holdLock, left);
+            }
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Whether DSF is held
+    /// </summary>
+    public bool IsHeld
+    {
+        get
+        {
+            lock (_holdLock)
+            {
+                return _held;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Let DSF continue. Thread-safe
+    /// </summary>
+    public void Release()
+    {
+        lock (_holdLock)
+        {
+            _holdFromExchange = int.MaxValue;
+            _holdWhilePacing = _holdAnyExchange = false;
+            _holdsWhenRequested = _holds;
+            Monitor.PulseAll(_holdLock);
+        }
+    }
+
+    /// <summary>
+    /// Called on the thread of DSF before every exchange, before DSF may be held for it
+    /// </summary>
+    public Action? BeforeExchange { get; set; }
+
+    /// <summary>
+    /// Called with the data of DSF whenever its checksum matches and RRF answers it with Success (DataTransfer.cpp, ExchangingData). RRF processes
+    /// it only once the data response has been exchanged as well
+    /// </summary>
+    public Action<byte[]>? DataAccepted { get; set; }
+
+    /// <summary>
+    /// Hold DSF before every exchange while this is true, checked again and again on the thread of DSF. Virtual time stands still meanwhile, so the work
+    /// DSF does in the background without the link takes no virtual time and causes no extra exchanges. Give up after <see cref="HoldWhileTimeout"/>
+    /// </summary>
+    public Func<bool>? HoldWhile { get; set; }
+
+    /// <summary>
+    /// Maximum time in real time to hold DSF for <see cref="HoldWhile"/>
+    /// </summary>
+    public TimeSpan HoldWhileTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Number of times <see cref="HoldWhile"/> was still true after <see cref="HoldWhileTimeout"/>
+    /// </summary>
+    public int HoldWhileTimeouts { get; private set; }
+
+    /// <summary>
+    /// Close the device: the next exchange or wait of DSF fails with an IOException, which ends the transfer thread of DCS (current state E7).
+    /// A test ends a link that is stuck that way, because DCS leaves a transfer only once it completes. Thread-safe
+    /// </summary>
+    public void Close()
+    {
+        lock (_holdLock)
+        {
+            _closed = true;
+        }
+    }
+
+    private volatile bool _closed;
+
+    private void ThrowIfClosed()
+    {
+        if (_closed)
+        {
+            throw new System.IO.IOException("SPI device closed by the test");
+        }
+    }
+
+    /// <summary>
+    /// Hold DSF before an exchange as requested
+    /// </summary>
+    private void WaitIfHeld()
+    {
+        ThrowIfClosed();
+        BeforeExchange?.Invoke();
+        lock (_holdLock)
+        {
+            if ((_holdAnyExchange || (_dmaActive && _dmaTarget == DmaTarget.Header)) && Exchanges >= _holdFromExchange)
+            {
+                Hold(() => Exchanges >= _holdFromExchange);
+            }
+        }
+
+        if (HoldWhile is Func<bool> condition)
+        {
+            DateTime end = DateTime.UtcNow + HoldWhileTimeout;
+            SpinWait wait = new();
+            while (condition())
+            {
+                if (DateTime.UtcNow > end)
+                {
+                    HoldWhileTimeouts++;
+                    break;
+                }
+                wait.SpinOnce();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Block DSF while the given condition holds. Call this with the lock of the holds taken
+    /// </summary>
+    private void Hold(Func<bool> condition)
+    {
+        _held = true;
+        _holds++;
+        Monitor.PulseAll(_holdLock);
+        while (condition())
+        {
+            Monitor.Wait(_holdLock);
+        }
+        _held = false;
+    }
+    #endregion
+
     #region ISpiDevice and IInputGpioPin
     /// <inheritdoc/>
     public void TransferFullDuplex(ReadOnlySpan<byte> writeBuffer, Span<byte> readBuffer)
     {
+        WaitIfHeld();
         CheckBudget();
         int exchange = Exchanges++;
         byte[] toRrf = writeBuffer.ToArray();
-        List<SpiFault> due = _faults.FindAll(f => exchange - _faultArmedAt == f.Exchange);
+        List<SpiFault> due = [.. _faults.Where(f => exchange - f.ArmedAt == f.Fault.Exchange).Select(f => f.Fault)];
         SpiFault? fault = due.FirstOrDefault();
         if (_bootAt is double bootAt && Now >= bootAt)
         {
@@ -1388,6 +1695,10 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         if (_armAt is double armAt && Now >= armAt)
         {
             ArmFirstHeader();
+        }
+        if (_paceUntil is double paceUntil && Now >= paceUntil)
+        {
+            EndPacing();
         }
         bool restartBeforeArm = fault is { RestartBeforeArm: true, RestartBootTime: not null };
         string? statusBefore = restartBeforeArm ? ReplayStatusNow : null;
@@ -1417,7 +1728,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
                 mutation.Mutate(toRrf);
             }
         }
-        AddBitErrors(toRrf);
+        AddBitErrors(toRrf, exchange, ExchangeDirection.ToRrf);
 
         // The rising edge of chip select ends the DMA transfer however many bytes were clocked
         bool completed = _dmaActive;
@@ -1434,7 +1745,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
         {
             mutation.Mutate(readBuffer);
         }
-        AddBitErrors(readBuffer);
+        AddBitErrors(readBuffer, exchange, ExchangeDirection.ToDsf);
         if (due.Count > 0)
         {
             if (!_faultTimeTaken)
@@ -1442,7 +1753,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
                 _faultTimeTaken = true;
                 FaultTime = Now;
             }
-            _faults.RemoveAll(due.Contains);
+            _faults.RemoveAll(f => exchange - f.ArmedAt == f.Fault.Exchange);
             FaultApplied = _faults.Count == 0;
         }
 
@@ -1483,7 +1794,15 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// <inheritdoc/>
     public bool WaitForEvent(int timeout)
     {
+        ThrowIfClosed();
         CheckBudget();
+        lock (_holdLock)
+        {
+            if (_holdWhilePacing && _paceUntil is not null && _edges.Count == 0)
+            {
+                Hold(() => _holdWhilePacing);
+            }
+        }
         double end = Now + timeout;
         if (_edges.Count == 0)
         {

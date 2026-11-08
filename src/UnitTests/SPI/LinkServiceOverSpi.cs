@@ -33,15 +33,15 @@ namespace UnitTests.SPI;
 /// src/SBC/SbcMessageFormats.h), and the tests read the answers of DSF as the Read functions of DataTransfer read them
 /// </summary>
 [TestFixture]
-public class LinkServiceOverSpi
+public partial class LinkServiceOverSpi
 {
-    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
+    internal static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
 
     #region Host
     /// <summary>
     /// DCS services with the LinkService running on the SPI adapter
     /// </summary>
-    private sealed class Host : IAsyncDisposable
+    internal sealed class Host : IAsyncDisposable
     {
         private readonly ServiceProvider _provider;
         private readonly ApplicationLifetime _lifetime;
@@ -76,9 +76,14 @@ public class LinkServiceOverSpi
         /// <param name="createAdapter">Create the SPI adapter from the services, the fake RRF and the settings, or null for the plain one</param>
         /// <param name="respond">Answers of RRF to packets of DSF in the next transfer, see <see cref="FakeRrfSpi.Respond"/></param>
         /// <param name="answerCapabilities">Whether to wait for the query of the link capabilities and answer it</param>
+        /// <param name="bootArmDelay">See <see cref="FakeRrfSpi.BootArmDelay"/></param>
+        /// <param name="transferDelay">See <see cref="FakeRrfSpi.TransferDelay"/></param>
+        /// <param name="noiseSeed">Seed of the random bit errors, see <see cref="FakeRrfSpi.BitErrorRate"/></param>
+        /// <param name="configure">Set up the fake RRF before DCS connects</param>
         public static async Task<Host> StartAsync(LinkCapabilities capabilities = LinkCapabilities.None,
             Func<IServiceProvider, FakeRrfSpi, IOptions<Settings>, SpiAdapter>? createAdapter = null,
-            Func<SbcRequest, ushort, byte[], IEnumerable<(FirmwareRequest Request, byte[] Payload, ushort ResendPacketId)>>? respond = null, bool answerCapabilities = true)
+            Func<SbcRequest, ushort, byte[], IEnumerable<(FirmwareRequest Request, byte[] Payload, ushort ResendPacketId)>>? respond = null, bool answerCapabilities = true,
+            double bootArmDelay = 0, double transferDelay = 0, int noiseSeed = 1, Action<FakeRrfSpi, string>? configure = null)
         {
             string baseDirectory = Path.Combine(Path.GetTempPath(), "dsf-spi-link-" + Guid.NewGuid().ToString("N"));
             foreach (string directory in new[] { "sys", "macros", "gcodes", "filaments", "firmware" })
@@ -92,8 +97,12 @@ public class LinkServiceOverSpi
                 RecordPackets = true,
                 ExchangeBudget = int.MaxValue,
                 TimeBudget = double.PositiveInfinity,
-                Respond = respond
+                Respond = respond,
+                BootArmDelay = bootArmDelay,
+                TransferDelay = transferDelay,
+                Noise = new Random(noiseSeed)
             };
+            configure?.Invoke(rrf, baseDirectory);
             ServiceProvider provider = DcsServices.Build(settings, DispatchProxy.Create<ILinkAdapter, DcsServices.NullLinkAdapter>(), services =>
                 services.AddSingleton<ILinkAdapter>(sp => createAdapter?.Invoke(sp, rrf, sp.GetRequiredService<IOptions<Settings>>()) ??
                     new SpiAdapter(sp.GetRequiredService<EventLogger>(), sp.GetRequiredService<DuetControlServer.Model.ObjectModel>(),
@@ -145,6 +154,10 @@ public class LinkServiceOverSpi
 
         public async ValueTask DisposeAsync()
         {
+            // A transfer thread that is held could not stop
+            Rrf.BeforeExchange = null;
+            Rrf.HoldWhile = null;
+            Rrf.Release();
             _lifetime.StopApplication();
             using (CancellationTokenSource cts = new(Timeout))
             {
@@ -175,7 +188,7 @@ public class LinkServiceOverSpi
     /// <summary>
     /// Packet data of the requests RRF sends, as the Write functions of DataTransfer write them
     /// </summary>
-    private static class RrfPackets
+    internal static class RrfPackets
     {
         private static byte[] Concat(params byte[][] parts) => [.. parts.SelectMany(p => p)];
 
@@ -276,7 +289,7 @@ public class LinkServiceOverSpi
     /// <summary>
     /// Packet data DSF sends, read as the Read functions of DataTransfer read it
     /// </summary>
-    private static class SbcPackets
+    internal static class SbcPackets
     {
         private static ushort U16(byte[] data, int offset) => BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset));
 
