@@ -526,3 +526,24 @@ Rückbau geprüft: ja, nach jedem Lauf (kein Side-Load, /var/tmp/lab-tests weg, 
 ```
 
 Bewertung: Jeder Fix zeigt sich auf der Hardware, und jede Gegenprobe ohne Fix zeigt den Fehler. T2 (#134) lief nicht: RRF mp.8 hat T1 noch, dessen Fenster direkt vor dem von T2 liegt. Tim: erst nach dem T1-Fix in RRF. Dass bei T3 mit Fix weniger Platz frei war als geschätzt, passt dazu, dass RRF den größten zusammenhängenden freien Block meldet (SbcInterface.cpp:1376); gemessen ist das nicht.
+
+### 2026-11-08 abends: Shutdown-Probe und Prüfung von #149, bestanden
+
+Ursache des 15-s-Hängers beim Stoppen von DCS (#147) auf der Hardware gesucht, dann den Fix (#149) geprüft. Probe `ShutdownHangProbe`: ein temporärer Labortest, nicht eingecheckt. Er lässt DCS über eine bind-gemountete Kopie von `config.json` mit `LogLevel` debug laufen und misst jeden Stopp von DCS.
+
+```
+Datum, Zeit (UTC): 2026-11-08, 17:15:36 bis 17:17:28 (Lauf 1, abgebrochen), 17:22 bis 17:30 (Lauf 2), etwa 21:00 (Lauf 3, mit #149)
+Anlass, PR, Commit: Ursache des Hängers (#147), dann #149. Lauf 1 und 2: Injektions-Build von v3.7-dev 9e6449d1. Lauf 3: Injektions-Build von fix/shutdown b2a6affd
+DSF: 3.7.0+mp.13 im Image, Side-Load je Lauf
+RRF: 3.7.0+1.mp.8 (Image)
+Stufen und Freigabe durch: 2, Tim (Debug-Lauf "ja, jetzt", Prüfung von #149)
+Ablauf je Lauf: 3 x systemctl restart, 3 x M999, 2 x festhängender Link ("Activation DataResponse ToRrf word 0x00000006" + M122 P1001) mit systemctl restart 5 s danach
+Lauf 1: abgebrochen nach 4 s. Das Skript las config.json ohne sudo. Die Debug-Kopie blieb gemountet, der Abschnitt-10-Check des Runners kennt keine Config-Mounts. Von Hand entfernt (umount, DCS-Neustart, M999), danach LogLevel info und 0 Debug-Zeilen des laufenden DCS geprüft
+Lauf 2, ohne Fix: restart 0,03 / 0,05 / 0,05 s, M999 1,04 / 1,05 / 1,05 s, festhängender Link 15,14 / 15,18 s mit "State 'stop-sigterm' timed out. Killing." und SIGKILL. DCS meldete im Stopp etwa alle 12 ms "Lost connection to Duet / Maximum number of SPI transfer retries exceeded" aus SPI.PerformFullTransfer
+Lauf 3, mit #149: restart 0,04 / 0,05 / 0,05 s, M999 1,04 / 1,05 / 1,07 s, festhängender Link 0,03 / 0,03 s, nie abgeschossen
+Journal: journald unterdrückte in Lauf 2 etwa 1,4 Millionen Zeilen (Debug-Flut des festhängenden Links). "Application is shutting down..." steht für den zweiten festhängenden Stopp im Journal, für den ersten vermutlich unterdrückt
+Abweichungen und Folgeaufgabe: Lauf 1 (siehe oben). Ein Labortest, der etwas mountet, muss seinen Rückbau selbst prüfen, der Runner prüft nur die DLL-Mounts
+Rückbau geprüft: ja, nach Lauf 2 und 3 (config.json nicht gemountet, LogLevel info, /var/tmp/lab-tests weg, DCS aktiv, idle)
+```
+
+Bewertung: Auf der Hardware zeigt sich von den drei offline gezeigten Mechanismen des Hängers nur der festhängende Link: Die Übertragung wartete auf `ApplicationStopped` statt auf das Stopp-Token. Mit #149 endet der Stopp sofort. Die beiden anderen Mechanismen (ein Code eines anderen Clients beim Stopp, ein Code in der Sekunde nach M999) traten in diesen Läufen nicht auf. Das Warten auf ein laufendes Firmware-Update beim Stoppen (#154) ist nicht auf der Hardware geprüft, dazu bräuchte es einen Flash.
