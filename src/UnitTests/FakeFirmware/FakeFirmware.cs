@@ -36,13 +36,13 @@ namespace UnitTests.FakeFirmware;
 /// <para>
 /// Emulated: code buffer and buffer updates, code replies with RRF's flags, macro requests (M98, system macros), pending triggers and their
 /// macros (GCodes::CheckTriggers, see <see cref="FireTrigger"/>), macro completion and M99 aborts, message boxes (M291/M292), M409, the result variables of M260/M261, expression evaluation, local and global variables,
-/// movement locks, channel invalidation, emergency stop, reset, resend requests and the mutex hand-over between RRF's SBC and main tasks
-/// while a code waits for a macro.
+/// movement locks, channel invalidation, emergency stop, reset, resend requests, the mutex hand-over between RRF's SBC and main tasks
+/// while a code waits for a macro, and main firmware updates through the SBC IAP program (FakeFirmwareIap.cs).
 /// Not emulated: job files and pausing, file requests from RRF, codes RRF passes on to DSF (DoCode), timeouts, motion, heaters,
 /// the binary protocol and its transfer buffer limits. Codes without a test handler succeed with an empty reply
 /// </para>
 /// </summary>
-public sealed class FakeFirmware : ILinkAdapter
+public sealed partial class FakeFirmware : ILinkAdapter
 {
     /// <summary>
     /// Size of RRF's code buffer, see SbcCodeBufferSize in SbcMessageFormats.h
@@ -1479,22 +1479,5 @@ public sealed class FakeFirmware : ILinkAdapter
 
     /// <inheritdoc />
     public bool WriteObjectModelKeyChanged(string key) => AddRequest(new FakeSbcRequest { Request = SbcRequest.ObjectModelKeyChanged, Text = key });
-    #endregion
-
-    #region Firmware updates (not emulated)
-    /// <inheritdoc />
-    public bool WriteIapSegment(Stream stream, CancellationToken cancellationToken = default) => throw new NotSupportedException("Firmware updates are not emulated");
-
-    /// <inheritdoc />
-    public void StartIap(uint firmwareLength, CancellationToken cancellationToken = default) => throw new NotSupportedException("Firmware updates are not emulated");
-
-    /// <inheritdoc />
-    public bool FlashFirmwareSegment(Stream stream) => throw new NotSupportedException("Firmware updates are not emulated");
-
-    /// <inheritdoc />
-    public bool VerifyFirmwareChecksum(long firmwareLength, ushort crc16) => throw new NotSupportedException("Firmware updates are not emulated");
-
-    /// <inheritdoc />
-    public void WaitForIapReset() => throw new NotSupportedException("Firmware updates are not emulated");
     #endregion
 }

@@ -7,8 +7,8 @@ using UnitTests.FakeFirmware;
 namespace UnitTests.Codes;
 
 /// <summary>
-/// Tests for M997. Only the paths that end before an update starts are used, because an update stops the plugins, flashes the
-/// firmware and writes the start error file. The fake firmware does not emulate updates
+/// Tests for M997 that end before an update starts. The updates themselves, which stop the plugins, flash the firmware through the IAP
+/// program emulated by the fake firmware and may write the start error file, are in <see cref="FirmwareUpdateFlashing"/>
 /// </summary>
 [TestFixture]
 public class FirmwareUpdates
@@ -98,6 +98,23 @@ public class FirmwareUpdates
 
         // The wiki: S2 updates the DSF packages, DuetPiManagementPlugin intercepts it
         Assert.That(await host.ExecuteAsync("M997 S2"), Is.EqualTo("Error: M997: Cannot update DSF because DuetPiManagementPlugin is not started\n"));
+        Assert.That(Received(), Is.Empty);
+    }
+
+    /// <summary>
+    /// A package upgrade stops DuetPiManagementPlugin halfway through, so M997 S2 is not an error while one is in progress (MCodeHandler.cs:1321-1334).
+    /// The flag is set by SetUpdateStatus (Commands/Generic/SetUpdateStatus.cs:21)
+    /// </summary>
+    [Test]
+    public async Task UpdateDsfDuringPackageUpgrade()
+    {
+        FakeFirmwareHost host = await StartAsync(null);
+        using (await host.Model.AccessReadWriteAsync())
+        {
+            host.Model.IsUpdating = true;
+        }
+
+        Assert.That(await host.ExecuteAsync("M997 S2"), Is.EqualTo("\n"));
         Assert.That(Received(), Is.Empty);
     }
 
