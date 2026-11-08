@@ -127,10 +127,7 @@ public partial class LinkRecovery
         {
             for (int counter = 0; counter <= ExtendedLink.CounterMask; counter++)
             {
-                TestCaseData data = new TestCaseData(variant, counter).SetName($"LabFaultLosesConnectionAndRrfStops({variant}, {counter})");
-                yield return (counter == 0)
-                    ? data.Explicit("With counter value 0 DSF leaves the extended link with 0x0000, which follows the 0xFFFF RRF got last, so RRF keeps the session (P4, fix/extended-link-reset-sequence)")
-                    : data;
+                yield return new TestCaseData(variant, counter).SetName($"LabFaultLosesConnectionAndRrfStops({variant}, {counter})");
             }
         }
     }
