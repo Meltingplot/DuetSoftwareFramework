@@ -138,11 +138,10 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     }
 
     /// <summary>
-    /// UninstallPlugin.cs:88-92 deletes the manifest only if it exists, but UninstallPlugin.cs:72 reads its file mode first, which throws
-    /// FileNotFoundException for a missing manifest. The plugin then stays registered and its files stay behind
+    /// UninstallPlugin deletes the manifest only if it exists, and it checks the file mode of the manifest only then as well, so a plugin whose manifest is
+    /// gone is still uninstalled
     /// </summary>
     [Test]
-    [Explicit("Bug: a plugin whose manifest is missing cannot be uninstalled (FileNotFoundException at UninstallPlugin.cs:72)")]
     public async Task PluginWithoutManifestIsUninstalled()
     {
         await StartDpsAsync(register: false);

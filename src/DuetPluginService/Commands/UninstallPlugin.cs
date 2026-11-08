@@ -69,9 +69,8 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
         {
             string manifestFile = Path.Combine(settings.Value.PluginDirectory, $"{Plugin}.json");
 
-            // Check if the manifest is writable
-            UnixFileMode fileMode = File.GetUnixFileMode(manifestFile);
-            if (!fileMode.HasFlag(UnixFileMode.UserWrite))
+            // Check if the manifest is writable. A manifest without write permission marks a plugin of a system package
+            if (File.Exists(manifestFile) && !File.GetUnixFileMode(manifestFile).HasFlag(UnixFileMode.UserWrite))
             {
                 throw new ArgumentException("Plugin cannot be uninstalled via API");
             }
