@@ -28,9 +28,10 @@ sequenceDiagram
 ```
 
 1. The client opens the socket. The server creates a `Connection` with a unique id and works out the
-   client's [permissions](plugins.md#permissions) from its PID/UID/GID: root processes get everything;
-   a plugin process is matched against the `Plugins` model (walking the parent-process tree) to inherit
-   its manifest permissions; other external programs get everything except `SuperUser`.
+   client's [permissions](plugins.md#permissions) from its PID/UID/GID: root processes and the DSF
+   services (DWS, DPS) get everything; a plugin process is matched against the `Plugins` model (walking
+   the parent-process tree) to inherit its manifest permissions; other external programs get everything
+   except `SuperUser` and `ServicePlugins`.
 2. The server sends a `ServerInitMessage`; the client replies with a `ClientInitMessage` naming the
    desired [connection mode](#connection-modes) and protocol version.
 3. The server validates the version and instantiates the matching processor

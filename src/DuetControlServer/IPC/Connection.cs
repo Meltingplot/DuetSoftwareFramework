@@ -97,10 +97,10 @@ public sealed class Connection(Socket socket, CommandFactory commandFactory, ILo
         if (!Processors.PluginService.IsConnected(false))
         {
             // This is also the bootstrap path for DPS itself, which needs the internal ServicePlugins
-            // permission to register as plugin service
+            // permission to register as plugin service. DSF services get SuperUser as well, see below
             if ((uid == ownUid || gid == ownGid) && IsDsfService(pid))
             {
-                Permissions |= SbcPermissions.ServicePlugins;
+                Permissions |= SbcPermissions.SuperUser | SbcPermissions.ServicePlugins;
             }
             GrantExternalPermissions();
             return true;
@@ -169,7 +169,8 @@ public sealed class Connection(Socket socket, CommandFactory commandFactory, ILo
             logger.LogDebug("IPC#{Id}: Granting permissions to sibling DSF service (pid {Pid})", Id, pid);
 
             // Sibling DSF services additionally need the internal ServicePlugins permission (e.g. DPS calls SetPluginProcess)
-            Permissions |= SbcPermissions.ServicePlugins;
+            // and SuperUser (e.g. DWS forwards InstallSystemPackage and UninstallSystemPackage from PUT/DELETE /machine/systemPackage)
+            Permissions |= SbcPermissions.SuperUser | SbcPermissions.ServicePlugins;
         }
 
         GrantExternalPermissions();

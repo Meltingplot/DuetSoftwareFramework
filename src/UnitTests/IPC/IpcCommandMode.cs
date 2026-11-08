@@ -196,7 +196,6 @@ public class IpcCommandMode
     [TestCase("{\"command\":\"InstallSystemPackage\",\"packageFile\":\"/tmp/does-not-exist.deb\"}", Description = "SuperUser")]
     [TestCase("{\"command\":\"SetPluginProcess\",\"plugin\":\"NoSuchPlugin\",\"pid\":1}", Description = "ServicePlugins")]
     [TestCase("{\"command\":\"SetNetworkProtocol\",\"protocol\":\"ftp\",\"enabled\":true}", Description = "SuperUser")]
-    [Explicit("Bug: RequiredPermissionsAttribute.Check grants every permission, so these commands are executed")]
     public async Task RefusesCommandsWithoutPermission(string json)
     {
         JsonElement response = await RequestAsync(json);
@@ -205,7 +204,6 @@ public class IpcCommandMode
     }
 
     [Test]
-    [Explicit("Bug: RequiredPermissionsAttribute.Check grants every permission, so a plugin may run any command")]
     public async Task PluginIsRefusedCommandsItHasNoPermissionFor()
     {
         // A plugin that may only read the object model must not run codes (SimpleCode requires CommandExecution)
@@ -226,7 +224,6 @@ public class IpcCommandMode
     }
 
     [Test]
-    [Explicit("Bug: RequiredPermissionsAttribute.Check grants every permission, so a plugin without permissions gets the Command mode")]
     public async Task PluginWithoutPermissionsIsRefusedTheCommandMode()
     {
         // Server.GetConnectionProcessorAsync refuses a mode if none of its commands may be executed (Connection.CheckCommandPermissions)
