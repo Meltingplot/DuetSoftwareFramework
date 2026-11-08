@@ -80,60 +80,10 @@ A partial line can only be a text line, because `GCodeBuffer::Put` clears `isBin
 2. Add `1 => USB` and `7 => USB2` back to the `M98.n` table in `MCodeHandler.cs`. Do this only together with an RRF release that has the fix, otherwise a call without a host returns success and the channel stays busy.
 3. Report it to Duet3D with the versions above, as the files are unchanged against upstream.
 
-## A firmware restart can leave DSF and RRF one exchange apart until the connection is lost
-
-**Problem:** on one firmware restart, DSF did not notice the restart the usual way (`RepRapFirmware has left the extended link`). DSF and RRF ran one exchange apart until DSF ran out of retries and lost the connection. The link came back 500 ms later, without a DCS restart.
-
-**Observed** on 2026-11-07 on the lab printer (DSF 3.7.0+mp.12 from the image, no side-load, no fault injection, RRF 3.7.0+1.mp.7), in run 4 of 5 of `FirmwareRestart.LinkRecoversAfterWatchdogReset`:
-
-| Time (UTC) | Journal |
-|---|---|
-| 07:59:38.180 | `Restarting full transfer because a bad header response was received (0x00000000)` |
-| 07:59:38.191 to .202 | 99 x `Bad header CRC16 (expected 0x0000, got 0x1760)`, each with `Note: RepRapFirmware didn't receive valid data either (code 0x0007005f)`, and 10 x `Restarting full transfer because the number of maximum retries has been exceeded` |
-| 07:59:38.203 | `Lost connection to Duet (Maximum number of SPI transfer retries exceeded)` |
-| 07:59:38.702 | `Connection to Duet established`, then `Connection to controller has been reset` |
-| 07:59:38.768 | `Link capabilities All are active` |
-
-- The test passed. The printer was idle again after 12.6 s, the other runs took 12.0 to 12.8 s. M122 of DSF afterwards: full transfer restarts 16, header retries 90, extended link left 5, lost connections 1, connection resets 6.
-- It is the only `Maximum number of SPI transfer retries exceeded` without fault injection in the journal, which starts on 2026-10-29. The journal has 39 x `has left the extended link`, the first on 2026-11-02, so this was about 1 in 40 restarts. The same suite ran without it earlier that morning and in block 1 on 2026-11-06.
-
-**What the values show:**
-- `0x0007005f` is `5F 00 07 00`, the start of a valid RRF header (`Consts.cs:12`, `:27`, `TransferHeader.cs:16-29`), read where DSF expects the response.
-- `0x1760` is the CRC16 of `05 00 00 00` and six zero bytes, computed offline with the table in `CRC16.cs`. That is the response `BadHeaderChecksum` (`TransferResponse.cs:34`), read where DSF expects the header.
-- The protocol version in that "header" is 0, so `SPI.cs:1848-1858` sets DSF's own version to 0 without a log line. The check then takes the CRC16 path (`SPI.cs:1882-1885`), which explains a CRC16 message on a link with protocol 7.
-
-**Cause, shown later on 2026-11-07** (census, real RRF code in the host harness, RRF review):
-1. RRF resets after an exchange has completed and before it sets up the next one, so TfrRdy keeps its level. `M122 P1001` resets go through `SoftwareReset`, which writes the reset data to flash with the interrupts off (reset code `0x80a3`), so an exchange can complete by DMA in that time. `M999` takes the same path.
-2. DSF takes the falling edge of `DataTransfer::Init` for its pending exchange and reads 0 from the disabled SPI. With data in the transfer, it answers with `BadResponse`, extended as `0xCCCCCCCC` (`SPI.cs:2008`, `:2027`).
-3. That word lands in the first header of the booted RRF, which decodes extended codes only while the extended link is active (RRF `DataTransfer.cpp:873`, `:1086`). It answers `BadHeaderChecksum`, and both sides stay one exchange apart.
-
-The census showed it once a restart between two exchanges was added (`SpiFault.RestartBeforeArm`): the same lines, `0x1760` and 99 x `Bad header CRC16`. 9 combinations of variant and phase lose the connection, all on the extended link. The regular link does not have it.
-
-**Fix (not merged):** RRF decodes extended codes while it is not connected (Meltingplot/RepRapFirmware branch `fix/sbc-decode-header-unconnected`, one condition in `DecodeResponse`). DSF branch `feature/census-restart-before-arm` has the census cases and the harness check. Results:
-- In the host harness, the build with the condition matches the port with the rule and the build without it matches the port without it, 0 differences each, on usb0 and usb1.
-- On the lab printer (side-load RRF 3.7.0+1.mp.7-dev.1, 2026-11-07): suite 30 of 30, A-1/A-2/F-1, and 40 watchdog restarts without a lost connection (12 of them through the boot window). That is a hint, not a proof, at about 1 in 40.
-
-**Still open:** the duration of the flash write in `SoftwareReset` is unmeasured. Whether `M999` hits the same window has not been shown.
-
-**Next steps:** the PRs of both branches, then an RRF release with the condition. Remove this entry once that is on the printer.
-
-## DCS logs "Failed to process code in stage Executed" while it shuts down
-
-**Problem:** while DCS stopped for a restart, a code was still in the Executed stage and logged an error.
-
-**Observed** on the lab printer (DSF 3.7.0+mp.12):
-- 2026-11-07 11:24:14 UTC, during the DCS restart of `run-lab-tests.sh` that removes a side-load. Right after `Application is shutting down...`, `Failed to process code in stage Executed` with `TaskCanceledException` in `AsyncLock.LockAsync`, called from `EventLogger.LogAsync` and `Executed.ProcessCodeAsync`.
-- 2026-11-06 09:36:49 UTC, same message, but the stack does not have `EventLogger.LogAsync`. Context not checked yet.
-- These are the only two in the journal since 2026-10-25.
-
-**Likely cause, read from the stack and not proven:** the Executed stage writes to the event log with the token that is cancelled on shutdown, and the cancellation is reported as a failure of the code.
-
-**Next step:** check both occurrences in the code and decide whether a cancelled log write on shutdown should be quiet.
-
 ## Findings of the fuzz and coverage tests (2026-11-07)
 
 The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the trigger tests of #129 found 9 more, and the stop path tests of #130 another 4.
-- **Fixed and removed from this list (2026-11-08):** H1 (#136), G2 (#132), I1 (#135), T2 (#134), T3 (#133), P1 and P2 (#137), and the extended-link part of P4 (#138). The lab printer showed each fix, and the stock build showed the bug (`design/lab-test-plan.md`, section 14, 2026-11-08).
+- **Fixed and removed from this list (2026-11-08):** H1 (#136), G2 (#132), I1 (#135), T2 (#134), T3 (#133), P1 and P2 (#137), the extended-link part of P4 (#138), H13 (upstream 5130ca43 through #143) and T1 (Meltingplot/RepRapFirmware#43 with #144). The lab printer showed each fix, and the stock build showed the bug (`design/lab-test-plan.md`, section 14, 2026-11-08).
 - **The others:** each has an `[Explicit]` test in `src/UnitTests` that reproduces it and fails today. Run one by its exact name, e.g. `dotnet test src/UnitTests/bin/Debug/net10.0/UnitTests.dll --filter "FullyQualifiedName=UnitTests.Codes.TriggerMacros.TriggerChannelWorksAfterInvalidationDuringTriggerRequest"`. Once a finding is fixed, remove the `[Explicit]` of its test and this entry.
 
 - **Line numbers:** DSF `v3.7-dev` at c6d225f2. The production code there is the same as at d576ee9e, where the tests started. Entries added on 2026-11-08 cite DSF at 9e6449d1. RRF `3.7-dev` at cde4e4fa1 (3.7.0+1.mp.8).
@@ -145,8 +95,7 @@ The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the tr
 1. **I3** An Executed interceptor with filters blocks its channel for good. Printer.
 2. **O2** A value of the wrong type in a firmware response ends the object model update loop.
 3. **O3** and **O4** An out-of-range float or a global string with invalid UTF-8 makes the object model unserializable, so model queries, subscriptions and DWS fail.
-4. **T1** An invalidation of the Trigger channel at the wrong moment leaves it blocked until DCS restarts. The door and E-stop macros run on the Trigger channel. Needs RRF.
-5. **P4** (plain link) A trigger macro can get lost after a reconnect while RRF keeps running. The fix is case 2 of #57, which is on hold.
+4. **P4** (plain link) A trigger macro can get lost after a reconnect while RRF keeps running. The fix is case 2 of #57, which is on hold.
 
 ### SBC link (#122)
 
@@ -188,9 +137,6 @@ The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the tr
 - **H10. rr_gcode returns `{"bufferSpace":255,"err":0}` instead of `{"buff":N}`.** Printer. RRF: `HttpResponder.cpp:566`. This is why the PollConnector cannot send codes to DWS. Test: `RrGcodeReportsBuff`.
 - **H11. rr_disconnect returns 204 instead of `{"err":0}`.** Printer. Test: `RrDisconnectReturnsErr`.
 - **H12. Every rr_connect adds another session for the same client.** Printer: 5 → 8. RRF keeps one per IP (`HttpResponder.cpp:803-808`). Test: `RrConnectKeepsOneIpSession`.
-- **H13. rr_delete ignores `recursive=yes`** (`RepRapFirmwareEndpoints.cs:354-383`). Test: `RrDeleteDeletesRecursively`.
-  - Upstream fixed it in 5130ca43 (2026-11-03), which the fork has not merged yet: `upstream/v3.7-dev` is 4 commits ahead.
-  - The root check of the H1 fix (#136) already covers `rr_delete`, so the merge can no longer delete the whole SD card.
 - **H14. DuetHttpClient's RestConnector reconnects with a new session every PingInterval while the model is quiet.** Cancelling the receive for the PING aborts the WebSocket (`RestConnector.cs:294`). Test: `WebServer.DuetHttpClientTests.RestKeepsAQuietWebSocket`.
 - **H15. DuetHttpClient's PollConnector never loads keys whose sequence number is still 0** (`PollConnector.cs:320-330`). RRF starts every sequence number at 0 (`RepRap.cpp:450`). Test: `PollLoadsKeysWithSequenceZero`.
 
@@ -288,19 +234,10 @@ Measured in the fake firmware without link faults:
 - DSF starts a trigger macro one transfer after the request.
 - trigger2.g's M112 reaches RRF 22-24 transfers after the request. That is 18-22 ms on the WSL VM, with a three-code stand-in for set-led-color.g.
 
-- **T1. An invalidation of the Trigger channel while RRF's trigger macro request is pending blocks all later triggers until DCS restarts.** RRF, upstream 8207b22cc.
-  - RRF marks the request as failed (`SbcInterface.cpp:880-883`) but still sends it in the same exchange (`:1576-1590`).
-  - DSF then runs a triggerN.g that RRF does not run and never pops it.
-  - Every later trigger is discarded with "System macro … stack is not empty" (`Processor.cs:1301-1305`), and RRF reports "Macro file triggerN.g not found".
-  - Reachable through the IPC InvalidateChannel command or `abort` on the Trigger channel outside a macro.
-  - Test: `Codes.TriggerMacros.TriggerChannelWorksAfterInvalidationDuringTriggerRequest`.
-  - **Proposed RRF change** (Tim, 2026-11-08; not sent to the RRF session yet): in `SbcInterface.cpp:880-883`, call `gb->MacroRequestSent()` before `ResolveMacroRequest(true, false)`, as `GCodeBuffer::Reset` does (`GCodeBuffer.cpp:131-134, 141`).
-    - DSF then needs the same change in `FakeFirmware.cs`, and the test loses its `[Explicit]`.
-    - The lab test `AbortsCrossingMacroRequests` (#139) of the T2 fix runs only after that, because RRF mp.8 still has T1, whose window lies right before the one of T2.
-    - The same proposal adds RRF's root check of `MassStorage::Delete` before the SBC hand-off (`MassStorage.cpp:822-836` before `:839-857`), as a second layer behind #136.
-  - **Not covered by that change:**
-    - daemon.g, which RRF requests at the base level of the Daemon channel without waiting (`GCodeBuffer.cpp:1258-1260`).
-    - A resent InvalidateChannel (`SbcInterface.cpp:885-897`), whose copy could end a wait that started after the first one.
+- **T11. Two cases that the fix of T1 (Meltingplot/RepRapFirmware#43) does not cover.** From reading the RRF code, not tested.
+  - daemon.g: at the base level of the Daemon channel, RRF requests daemon.g without waiting (`GCodeBuffer.cpp:1258-1260`). If InvalidateChannel arrives before that request has gone out, RRF closes the file but still sends the request.
+  - A resent InvalidateChannel: if RRF does not get the mutex for it (`SbcInterface.cpp:888-900` at RRF fd4324368), it asks DSF to resend it. The resent copy could end a wait that started after the first one.
+  - The lab test of the T2 fix, `AbortsCrossingMacroRequests` (#139), can run once the printer has an RRF with #43. RRF 3.7.0+1.mp.8 does not have it.
 - **T4. A missing trigger macro is not shown after DSF has run a code on the Trigger channel.** RRF reports it as a pushed code reply (`GCodes.cpp:3703-3706`), DSF takes it as an out-of-order reply and holds it back (`Processor.cs:1122-1127`, `LinkService.cs:727-733, 762-776`). This fits the field journal line "Trigger: Out-of-order reply: 'Macro file trigger8.g not found'", not proven to be the same event. Test: `Codes.TriggerMacros.MissingTriggerMacroAfterCodeOfDsfOnTriggerChannel`.
 - **T5. M581.1 with SBC fields succeeds and creates the trigger although its expression fails** (upstream 4229f552). RRF returns an error and creates nothing (`TriggerItem.cpp:328-339`, wiki M581.1). Test: `Codes.SbcTriggerEvaluation.ErrorInExpressionIsReported`.
 - **T6. A later evaluation error of such a trigger is only logged, and the trigger stays enabled.** RRF disables it and reports it (`TriggerItem.cpp:133-149`). Test: `ErrorInLaterEvaluationDisablesTheTrigger`.
@@ -352,3 +289,35 @@ Findings:
   - Rests on the SPI port; not replayed against the RRF host build.
   - Test: `TriggerMacroRunsOrRrfStops` (plain-link input, explicit).
 - **Observation:** a trigger request that crosses an emergency stop starts its macro after the stop, but its codes are held back, because the buffer space is 0 after `InvalidateCodes` (`LinkInterface.cs:615`).
+
+## Findings of the firmware update, plugin service and startup tests (2026-11-08)
+
+The tests of #145, #146 and #147 found bugs that #148 to #151, #153 and #154 fixed on the same day. These points are still open. Line numbers are DSF `v3.7-dev` at f70a6f16 unless an entry says otherwise. None has an `[Explicit]` test yet unless one is named.
+
+### Firmware update (#145, #148)
+
+- **U1. The remote wait of `DCS -u` for an expansion board ignores its timeout while no object model patch arrives.** It blocks in `GetObjectModelPatchAsync` (`FirmwareUpdater.cs:416`), and patches come only when something below `boards/**`, `directories/**` or `state/status` changes. Shown with a scratch test (100 ms timeout); whether a real machine keeps sending patches (e.g. mcuTemp) is not checked. Documented in `UpdateOnlyMode.ExpansionUpdateTimesOut`.
+- **U2. The M999 of the remote `DCS -u` update has no channel**, while the local one runs on the Trigger channel (`FirmwareUpdater.cs:464-470` vs `:248-252`).
+- **U3. DuetPiManagementPlugin intercepts every M997 whose S contains 2 and runs only S2** (`DuetPiManagementPlugin/Program.cs:679-680`), so `M997 S0:2` drops module 0 silently while the plugin runs.
+- **U4. An RRF build with `NO_S_CURVE` reports a version with spaces**, "(no 3rd order motion)" (RRF `Version.h:18-19`). DSF takes the last space-delimited word of the identifier as version (`Firmware.cs:169-173`), "motion)", so such a board would always look outdated. Not checked which version string RRF reports for such a build.
+- **U5. Open questions of #154:** the 2-minute bound of the wait for a firmware update at a stop rests only on the 11 s main board flash of the lab printer. An M997 sent after the stop has begun waits for the update lock until the stop ends.
+
+### Plugin service (#146, #151)
+
+- **D1. A parent directory swapped for a symlink between the check and the write** is not covered (TOCTOU). The sticky bit of `/opt/dsf/plugins` (root:dsf 1775) only narrows this for root-owned entries.
+- **D2. The www link of a root plugin's web file is created by the regular service before the root service writes the file.** If creating the symlink fails, the copy fallback finds no source file.
+- **D3. DPS has the startup deviations that #150 fixed in DCS:** the LogLevel key is filtered case-sensitively (`DuetPluginService/Program.cs:84`), `AddCommandLine` with the unmatched tokens (`:69`) never runs because unmatched tokens are still errors, and `Directory.GetFiles` of the plugin directory is not guarded (`PluginService.cs:39`), so DPS fails to start without that directory.
+- **D4. Deviations without a test:**
+  - PLUGINS.md:27 says DWC files go to 0:/www/\<PluginName\>, the code puts them directly below 0:/www.
+  - StopPlugin's error says "Wrong plugin service to start this plugin" (`StopPlugin.cs:56`).
+  - `"` and `\` are refused in the arguments of every plugin, so a plugin that is not a Python plugin cannot pass an argument with a space (.NET splits only at double quotes).
+- **D5. CHX image, for Tim (not DSF code):** the image build chowns the whole plugin tree to dsf (`rpi-image-gen/meltingplot/layer/mp-dsf.d/bin/mp-dsf-plugins:251`), so `/opt/dsf/plugins` is dsf-owned on the image. Nothing breaks today, because the image ships no superUser plugin. A root plugin in the image would be refused by the root service (#151) unless the script keeps the directory root:dsf 1775 and the plugin's files root-owned.
+
+### Startup and shutdown (#147, #149, #150, #154)
+
+- **L1. A code that reaches the Firmware stage after LinkService has stopped stays there until the 10 s shutdown timeout.** Mainly an IPC `Code` command, which runs with the token its caller passes (`Commands/Generic/Code.cs:119-125`), the stop token of the IPC server, not one that LinkService cancels. Not reproduced.
+- **L2. M999 and M997 may not stop DCS when their code faults after the reset.** `StopApplication` runs in a continuation after `await task` (`MCodeHandler.cs:1380-1385` for M999, `:1324-1329` for M997), so a faulted or cancelled code task, e.g. from an Executed interceptor, leaves DCS running with the link reset. From reading the code, not tested.
+- **L3. A start failure leaves the IPC socket file behind:** the host is disposed without StopAsync, and the socket is deleted only at `IPC/Server.cs:136`.
+- **L4. `DCS -u` binds and listens on the IPC socket but never accepts** (`IPC/Server.cs:66-67`, `:81`), and it deletes an existing socket file (`:57`).
+- **L5. `-l` with an unknown level silently falls back to Information** (`LogLevelHelper.ParseLogLevel`, DuetSharedLibrary `LogLevelHelper.cs:49`).
+- **L6. An interceptor error in the Executed stage is not logged while DCS runs:** the catch logs only when `(e is OperationCanceledException) != ApplicationStopping.IsCancellationRequested` (`Executed.cs:235`), which is false for a real error while DCS runs, and true for a cancellation, which is then logged as an error instead (the open question in the IPC server section). Upstream since v3.6.
