@@ -105,12 +105,12 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
 
     /// <summary>
     /// Whether InvalidateChannel could not get the mutex of this buffer, so the next one is a resent copy (accessed only by the SBC task,
-    /// RRF Meltingplot/RepRapFirmware#RRFPR)
+    /// RRF Meltingplot/RepRapFirmware#46)
     /// </summary>
     public bool IsInvalidationPending { get; set; }
 
     /// <summary>
-    /// Whether DSF has dropped the code being executed when it invalidated the channel, so its replies are surplus (RRF Meltingplot/RepRapFirmware#RRFPR)
+    /// Whether DSF has dropped the code being executed when it invalidated the channel, so its replies are surplus (RRF Meltingplot/RepRapFirmware#46)
     /// </summary>
     public bool IsCodeReplySurplus { get; set; }
 

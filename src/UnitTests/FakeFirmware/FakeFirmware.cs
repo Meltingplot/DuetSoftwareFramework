@@ -805,7 +805,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
 
                 case SbcRequest.InvalidateChannel:
                     // DSF drops every code it has sent on this channel, so the replies of a code that is still being executed are surplus. Only the
-                    // first copy of the request flags that code, a resent copy would flag a code that has started since (RRF Meltingplot/RepRapFirmware#RRFPR)
+                    // first copy of the request flags that code, a resent copy would flag a code that has started since (RRF Meltingplot/RepRapFirmware#46)
                     bool firstCopy = !gb!.IsInvalidationPending;
                     if (gb.IsWaitingForMacro)
                     {

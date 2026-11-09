@@ -742,7 +742,7 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
         {
             if (gb.IsCodeReplySurplus)
             {
-                // DSF has dropped this code when it invalidated the channel, so this final reply is surplus (RRF Meltingplot/RepRapFirmware#RRFPR)
+                // DSF has dropped this code when it invalidated the channel, so this final reply is surplus (RRF Meltingplot/RepRapFirmware#46)
                 gb.IsCodeReplySurplus = false;
             }
             else
@@ -821,7 +821,7 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
         {
             if (call.ReportMissing)
             {
-                // A part of the reply of a code that DSF has dropped is surplus (RRF Meltingplot/RepRapFirmware#RRFPR)
+                // A part of the reply of a code that DSF has dropped is surplus (RRF Meltingplot/RepRapFirmware#46)
                 bool isCodeReply = gb.MachineState.LastCodeFromSbc && call.CodeRunning != SystemHelperMacroCode;
                 if (!isCodeReply || !gb.IsCodeReplySurplus)
                 {
@@ -1015,7 +1015,7 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
             if (gb.IsCodeReplySurplus)
             {
                 // DSF has dropped this code when it invalidated the channel, so this reply is surplus. Otherwise it would complete the next code
-                // (RRF Meltingplot/RepRapFirmware#RRFPR)
+                // (RRF Meltingplot/RepRapFirmware#46)
                 if (!isPushMessage)
                 {
                     gb.IsCodeReplySurplus = false;
