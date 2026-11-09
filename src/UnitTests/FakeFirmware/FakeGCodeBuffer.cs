@@ -115,6 +115,20 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     public bool IsCodeReplySurplus { get; set; }
 
     /// <summary>
+    /// Whether the SBC task has recorded an abort of this channel that the main task has yet to apply (abortRecorded, the byte of invalidationPending
+    /// renamed, design/sbc-link-v8-requirements.md CE-7). The SBC task sets it, the main task clears it after the routine. Not used by
+    /// <see cref="FakeRrfModel.V7"/>
+    /// </summary>
+    public bool IsAbortRecorded { get; set; }
+
+    /// <summary>
+    /// Whether the buffer is completely idle, see GCodeBuffer::IsCompletelyIdle (GCodeBuffer.cpp:951-954): the state of the latest frame is normal and
+    /// the buffer is neither ready nor executing. A text code that DSF executes (executingOnSbc) counts as idle, one that is yet to be sent does not,
+    /// because RRF runs it again on every spin until it has gone out (GCodes2.cpp:603-606)
+    /// </summary>
+    public bool IsCompletelyIdle => MachineState.State == FakeMachineState.MachineStateKind.Normal && CurrentCode is null && !IsSendRequested;
+
+    /// <summary>
     /// Whether a macro request has yet to be sent to DSF
     /// </summary>
     public bool IsMacroRequestPending => RequestedMacroFile is not null;
@@ -518,6 +532,7 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
         LastResult = CodeResult.Ok;
         IsWaitingForMacro = HasJustStartedMacro = MacroFileError = IsMacroEmpty = IsMacroFileClosed = false;
         IsAbortRequested = IsAbortAllRequested = IsMessagePromptPending = IsMessageAcknowledged = IsInvalidated = IsInvalidationPending = IsCodeReplySurplus = false;
+        IsAbortRecorded = false;
         RequestedMacroFile = null;
         SbcCode = null;
         IsSendRequested = IsExecutingOnSbc = false;

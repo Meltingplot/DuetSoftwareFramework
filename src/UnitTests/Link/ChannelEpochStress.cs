@@ -201,13 +201,14 @@ public class ChannelEpochStress
     }
 
     /// <summary>
-    /// Measure the link as the fake firmware models it by default, with the seed and number of aborts of the measurement.
-    /// This only reports the numbers, the runs of the later milestones check them
+    /// Measure the link with a model of RRF, with the seed and number of aborts of the measurement. This only reports the numbers.
+    /// <see cref="FakeRrfModel.V7"/> is the baseline (fork RRF 0dccb9efe), <see cref="FakeRrfModel.RecordApply"/> milestone E1
     /// </summary>
+    /// <param name="model">RRF that the fake firmware models</param>
     [Test, Explicit("Measurement, takes minutes: run with DSF_EPOCH_STRESS_REPORT set to collect the numbers")]
-    public async Task Measure()
+    public async Task Measure([Values] FakeRrfModel model)
     {
-        Counters counters = await RunAsync(new Options("default"), Seed, MeasurementAborts);
+        Counters counters = await RunAsync(new Options(model.ToString(), firmware => firmware.Model = model), Seed, MeasurementAborts);
         Assert.That(counters.Aborts, Is.GreaterThanOrEqualTo(MeasurementAborts));
     }
 
@@ -247,7 +248,7 @@ public class ChannelEpochStress
         /// <summary>
         /// Counters of the host instances that have ended already
         /// </summary>
-        private int _resendsBefore, _invalidateResendsBefore, _rrfWarningsBefore, _rrfEpochDropsBefore;
+        private int _rrfStaleStarts;
 
         public async Task StartAsync()
         {
@@ -282,10 +283,6 @@ public class ChannelEpochStress
             Counters.Restarts++;
             // The counters of the fake firmware start again with the new host, so keep the totals so far
             CollectFirmwareCounters();
-            _resendsBefore = Counters.Resends;
-            _invalidateResendsBefore = Counters.InvalidateChannelResends;
-            _rrfWarningsBefore = Counters.Details.Where(detail => detail.Key.StartsWith("RRF:")).Sum(detail => detail.Value);
-            _rrfEpochDropsBefore = Counters.RrfEpochDrops;
             ReleaseHolds();
             _host.Firmware.ReleaseTransfers();
             await _host.DisposeAsync();
@@ -325,27 +322,35 @@ public class ChannelEpochStress
                     Counters.Details[$"DSF: {format}"] = count;
                 }
             }
-            Counters.StaleEventEffects += Counters.Details.Where(detail => detail.Key.StartsWith("RRF:")).Sum(detail => detail.Value);
+            Counters.StaleEventEffects += _rrfStaleStarts;
             Counters.DsfEpochDrops = DsfEpochDrops();
         }
 
         /// <summary>
-        /// Count what the fake firmware recorded: resends and the warnings RRF writes for a stale macro start
+        /// Add what the fake firmware of the current host recorded: resends and the warnings RRF writes for a stale macro start. Called once per host,
+        /// before it is disposed
         /// </summary>
         private void CollectFirmwareCounters()
         {
             FakeFirmware.FakeFirmware firmware = _host.Firmware;
             FakePacket[] packets = [.. firmware.GetSentPackets()];
-            Counters.Resends = _resendsBefore + packets.Count(packet => packet.Request == FirmwareRequest.ResendPacket &&
-                packet.ResendRequest?.Request is not SbcRequest.LockAllMovementSystemsAndWaitForStandstill);
-            Counters.InvalidateChannelResends = _invalidateResendsBefore + packets.Count(packet => packet.Request == FirmwareRequest.ResendPacket &&
-                packet.ResendRequest?.Request == SbcRequest.InvalidateChannel);
-            int started = packets.Count(packet => packet.Request == FirmwareRequest.Message && packet.Text.Contains("but none was requested"));
-            if (started + _rrfWarningsBefore > 0)
+            foreach (FakePacket packet in packets.Where(packet => packet.Request == FirmwareRequest.ResendPacket &&
+                packet.ResendRequest?.Request is not SbcRequest.LockAllMovementSystemsAndWaitForStandstill))
             {
-                Counters.Details["RRF: Macro file has been started but none was requested"] = started + _rrfWarningsBefore;
+                Counters.Resends++;
+                Counters.Detail($"resend: {packet.ResendRequest?.Request}");
+                if (packet.ResendRequest?.Request == SbcRequest.InvalidateChannel)
+                {
+                    Counters.InvalidateChannelResends++;
+                }
             }
-            Counters.RrfEpochDrops = _rrfEpochDropsBefore + RrfEpochDrops(firmware);
+            int started = packets.Count(packet => packet.Request == FirmwareRequest.Message && packet.Text.Contains("but none was requested"));
+            if (started > 0)
+            {
+                _rrfStaleStarts += started;
+                Counters.Details["RRF: Macro file has been started but none was requested"] = _rrfStaleStarts;
+            }
+            Counters.RrfEpochDrops += RrfEpochDrops(firmware);
         }
 
         /// <summary>
@@ -710,6 +715,23 @@ public class ChannelEpochStress
                         }
                         StepRandom(3);
                         Interlocked.Exchange(ref _doCodeGate, null)?.TrySetResult();
+
+                        // M929 flushes its channel in DSF (MCodeHandler.cs:1150), so a probe buffered on that channel would wait for M929 while RRF holds
+                        // the probe until M929 has its result. The probe goes out once RRF has nothing of the channel left, a channel that never gets
+                        // there is blocked (K13)
+                        DateTime idleTime = DateTime.UtcNow + BlockTime;
+                        int idleTransfer = _host.Firmware.TransferCount;
+                        while (!_host.Firmware.IsIdle(channel) && (_host.Firmware.TransferCount - idleTransfer < BlockTransfers || DateTime.UtcNow < idleTime))
+                        {
+                            Step();
+                        }
+                        if (!_host.Firmware.IsIdle(channel))
+                        {
+                            Counters.Blocks++;
+                            Counters.Detail($"block: {situation} on {channel}");
+                            await RestartAsync();
+                            return;
+                        }
                         break;
                     }
             }

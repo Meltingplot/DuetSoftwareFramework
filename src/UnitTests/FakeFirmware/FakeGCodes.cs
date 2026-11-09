@@ -197,6 +197,85 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
     public void RequestEmergencyStop() => _emergencyStopRequested = true;
 
     /// <summary>
+    /// Whether the SBC task has recorded a channel abort that the main task has yet to apply (the request bit of CE-7 in requestsFromOtherTasks,
+    /// GCodes.cpp:69-76)
+    /// </summary>
+    private bool _applyRequested;
+
+    /// <summary>
+    /// Number of transfers the main task still needs to reach the top of its next spin, see <see cref="FakeFirmware.ApplyDelay"/>
+    /// </summary>
+    private int _applyCountdown;
+
+    /// <summary>
+    /// Transfer in which the oldest abort that is yet to be applied was recorded
+    /// </summary>
+    private int _recordTransfer;
+
+    /// <summary>
+    /// Longest time from the record of an abort to its apply in transfers (CE-20 keeps it in ms)
+    /// </summary>
+    public int MaxRecordToApply { get; private set; }
+
+    /// <summary>
+    /// Called by the SBC task when it has recorded a channel abort. The main task applies it at the top of its next spin (CE-7)
+    /// </summary>
+    /// <param name="delay">Number of transfers the main task needs to get there</param>
+    /// <param name="transfer">Transfer of the record</param>
+    public void RequestApply(int delay, int transfer)
+    {
+        if (!_applyRequested)
+        {
+            _applyRequested = true;
+            _applyCountdown = delay;
+            _recordTransfer = transfer;
+        }
+    }
+
+    /// <summary>
+    /// End the work of a channel: the routine that the apply of a channel abort and InvalidateResources share (design/sbc-link-v8-requirements.md
+    /// CE-25 and the table "What the routine does"). The caller has ended a macro wait before. No "tell DSF" flag of the buffer is left set, so nothing
+    /// of the old work is announced afterwards. A code that still runs at the base level survives, because the routine neither aborts the state machine
+    /// nor resets the buffer
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    public void EndChannelWork(FakeGCodeBuffer gb)
+    {
+        // Unsent macro request (as RRF #43 and InvalidateResources, SbcInterface.cpp:893, :1766-1769)
+        gb.MacroRequestSent();
+
+        // A text code passed on to DSF, sent or not (SetFinished(true), as InvalidateResources does for a sent one, :1762-1765)
+        if (gb.IsSendRequested || gb.IsExecutingOnSbc)
+        {
+            gb.SetFinished(true);
+        }
+
+        // PauseSequenceAborted comes before the files are aborted in RRF, but pausing is not emulated
+
+        // File levels, without telling DSF, which has aborted them itself (:902-903, :1770-1771)
+        gb.AbortFile(true);
+        gb.FileAbortSent();
+
+        // A closal that has not gone out (as RRF #45, :904)
+        gb.MacroFileClosedSent();
+
+        // A box left at the base level, closed as cancelled without the abort flag: with it, the main task would stop the print of the whole machine
+        // (GCodes.cpp:593-616). Neither the prompt nor the acknowledgement is announced
+        gb.MessageAcknowledged(true, false, 0);
+        gb.MessagePromptSent();
+        gb.MessageAcknowledgementSent();
+
+        // The event that invalidated the buffer is void. The pause report is not emulated
+        gb.IsInvalidated = false;
+
+        // Locks only of an idle buffer: UnlockAll under a running code would change it, e.g. clear toBeHomed of a G28 (FD-27, GCodes.cpp:5658-5663)
+        if (gb.IsCompletelyIdle)
+        {
+            UnlockAll(gb);
+        }
+    }
+
+    /// <summary>
     /// Reset everything after a firmware reset
     /// </summary>
     public void Reset()
@@ -205,7 +284,8 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
         {
             gb.Reset();
         }
-        Stopped = _emergencyStopRequested = false;
+        Stopped = _emergencyStopRequested = _applyRequested = false;
+        _applyCountdown = 0;
         MovementLockOwner = null;
         MessageBoxes.Clear();
         _macroRequests.Clear();
@@ -242,6 +322,34 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
                 gb.AbortFile(true);
             }
             Stopped = true;
+        }
+
+        // Apply the channel aborts that the SBC task recorded, after the stop and reset requests and before CheckTriggers, under the buffer mutex
+        // (CE-7, GCodes.cpp:463-487). While a request is pending, SpinGCodeBuffer starts nothing (GCodes.cpp:581-584), so with a delay the main task
+        // does no work at all until it gets here
+        if (_applyRequested)
+        {
+            if (_applyCountdown > 0)
+            {
+                _applyCountdown--;
+                return;
+            }
+            _applyRequested = false;
+            MaxRecordToApply = Math.Max(MaxRecordToApply, firmware.TransferCount - _recordTransfer);
+            foreach (FakeGCodeBuffer gb in Buffers)
+            {
+                if (gb.IsAbortRecorded)
+                {
+                    EndChannelWork(gb);
+
+                    // Until E3 the fork catch code of RRF #46 stays: a code that still runs has replies that DSF does not expect (SbcInterface.cpp:907-911)
+                    if (firmware.CodeReplySurplus && gb.MachineState.LastCodeFromSbc && !gb.IsCompletelyIdle)
+                    {
+                        gb.IsCodeReplySurplus = true;
+                    }
+                    gb.IsAbortRecorded = false;
+                }
+            }
         }
 
         // RRF's own abort of all files, e.g. AbortPrint after an error of the state machine
@@ -316,8 +424,9 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
         get
         {
             FakeGCodeBuffer gb = this[CodeChannel.Trigger];
+            // A recorded abort counts like an unsent one, so a trigger stays pending until the apply (CE-7 (c))
             return gb.IsDoingFile || gb.CurrentCode is not null || gb.MachineState.WaitingForAcknowledgement || gb.IsAbortRequested ||
-                gb.IsSendRequested || gb.IsExecutingOnSbc;
+                gb.IsSendRequested || gb.IsExecutingOnSbc || gb.IsAbortRecorded;
         }
     }
 

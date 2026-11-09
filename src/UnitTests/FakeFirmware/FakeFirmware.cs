@@ -34,6 +34,12 @@ namespace UnitTests.FakeFirmware;
 /// src/GCodes/GCodeBuffer/GCodeBuffer.cpp. Packets are passed as objects, there is no binary encoding and the transfer buffer size is not limited
 /// </para>
 /// <para>
+/// Channel aborts follow <see cref="Model"/>: the InvalidateChannel handler of fork RRF 0dccb9efe (<see cref="FakeRrfModel.V7"/>), or the record by
+/// the SBC task and the apply by the main task of design/sbc-link-v8-requirements.md (<see cref="FakeRrfModel.RecordApply"/>, the default). The fake
+/// has one loop for both RRF tasks, so the record happens while the SBC task reads the requests of a transfer and the apply at the start of the main
+/// task's spin that follows; <see cref="ApplyDelay"/> puts transfers in between
+/// </para>
+/// <para>
 /// Emulated: code buffer and buffer updates, code replies with RRF's flags, macro requests (M98, system macros), pending triggers and their
 /// macros (GCodes::CheckTriggers, see <see cref="FireTrigger"/>), macro completion and M99 aborts, message boxes (M291/M292), M409, the result variables of M260/M261, expression evaluation, local and global variables,
 /// movement locks, channel invalidation, emergency stop, reset, resend requests, the mutex hand-over between RRF's SBC and main tasks
@@ -95,6 +101,96 @@ public sealed partial class FakeFirmware : ILinkAdapter
     /// Logger for the packets exchanged with DSF (debug level)
     /// </summary>
     public ILogger Logger { get; set; } = NullLogger.Instance;
+
+    /// <summary>
+    /// RRF that the fake models. Set it before DSF connects
+    /// </summary>
+    public FakeRrfModel Model { get; set; } = FakeRrfModel.RecordApply;
+
+    /// <summary>
+    /// Number of transfers that RRF's main task needs after the SBC task recorded a channel abort to reach the top of its next spin, where it applies
+    /// the abort (CE-7). The rest of a pass can be long, e.g. while the main task waits for an expansion board (Q38). 0 applies it in the transfer of the record
+    /// </summary>
+    public int ApplyDelay
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _applyDelay;
+            }
+        }
+        set
+        {
+            lock (_lock)
+            {
+                _applyDelay = value;
+            }
+        }
+    }
+    private int _applyDelay;
+
+    /// <summary>
+    /// Whether the fork catch code of RRF #46 (codeReplySurplus, GCodeBuffer.h:405) suppresses the replies of a code that DSF dropped at its abort.
+    /// It stays until milestone E3 (CE-7), switch it off to model E3
+    /// </summary>
+    public bool CodeReplySurplus { get; set; } = true;
+
+    /// <summary>
+    /// Whether the SBC task has recorded an abort of a channel that the main task has yet to apply
+    /// </summary>
+    /// <param name="channel">Code channel</param>
+    /// <returns>Whether the abort is recorded but not applied</returns>
+    public bool IsAbortRecorded(CodeChannel channel)
+    {
+        lock (_lock)
+        {
+            return _gcodes[channel].IsAbortRecorded;
+        }
+    }
+
+    /// <summary>
+    /// Longest time from the record of a channel abort to its apply, in transfers (CE-20 counts it in ms)
+    /// </summary>
+    public int MaxRecordToApply
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _gcodes.MaxRecordToApply;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Channel that holds the movement lock, or null if none does
+    /// </summary>
+    public CodeChannel? MovementLockOwner
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _gcodes.MovementLockOwner?.Channel;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Emulate a lost connection to the SBC that RRF notices while it keeps running, see the connection loss in SbcInterface::TaskLoop
+    /// (SbcInterface.cpp:194-233): RRF stops the machine and runs InvalidateResources (:1717-1780). DSF sees the connection reset
+    /// </summary>
+    public void SimulateConnectionLoss()
+    {
+        lock (_lock)
+        {
+            _repRapStopped = true;
+            _gcodes.RequestEmergencyStop();
+            InvalidateResources();
+            _hadReset = true;
+        }
+    }
 
     /// <summary>
     /// Object model of the fake firmware. Changes are reported to DSF via the sequence numbers
@@ -525,7 +621,8 @@ public sealed partial class FakeFirmware : ILinkAdapter
         {
             FakeGCodeBuffer gb = _gcodes[channel];
             return !gb.IsDoingFile && !gb.IsWaitingForMacro && gb.PendingMacroCall is null && gb.CurrentCode is null &&
-                !gb.MachineState.WaitingForAcknowledgement && !gb.IsAbortRequested && gb.MachineState.Previous is null && gb.SbcCode is null;
+                !gb.MachineState.WaitingForAcknowledgement && !gb.IsAbortRequested && gb.MachineState.Previous is null && gb.SbcCode is null &&
+                !gb.IsAbortRecorded;
         }
     }
 
@@ -876,6 +973,10 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     }
                     break;
 
+                case SbcRequest.InvalidateChannel when Model != FakeRrfModel.V7:
+                    RecordAbort(gb!);
+                    break;
+
                 case SbcRequest.InvalidateChannel:
                     // DSF drops every code it has sent on this channel, so the replies of a code that is still being executed are surplus. Only the
                     // first copy of the request flags that code, a resent copy would flag a code that has started since (RRF Meltingplot/RepRapFirmware#46)
@@ -992,6 +1093,18 @@ public sealed partial class FakeFirmware : ILinkAdapter
         // Deal with code channel requests
         foreach (FakeGCodeBuffer gb in _gcodes.Buffers)
         {
+            // Nothing of a buffer whose abort is recorded is written before the main task has applied it (CE-12). A macro wait that began after the
+            // record ends here with an error instead of a request, as the record ends one (SbcInterface.cpp:893-894)
+            if (gb.IsAbortRecorded)
+            {
+                if (gb.IsWaitingForMacro)
+                {
+                    gb.MacroRequestSent();
+                    gb.ResolveMacroRequest(true, false);
+                }
+                continue;
+            }
+
             // Invalidate buffered codes if required
             if (gb.IsInvalidated)
             {
@@ -1073,14 +1186,94 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <summary>
+    /// Record an abort of a channel on the SBC task (design/sbc-link-v8-requirements.md CE-7, "Record"). It takes no buffer mutex, so it is never
+    /// refused. The main task applies it at the top of its next spin with <see cref="FakeGCodes.EndChannelWork"/>
+    /// </summary>
+    /// <param name="gb">G-code buffer of the channel</param>
+    private void RecordAbort(FakeGCodeBuffer gb)
+    {
+        // Purge the codes of the channel in the ring and clear invalidated, the step the write phase does today (SbcInterface.cpp:1497-1504). A code of
+        // the new work is then stored as usual and not dropped by the read-ahead rule (:376-380), whose cause the abort has voided
+        InvalidateBufferedCodes(gb.Channel);
+        gb.IsInvalidated = false;
+
+        // Until E3 the fork catch code of RRF #46 flags a code that waits for its macro (:886-889)
+        if (CodeReplySurplus && gb.IsWaitingForMacro && gb.IsMacroStartedByCode)
+        {
+            gb.IsCodeReplySurplus = true;
+        }
+
+        // Flag the abort for the main task before the next packet is read
+        gb.IsAbortRecorded = true;
+        _gcodes.RequestApply(_applyDelay, _transferNumber);
+
+        // End a macro wait with an error, so that a main task blocked in it returns (:893-894)
+        if (gb.IsWaitingForMacro)
+        {
+            gb.MacroRequestSent();
+            gb.ResolveMacroRequest(true, false);
+        }
+    }
+
+    /// <summary>
+    /// Invalidate the resources of the SBC interface after a lost connection, see SbcInterface::InvalidateResources (SbcInterface.cpp:1717-1780).
+    /// From milestone E1 it runs the routine of a channel abort on every buffer (CE-25), which also fixes K5
+    /// </summary>
+    private void InvalidateResources()
+    {
+        _codeBuffer.Clear();
+        _codeBufferUsed = 0;
+        _sendBufferUpdate = true;
+        _gcodeReply.Clear();
+        _txPackets.Clear();
+        foreach (FakeGCodeBuffer gb in _gcodes.Buffers)
+        {
+            if (gb.IsWaitingForMacro)
+            {
+                gb.ResolveMacroRequest(true, false);
+            }
+
+            // RRF takes the buffer mutex without a timeout here, and the main task finishes a code that waited for its macro before it releases it
+            if (gb.PendingMacroCall is not null)
+            {
+                _gcodes.ContinueMacroCall(gb);
+            }
+
+            if (Model == FakeRrfModel.V7)
+            {
+                if (gb.IsExecutingOnSbc)
+                {
+                    gb.SetFinished(true);
+                }
+                gb.MacroRequestSent();
+                gb.AbortFile(true);
+                gb.FileAbortSent();
+                gb.MessageAcknowledged(true, true, 0);
+            }
+            else
+            {
+                _gcodes.EndChannelWork(gb);
+                gb.IsAbortRecorded = false;
+                gb.IsCodeReplySurplus = false;
+            }
+        }
+    }
+
+    /// <summary>
     /// Try to take the mutex of a G-code buffer from the SBC task.
     /// While the main task waits in RequestMacroFile for a macro started by a code, it holds the mutex and the SBC task gives up
-    /// after SbcYieldTimeout. Once the request has been resolved, the main task finishes that code before it releases the mutex
+    /// after SbcYieldTimeout. Once the request has been resolved, the main task finishes that code before it releases the mutex.
+    /// From milestone E1 the SBC task keeps off a buffer whose abort it has recorded until the main task has applied it (CE-7 (d)),
+    /// so the packets that need the mutex are refused as for a busy one
     /// </summary>
     /// <param name="gb">G-code buffer</param>
     /// <returns>Whether the mutex could be taken</returns>
     private bool TryLockBuffer(FakeGCodeBuffer gb)
     {
+        if (gb.IsAbortRecorded)
+        {
+            return false;
+        }
         if (_failedBufferLocks.TryGetValue(gb.Channel, out int failures) && failures > 0)
         {
             _failedBufferLocks[gb.Channel] = failures - 1;
@@ -1151,9 +1344,10 @@ public sealed partial class FakeFirmware : ILinkAdapter
     internal bool FillBuffer(FakeGCodeBuffer gb)
     {
         if (gb.IsInvalidated || gb.IsMacroFileClosed || gb.IsMessageAcknowledged || gb.IsAbortRequested ||
-            (gb.MachineState.WaitingForAcknowledgement && gb.IsMessagePromptPending))
+            (gb.MachineState.WaitingForAcknowledgement && gb.IsMessagePromptPending) || gb.IsAbortRecorded)
         {
-            // Don't process codes that are supposed to be suspended
+            // Don't process codes that are supposed to be suspended. A recorded abort holds the codes as well, because within one spin the main task
+            // fetches up to 8 codes without passing the guard of SpinGCodeBuffer again (CE-7 (b), GCodes.cpp:808-828)
             return false;
         }
 

@@ -701,6 +701,13 @@ public class TriggerFuzz
     }
 
     /// <summary>
+    /// The three tests below need an RRF that refuses InvalidateChannel for a busy buffer mutex, which is RRF up to 0dccb9efe (SbcInterface.cpp:897,
+    /// :914-918). From milestone E1 of design/sbc-link-v8-requirements.md RRF never refuses it (CE-7), so they run against that model, where DSF's
+    /// catch code (#161) still has to work until E3 (CE-18)
+    /// </summary>
+    private static void StockRrf(FakeFirmware.FakeFirmware firmware) => firmware.Model = FakeRrfModel.V7;
+
+    /// <summary>
     /// Run M98 on HTTP with held transfers until RRF waits for the macro and its request is on the way, then abort HTTP while the buffer
     /// mutex of RRF cannot be had, as on the lab printer on 2026-11-08 ("Resending packet #0 (request InvalidateChannel)"): while an M98 waits for
     /// its macro, the main task holds the mutex (GCodes.cpp:590), and InvalidateChannel waits only SbcYieldTimeout for it (SbcInterface.cpp:45, :888-900)
@@ -734,7 +741,7 @@ public class TriggerFuzz
         // RRF asks for the InvalidateChannel again (SbcInterface.cpp:1338-1341) and processes the copy one transfer later. A code that DSF sent in
         // between reached RRF before the copy, which dropped it (InvalidateBufferedCodes), and the code never got a reply. On the printer the probe
         // G4 P0 of AbortsCrossingMacroRequests got none. DSF now sends nothing on the channel until RRF has processed the InvalidateChannel
-        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(StockRrf);
         Task<string> m98 = await AbortWhileRrfCannotLockAsync(host);
         Task<string> next = host.StartCode("G4 P90002");
         host.Firmware.ReleaseTransfers();
@@ -761,7 +768,7 @@ public class TriggerFuzz
         // RRF asked for the InvalidateChannel again and requests a macro before it reads the copy. The copy ends that request with an error
         // (SbcInterface.cpp:880-886), so DSF must not start the macro, as for the requests before the first copy (#134). Before, DSF started it,
         // RRF warned "Macro file has been started on channel ... but none was requested" (lab printer, 2026-11-08) and the channel waited for it
-        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(StockRrf);
         host.WriteMacro("http-other.g", "G4 P90004\n");
         Task<string> m98 = await AbortWhileRrfCannotLockAsync(host);
 
@@ -862,7 +869,7 @@ public class TriggerFuzz
     {
         // The case on the lab printer (2026-11-08 22:39 UTC): the M98 waits for its macro, so the main task holds the buffer mutex and RRF asks for
         // the InvalidateChannel again (FailBufferLocks). The first copy flags M98 before it ends the wait (SbcInterface.cpp:880-886), the copy flags nothing
-        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(StockRrf);
         host.Firmware.OnCode("G4", code => (code.Text == "G4 P2") ? FakeReply.Ok("reply of G4 P2") : null);
         Task<string> m98 = await AbortWhileRrfCannotLockAsync(host);
         Task<string> next = host.StartCode("G4 P2");
