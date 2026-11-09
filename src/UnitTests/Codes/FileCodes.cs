@@ -118,6 +118,15 @@ public class FileCodes
     }
 
     [Test]
+    public async Task ListFilesWithTypeOutOfRangeIsAnError()
+    {
+        // Input of the weekly fuzz run (GCodeExecutionFuzz seed 1754056457). DSF parses 31e9 as a float that does not fit the int that
+        // M20 reads for S (MCodeHandler.cs:142). It is refused like a parameter of the wrong type (Code.cs:276-281); before, the
+        // OverflowException of Convert.ToInt32 reached the client. RRF reads integers with StrToI32 and would stop at the e (StringParser.cpp:2049-2051)
+        Assert.That(await _host.ExecuteAsync("M20 S31e9 P\"0:/macs\""), Does.StartWith("Error: M20: Cannot convert S parameter to Int32 (value 31e9)"));
+    }
+
+    [Test]
     public async Task MountDefaultVolume()
     {
         // The internal volume is always mounted, so M21 (P0) succeeds without the firmware
