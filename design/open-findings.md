@@ -247,11 +247,13 @@ Measured in the fake firmware without link faults:
 - **T7. An SBC trigger T0 runs trigger0.g instead of an emergency stop** (`SbcTriggerService.cs:298-308`; wiki M581; `GCodes.cpp:994-998`). By the code, T1 runs trigger1.g instead of pausing; this is not tested. Test: `TriggerZeroIsAnEmergencyStop`.
 - **T8. M582 never checks a trigger that DSF evaluates**, because it is passed straight to RRF. The wiki says M582 works for M581.1 triggers. Test: `M582ChecksTriggerOfDsf`.
 - **T9. R1 and R2 of SBC triggers count simulating and cancelling as not printing** (`SbcTriggerService.cs:341-344`). RRF's `IsPrinting` counts both as printing (`GCodes.cpp:3993`, `RepRap.cpp:1961-1968`). Test: `EnableConditionWhilePrinting` with Simulating and Cancelling.
-- **T10. The reply of an aborted M98 goes to the next code of the channel.** Not cosmetic, as assumed before.
-  - When InvalidateChannel ends the wait for a macro, RRF still reports the file as missing: for an M98 as an error reply (`GCodes2.cpp:1718-1722`), for a trigger as a pushed warning (`GCodes.cpp:3699-3707`).
-  - DSF has no buffered code for that reply any more, so it holds it back as an out-of-order reply (`Processor.cs:1122-1127`, as in T4). The next code of the channel takes it.
-  - Printer, 2026-11-08 (`AbortsCrossingMacroRequests`): the G4 P0 after an abort finished with "Error: M98: Macro file 0:/macros/lab-tests/abort/short.g not found", and its own empty reply came out of order. The final reply of an M98 whose macro RRF had just closed becomes an out-of-order reply as well (fake firmware log of `TriggerFuzz.DcsKeepsRunningWhenAnAbortCrossesAMacroFileClosal`).
-  - Open: which side drops these replies. RRF answers a code that DSF has cancelled, DSF cannot tell such a reply from the reply of the next code.
+- **T10. Cases that the fix of T10 (Meltingplot/RepRapFirmware#46) does not cover.** From reading the RRF code, not tested.
+  - The fix (RRF drops the replies of the code that ran when InvalidateChannel arrived) is in `design/dsf-findings-upstream.md`.
+  - A first copy of InvalidateChannel that does not get the buffer mutex while the running code does not wait for a macro (e.g. the main task blocked on CAN or a file operation for more than 10 ms): the running code is not flagged, and its reply still goes out.
+  - Replies that RRF wrote before it read InvalidateChannel are on their way already. DSF logs them as out-of-order replies, since #161 holds the channel back they no longer complete the next code.
+  - M291 S2 at the base level: `AbortFile` does nothing there, the message box stays open in RRF, and its reply after the acknowledgement is stale (DSF cancels the M291, `Processor.cs:794-799`).
+  - State machines go on after InvalidateChannel (G28 with the next axis, `GCodes4.cpp:358-413`; tool changes) and can request new macros. InvalidateChannel does not call `AbortStateMachine`, as `AbortPrint` does (`GCodes.cpp:3633`).
+  - Messages that codes write with their response type outside HandleReply are not dropped: M122 (`GCodes2.cpp:2292`), `GpInPort.cpp:90`, the SD speed test (`GCodes4.cpp:1894`, `:1906`, `GCodes.cpp:6029`).
 
 Open question: the wiki for M581 says polling for further triggers is suspended while a trigger macro runs. RRF keeps checking and marks the trigger as pending (`GCodes.cpp:983-989`).
 
