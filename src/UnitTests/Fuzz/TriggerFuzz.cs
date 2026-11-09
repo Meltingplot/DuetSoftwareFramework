@@ -812,6 +812,142 @@ public class TriggerFuzz
     }
 
     /// <summary>
+    /// Code replies that RRF sent for the code with the given text
+    /// </summary>
+    private static FakePacket[] CodeReplies(FakeFirmwareHost host, string code) =>
+        [.. host.Firmware.GetSentPackets().Where(packet => packet.IsCodeReply && packet.RelatedCode?.Text == code)];
+
+    [Test]
+    public async Task NextCodeGetsItsOwnReplyAfterAbortWhileM98WaitsForItsMacro()
+    {
+        // Lab printer 2026-11-08 (finding T10): after an IPC InvalidateChannel of Telnet while M98 waited for its macro, the next G4 P0 finished with
+        // "Error: M98: Macro file ... not found". InvalidateChannel ends the wait with an error (SbcInterface.cpp:880-886), so RRF still finishes M98
+        // and reports the macro as not found (GCodes2.cpp:1713-1722). DSF has dropped M98 for the abort (Processor.InvalidateRegular) and matches
+        // replies by order (Processor.HandleReply), so that reply completed the next code and its own reply came out of order
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        host.WriteMacro("http-macro.g", "G4 P90001\n");
+        host.Firmware.OnCode("G4", code => (code.Text == "G4 P2") ? FakeReply.Ok("reply of G4 P2") : null);
+        host.Firmware.HoldTransfers();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, Timeout), Is.True, "The transfers were not held");
+
+        // RRF executes M98 and waits for the macro, which it requests in the transfer after that (as in ChannelWorksAfterAbortWhileMacroRequestIsUnderway)
+        Task<string> m98 = host.StartCode("M98 P\"http-macro.g\"");
+        for (int i = 0; i < 100 && !host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Any(code => code.Text == "M98 P\"http-macro.g\""); i++)
+        {
+            Step(host);
+        }
+        Step(host);
+
+        // DSF aborts HTTP, and the next code waits in DSF at least until InvalidateChannel has gone out (Processor.Spin)
+        await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
+        Task<string> next = host.StartCode("G4 P2");
+        host.Firmware.ReleaseTransfers();
+        try
+        {
+            await m98.WaitAsync(Timeout);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled by the abort
+        }
+
+        // RRF drops the reply of M98, so the next code gets its own
+        Assert.That(await next.WaitAsync(Timeout), Is.EqualTo("reply of G4 P2\n"));
+        Assert.That(CodeReplies(host, "M98 P\"http-macro.g\""), Is.Empty, "RRF replied to M98, which DSF had dropped");
+        Assert.That(host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.None.EqualTo("G4 P90001"));
+    }
+
+    [Test]
+    public async Task NextCodeGetsItsOwnReplyWhenRrfAsksForTheAbortAgain()
+    {
+        // The case on the lab printer (2026-11-08 22:39 UTC): the M98 waits for its macro, so the main task holds the buffer mutex and RRF asks for
+        // the InvalidateChannel again (FailBufferLocks). The first copy flags M98 before it ends the wait (SbcInterface.cpp:880-886), the copy flags nothing
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        host.Firmware.OnCode("G4", code => (code.Text == "G4 P2") ? FakeReply.Ok("reply of G4 P2") : null);
+        Task<string> m98 = await AbortWhileRrfCannotLockAsync(host);
+        Task<string> next = host.StartCode("G4 P2");
+        host.Firmware.ReleaseTransfers();
+        try
+        {
+            await m98.WaitAsync(Timeout);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled by the abort
+        }
+
+        Assert.That(await next.WaitAsync(Timeout), Is.EqualTo("reply of G4 P2\n"));
+        Assert.That(InvalidateChannelTransfers(host, CodeChannel.HTTP), Has.Length.EqualTo(2), "RRF did not ask for the InvalidateChannel again");
+        Assert.That(CodeReplies(host, "M98 P\"http-macro.g\""), Is.Empty, "RRF replied to M98, which DSF had dropped");
+        Assert.That(CodeReplies(host, "G4 P2"), Has.Length.EqualTo(1));
+    }
+
+    /// <summary>
+    /// Let M400 run on HTTP until the returned event is set, then it finishes with the reply "late reply of M400"
+    /// </summary>
+    private static ManualResetEventSlim HoldM400(FakeFirmwareHost host)
+    {
+        ManualResetEventSlim release = new();
+        host.Firmware.OnCode("M400", _ => release.IsSet ? FakeReply.Ok("late reply of M400") : FakeReply.NotFinished);
+        host.Firmware.OnCode("G4", code => (code.Text == "G4 P2") ? FakeReply.Ok("reply of G4 P2") : null);
+        return release;
+    }
+
+    /// <summary>
+    /// Abort HTTP while M400 runs, queue G4 P2 behind M400 in RRF and let M400 finish. Returns the reply of G4 P2
+    /// </summary>
+    private static async Task<string> AbortWhileM400RunsAsync(FakeFirmwareHost host, ManualResetEventSlim release, Task<string> started)
+    {
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "M400", Timeout), Is.True, "M400 did not start");
+        await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetReceivedRequests().Any(request => request.Request == SbcRequest.InvalidateChannel), Timeout), Is.True,
+            "RRF did not get the abort");
+        try
+        {
+            await started.WaitAsync(Timeout);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled by the abort
+        }
+
+        // RRF executes M400 on (InvalidateBufferedCodes drops only codes that wait in its code buffer), so the next code waits behind it
+        Task<string> next = host.StartCode("G4 P2");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetReceivedCodes(CodeChannel.HTTP).Any(code => code.Text == "G4 P2"), Timeout), Is.True, "G4 P2 did not reach RRF");
+        Assert.That(host.Firmware.GetCurrentCode(CodeChannel.HTTP)?.Text, Is.EqualTo("M400"));
+        release.Set();
+        return await next.WaitAsync(Timeout);
+    }
+
+    [Test]
+    public async Task NextCodeGetsItsOwnReplyAfterAbortWhileACodeRuns()
+    {
+        // As NextCodeGetsItsOwnReplyAfterAbortWhileM98WaitsForItsMacro, but for a code that RRF is still executing, e.g. M400 or G4 with a long delay.
+        // RRF finishes it after InvalidateChannel and would send its final reply, which completed the next code
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        using ManualResetEventSlim release = HoldM400(host);
+
+        Assert.That(await AbortWhileM400RunsAsync(host, release, host.StartCode("M400")), Is.EqualTo("reply of G4 P2\n"));
+        Assert.That(CodeReplies(host, "M400"), Is.Empty, "RRF replied to M400, which DSF had dropped");
+    }
+
+    [Test]
+    public async Task NextCodeGetsItsOwnReplyAfterAbortWhileACodeOfAMacroRuns()
+    {
+        // As NextCodeGetsItsOwnReplyAfterAbortWhileACodeRuns, but M400 runs in a macro. InvalidateChannel aborts the macro (SbcInterface.cpp:893-894),
+        // M400 goes on and replies on the level of M98. DSF completes M98 itself (Processor.AbortAllFilesAsync), and RRF sends no reply for it:
+        // its final reply comes only when the macro ends normally (GCodes.cpp:770-790)
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        host.WriteMacro("http-hold.g", "M400\nG4 P90004\n");
+        using ManualResetEventSlim release = HoldM400(host);
+
+        Assert.That(await AbortWhileM400RunsAsync(host, release, host.StartCode("M98 P\"http-hold.g\"")), Is.EqualTo("reply of G4 P2\n"));
+        Assert.That(CodeReplies(host, "M400"), Is.Empty, "RRF replied to M400, which DSF had dropped");
+        Assert.That(CodeReplies(host, "M98 P\"http-hold.g\""), Is.Empty, "RRF replied to M98, which DSF had completed");
+        Assert.That(host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.None.EqualTo("G4 P90004"));
+    }
+
+    /// <summary>
     /// Transfers in which RRF asked for a macro on a channel
     /// </summary>
     private static int[] MacroRequestTransfers(FakeFirmwareHost host, CodeChannel channel) =>

@@ -804,8 +804,16 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     break;
 
                 case SbcRequest.InvalidateChannel:
-                    if (gb!.IsWaitingForMacro)
+                    // DSF drops every code it has sent on this channel, so the replies of a code that is still being executed are surplus. Only the
+                    // first copy of the request flags that code, a resent copy would flag a code that has started since (RRF Meltingplot/RepRapFirmware#46)
+                    bool firstCopy = !gb!.IsInvalidationPending;
+                    if (gb.IsWaitingForMacro)
                     {
+                        if (firstCopy && gb.IsMacroStartedByCode)
+                        {
+                            gb.IsCodeReplySurplus = true;
+                        }
+
                         // A request that has not gone out yet is void as well (RRF Meltingplot/RepRapFirmware#43, as GCodeBuffer::Reset)
                         gb.MacroRequestSent();
                         gb.ResolveMacroRequest(true, false);
@@ -817,9 +825,17 @@ public sealed partial class FakeFirmware : ILinkAdapter
                         // DSF has removed all its macro files, so a closal that has not gone out yet is void (RRF Meltingplot/RepRapFirmware#45, as GCodeBuffer::Reset)
                         gb.MacroFileClosedSent();
                         InvalidateBufferedCodes(request.Channel);
+
+                        // A code that is still being executed replies on the level that AbortFile has left, see GCodeBuffer::IsCompletelyIdle
+                        if (firstCopy && gb.MachineState.LastCodeFromSbc && (gb.CurrentCode is not null || gb.MachineState.State != FakeMachineState.MachineStateKind.Normal))
+                        {
+                            gb.IsCodeReplySurplus = true;
+                        }
+                        gb.IsInvalidationPending = false;
                     }
                     else
                     {
+                        gb.IsInvalidationPending = true;
                         acknowledged = false;
                     }
                     break;

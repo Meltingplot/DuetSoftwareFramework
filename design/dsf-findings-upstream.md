@@ -40,6 +40,7 @@ Line numbers refer to these commits. PR numbers are those of Meltingplot/DuetSof
 | T1 | **RRF:** InvalidateChannel ends a macro wait but still sends the request. DSF runs a macro that RRF does not, and every later trigger is discarded until DCS restarts. | RRF 8207b22cc | RRF #43 |
 | T12 | An abort that crosses the closal of a macro underruns DSF's stack, and the exception stops DCS. Printer. | 4a576390, RRF 8207b22cc | #158, RRF #45 |
 | T11 | When RRF asks for an InvalidateChannel again, the copy drops the codes DSF sent after the first one, or ends macro waits that started in between. The channel stays blocked. Printer. | 4a576390, RRF 8207b22cc, c5af8416b | #161 |
+| T10 | **RRF:** after an InvalidateChannel, RRF replies to the code it was running, and DSF gives that reply to the next code. Printer. | RRF 8207b22cc | RRF #46, #163 |
 | I1 | `RequiredPermissionsAttribute.Check` is true for every command, so plugins get every IPC command and connection mode. | c42f948b | #135 |
 | I8 | The IPC command `InvalidateChannel` is refused as unsupported, so the DuetAPIClient calls for it always fail. | 6dd3b8a3 | #158 |
 | H1 | A delete that names the SD root deletes the whole virtual SD card. | 75eb6536, RRF 600857f87 | #136, RRF #44 |
@@ -153,6 +154,19 @@ H13 (`rr_delete` ignored `recursive=yes`) was fixed upstream in 5130ca43 and is 
   - RRF (#45): InvalidateChannel clears a closal that has not gone out (`gb->MacroFileClosedSent()`), as `GCodeBuffer::Reset` does (`GCodeBuffer.cpp:142`). The main task sets it under the same buffer mutex (`GCodes.cpp:540`).
 - **Not covered:** an InvalidateChannel that RRF asks DSF to resend, as in T11.
 - **Test:** `TriggerFuzz.DcsKeepsRunningWhenAMacroFileClosalArrivesBeforeTheAbortGoesOut`, `DcsKeepsRunningWhenAnAbortCrossesAMacroFileClosal` (DSF side), `DcsKeepsRunningWhenAnAbortArrivesBeforeAMacroFileClosalIsSent` (RRF side in the fake firmware). RRF #45 has only been built, not run on hardware.
+
+### T10 (RRF). The reply of a code that DSF dropped goes to the next code
+
+- **What happens:** printer, 2026-11-08 (`AbortsCrossingMacroRequests`): after an IPC InvalidateChannel of Telnet while an M98 waited for its macro, the next `G4 P0` finished with "Error: M98: Macro file 0:/macros/lab-tests/abort/short.g not found". Its own reply came out of order.
+- **Cause:**
+  - DSF drops every code it has sent on the channel for the abort (`Processor.InvalidateRegular`) and matches code replies by order (`Processor.HandleReply`, `Processor.cs:1073-1086`).
+  - RRF's InvalidateChannel drops only the codes that are still pending in the code buffer (`SbcInterface.cpp:867`, `InvalidateBufferedCodes`). The code being executed finishes and replies; an M98 reports its macro as not found once InvalidateChannel ends the wait (`:857`, `GCodes2.cpp:1713`).
+- **Fork fix (RRF #46, DSF #163 for the fake firmware):** InvalidateChannel flags the code from the SBC that runs on the channel, and RRF drops its replies and push messages, as it already drops the surplus reply of a single file abort (`GCodes.cpp:4344`).
+  - The flag covers an M98 that waits for its macro (before the wait is ended) and a code that `AbortFile` leaves running.
+  - Only the first copy of InvalidateChannel flags a code (see T11 resend).
+  - Behaviour change: RRF sends no reply for a code from the SBC that was running when InvalidateChannel arrived.
+- **Not covered:** listed under T10 in `open-findings.md`.
+- **Test:** `TriggerFuzz.NextCodeGetsItsOwnReplyAfterAbortWhileM98WaitsForItsMacro`, `NextCodeGetsItsOwnReplyAfterAbortWhileACodeRuns`, `NextCodeGetsItsOwnReplyAfterAbortWhileACodeOfAMacroRuns`, `NextCodeGetsItsOwnReplyWhenRrfAsksForTheAbortAgain` (fake firmware). RRF #46 builds (3.7.0+1.mp.9-dev.3), the lab run follows.
 
 ### T11 (resend). An abort that RRF asks for again blocks the channel
 

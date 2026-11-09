@@ -104,6 +104,17 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     public bool IsInvalidated { get; set; }
 
     /// <summary>
+    /// Whether InvalidateChannel could not get the mutex of this buffer, so the next one is a resent copy (accessed only by the SBC task,
+    /// RRF Meltingplot/RepRapFirmware#46)
+    /// </summary>
+    public bool IsInvalidationPending { get; set; }
+
+    /// <summary>
+    /// Whether DSF has dropped the code being executed when it invalidated the channel, so its replies are surplus (RRF Meltingplot/RepRapFirmware#46)
+    /// </summary>
+    public bool IsCodeReplySurplus { get; set; }
+
+    /// <summary>
     /// Whether a macro request has yet to be sent to DSF
     /// </summary>
     public bool IsMacroRequestPending => RequestedMacroFile is not null;
@@ -231,6 +242,7 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     {
         MachineState.LastCodeFromSbc = true;
         HasJustStartedMacro = false;
+        IsCodeReplySurplus = false;     // the dropped code has finished, or this code belongs to a macro that the dropped code has started since
         CurrentCode = code;
         IsExecuting = false;
     }
@@ -466,7 +478,7 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
         PendingMacroCall = null;
         LastResult = CodeResult.Ok;
         IsWaitingForMacro = HasJustStartedMacro = MacroFileError = IsMacroEmpty = IsMacroFileClosed = false;
-        IsAbortRequested = IsAbortAllRequested = IsMessagePromptPending = IsMessageAcknowledged = IsInvalidated = false;
+        IsAbortRequested = IsAbortAllRequested = IsMessagePromptPending = IsMessageAcknowledged = IsInvalidated = IsInvalidationPending = IsCodeReplySurplus = false;
         RequestedMacroFile = null;
     }
 

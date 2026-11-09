@@ -740,7 +740,15 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
         gb.LastResult = CodeResult.Ok;
         if (gb.MachineState.LastCodeFromSbc)
         {
-            firmware.PlatformMessage(gb.ResponseMessageType, json, code, true);
+            if (gb.IsCodeReplySurplus)
+            {
+                // DSF has dropped this code when it invalidated the channel, so this final reply is surplus (RRF Meltingplot/RepRapFirmware#46)
+                gb.IsCodeReplySurplus = false;
+            }
+            else
+            {
+                firmware.PlatformMessage(gb.ResponseMessageType, json, code, true);
+            }
         }
         else
         {
@@ -813,10 +821,15 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
         {
             if (call.ReportMissing)
             {
-                MessageTypeFlags mt = (gb.MachineState.LastCodeFromSbc && call.CodeRunning != SystemHelperMacroCode)
-                    ? gb.ResponseMessageType | MessageTypeFlags.WarningMessageFlag | MessageTypeFlags.PushFlag
-                    : MessageTypeFlags.GenericMessage | MessageTypeFlags.LogWarn | MessageTypeFlags.WarningMessageFlag;
-                firmware.PlatformMessage(mt, $"Macro file {call.FileName} not found\n", call.Code);
+                // A part of the reply of a code that DSF has dropped is surplus (RRF Meltingplot/RepRapFirmware#46)
+                bool isCodeReply = gb.MachineState.LastCodeFromSbc && call.CodeRunning != SystemHelperMacroCode;
+                if (!isCodeReply || !gb.IsCodeReplySurplus)
+                {
+                    MessageTypeFlags mt = isCodeReply
+                        ? gb.ResponseMessageType | MessageTypeFlags.WarningMessageFlag | MessageTypeFlags.PushFlag
+                        : MessageTypeFlags.GenericMessage | MessageTypeFlags.LogWarn | MessageTypeFlags.WarningMessageFlag;
+                    firmware.PlatformMessage(mt, $"Macro file {call.FileName} not found\n", call.Code);
+                }
                 return true;
             }
             return false;
@@ -998,6 +1011,18 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
     {
         if (gb.MachineState.LastCodeFromSbc)
         {
+            bool isPushMessage = result == CodeResult.NotFinished || gb.HasJustStartedMacro || (gb.MachineState.WaitingForAcknowledgement && gb.IsMessagePromptPending);
+            if (gb.IsCodeReplySurplus)
+            {
+                // DSF has dropped this code when it invalidated the channel, so this reply is surplus. Otherwise it would complete the next code
+                // (RRF Meltingplot/RepRapFirmware#46)
+                if (!isPushMessage)
+                {
+                    gb.IsCodeReplySurplus = false;
+                }
+                return;
+            }
+
             if (reply.Length == 0 && gb.IsAbortRequested && !gb.IsAbortAllRequested)
             {
                 // The SBC resolves the code that requested a single file abort itself, so this reply is surplus (RRF 4d80f4663)
@@ -1005,7 +1030,7 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
             }
 
             MessageTypeFlags type = gb.ResponseMessageType;
-            if (result == CodeResult.NotFinished || gb.HasJustStartedMacro || (gb.MachineState.WaitingForAcknowledgement && gb.IsMessagePromptPending))
+            if (isPushMessage)
             {
                 if (reply.Length == 0)
                 {

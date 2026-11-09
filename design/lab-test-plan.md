@@ -584,3 +584,18 @@ Rückbau geprüft: ja (kein Side-Load gemountet, idle, Versionen wie vorher). RR
 
 Bewertung: T12 ist auf der Hardware behoben. Der neue Block ist der zweite Fall von T11: Während ein M98 auf sein Makro wartet, hält die Hauptaufgabe von RRF die Pufferfreigabe, InvalidateChannel wartet nur 10 ms darauf und lässt sich neu senden. Die Kopie verwirft den Code, den DSF dazwischen geschickt hat. Fix in DSF (Kanal wartet, bis RRF den Abbruch angenommen hat), dazu der RRF-Fix für T10. Danach Wiederholung mit dem nächsten Testbuild.
 
+### 2026-11-09 morgens: T2 mit RRF #46 (dev.3), bestanden
+
+```
+Datum, Zeit (UTC): 2026-11-09, 06:19 Flash, 06:20:15 bis 06:23:13 Lauf 1 (600 Abbrüche), 06:23:59 bis 06:28:59 Lauf 2 (2000 Abbrüche, LAB_ABORT_ITERATIONS=2000)
+Anlass, PR, Commit: Prüfung von #161 (T11 Neusendung) und RRF #46 (T10), DSF v3.7-dev 808d56fa
+DSF: 3.7.0+mp.13 im Image, Side-Load von 808d56fa
+RRF: 3.7.0+1.mp.9-dev.3 (3.7-dev 9678339c8 + RRF #46 0dccb9efe), Firmware-Side-Load, Erweiterungen unverändert mp.4
+Stufen und Freigabe durch: 2 und 3 (M111 P-1 des Tests), Tim ("Keep dev.2" bis zum nächsten Testbuild, dieser ersetzt es)
+Lauf 1: PASS, 600 Abbrüche alle "done", kein Block. DCS verwarf 3 kreuzende Makro-Requests, 0 x "none was requested", 0 Neusendungen, 0 x "Macro file ... not found", 73 leere Out-of-order replies
+Lauf 2: PASS, 2000 Abbrüche alle "done", kein Block. DCS verwarf 17 kreuzende Makro-Requests, 0 x "none was requested", 0 x Stack underrun, 2 Neusendungen von InvalidateChannel (06:25:12, 06:27:29), danach je ein Out-of-order reply "M98: Macro file ... not found", 249 leere Out-of-order replies
+Rückbau geprüft: ja, nach beiden Läufen (kein Side-Load gemountet, /var/tmp/lab-tests weg, OTA-Timer aktiv, idle, Versionen wie vorher). RRF dev.3 bleibt auf dem Board
+```
+
+Bewertung: T2 (#134), T12 (#158, RRF #45) und die Neusendung von T11 (#161) sind auf der Hardware behoben, der Kanal blieb bei beiden Neusendungen frei. T10 (RRF #46) wirkt: Die Antwort "Macro file ... not found" landet nicht mehr beim nächsten Code. Offen bleibt der Fall, in dem die erste Kopie vor dem Warten auf das Makro kommt (`open-findings.md`, T10): dann erscheint die Fehlermeldung als Out-of-order reply in der Konsole. Die leeren Out-of-order replies sind Antworten, die RRF vor dem Lesen des Abbruchs geschrieben hat.
+
