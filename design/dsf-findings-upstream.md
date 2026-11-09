@@ -34,6 +34,7 @@ Line numbers refer to these commits. PR numbers are those of Meltingplot/DuetSof
 | | Finding and effect | Upstream origin | Fork fix |
 |---|---|---|---|
 | G2 | `M98` with a path that `FilePathResolver` refuses stops DCS. RRF stays halted until M999. Printer. | 4c910baa | #132 |
+| G12 | A float parameter that does not fit an int, uint or long (e.g. `M20 S31e9`) throws an OverflowException instead of an error reply. | 8434050b | #162 |
 | T3 | Codes buffered ahead on all channels can fill RRF's whole code buffer, so the codes of a trigger macro (trigger2.g: M112) wait. Printer. | 82d581d1 | #133 |
 | T2 | A macro request that crosses an InvalidateChannel is started by DSF. The channel stays blocked until DCS restarts. | 4a576390 | #134 |
 | T1 | **RRF:** InvalidateChannel ends a macro wait but still sends the request. DSF runs a macro that RRF does not, and every later trigger is discarded until DCS restarts. | RRF 8207b22cc | RRF #43 |
@@ -86,6 +87,15 @@ H13 (`rr_delete` ignored `recursive=yes`) was fixed upstream in 5130ca43 and is 
   - The packet loop catches only `ArgumentOutOfRangeException` (`Link/LinkService.cs:369-375`), so the exception ends LinkService and the host.
 - **Fork fix (#132):** a refused path ends like a missing file. `macro` stays null and `MacroError` is set, so RRF replies "Macro file … not found" (RRF `GCodes2.cpp:1713`). The refused path is logged as an error.
 - **Tests:** `MacroPaths.MacroPathRefusedByResolver`, `MacroPaths.RefusedPathInMacroEndsLikeMissingFile`, `LinkServiceOverSpi.MacroRequestForAFileThatCannotBeOpened`.
+
+### G12. A number that does not fit the parameter type throws an OverflowException
+
+- **What happens:** `M20 S31e9 P"0:/macs"` ends with `System.OverflowException: Value was either too large or too small for an Int32` instead of an error reply. Found by the weekly fuzz run (GCodeExecutionFuzz, seed 1754056457).
+- **Cause:** DSF parses `31e9` as a float. `CodeParameter`'s conversion to int calls `Convert.ToInt32` for every float (`DuetAPI/Commands/Code/Parameter.cs:309-311`, 8434050b), which throws for values out of range and for NaN. The same holds for uint (also from a negative int), long and the arrays.
+  - The conversions document `InvalidParameterTypeException` and refuse a long or uint that "won't fit". `Code.ProcessInternally` turns that exception into an error reply (`DuetControlServer/Commands/Generic/Code.cs:276-281`), but not an OverflowException, which reaches the client like G11.
+- **Fork fix (#162):** a value that `Convert` would refuse falls through to the existing `InvalidParameterTypeException`, as the uint array conversion already did for negative values. M20 then answers "Error: M20: Cannot convert S parameter to Int32 (value 31e9)".
+- **Not changed:** RRF reads `S31e9` as 31 and clamps integers that are too large, see G13 in `open-findings.md`.
+- **Tests:** `Commands.CodeParameterConversions.RejectedConversion` (16 new cases), `Codes.FileCodes.ListFilesWithTypeOutOfRangeIsAnError`.
 
 ### T3. All channels together can fill RRF's code buffer
 

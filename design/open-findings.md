@@ -176,6 +176,9 @@ Open questions:
   - It does not check skipped elements.
   - It joins `1 2` into 12.
   - Tests: `Codes.MetaExpressions.FileRead*` (6).
+- **G13. DSF refuses integer parameters that RRF reads.** From reading the code, not tested on RRF.
+  - RRF reads an integer with `StrToI32`, which takes no exponent (`NumericConverter.cpp:244`, only with `AcceptFloat`) and clamps values that are too large to `Int32Max` or `Int32Min` (`SafeStrtod.cpp:96-117`). So `S31e9` is 31 and `S99999999999` is 2147483647 (`StringParser.cpp:2039-2052`).
+  - DSF parses `31e9` as a float and `99999999999` as a long, and refuses both for an int parameter (`Parameter.cs`, G12 in `dsf-findings-upstream.md`).
 - **G11. M30, M470 and M472 fail with an exception when DSF refuses their path.** Same kind of bug as the fixed G2, but the channel goes on.
   - They resolve the path before their try (`MCodeHandler.cs:419`, `:850`, `:907`, with the try at `:426`, `:851`, `:914`, at 9e6449d1). M471 resolves inside its try (`:869-871`).
   - The exception then ends in the catch of the internal processing stage (`ProcessInternally.cs:32-39`): it is logged as "Failed to execute code … on internal processing stage", and the client gets the exception instead of an error reply.
