@@ -711,7 +711,8 @@ public class USB : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="packet">Packet holding the resend request</param>
     /// <param name="sbcRequest">Content of the packet to resend</param>
-    public void ResendPacket(PacketHeader packet, out Protocol.SbcRequests.Request sbcRequest)
+    /// <param name="invalidatedChannel">Channel of the resent request if it is an InvalidateChannel, else null</param>
+    public void ResendPacket(PacketHeader packet, out Protocol.SbcRequests.Request sbcRequest, out CodeChannel? invalidatedChannel)
     {
         // USB transfers are sequential: the firmware sees our data before composing its response, so a
         // resend request always refers to the exchange that was just sent. That buffer is the previous
@@ -729,6 +730,8 @@ public class USB : IDiagnostics, ILinkAdapter
             {
                 // Resend it but use a new identifier
                 sbcRequest = (Protocol.SbcRequests.Request)header.Request;
+                invalidatedChannel = (sbcRequest == Protocol.SbcRequests.Request.InvalidateChannel)
+                    ? MemoryMarshal.Read<CodeChannelHeader>(buffer.Slice(headerSize, header.Length)).Channel : null;
                 WritePacket(sbcRequest, header.Length);
                 buffer.Slice(headerSize, header.Length).CopyTo(GetWriteBuffer(header.Length));
                 return;

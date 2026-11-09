@@ -59,7 +59,7 @@ public class FakeFirmwareProtocolTests
             PacketHeader header = _firmware.ReadNextPacket()!.Value;
             if ((Request)header.Request == Request.ResendPacket)
             {
-                _firmware.ResendPacket(header, out _);
+                _firmware.ResendPacket(header, out _, out _);
             }
         }
         return [.. packets.Where(packet => packet.Request != Request.CodeBufferUpdate)];

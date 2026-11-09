@@ -193,8 +193,11 @@ public class SpiAdapterRequests
         foreach (PacketHeader request in requests)
         {
             Assert.That((FirmwareRequest)request.Request, Is.EqualTo(FirmwareRequest.ResendPacket));
-            dsf.ResendPacket(request, out SbcRequest kind);
+            dsf.ResendPacket(request, out SbcRequest kind, out CodeChannel? invalidatedChannel);
             resent.Add(kind);
+
+            // LinkService reopens the abort window of that channel (Processor.AllFilesAbortResent)
+            Assert.That(invalidatedChannel, Is.EqualTo((kind == SbcRequest.InvalidateChannel) ? CodeChannel.Trigger : null), kind.ToString());
         }
         Assert.That(resent, Is.EqualTo(sent.Select(p => p.Request)));
 

@@ -611,11 +611,18 @@ public sealed class LinkService(
         switch ((Request)packet.Request)
         {
             case Request.ResendPacket:
-                linkAdapter.ResendPacket(packet, out Protocol.SbcRequests.Request sbcRequest);
+                linkAdapter.ResendPacket(packet, out Protocol.SbcRequests.Request sbcRequest, out CodeChannel? invalidatedChannel);
                 if (sbcRequest != Protocol.SbcRequests.Request.LockAllMovementSystemsAndWaitForStandstill)
                 {
                     // It's expected that RRF will need a moment to lock the movement but report other resend requests
                     logger.LogWarning("Resending packet #{Id} (request {Request})", packet.Id, sbcRequest);
+                }
+                if (invalidatedChannel is not null && invalidatedChannel.Value < CodeChannel.Unknown)
+                {
+                    using (channels[invalidatedChannel.Value].Lock())
+                    {
+                        channels[invalidatedChannel.Value].AllFilesAbortResent();
+                    }
                 }
                 break;
             case Request.ObjectModel:

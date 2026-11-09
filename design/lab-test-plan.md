@@ -567,3 +567,20 @@ Rückbau geprüft: ja (kein Side-Load, /var/tmp/lab-tests weg, OTA-Timer aktiv, 
 ```
 
 Bewertung: Der T2-Fix wirkt auf der Hardware, und T1 trat nicht auf. Der Lauf fand T12: Die Meldung einer geschlossenen Makrodatei (`MacroFileClosed`), die einen Abbruch kreuzt, lässt den Stack von DSF unterlaufen, und die Ausnahme stoppt DCS (`design/dsf-findings-upstream.md`, T12). Fix in DSF (Fenster von #134) und RRF #45. Der Test muss mit einem RRF mit #45 wiederholt werden. T10 ist nicht nur kosmetisch: Die Antwort des abgebrochenen M98 ging an den nächsten Code.
+
+### 2026-11-08 nachts: T2 mit RRF #45, nicht bestanden (Fund T11, Neusendung)
+
+```
+Datum, Zeit (UTC): 2026-11-08, 22:36 Flash, 22:37:13 bis 22:40:34 Lauf
+Anlass, PR, Commit: Wiederholung von T2 nach #158 und RRF #45, DSF v3.7-dev 071c2b8f
+DSF: 3.7.0+mp.13 im Image, Side-Load von 071c2b8f
+RRF: 3.7.0+1.mp.9-dev.2 (3.7-dev 9678339c8 mit RRF #43, #44, #45), Firmware-Side-Load (DuetControlServer -u, Erweiterungen unverändert mp.4)
+Stufen und Freigabe durch: 2 und 3 (M111 P-1 des Tests), Tim ("yes both": dev.2 side-loaden und T2 wiederholen)
+Ablauf: run-lab-tests.sh --side-load, Filter ChannelWorksAfterAbortsCrossingMacroRequests, Telnet, short.g = G4 P1
+Ergebnis: FAIL nach 1 min 7 s. 165 Abbrüche liefen durch (Histogramm 0 bis 11,1 ms, alle "done"), in Durchlauf 165 (1,4 ms) bekam der Probe-Code G4 P0 keine Antwort. Kein Absturz von DCS mehr (T12 behoben)
+Journal: 22:39:02.728 "Resending packet #0 (request InvalidateChannel)", in derselben Millisekunde "Starting macro file ... short.g on channel Telnet", 22:39:02.730 RRF "Macro file has been started on channel Telnet but none was requested" und "M98: Macro file ... not found". 67 Out-of-order replies (T10). Debug-Zeilen wieder lückenhaft (journald)
+Rückbau geprüft: ja (kein Side-Load gemountet, idle, Versionen wie vorher). RRF dev.2 bleibt auf dem Board (Tim: bis zum nächsten Testbuild)
+```
+
+Bewertung: T12 ist auf der Hardware behoben. Der neue Block ist der zweite Fall von T11: Während ein M98 auf sein Makro wartet, hält die Hauptaufgabe von RRF die Pufferfreigabe, InvalidateChannel wartet nur 10 ms darauf und lässt sich neu senden. Die Kopie verwirft den Code, den DSF dazwischen geschickt hat. Fix in DSF (Kanal wartet, bis RRF den Abbruch angenommen hat), dazu der RRF-Fix für T10. Danach Wiederholung mit dem nächsten Testbuild.
+

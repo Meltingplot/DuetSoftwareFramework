@@ -38,6 +38,7 @@ Line numbers refer to these commits. PR numbers are those of Meltingplot/DuetSof
 | T2 | A macro request that crosses an InvalidateChannel is started by DSF. The channel stays blocked until DCS restarts. | 4a576390 | #134 |
 | T1 | **RRF:** InvalidateChannel ends a macro wait but still sends the request. DSF runs a macro that RRF does not, and every later trigger is discarded until DCS restarts. | RRF 8207b22cc | RRF #43 |
 | T12 | An abort that crosses the closal of a macro underruns DSF's stack, and the exception stops DCS. Printer. | 4a576390, RRF 8207b22cc | #158, RRF #45 |
+| T11 | When RRF asks for an InvalidateChannel again, the copy drops the codes DSF sent after the first one, or ends macro waits that started in between. The channel stays blocked. Printer. | 4a576390, RRF 8207b22cc, c5af8416b | #161 |
 | I1 | `RequiredPermissionsAttribute.Check` is true for every command, so plugins get every IPC command and connection mode. | c42f948b | #135 |
 | I8 | The IPC command `InvalidateChannel` is refused as unsupported, so the DuetAPIClient calls for it always fail. | 6dd3b8a3 | #158 |
 | H1 | A delete that names the SD root deletes the whole virtual SD card. | 75eb6536, RRF 600857f87 | #136, RRF #44 |
@@ -142,6 +143,20 @@ H13 (`rr_delete` ignored `recursive=yes`) was fixed upstream in 5130ca43 and is 
   - RRF (#45): InvalidateChannel clears a closal that has not gone out (`gb->MacroFileClosedSent()`), as `GCodeBuffer::Reset` does (`GCodeBuffer.cpp:142`). The main task sets it under the same buffer mutex (`GCodes.cpp:540`).
 - **Not covered:** an InvalidateChannel that RRF asks DSF to resend, as in T11.
 - **Test:** `TriggerFuzz.DcsKeepsRunningWhenAMacroFileClosalArrivesBeforeTheAbortGoesOut`, `DcsKeepsRunningWhenAnAbortCrossesAMacroFileClosal` (DSF side), `DcsKeepsRunningWhenAnAbortArrivesBeforeAMacroFileClosalIsSent` (RRF side in the fake firmware). RRF #45 has only been built, not run on hardware.
+
+### T11 (resend). An abort that RRF asks for again blocks the channel
+
+- **What happens:** printer, 2026-11-08 22:39:02 UTC (RRF with #43 and #45, DSF with #158): DCS logs "Resending packet #0 (request InvalidateChannel)". RRF warns "Macro file has been started on channel Telnet but none was requested", the next code on Telnet gets no reply, and the channel stays blocked until DCS restarts.
+- **Cause:**
+  - While an M98 waits for its macro, the main task holds the buffer mutex: `SpinGCodeBuffer` locks it for the whole spin (RRF `GCodes.cpp:540`, c5af8416b). `RequestMacroFile` releases only its own level of the recursive mutex (`GCodeBuffer.cpp:1252`, `:1263`).
+  - InvalidateChannel waits only `SbcYieldTimeout` (10 ms, `SbcInterface.cpp:45`, `:860`) and asks DSF to send it again (`:1300`). Before that it ends the macro wait (`:857`). So during a macro wait the copy is the normal case.
+  - DSF goes on with the channel as soon as the first copy is out (`Processor.cs:867-870`). `WriteCode` only waits for resends of codes (`SPI.cs:737`).
+  - The copy then drops the codes RRF got in between (`InvalidateBufferedCodes`), which never get a reply. Or it ends a macro wait that started after the first copy, and DSF starts that macro, because the request came after its window (T2, #134).
+- **Fork fix (#161):** DSF sends nothing else on the channel until RRF has answered the InvalidateChannel, i.e. until the data of the next transfer brought no resend request. RRF writes resend requests while it reads, before its other packets (`SbcInterface.cpp:1300`), so a resend request also reopens the window of #134 for the rest of that data and the next transfer.
+  - `ILinkAdapter.ResendPacket` reports the channel of a resent InvalidateChannel.
+  - Behaviour change: after an abort, the channel's next request goes out one transfer later.
+- **Not changed:** the T1 part of InvalidateChannel still ends the macro wait on the first copy, and RRF still answers the M98 with "Macro file … not found" (T10).
+- **Test:** `TriggerFuzz.CodesAfterAnAbortWaitUntilRrfHasProcessedIt`, `MacroRequestBetweenTwoCopiesOfAnAbortIsDiscarded`. `TriggerMacroAfterAnAcceptedAbortIsStarted` guards that a trigger macro after an accepted abort still starts. The fake firmware lets the buffer lock fail (`FakeFirmware.FailBufferLocks`).
 
 ## Permissions and files
 

@@ -701,6 +701,117 @@ public class TriggerFuzz
     }
 
     /// <summary>
+    /// Run M98 on HTTP with held transfers until RRF waits for the macro and its request is on the way, then abort HTTP while the buffer
+    /// mutex of RRF cannot be had, as on the lab printer on 2026-11-08 ("Resending packet #0 (request InvalidateChannel)"): while an M98 waits for
+    /// its macro, the main task holds the mutex (GCodes.cpp:590), and InvalidateChannel waits only SbcYieldTimeout for it (SbcInterface.cpp:45, :888-900)
+    /// </summary>
+    private static async Task<Task<string>> AbortWhileRrfCannotLockAsync(FakeFirmwareHost host)
+    {
+        host.WriteMacro("http-macro.g", "G4 P90001\n");
+        host.Firmware.HoldTransfers();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, Timeout), Is.True, "The transfers were not held");
+
+        Task<string> m98 = host.StartCode("M98 P\"http-macro.g\"");
+        for (int i = 0; i < 100 && !host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Any(code => code.Text == "M98 P\"http-macro.g\""); i++)
+        {
+            Step(host);
+        }
+        Step(host);
+        host.Firmware.FailBufferLocks(CodeChannel.HTTP, 1);
+        await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
+        return m98;
+    }
+
+    /// <summary>
+    /// Transfers in which RRF got an InvalidateChannel of a channel
+    /// </summary>
+    private static int[] InvalidateChannelTransfers(FakeFirmwareHost host, CodeChannel channel) =>
+        [.. host.Firmware.GetReceivedRequests().Where(request => request.Request == SbcRequest.InvalidateChannel && request.Channel == channel).Select(request => request.Transfer)];
+
+    [Test]
+    public async Task CodesAfterAnAbortWaitUntilRrfHasProcessedIt()
+    {
+        // RRF asks for the InvalidateChannel again (SbcInterface.cpp:1338-1341) and processes the copy one transfer later. A code that DSF sent in
+        // between reached RRF before the copy, which dropped it (InvalidateBufferedCodes), and the code never got a reply. On the printer the probe
+        // G4 P0 of AbortsCrossingMacroRequests got none. DSF now sends nothing on the channel until RRF has processed the InvalidateChannel
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        Task<string> m98 = await AbortWhileRrfCannotLockAsync(host);
+        Task<string> next = host.StartCode("G4 P90002");
+        host.Firmware.ReleaseTransfers();
+        try
+        {
+            await m98.WaitAsync(Timeout);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled by the abort
+        }
+
+        Assert.That(await next.WaitAsync(Timeout), Is.Not.Null, "The code after the abort got no reply");
+        int[] invalidations = InvalidateChannelTransfers(host, CodeChannel.HTTP);
+        Assert.That(invalidations, Has.Length.EqualTo(2), "RRF did not ask for the InvalidateChannel again");
+        int codeTransfer = host.Firmware.GetReceivedRequests().First(request => request.Request == SbcRequest.Code && request.Code?.Text == "G4 P90002").Transfer;
+        Assert.That(codeTransfer, Is.GreaterThan(invalidations[1]), "The code went out before RRF had processed the InvalidateChannel");
+        Assert.That(host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.Member("G4 P90002"));
+    }
+
+    [Test]
+    public async Task MacroRequestBetweenTwoCopiesOfAnAbortIsDiscarded()
+    {
+        // RRF asked for the InvalidateChannel again and requests a macro before it reads the copy. The copy ends that request with an error
+        // (SbcInterface.cpp:880-886), so DSF must not start the macro, as for the requests before the first copy (#134). Before, DSF started it,
+        // RRF warned "Macro file has been started on channel ... but none was requested" (lab printer, 2026-11-08) and the channel waited for it
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        host.WriteMacro("http-other.g", "G4 P90004\n");
+        Task<string> m98 = await AbortWhileRrfCannotLockAsync(host);
+
+        // DSF writes the InvalidateChannel after the next transfer. RRF asks for it again in the transfer that brings it, and its main task asks for
+        // the other macro in the same transfer, once the first copy has ended the wait of the M98
+        Step(host);
+        Assert.That(host.Firmware.GetPendingRequests().Any(request => request.Request == SbcRequest.InvalidateChannel && request.Channel == CodeChannel.HTTP), Is.True,
+            "DSF did not write the InvalidateChannel");
+        host.Firmware.RequestMacro(CodeChannel.HTTP, "http-other.g");
+        host.Firmware.ReleaseTransfers();
+        try
+        {
+            await m98.WaitAsync(Timeout);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled by the abort
+        }
+        Assert.That(host.Firmware.WaitUntil(firmware => InvalidateChannelTransfers(host, CodeChannel.HTTP).Length == 2 && firmware.IsIdle(CodeChannel.HTTP), Timeout), Is.True,
+            "RRF did not process the copy of the abort");
+
+        Assert.That(await host.ExecuteAsync("G4 P90005").WaitAsync(Timeout), Is.Not.Null);
+        Assert.That(host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.None.EqualTo("G4 P90004"));
+        Assert.That(DsfStackDepth(host, CodeChannel.HTTP), Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task TriggerMacroAfterAnAcceptedAbortIsStarted()
+    {
+        // Guard for the two tests above: once RRF has processed an InvalidateChannel without asking for it again, its next requests are valid.
+        // DSF must start a trigger macro that RRF requests then, or the trigger is lost (RRF gives the request up after SbcMaxRequestTime)
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        host.WriteMacro("trigger5.g", "G4 P90006\n");
+        host.Firmware.HoldTransfers();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, Timeout), Is.True, "The transfers were not held");
+        await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.Trigger);
+        for (int i = 0; i < 10 && InvalidateChannelTransfers(host, CodeChannel.Trigger).Length == 0; i++)
+        {
+            Step(host);
+        }
+        Assert.That(InvalidateChannelTransfers(host, CodeChannel.Trigger), Has.Length.EqualTo(1));
+
+        host.Firmware.RequestMacro(CodeChannel.Trigger, "trigger5.g");
+        host.Firmware.ReleaseTransfers();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.Trigger).Any(code => code.Text == "G4 P90006"), Timeout), Is.True,
+            "DSF did not start the trigger macro");
+        Assert.That(InvalidateChannelTransfers(host, CodeChannel.Trigger), Has.Length.EqualTo(1));
+    }
+
+    /// <summary>
     /// Transfers in which RRF asked for a macro on a channel
     /// </summary>
     private static int[] MacroRequestTransfers(FakeFirmwareHost host, CodeChannel channel) =>
