@@ -13,9 +13,9 @@ Goal (Tim, 2026-11-09):
 > My goal is to remove our edge-case catch code from the codebase in the medium term. Follow best practices of
 > mainstream high-volume protocols, and require as few changes to the logic code as possible.
 
-Constraint: RRF runs on a SAME70 with fixed RAM. Measured on the lab printer on 2026-11-09 (MB6HC, RRF
-3.7.0+1.mp.9-dev.3, CHX configuration, M122, reported by Tim): "RAM: static 131040, dynamic 105276 (1744 recycled),
-never used 95868, free sys stack 172", heap 6144/5036/612.
+Constraint (Tim: "the other end is an embedded system with RAM constraints"): RRF runs on a SAME70 with fixed RAM.
+M122 on the lab printer on 2026-11-09 06:4x UTC (MB6HC, RRF 3.7.0+1.mp.9-dev.3, CHX configuration), read for this
+document: "RAM: static 131040, dynamic 105276 (1744 recycled), never used 95868, free sys stack 172", heap 6144/5036/612.
 
 ## 0. Basis and conventions
 
@@ -23,10 +23,11 @@ never used 95868, free sys stack 172", heap 6144/5036/612.
   was made. RRF fork at 0dccb9efe, whose tree equals fork `3.7-dev` ddec2d001 (the DSF submodule pin).
 - **Paths:** `DCS/` = `src/DuetControlServer/`. `RRF/` = RRF `src/`. Line numbers refer to the commits above.
 - **PRs:** `#n` = Meltingplot/DuetSoftwareFramework, `RRF #n` = Meltingplot/RepRapFirmware.
-- **Working papers** (2026-11-09, not in the repository; this document repeats every code reference it needs):
-  - the edge-case catalogue: 47 catch-code items, numbered `CC-1`–`CC-47` here (to keep them apart from PR
-    numbers), with letter IDs (`A1`, `B7`, `NEW-1`);
-  - the pattern survey: 12 patterns `P1`–`P12` from mainstream protocols.
+- **Working papers** (2026-11-09; this document repeats every code reference it needs):
+  - [sbc-link-v8-catalogue.md](sbc-link-v8-catalogue.md): 47 catch-code items. `CC-n` here is row n of its
+    catch-code index (section 12), numbered so to keep them apart from PR numbers. Its letter IDs (`A1`, `B7`,
+    `NEW-1`) are kept;
+  - [sbc-link-v8-patterns.md](sbc-link-v8-patterns.md): 12 patterns `P1`–`P12` from mainstream protocols.
 - **IDs of other documents are qualified,** because several collide:
 
 | Prefix | Document |
@@ -226,7 +227,7 @@ are processed in order, as today. **Barriers** across channels that v8 keeps:
 
 ## 6. Firmware RAM budget
 
-Measured basis (M122 as reported by Tim; meaning from the RRF code):
+Measured basis (M122 of 2026-11-09, see the top; meaning from the RRF code):
 - "static 131040" is RAM up to `_end`, "dynamic 105276 (1744 recycled)" is `mallinfo` in use and free,
   "never used 95868" is `heapLimit − heapTop`, "free sys stack 172" is in words, 688 bytes
   (`RRF/Platform/Tasks.cpp:300-314`, `:369-370`).
@@ -362,7 +363,7 @@ session layer.
 | Q12 | H1 ("Daemon: Out-of-order reply ''" after a DCS start) and H2 ("Failed to find suitable stack level for flush request") | Causes not known; whether v8 removes them is not known |
 
 Also unverified:
-- The M122 figures were measured by Tim, not for this document.
+- The M122 figures are one reading on one printer and configuration; they change with the configuration.
 - RAM figures are estimates from field sizes; padding, `StaticSemaphore_t` and `GCodeMachineState` sizes were not
   measured.
 - The PBUF pool size comes from the harness model, not from the board's `lwipopts.h:267` expression.
