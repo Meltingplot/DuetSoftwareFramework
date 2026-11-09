@@ -168,6 +168,30 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
     public void QueueMacroRequest(CodeChannel channel, string fileName, bool reportMissing) => _macroRequests.Enqueue((channel, fileName, reportMissing));
 
     /// <summary>
+    /// Text codes that a channel passes on to DSF once it is idle, see <see cref="FakeFirmware.PassCodeToSbc"/>
+    /// </summary>
+    private readonly Queue<(CodeChannel channel, string code)> _sbcCodes = new();
+
+    /// <summary>
+    /// Queue a text code that RRF cannot run itself, so it passes it on to DSF (GCodes2.cpp:600-606)
+    /// </summary>
+    /// <param name="channel">Channel of the code</param>
+    /// <param name="code">Text of the code</param>
+    public void QueueSbcCode(CodeChannel channel, string code) => _sbcCodes.Enqueue((channel, code));
+
+    /// <summary>
+    /// Channels whose files the main task aborts on its next spin, see <see cref="FakeFirmware.AbortAllFiles"/>
+    /// </summary>
+    private readonly HashSet<CodeChannel> _abortAllFiles = [];
+
+    /// <summary>
+    /// Let the main task abort all files of a channel on its next spin, as GCodes::AbortPrint does after an error of the state machine
+    /// (GCodes.cpp:3623-3640). GCodeBuffer::AbortFile(true) flags the abort for DSF, which the SBC task writes as AbortFile(all)
+    /// </summary>
+    /// <param name="channel">Code channel</param>
+    public void QueueAbortAllFiles(CodeChannel channel) => _abortAllFiles.Add(channel);
+
+    /// <summary>
     /// Called by the SBC task on an emergency stop. The main task carries it out on its next spin, see GCodes::EmergencyStop
     /// </summary>
     public void RequestEmergencyStop() => _emergencyStopRequested = true;
@@ -185,6 +209,8 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
         MovementLockOwner = null;
         MessageBoxes.Clear();
         _macroRequests.Clear();
+        _sbcCodes.Clear();
+        _abortAllFiles.Clear();
         TriggersPending = 0;
     }
 
@@ -218,11 +244,18 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
             Stopped = true;
         }
 
+        // RRF's own abort of all files, e.g. AbortPrint after an error of the state machine
+        foreach (CodeChannel channel in _abortAllFiles)
+        {
+            this[channel].AbortFile(true);
+        }
+        _abortAllFiles.Clear();
+
         // Start requested system macros when their channels are idle
         while (_macroRequests.TryPeek(out var request))
         {
             FakeGCodeBuffer gb = this[request.channel];
-            if (gb.CurrentCode is not null || gb.PendingMacroCall is not null)
+            if (gb.CurrentCode is not null || gb.PendingMacroCall is not null || gb.SbcCode is not null)
             {
                 break;
             }
@@ -232,6 +265,23 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
             if (IsBlocked)
             {
                 return;
+            }
+        }
+
+        // Pass text codes on to DSF when their channels are idle. RRF reads a text code into the buffer of its channel, so that channel is busy
+        // until DSF has sent the result (GCodeBufferState::executingOnSbc)
+        int sbcCodes = _sbcCodes.Count;
+        for (int i = 0; i < sbcCodes; i++)
+        {
+            (CodeChannel channel, string code) = _sbcCodes.Dequeue();
+            FakeGCodeBuffer gb = this[channel];
+            if (gb.CurrentCode is null && gb.PendingMacroCall is null && gb.SbcCode is null && !gb.IsDoingFile && !gb.MachineState.WaitingForAcknowledgement)
+            {
+                gb.SendToSbc(code);
+            }
+            else
+            {
+                _sbcCodes.Enqueue((channel, code));
             }
         }
 
@@ -259,15 +309,15 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
     }
 
     /// <summary>
-    /// Whether the trigger channel is busy, see GCodes::IsTriggerBusy (GCodes.cpp:423-433).
-    /// Lines that RRF passes on to DSF (IsSendRequested, IsExecutingOnSbc) are not emulated
+    /// Whether the trigger channel is busy, see GCodes::IsTriggerBusy (GCodes.cpp:423-433)
     /// </summary>
     private bool IsTriggerBusy
     {
         get
         {
             FakeGCodeBuffer gb = this[CodeChannel.Trigger];
-            return gb.IsDoingFile || gb.CurrentCode is not null || gb.MachineState.WaitingForAcknowledgement || gb.IsAbortRequested;
+            return gb.IsDoingFile || gb.CurrentCode is not null || gb.MachineState.WaitingForAcknowledgement || gb.IsAbortRequested ||
+                gb.IsSendRequested || gb.IsExecutingOnSbc;
         }
     }
 
@@ -348,6 +398,12 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
         if (gb.IsDoingFile)
         {
             return DoFilePrint(gb);
+        }
+
+        if (gb.SbcCode is not null)
+        {
+            // A text code is with DSF or waits to be sent there, the buffer of the channel holds it until DSF has sent the result
+            return false;
         }
 
         if (firmware.FillBuffer(gb))

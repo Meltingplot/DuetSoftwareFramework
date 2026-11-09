@@ -37,8 +37,9 @@ namespace UnitTests.FakeFirmware;
 /// Emulated: code buffer and buffer updates, code replies with RRF's flags, macro requests (M98, system macros), pending triggers and their
 /// macros (GCodes::CheckTriggers, see <see cref="FireTrigger"/>), macro completion and M99 aborts, message boxes (M291/M292), M409, the result variables of M260/M261, expression evaluation, local and global variables,
 /// movement locks, channel invalidation, emergency stop, reset, resend requests, the mutex hand-over between RRF's SBC and main tasks
-/// while a code waits for a macro, and main firmware updates through the SBC IAP program (FakeFirmwareIap.cs).
-/// Not emulated: job files and pausing, file requests from RRF, codes RRF passes on to DSF (DoCode), timeouts, motion, heaters,
+/// while a code waits for a macro, text codes that RRF passes on to DSF (DoCode, see <see cref="PassCodeToSbc"/>), RRF's own abort of all files
+/// (see <see cref="AbortAllFiles"/>) and main firmware updates through the SBC IAP program (FakeFirmwareIap.cs).
+/// Not emulated: job files and pausing, file requests from RRF, timeouts, motion, heaters,
 /// the binary protocol and its transfer buffer limits. Codes without a test handler succeed with an empty reply
 /// </para>
 /// </summary>
@@ -200,6 +201,60 @@ public sealed partial class FakeFirmware : ILinkAdapter
         lock (_lock)
         {
             _gcodes.SetTriggerPending(number);
+        }
+    }
+
+    /// <summary>
+    /// Let a channel pass a text code on to DSF, as RRF does for a code from PanelDue, USB or a trigger action that it cannot run itself
+    /// (default case of GCodes::HandleMcode, GCodes2.cpp:600-606). The main task takes the code once the channel is idle, and the SBC task writes it
+    /// as DoCode (SbcInterface.cpp:1613-1634). The channel stays busy until DSF sends a message to that channel alone, which is the result
+    /// (SbcInterface.cpp:774-793)
+    /// </summary>
+    /// <param name="channel">Channel of the code</param>
+    /// <param name="code">Text of the code</param>
+    public void PassCodeToSbc(CodeChannel channel, string code)
+    {
+        lock (_lock)
+        {
+            _gcodes.QueueSbcCode(channel, code);
+        }
+    }
+
+    /// <summary>
+    /// Let the main task abort all files of a channel on its next spin, as GCodes::AbortPrint does after an error of the state machine
+    /// (GCodes.cpp:3623-3640). The SBC task tells DSF with AbortFile(all) (SbcInterface.cpp:1541-1577). A channel without a file is left alone,
+    /// see GCodeBuffer::AbortFile
+    /// </summary>
+    /// <param name="channel">Code channel</param>
+    public void AbortAllFiles(CodeChannel channel)
+    {
+        lock (_lock)
+        {
+            _gcodes.QueueAbortAllFiles(channel);
+        }
+    }
+
+    /// <summary>
+    /// Get the messages DSF sent to the firmware, e.g. the results of the text codes RRF passed on
+    /// </summary>
+    /// <returns>Messages in order</returns>
+    public IReadOnlyList<FakeSbcRequest> GetReceivedMessages()
+    {
+        lock (_lock)
+        {
+            return [.. _receivedMessages];
+        }
+    }
+
+    /// <summary>
+    /// Get the text codes that RRF passed on to DSF and that a message of DSF finished, with the text of that message
+    /// </summary>
+    /// <returns>Finished codes and the results that finished them, in order</returns>
+    public IReadOnlyList<(string Code, string Result)> GetFinishedSbcCodes()
+    {
+        lock (_lock)
+        {
+            return [.. _finishedSbcCodes];
         }
     }
 
@@ -470,7 +525,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
         {
             FakeGCodeBuffer gb = _gcodes[channel];
             return !gb.IsDoingFile && !gb.IsWaitingForMacro && gb.PendingMacroCall is null && gb.CurrentCode is null &&
-                !gb.MachineState.WaitingForAcknowledgement && !gb.IsAbortRequested && gb.MachineState.Previous is null;
+                !gb.MachineState.WaitingForAcknowledgement && !gb.IsAbortRequested && gb.MachineState.Previous is null && gb.SbcCode is null;
         }
     }
 
@@ -555,6 +610,8 @@ public sealed partial class FakeFirmware : ILinkAdapter
     private readonly List<FakeCode> _receivedCodes = [], _executedCodes = [], _discardedCodes = [];
     private readonly List<FakePacket> _sentPackets = [];
     private readonly List<FakeSbcRequest> _receivedRequests = [];
+    private readonly List<FakeSbcRequest> _receivedMessages = [];
+    private readonly List<(string code, string result)> _finishedSbcCodes = [];
     private readonly List<string> _unemulated = [];
 
     /// <summary>
@@ -789,7 +846,23 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     break;
 
                 case SbcRequest.Message:
-                    // Messages for other devices and replies to codes executed by DSF (DoCode) are not emulated
+                    // A message to a single channel whose text code DSF executes is the result of that code and finishes it (SbcInterface.cpp:774-793).
+                    // Output to other devices is not emulated, the fake records the message instead
+                    if (!request.MessageFlags.HasFlag(MessageTypeFlags.PushFlag) && TryGetSingleChannel(request.MessageFlags, out CodeChannel destination))
+                    {
+                        FakeGCodeBuffer target = _gcodes[destination];
+                        if (target.IsExecutingOnSbc)
+                        {
+                            if (!TryLockBuffer(target))
+                            {
+                                acknowledged = false;
+                                break;
+                            }
+                            _finishedSbcCodes.Add((target.SbcCode!, request.Text));
+                            target.SetFinished(true);
+                        }
+                    }
+                    _receivedMessages.Add(request);
                     break;
 
                 case SbcRequest.MacroStarted:
@@ -987,7 +1060,12 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     gb.IsInvalidated = true;
                 }
 
-                // Codes that RRF passes on to DSF (DoCode) are not emulated
+                // Send pending firmware codes (SbcInterface.cpp:1613-1634). Explicit line numbers are not emulated
+                if (gb.IsSendRequested)
+                {
+                    WritePacket(new FakePacket { Request = FirmwareRequest.DoCode, Channel = gb.Channel, Text = gb.SbcCode! });
+                    gb.SentToSbc();
+                }
             }
         }
 
@@ -1191,6 +1269,25 @@ public sealed partial class FakeFirmware : ILinkAdapter
         packet.Id = (ushort)_txPackets.Count;
         _txPackets.Add(packet);
     }
+
+    /// <summary>
+    /// Get the channel of a message whose only destination is one code channel, as SbcInterface.cpp:774-793 checks with
+    /// Bitmap::IsOnlyBitSet over the destination bits
+    /// </summary>
+    /// <param name="flags">Message flags</param>
+    /// <param name="channel">Channel of the destination</param>
+    /// <returns>Whether exactly one channel is the destination</returns>
+    private static bool TryGetSingleChannel(MessageTypeFlags flags, out CodeChannel channel)
+    {
+        uint destinations = (uint)flags & ((1u << (int)CodeChannel.Unknown) - 1);
+        if (destinations != 0 && (destinations & (destinations - 1)) == 0)
+        {
+            channel = (CodeChannel)System.Numerics.BitOperations.TrailingZeroCount(destinations);
+            return true;
+        }
+        channel = CodeChannel.Unknown;
+        return false;
+    }
     #endregion
 
     #region Interface for the emulated main task
@@ -1351,7 +1448,12 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <inheritdoc />
-    public void ReadDoCode(out CodeChannel channel, out string code) => throw new NotSupportedException("The fake firmware does not pass codes to DSF");
+    public void ReadDoCode(out CodeChannel channel, out string code)
+    {
+        FakePacket packet = CurrentPacket(FirmwareRequest.DoCode);
+        channel = packet.Channel;
+        code = packet.Text;
+    }
 
     /// <inheritdoc />
     public void ReadCheckFileExists(out string filename) => throw new NotSupportedException("The fake firmware does not request files");

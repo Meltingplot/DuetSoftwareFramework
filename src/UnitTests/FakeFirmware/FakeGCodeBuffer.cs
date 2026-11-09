@@ -148,6 +148,42 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     /// Called when DSF has been told about the acknowledged message box
     /// </summary>
     public void MessageAcknowledgementSent() => IsMessageAcknowledged = false;
+
+    /// <summary>
+    /// Text code that RRF passes on to DSF (DoCode) because it cannot run it itself, see the default case of GCodes::HandleMcode
+    /// (GCodes2.cpp:600-606). Null if there is none
+    /// </summary>
+    public string? SbcCode { get; private set; }
+
+    /// <summary>
+    /// Whether the text code is yet to be sent to DSF (sendToSbc, GCodeBuffer.h:416)
+    /// </summary>
+    public bool IsSendRequested { get; private set; }
+
+    /// <summary>
+    /// Whether DSF executes the text code (GCodeBufferState::executingOnSbc, GCodeBuffer::IsExecutingOnSbc)
+    /// </summary>
+    public bool IsExecutingOnSbc { get; private set; }
+
+    /// <summary>
+    /// Pass a text code on to DSF, see GCodeBuffer::SendToSbc. A text code clears lastCodeFromSbc (GCodeBuffer::Put, GCodeBuffer.cpp:294)
+    /// </summary>
+    /// <param name="code">Text of the code</param>
+    public void SendToSbc(string code)
+    {
+        MachineState.LastCodeFromSbc = false;
+        SbcCode = code;
+        IsSendRequested = true;
+    }
+
+    /// <summary>
+    /// The text code has been sent to DSF, see GCodeBuffer::SentToSbc (GCodeBuffer.h:447-452)
+    /// </summary>
+    public void SentToSbc()
+    {
+        IsSendRequested = false;
+        IsExecutingOnSbc = true;
+    }
     #endregion
 
     /// <summary>
@@ -255,8 +291,11 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     {
         if (finished)
         {
+            // This ends a text code passed on to DSF as well (sendToSbc = false and the parser's SetFinished, GCodeBuffer.cpp:957-966)
             CurrentCode = null;
             IsExecuting = false;
+            SbcCode = null;
+            IsSendRequested = IsExecutingOnSbc = false;
         }
         else
         {
@@ -480,6 +519,8 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
         IsWaitingForMacro = HasJustStartedMacro = MacroFileError = IsMacroEmpty = IsMacroFileClosed = false;
         IsAbortRequested = IsAbortAllRequested = IsMessagePromptPending = IsMessageAcknowledged = IsInvalidated = IsInvalidationPending = IsCodeReplySurplus = false;
         RequestedMacroFile = null;
+        SbcCode = null;
+        IsSendRequested = IsExecutingOnSbc = false;
     }
 
     /// <summary>
