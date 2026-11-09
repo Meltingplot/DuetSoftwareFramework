@@ -232,7 +232,7 @@ bounded as C-4). V8-34 removes three waits (E-26…E-28).
 | V7-19 when DSF writes a Code | changed | V8-9, V8-15 | the block by an unconfirmed abort becomes the wait for RESET_ACK; buffer space becomes credit | CC-6 | yes: same blocking, explicit end |
 | V7-20 code admission | gap | V8-15, V8-35 (new) | a code within the credit is never refused and there is no cascade; an invalid length is rejected for good instead of refused on every copy | CC-30; G-17, X-19 (K24): draft 2 had no answer for a code that can never fit | yes: "code ends with an error" is a v7 outcome |
 | V7-21 flow control by estimate | changed | V8-15, V8-16, V8-17 | absolute credit instead of estimate, spare room and share | CC-28, CC-29, CC-30 | yes |
-| V7-22 read-ahead drop (B7) | gap | V8-37 (new), V8-23 (amended) | — (kept) | V8-23 of draft 2 forbade the rule it rests on, with no replacement (Q5) | — |
+| V7-22 read-ahead drop (B7) | gap | V8-37 (new), V8-23 (amended) | — (kept) | V8-23 of draft 2 forbade the rule it rests on, with no replacement (Q5) | yes: v7 behaviour kept, no order added |
 | V7-23 RRF holds codes while a stack event is unsent | identical | — | — | RRF logic | — |
 | V7-24 per-channel FIFO | identical | V8-4 | — | — | — |
 | V7-25 comment codes get no reply | identical | — | — | — | — |
@@ -251,7 +251,7 @@ bounded as C-4). V8-34 removes three waits (E-26…E-28).
 | V7-38 macro start, implicit start | changed | V8-7 | only an accepted Code starts the macro | DF-T11 family | yes |
 | V7-39 daemon.g | changed | V8-11 | a request of an older epoch is not sent | A5 (OF T11) | yes |
 | V7-40 macro wait timeout | gap | V8-39 (new) | late answers are dropped by request number; an expired request asks for RESET(c) | X-9, X-25 (K23); draft 2 had request numbers only in the table of section 5 | yes: "channel aborted after a macro request" is a v7 order (an abort can come at any time); decision D10 |
-| V7-41 MacroCompleted | changed | V8-10; V8-14 (M5) | one of an old epoch is dropped; X-7 stays until M5 | — | yes |
+| V7-41 MacroCompleted | changed | V8-10; V8-14 (M5) | one of an old epoch is dropped; X-7 stays until M5 | a MacroCompleted written before an abort belongs to a level that no longer exists; the epoch identifies it instead of its position (A-2 family, contract V7-41) | yes |
 | V7-42 MacroFileClosed | changed | V8-10, V8-24 (amended) | the epoch replaces #158 and RRF #45; no closal of the old session arrives | CC-3, CC-4; K5 | yes |
 | V7-43 DSF's macro reader | identical | — | — | DSF logic | — |
 | V7-44 M98 | identical | — | — | — | — |
@@ -259,7 +259,7 @@ bounded as C-4). V8-34 removes three waits (E-26…E-28).
 | V7-46 AbortFile all | changed | V8-12 | RRF's abort of all files asks for RESET(c, e+1); DSF's channel then waits for RESET_ACK | G-20 (K18): late replies get a stale epoch and are dropped | yes; the RESET_ACK wait is E-16 of a DSF abort, bounded as C-4, and RRF runs codes of c only after the abort, as in v7 |
 | V7-47 stack depth | identical | — | — | RRF logic; its overflow uses V7-46 | — |
 | V7-48 WaitForAcknowledgement | identical | V8-14 (M5) | G-14 stays (K15) | — | — |
-| V7-49 MessageAcknowledged | changed | V8-10 | an acknowledgement of an old epoch is dropped (a box at the base level after an abort, OF T10) | — | yes |
+| V7-49 MessageAcknowledged | changed | V8-10 | an acknowledgement of an old epoch is dropped (a box at the base level after an abort, OF T10) | in v7 such an acknowledgement pops whatever level is current after the abort (X-11, OF T10); the epoch ties it to the level it was meant for | yes |
 | V7-50 cancel with abort | identical | — | — | — | — |
 | V7-51 M291 blocks only lower levels | identical | — | — | logic | — |
 | V7-52 DSF side of an abort | changed | V8-9 | InvalidateChannel becomes RESET(c, e+1) after the same DSF work; G-21 stays (K19) | CC-1 | yes |
@@ -287,10 +287,10 @@ bounded as C-4). V8-34 removes three waits (E-26…E-28).
 | V7-74 … V7-79 level routing, start code, pop effects, flush, prioritized codes, job read-ahead | identical | — | — | DSF and RRF logic, untouched by v8 | — |
 | V7-80 M606 S1 | identical | V8-33 (amended) | C-3 stays until the v7 fix (K3, D11) | — | — |
 | V7-81 triggers | identical | — | — | RRF logic | — |
-| V7-82 no cross-channel order | gap | V8-29 (amended) | — (kept) | draft 2 stated one direction and "the order DSF wrote them"; RRF→DSF has production order for replies and channel-number order for requests; requiring more would add waits | — |
+| V7-82 no cross-channel order | gap | V8-29 (amended) | — (kept) | draft 2 stated one direction and "the order DSF wrote them"; RRF→DSF has production order for replies and channel-number order for requests; requiring more would add waits | yes: v7 behaviour kept, no order added |
 | V7-83 the link thread takes logic locks | gap | V8-31 (amended), V8-34 | the packet loop takes no lock whose holder waits for it | C-1, C-2 (K1, K2) | yes |
 | V7-84 completion never blocks the link thread | identical | — | — | — | — |
-| V7-85 DSF waits without timeout | gap | V8-32 (amended) | — (kept); the only new wait is STOP_ACK | draft 2 ended the session when a credit or stall wait made no progress, where v7 goes on | — |
+| V7-85 DSF waits without timeout | gap | V8-32 (amended) | — (kept); the only new wait is STOP_ACK | draft 2 ended the session when a credit or stall wait made no progress, where v7 goes on | yes: v7 behaviour kept; STOP_ACK is the one new wait (V7-13) |
 | V7-86 … V7-88 RRF task waits | identical | V8-31 | — | the 10 ms hand-over and RRF's waits stay | — |
 | V7-89 link-level bounds | identical | — (v2) | — | — | — |
 | V7-90 fatal errors in DSF's packet loop | identical | — | the `ArgumentException` of V7-7 goes with V8-21 | — | — |
@@ -304,7 +304,7 @@ bounded as C-4). V8-34 removes three waits (E-26…E-28).
 | V7-98 protocol versions | identical | section 1 (D1) | the header keeps protocol version 7 | — | — |
 | V7-99 protocol < 3 | identical | D2 | only on the v7 path | — | — |
 | V7-100 `UpdateOnly` | identical | — | — | — | — |
-| V7-101 link capabilities | changed | section 7, V8-35 | new capability `SessionLayer` = 8; nothing of v8 before both have it | — | yes (link only) |
+| V7-101 link capabilities | changed | section 7, V8-35 | new capability `SessionLayer` = 8; nothing of v8 before both have it | stock and fork DSF/RRF must keep working together, so v8 is switched on by the same handshake as v2 instead of a new protocol number (sbc-link-requirements.md C1 and decision 2026-10-08; D1) | yes (link only) |
 
 ## 5. Message classes and ordering
 
