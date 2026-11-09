@@ -119,6 +119,15 @@ The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the tr
 - **S5. A lost connection in the switch window of the extended link gives RRF a regular number it takes in sequence.** From reading the code, not tested.
   - In the window, RRF has switched and DSF has not (`_extendedRequested` without `_extendedTx`, `SPI.cs:422-433`).
   - The catch advances the sequence number only when DSF was on the extended link (`leavingExtendedLink = _extendedTx`, `:454`), so the fix of #138 does not apply there. This is the same cause as the plain-link part of P4.
+- **S6. Over USB, DSF looks for a packet that RRF asks for again in the wrong transfer.** From reading the code, not tested (the lab printer has no USB link).
+  - `USB.ResendPacket` searches the previous TX buffer, because "the firmware sees our data before composing its response" (`USB.cs:717-721`). RRF however composes its USB answer one transfer behind (`RRF/SBC/DataTransfer.cpp:1303-1357`, as T13).
+  - So DSF can copy another packet with the same id, or find none and throw `ArgumentException` (`USB.cs:746`). The packet loop only dumps and rethrows an `ArgumentOutOfRangeException` (`LinkService.cs:446-450`) and catches nothing else, so the exception would end LinkService and DCS, as for G2 in `dsf-findings-upstream.md`. The USB adapter also has no `_packetsBeingResent` guard like `SPI.cs:94`.
+  - Catalogue NEW-1 in `sbc-link-v8-catalogue.md`.
+- **S7. RRF drops a code reply when its shared reply FIFO is full, and the later replies of that channel shift by one.** From reading the code, not observed.
+  - One 64-entry `OutputStack` holds the replies of all channels (`RRF/SBC/SbcInterface.h:155`, `RRF/Platform/OutputMemory.h:15-19`). On a full stack, `Push` releases the buffer and logs `OutputStackOverflow` (`RRF/Platform/OutputMemory.cpp:487-506`).
+  - DSF matches replies by position (`Processor.cs:1108-1117`). Catalogue NEW-2; v8 requirement V8-18.
+- **S8. A code that RRF refuses for lack of buffer space can be overtaken by a later code of its channel.** From reading the code, not shown.
+  - DSF writes the next code into the following transfer before it reads the resend request of the refused one, and RRF may accept the later one. Whether RRF can refuse a code that DSF's buffer estimate allowed is not shown. Catalogue NEW-3; v8 requirements V8-6 and V8-15.
 
 ### HTTP: DuetWebServer and DuetHttpClient (#123)
 
@@ -240,10 +249,9 @@ Measured in the fake firmware without link faults:
   - daemon.g: at the base level of the Daemon channel, RRF requests daemon.g without waiting (`GCodeBuffer.cpp:1258-1260`). If InvalidateChannel arrives before that request has gone out, RRF closes the file but still sends the request.
   - The second case, a resent InvalidateChannel, was seen on the printer and is fixed by #161 (`design/dsf-findings-upstream.md`, T11 resend).
   - The lab test `AbortsCrossingMacroRequests` (#139) ran again on 2026-11-08 22:37 UTC with RRF 3.7.0+1.mp.9-dev.2 (#43, #45): T12 did not occur in 165 aborts, the run stopped at the resend case. It needs a run with #161 and the RRF fix for T10.
-- **T13. On the USB link the abort window of #134 also covers data that RRF wrote after it read the InvalidateChannel.** From reading the code, not tested.
-  - The window assumes the order of the SPI link: RRF writes the data of a transfer before it reads DSF's packets of that transfer (`Processor.cs`, doc of `_allFilesAbortedSent`). Over USB the firmware sees DSF's data before it composes its response, says the comment of `USB.ResendPacket` (`USB.cs:717-720`); not checked against the USB transport of RRF.
-  - So over USB DSF discards a macro request that RRF makes after the abort in the same exchange, e.g. for a trigger. RRF gives it up after `SbcMaxRequestTime` (3 s, `SbcMessageFormats.h:42`), and the trigger macro does not run.
-  - The CHX uses the SPI link ("Connected to controller over SPI" in the lab journal).
+- **T13. Probably no finding: the abort window of #134 fits the USB link as well.** From reading the code.
+  - T13 assumed that over USB RRF answers a transfer only after it has read DSF's packets of that transfer, as the comment of `USB.ResendPacket` says (`USB.cs:717-720`).
+  - RRF's `DoTransferUsb` sends the TX buffer that the previous `ExchangeData` composed (`RRF/SBC/DataTransfer.cpp:1303-1357`), so over USB RRF answers one transfer later, as over SPI. The comment is wrong, see S6.
 - **T4. A missing trigger macro is not shown after DSF has run a code on the Trigger channel.** RRF reports it as a pushed code reply (`GCodes.cpp:3703-3706`), DSF takes it as an out-of-order reply and holds it back (`Processor.cs:1122-1127`, `LinkService.cs:727-733, 762-776`). This fits the field journal line "Trigger: Out-of-order reply: 'Macro file trigger8.g not found'", not proven to be the same event. Test: `Codes.TriggerMacros.MissingTriggerMacroAfterCodeOfDsfOnTriggerChannel`.
 - **T5. M581.1 with SBC fields succeeds and creates the trigger although its expression fails** (upstream 4229f552). RRF returns an error and creates nothing (`TriggerItem.cpp:328-339`, wiki M581.1). Test: `Codes.SbcTriggerEvaluation.ErrorInExpressionIsReported`.
 - **T6. A later evaluation error of such a trigger is only logged, and the trigger stays enabled.** RRF disables it and reports it (`TriggerItem.cpp:133-149`). Test: `ErrorInLaterEvaluationDisablesTheTrigger`.
@@ -333,3 +341,88 @@ The tests of #145, #146 and #147 found bugs that #148 to #151, #153 and #154 fix
 - **L4. `DCS -u` binds and listens on the IPC socket but never accepts** (`IPC/Server.cs:66-67`, `:81`), and it deletes an existing socket file (`:57`).
 - **L5. `-l` with an unknown level silently falls back to Information** (`LogLevelHelper.ParseLogLevel`, DuetSharedLibrary `LogLevelHelper.cs:49`).
 - **L6. An interceptor error in the Executed stage is not logged while DCS runs:** the catch logs only when `(e is OperationCanceledException) != ApplicationStopping.IsCancellationRequested` (`Executed.cs:235`), which is false for a real error while DCS runs, and true for a cancellation, which is then logged as an error instead (the open question in the IPC server section). Upstream since v3.6.
+
+## Found by the v7 contract reverse engineering (2026-11-09)
+
+These come from reading the code for [sbc-link-v7-contract.md](sbc-link-v7-contract.md), the v7 contract that the v8 requirements are checked against. Each entry names its item there (`G-n` DSF gap, `X-n` RRF gap, `C-n` cycle) and the v8 requirement that removes it. Line numbers: DSF `v3.7-dev` at 7f26d0ca, RRF fork at 0dccb9efe (tree of `3.7-dev` ddec2d001). Unless an entry says otherwise, nothing was run and every line involved is upstream code.
+
+- **K1. M23, M32 or M37 can deadlock DSF's link thread on the job lock (C-1).** From reading the code, not tested.
+  - M23, M32 and M37 hold the job lock while they wait for SetPrintFileInfo to be written (`MCodeHandler.cs:245-252`, `:508-515`, `JobProcessor.cs:356`); so does the job loop when it selects the file that the finished job asked for (`JobProcessor.cs:825-846`). Only the link thread writes it (`LinkService.cs:403-410`).
+  - The link thread takes the job lock synchronously for PrintPaused (`LinkService.cs:907`) and for an AbortFile on File or File2 (`Processor.cs:753-758`). If it processes such a packet in the iteration after the request was registered, it blocks and never writes SetPrintFileInfo.
+  - Nothing bounds it: `JobProcessor.Lock()` waits with `ApplicationStopping` (`JobProcessor.cs:100`), and the M23's token is the caller's or the channel's, which only `Invalidate` on the blocked thread cancels (`Code.cs:123-134`). No transfer happens any more; RRF declares a link loss after 4 s and, in the fork, makes an emergency stop (`SbcInterface.cpp:171-176`, `:229-230`); DCS hangs, because its 60 s check runs on the same thread (`SPI.cs:326-331`).
+  - Reachability is not shown: outside a job, M23 waits under the lock only while no print runs or is paused (`MCodeHandler.cs:247-250`), so RRF has to send PrintPaused or an AbortFile on File within that one iteration. RRF waits for no answer to either.
+  - v8: V8-34 (completion on acceptance). When to fix it in v7: decision D11 in the v8 requirements.
+- **K2. An abort of File or File2 can join K1 (C-2).** From reading the code, not tested.
+  - `AbortAllAsync` holds the channel lock while it waits for the job lock (`LinkInterface.cs:557-563`, `Processor.cs:828`). If the job lock holder waits as in K1, the link thread waits for that channel lock in Spin (`Manager.cs:80`).
+  - Bounded only by the abort's token: the IPC connection, or for `abort` in a macro the macro's own token, which the abort cancels (K8). Reachability is not shown. v8: V8-34.
+- **K3. M606 S1 takes the job lock before the channel locks (C-3).** From reading the code, not tested. Found while merging the contract.
+  - M606 S1 holds the job lock and waits for the File2 and then the File channel lock (`MCodeHandler.cs:1133-1135`, `JobProcessor.cs:397`, `LinkInterface.cs:315-324`).
+  - The link thread takes them the other way round: the File or File2 lock in `HandleAbortFileRequest` (`LinkService.cs:880`), then the job lock (`Processor.cs:755`). `AbortAllAsync` does the same (`Processor.cs:828`), and `JobProcessor.cs:821-822` names "channel before job" as the order.
+  - The link variant has no bound, as K1; the IPC variant ends with the abort's token.
+  - Reachability is not shown: M606 S1 runs on File after a flush of File (`MCodeHandler.cs:1118-1121`), and DSF's own M112 cancels the M606 before it processes the RX (`LinkService.cs:1499-1518`). The likelier case is an IPC InvalidateChannel of File or File2 during the fork. `git blame`: `MCodeHandler.cs:1133` c5e3214be, `JobProcessor.cs:397` 2cbc04aeb, `Processor.cs:755` 4a5763904, all Christian Hammacher.
+  - v8 does not remove it (V8-33); it needs a v7 fix in the logic.
+- **K4. Unknown request types are dropped without an error on both sides (X-18, G-16).** From reading the code, not tested.
+  - RRF: a request number of 32 or more, other than 0x4D50, is an internal error that ends the read loop, so the rest of the transfer, codes included, is neither processed nor refused (`SbcInterface.cpp:326-330`; `InvalidRequest` = 32, `SbcMessageFormats.h:346`).
+  - DSF: an RRF request type it does not know is ignored silently, the switch has no default (`LinkService.cs:611-701`).
+  - This matters for every new packet type, e.g. those of v8 (V8-35).
+- **K5. Stale RRF events reach DSF after a reconnect, and a stale MacroFileClosed stops DCS (X-12).** From reading the code, not tested.
+  - `InvalidateResources` does not clear `macroFileClosed`, `messagePromptPending`, `invalidated`, `invalidationPending`, `codeReplySurplus`, an unsent `sendToSbc` or `reportPause`, and it sets `messageAcknowledged` itself through `MessageAcknowledged(true, true, …)` (`SbcInterface.cpp:1717-1780`, `:1772`; `GCodeBuffer.cpp:1313-1333`). `GCodeBuffer::Reset` clears them (`GCodeBuffer.cpp:128-150`); `InvalidateResources` does not call it.
+  - A MacroFileClosed set just before the link loss is written in the first exchange of the new session (`SbcInterface.cpp:1506-1511`). DSF has invalidated by then (`LinkService.cs:388-396`), so its abort flags are clear and it pops its base level: "Stack underrun" ends the link thread and DCS (`Processor.cs:1283-1305`, `:198-201`). RRF clears the flag once written, so this happens once.
+  - The stale MessageAcknowledged is logged as an error (`Processor.cs:1343`), a stale DoCode runs an old code in the new session, a stale PrintPaused sets the status to paused (`LinkService.cs:900-904`; what the job processor does without a job was not checked). A stale `invalidated` is harmless: DSF sends no code before the first buffer update (`LinkInterface.cs:703`), which RRF writes in the exchange that clears the flag.
+  - Window: a macro closes in the last exchange before the loss, e.g. a DCS restart at the end of a macro. v8: V8-24.
+- **K6. Over USB, M112 can report success although RRF never got the stop (G-2).** From reading the code, not tested (the lab printer has no USB link).
+  - A USB transfer that fails returns normally with an empty RX (`USB.cs:363-404`), so the next iteration completes the halt of the TX that just failed (`LinkService.cs:454-456`, `:599`), and the reconnect drops that TX (`USB.cs:270`).
+  - Only RRF's own stop on a lost connection is left (fork RRF #21, after 4 s). v8: V8-20 (STOP_ACK).
+- **K7. Over SPI, RRF can process a transfer of the old session in the new one (G-3).** From reading the code, not tested.
+  - After a lost connection DSF exchanges the same TX again and invalidates its own state only after that transfer (`SPI.cs:442-477`, `:383-390`).
+  - RRF skips the transfer that shows the reset, but after a connection reset (not a full one) it processes the next transfer whose number follows, whichever session wrote it (`SbcInterface.cpp:184-186`, `:257-288`; `DataTransfer.cpp:839-853`, `:1396-1443`). Codes, InvalidateChannel or MacroStarted of the old session can then run while DSF has cancelled them.
+  - The stop path tests saw the other half: a restarted RRF drops its first transfer in about half of the cases (section "Stop path under SPI faults"). v8: V8-24.
+- **K8. `abort` inside a macro can release the channel lock while the abort still runs (G-4).** From reading the code, not tested.
+  - `KeywordHandler.cs:170` passes the macro code's token to `AbortAllAsync`, which waits with it while it holds the channel lock (`LinkInterface.cs:557-563`). Macro codes carry the macro's token (`MacroFile.cs:340`), and aborting the macro cancels it (`MacroFile.cs:236`).
+  - The wait then throws and releases the lock while `AbortAllFilesAsync` still pops levels and sets `_allFilesAborted` without it (`Processor.cs:778-823`), concurrently with the link thread.
+- **K9. File results, FileChunk and the refusal of a system macro can be lost (G-6).** From reading the code, not tested.
+  - The link thread ignores whether these packets were written (`LinkService.cs:985`, `:993`, `:1161`, `:1169`, `:1193` and the other file results; `Processor.cs:1368`, `:1393`). If the TX is full, or on SPI a resend of the same type is in it (guards from `SPI.cs:1468`), the packet is neither written nor retried.
+  - RRF then waits for its 3 s timeout and reports "Timeout while …" (`SbcInterface.cpp:2331-2336`, `GCodeBuffer.cpp:1266-1273`). v8: V8-5, V8-34.
+- **K10. SetLastCodeResult can be overtaken by the next code (G-7).** From reading the code, not tested.
+  - It has no resend guard (`SPI.cs:1666-1683`) and completes when written (`LinkService.cs:498-513`). If RRF refuses it because the GB mutex is busy (`SbcInterface.cpp:1287-1316`), the next code of the channel, written after it, runs with the old `result`. Same pattern as S8.
+  - v8 keeps this order on purpose: SetLastCodeResult is in the stream D-req, which the next code may pass (V8-6).
+- **K11. A partial reply survives an invalidation and is prepended to the next reply (G-8).** From reading the code, not tested.
+  - `_lastPartialMessage` and the partial log and generic messages are not cleared by `Invalidate` or `InvalidateCodes` (`Processor.cs:1184-1215` vs `:1491-1538`; `LinkService.cs:759`, `:819` vs `:1605-1622`). v8: V8-10.
+- **K12. After DSF's M112, codes wait for a buffer update that RRF need not send (G-11).** From reading the code; the fake firmware showed the held-back codes (observation in "Stop path under SPI faults"), the RRF side is not tested.
+  - `InvalidateCodes` sets DSF's view of RRF's buffer space to 0 (`LinkInterface.cs:613`), so DSF sends no code until RRF reports space.
+  - RRF sends CodeBufferUpdate only when its ring changes (`SbcInterface.cpp:1391-1400`); the EmergencyStop packet does not touch the ring (`SbcInterface.cpp:336-338`, `RepRap.cpp:1049-1103`). With an empty ring no update comes, so a code after M112, e.g. M122, waits until something else changes the ring or M999 resets. v8: V8-15.
+- **K13. A DoCode that DSF cancels leaves RRF's channel busy (G-12).** From reading the code, not tested.
+  - DSF answers a DoCode with a targeted message only when the code has a result; a cancelled one gets nothing (`Executed.cs:170-230`, `LinkService.cs:1034-1050`).
+  - RRF's GB stays "executing on SBC" with no timeout and takes no further text input (`GCodes2.cpp:709-733`, `GCodes.cpp:705`, `SbcInterface.cpp:772-808`) until a link loss. Which cancellations can reach a DoCode was not listed. v8: V8-39.
+- **K14. A lock request that DSF drops is not withdrawn (G-13).** From reading the code, not tested.
+  - When DSF pops or invalidates the level of an M505, it fails the lock request (`Processor.cs:212-215`), but it keeps copying the Lock packet whenever RRF asks for it again (`SPI.cs:821-856` copies any id). The later Locked finds no request (`Processor.cs:848`), and no Unlock follows.
+  - RRF keeps the movement lock until it releases it by itself; `UnlockAll(gb)` when a code of that GB finishes (`GCodes2.cpp:5016`) was seen only in passing. v8: V8-36.
+- **K15. DSF ignores a second message box on a channel that already waits (G-14).** From reading the code, not tested.
+  - RRF can send a second WaitForAcknowledgement while the first box is open: M120 is allowed on the box level and pushes a level on which M291 S2 runs normally (`GCodes2.cpp:182-186`, `:2272-2274`; `GCodes7.cpp:101-115`; `SbcInterface.cpp:1580-1590`).
+  - DSF ignores the second request (`Processor.cs:1260`), so its MessageAcknowledged pops the first box.
+- **K16. An object model answer for another key stops the model updates (G-18).** From reading the code, not tested.
+  - The fork's key check discards the answer but leaves the query at the head marked as sent (`LinkService.cs:714-723`, `:470-478`). If the right answer never comes, no further query is sent until a reset. v8: V8-13.
+- **K17. ExecuteMacro can overtake an earlier reply of its channel (G-10).** From reading the code, not tested.
+  - DSF takes `BufferedCodes[0]` as the code that requested the macro (`Processor.cs:1383-1388`). RRF writes the reply FIFO before ExecuteMacro (`SbcInterface.cpp:1389`, `:1514-1518`) but does not drain it: a FIFO entry that does not fit as a whole stays while the smaller request still fits, with 19 to 31 free bytes for "homeall.g" or "pause.g" (`DataTransfer.cpp:1491-1496`, `:1545-1549`). Fork RRF #29 removed its own drains before ExecuteMacro again.
+  - A narrow window. v8: V8-14 (milestone M5).
+- **K18. Replies of a code that RRF still ran can follow RRF's own abort of all files (G-20).** From reading the code, not tested.
+  - AbortFile(all) is written without a drain (`SbcInterface.cpp:1549`); replies queued while the SBC task waited for the channel's mutex, or that did not fit, go out after it. Probing and positioning errors call `AbortPrint` and reply later by design (`GCodes4.cpp:182-188`, `:207-214`, `:278-285`, `:318-324`).
+  - RRF's own abort sets no `codeReplySurplus` (only `SbcInterface.cpp:888`, `:910` do), and DSF has cancelled its buffered codes (`Processor.cs:728-731`), so such a reply completes DSF's next code of the channel or is logged as out of order. v8: V8-12.
+- **K19. An abort leaves base-level codes that are still in the early pipeline stages (G-21).** From reading the code, not tested.
+  - InvalidateChannel and `abort` cancel the buffered and Firmware-stage codes (`Processor.cs:1449-1485`), but only `Invalidate` cancels the channel's token (`Processor.cs:1536`), so base-level codes in the Start to Post stages go on. The DuetAPI doc says "all pending codes" (`src/DuetAPI/Commands/Generic/InvalidateChannel.cs:5-7`).
+- **K20. An emergency stop that RRF makes by itself leaves DSF's stacks behind (X-5).** From reading the code, not tested.
+  - Trigger 0, PanelDue's M112 bytes, an M112 that RRF executes and a trigger action with M112 run `DoEmergencyStop`, which calls `GCodes::Reset` after the stop (`GCodes.cpp:490-499`, `:990-999`, `:1065-1070`; `GCodes2.cpp:1953-1955`). `Reset` pops every stack and clears the abort flags that `AbortPrint` has just set (`GCodeBuffer.cpp:128-150`, `:145`), so no AbortFile reaches DSF and the codes in the SBC ring are not purged.
+  - DSF keeps its macro levels and buffered codes; RRF answers the codes left in its ring at the base level with "stopped". DSF's own M112 aborts the files on both sides (`SbcInterface.cpp:336-338`, `GCodes.cpp:1073-1095`). v8: V8-38, decision D9.
+- **K21. SetVariable assigns before it can be refused (X-6).** From reading the code, not tested.
+  - RRF evaluates and assigns (`SbcInterface.cpp:1041-1056`), then writes VariableResult; without a free OutputBuffer or TX room it refuses the packet after the assignment (`:1070`, `:1086`, `:1092`). The copy of a `var` or `global` then fails with "variable '…' already exists" (`:1024-1030`). v8: V8-7.
+- **K22. A late file result answers the next file request (X-8).** From reading the code, not tested.
+  - File results carry no id; RRF matches them by the state of its single file slot (`SbcInterface.cpp:1145-1285`) and clears the slot after its 3 s timeout (`:2331-2336`). A result of the same type that comes later is taken as the answer to the next request.
+  - DSF serves file requests with blocking I/O on the link thread (`LinkService.cs:1152-1494`), so a slow file system makes it late. v8: V8-13.
+- **K23. Late answers after RRF's 3 s macro timeout act on the wrong level (X-9, X-25).** From reading the code, not tested.
+  - After `SbcMaxRequestTime` RRF reports "Timeout while waiting for macro file" and goes on as "not found" (`GCodeBuffer.cpp:1263-1274`), but the request had gone out. A late MacroStarted gives "none was requested" (`SbcInterface.cpp:850-853`), a late Code of the macro runs at the caller's level (`:383`), a late MacroCompleted with error pops whatever level is current (`:567-576`). DSF has pushed the macro's level and stays one level deeper. v8: V8-39, decision D10.
+- **K24. A code longer than RRF's limit is refused for good (G-17, X-19).** From reading the code, not tested.
+  - RRF refuses a Code over 384 bytes (`SbcMessageFormats.h:31`, `SbcInterface.cpp:358-364`) on every copy and never ends it with an error, so DSF resends it forever and the channel stays blocked. DSF lets `MaxCodeBufferSize` in `config.json` go above that (`Settings.cs:245-248`). v8: V8-35.
+- **K25. A while loop's local variables can be deleted on the wrong level when the loop body calls a macro.** From reading the code, not tested. Found while merging the contract.
+  - At the end of an iteration whose body declared local variables, `CodeFile` deletes them without a flush; it flushes only when the body has none (`CodeFile.cs:396-421`, `:679-689`; the code does not say why). The DeleteLocalVariable can therefore reach RRF while an M98 of the body still waits for its macro, holding the GB mutex (`GCodes.cpp:579-639`, `GCodeBuffer.cpp:1253`, `:1263-1274`).
+  - RRF refuses it while the mutex is busy (`SbcInterface.cpp:1131-1136`) and applies the copy later to the GB's current variables (`:1138-1140`), which by then belong to the macro. The loop's variable stays, and the next iteration's `var` fails with "variable '…' already exists" (`:1024-1030`).
+  - The same request is why v8 splits each channel into two streams (V8-6): in one stream the macro's answer would wait behind it until RRF's 3 s timeout. v8 does not remove K25 itself; it needs a v7 fix in `CodeFile` (V8-33, D11).
