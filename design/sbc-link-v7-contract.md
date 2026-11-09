@@ -1,7 +1,7 @@
 # SBC link v7: the contract between DSF and RRF (reverse engineered)
 
 Status: 2026-11-09. Read from code only; nothing was run, nothing was changed. This is the v7 contract that
-[sbc-link-v8-requirements.md](sbc-link-v8-requirements.md) (PR9, V8-28 to V8-33) is checked against. It merges two
+[sbc-link-v8-requirements.md](sbc-link-v8-requirements.md) (draft 5, the channel epoch: PR9, CE-22, CE-23 and the alignment of its section 4.10) is checked against. It merges two
 working papers of the same day, one per side (DSF items `D-n`, RRF items `R-n`, see section 0). Every statement comes
 from those papers or was re-read for this document; nothing here was tested.
 
@@ -346,7 +346,7 @@ where it is followed up; K-numbers are in [open-findings.md](open-findings.md).
 | G-16, X-18 | Unknown request types: RRF ends the read loop at ≥ 32 (rest of the transfer lost), DSF ignores unknown types silently | V7-6 | code | K4 |
 | G-17, X-19 | A code longer than RRF's 384 bytes (`MaxCodeBufferSize` raised in `config.json`) is refused on every copy, forever | V7-20 | code; configuration | K24 |
 | G-18 | An ObjectModel answer with another key is discarded but the query stays "sent"; the OM stops updating | V7-63 | code | K16 |
-| G-19 | ActivateLinkCapabilities precedes SetPrintFileInfo in one TX, against the alignment comment | V7-65 | open: whether the alignment matters was not checked | v8 Q11 |
+| G-19 | ActivateLinkCapabilities precedes SetPrintFileInfo in one TX, against the alignment comment | V7-65 | open: whether the alignment matters was not checked | Q11 of the channel-epoch requirements |
 | G-20 | Replies after RRF's own abort of all files carry no marker and can complete DSF's next code | V7-46 | code (both sides, RRF Q4) | K18 |
 | G-21 | InvalidateChannel and `abort` leave base-level codes of the Start to Post stages, against the DuetAPI doc | V7-52 | code vs doc | K19 |
 | G-22 | `NumPackets` of a reset TX counts dropped packets | V7-15 | harmless: RRF resets on the first packet | — |
@@ -357,7 +357,7 @@ where it is followed up; K-numbers are in [open-findings.md](open-findings.md).
 | X-3 | Fork RRF #23 turns ATX off on every emergency stop; W:Gc:2682 says M112 does not | V7-12 | fork deviation, documented | — |
 | X-4 | Fork RRF #21 halts on a link loss; W:DSF:33-41 lists only invalidation | V7-95 | fork deviation, documented | — |
 | X-5 | RRF-local stops send no stack event and leave the ring, unlike DSF's | V7-17 | code; test needed | K20 |
-| X-6 | SetVariable assigns before it can be refused; Lock keeps the lock it took | V7-60, V7-57 | code; test needed | K21 (SetVariable); Lock: v8 V8-36 |
+| X-6 | SetVariable assigns before it can be refused; Lock keeps the lock it took | V7-60, V7-57 | code; test needed | K21 (SetVariable); Lock: VF-5 of the channel-epoch requirements |
 | X-7 | A MacroCompleted that crosses an RRF-side pop marks the next outer macro finished | V7-41 | reachability not shown | — |
 | X-8 | File results carry no id; a late result answers the next request of its type | V7-71 | code; test needed | K22 |
 | X-9, X-25 | After the 3 s macro timeout a late MacroStarted, Code or MacroCompleted(error) acts on the wrong level; DSF's stack is one deeper | V7-40, V7-37 | code; test needed | K23 |

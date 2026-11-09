@@ -1,33 +1,19 @@
-# SBC link v8: link and session layer requirements
+# SBC link: channel epoch on v7 (requirements; replaces the v8 session layer)
 
-Status: draft 4, 2026-11-09. Nothing here is implemented. No code was changed for it. The decisions of section 9 are
-Tim's; the requirements are not agreed yet.
-Draft 2 adds Tim's requirement of the same day: "The protocol must guarantee a logical compatibility to the current
-implementation, so that we do not create deadlocks due to concurrency" (PR9, section 4.8, V8-4, section 5, AC7, AC8).
-Draft 3 checks every requirement against the v7 contract reverse engineered from the code
-([sbc-link-v7-contract.md](sbc-link-v7-contract.md), items `V7-n`, edges `E-n`, cycles `C-n`), as Tim asked: "check
-the requirements against the current requirements of v7 … make sure that they align or name the difference and the
-reason". Section 4.9 gives every V7 item its status. Draft 3 added V8-34 to V8-39 and decisions D9 to D11.
-Draft 4 records the decisions Tim made in an interview on 2026-11-09 (section 9) and applies his layering rule:
-> We must not mix levels: motion is not link, and safety is neither link nor protocol. If the link is down it must
-> signal event-based to the logic; the logic decides.
-
-and "no special cases in the link — if it is not defined, it does not exist". This document therefore holds only link
-(L) and session (S) requirements, each tagged with its layer. What the logic of DSF or RRF does on an event, and the
-defects of the logic, are in [sbc-link-v8-logic-adaptations.md](sbc-link-v8-logic-adaptations.md) (items `LA-n`).
-Draft 4 makes v8 its own protocol version (section 1, V8-41), puts the v2 link features into v8 (V8-40), adds PR10
-"link faults never end a print" (section 4.10), the per-packet integrity check (V8-42) and one stream per message
-(V8-48), states the general rule of the two streams per channel (V8-6) and the write order across streams (V8-29,
-V8-34), moves V8-22 and the logic parts of V8-36, V8-38 and V8-39 to the logic list, and drops the precondition of
-V8-33. Changed text is marked "Draft 4".
+Status: draft 5, 2026-11-09. Nothing here is implemented. No code was changed for it. The decisions of section 10 are
+Tim's.
+Draft 5 replaces the v8 session layer of drafts 1 to 4 by a minimal design: a **channel epoch on protocol version 7**,
+switched on as a link capability, plus **evidence gates** that decide later whether more is needed. Tim decided this
+on 2026-11-09 after three expert reviews of draft 4 (section 11). The file keeps its path so that links stay valid.
+Section 10.3 lists what happened to every requirement of drafts 1 to 4.
 Audience: Tim, later Christian Hammacher (Duet3D). The reader knows DSF and RRF, not the working papers.
-Scope: the link and session layers of v8: the v8 link (the v2 link features, always on), channels, ordering, priority
-and overtaking, cancellation, correlation, flow control, retransmission above the link, integrity per packet, the
-session lifetime and the events the layers report to the logic.
-Not in scope: what the logic does on an event and the defects of the logic (logic list); safety functions (v2 SB1);
-IAP flashing (v2 C2); G-code semantics. [sbc-link-requirements.md](sbc-link-requirements.md) (v2) keeps the framing,
-transfer retransmission, recovery times and the stop path on the wire (v2 R1–R5, R10, R12, R14); v8 takes over v2 R6,
-R8, R9 and R13 (section 1).
+
+Scope: the channel epoch (capability, tag, filters, the two companion fixes), the stop path above the transfer retries,
+the rule that a halt is never lost, the evidence gates, and the list of separate v7 fixes found on the way.
+Not in scope: what the logic of DSF or RRF does on an event, and the defects of the logic. They are in
+[sbc-link-v8-logic-adaptations.md](sbc-link-v8-logic-adaptations.md) (items `LA-n`). Also not in scope: safety
+functions (v2 SB1), IAP flashing (v2 C2), G-code semantics. [sbc-link-requirements.md](sbc-link-requirements.md) (v2)
+keeps the link requirements R1 to R14 and the decision "negotiation on top of v7" (v2 C1).
 
 Goal (Tim, 2026-11-09):
 > We keep finding edge cases that are tied to the strict ordering of the protocol. At the same time some commands
@@ -35,633 +21,588 @@ Goal (Tim, 2026-11-09):
 > My goal is to remove our edge-case catch code from the codebase in the medium term. Follow best practices of
 > mainstream high-volume protocols, and require as few changes to the logic code as possible.
 
+Layering rule (Tim, 2026-11-09), unchanged since draft 4:
+> We must not mix levels: motion is not link, and safety is neither link nor protocol. If the link is down it must
+> signal event-based to the logic; the logic decides.
+
+and "no special cases in the link — if it is not defined, it does not exist". Every requirement here is tagged L
+(link) or S (session: the channel layer above the link, where the epoch lives).
+
 Constraint (Tim: "the other end is an embedded system with RAM constraints"): RRF runs on a SAME70 with fixed RAM.
-M122 on the lab printer on 2026-11-09 06:4x UTC (MB6HC, RRF 3.7.0+1.mp.9-dev.3, CHX configuration), read for this
-document: "RAM: static 131040, dynamic 105276 (1744 recycled), never used 95868, free sys stack 172", heap 6144/5036/612.
+M122 on the lab printer on 2026-11-09 06:4x UTC (MB6HC, RRF 3.7.0+1.mp.9-dev.3, CHX configuration): "RAM: static
+131040, dynamic 105276 (1744 recycled), never used 95868, free sys stack 172", heap 6144/5036/612.
 
 ## 0. Basis and conventions
 
-- **Code:** DSF `v3.7-dev` at 7f26d0ca. `src/DuetControlServer` is unchanged since 808d56fa, where the catalogue
-  was made. RRF fork at 0dccb9efe, whose tree equals fork `3.7-dev` ddec2d001 (the DSF submodule pin).
-- **Paths:** `DCS/` = `src/DuetControlServer/`. `RRF/` = RRF `src/`. Line numbers refer to the commits above.
+- **Code:** DSF `v3.7-dev` at 7f26d0ca (`src/DuetControlServer` is unchanged since 808d56fa). RRF fork at 0dccb9efe,
+  whose tree equals fork `3.7-dev` ddec2d001 (the DSF submodule pin). Every file:line in this draft was re-read at
+  these commits for draft 5, including those that came from the review reports.
+- **Paths:** `DCS/` = `src/DuetControlServer/`. `RRF/` = RRF `src/`. `pkg/` = `pkg/` of this repository.
 - **PRs:** `#n` = Meltingplot/DuetSoftwareFramework, `RRF #n` = Meltingplot/RepRapFirmware.
-- **Working papers** (2026-11-09; this document repeats every code reference it needs):
-  - [sbc-link-v8-catalogue.md](sbc-link-v8-catalogue.md): 47 catch-code items. `CC-n` here is row n of its
-    catch-code index (section 12), numbered so to keep them apart from PR numbers. Its letter IDs (`A1`, `B7`,
-    `NEW-1`) are kept;
-  - [sbc-link-v8-patterns.md](sbc-link-v8-patterns.md): 12 patterns `P1`–`P12` from mainstream protocols;
-  - [sbc-link-v7-contract.md](sbc-link-v7-contract.md): the v7 contract of both sides, 101 items `V7-n`, the wait-for
-    graph (`E-1`…`E-53`, cycles `C-1`…`C-8`) and the v7 defects (findings `K1`…`K27` in open-findings.md).
-- **IDs of other documents are qualified,** because several collide:
+- **IDs of this document:** `CE-n` requirements of the channel epoch and its companions (section 4), `VF-n` separate
+  v7 fixes (section 5), `EG-n` evidence gates (section 7.3), `E0`–`E3` milestones (section 7.2), `AC-n` acceptance
+  (section 8), `FD-n` final decisions (section 10), `Qn` open questions (section 12), `PRn` principles (section 3).
+- **Working papers** (this document repeats every code reference it needs):
+  - [sbc-link-v8-catalogue.md](sbc-link-v8-catalogue.md): 47 catch-code items. `CC-n` is row n of its index
+    (section 12). Its letter IDs (`A1`, `B7`, `NEW-1`) are kept;
+  - [sbc-link-v8-patterns.md](sbc-link-v8-patterns.md): patterns `P1`–`P12` from mainstream protocols;
+  - [sbc-link-v7-contract.md](sbc-link-v7-contract.md): the v7 contract, 101 items `V7-n`, the wait-for graph
+    (`E-1`…`E-53`, cycles `C-1`…`C-8`) and the v7 defects (findings `K1`…`K27` in open-findings.md).
+- **IDs of other documents are qualified:**
 
 | Prefix | Document |
 |---|---|
 | `v2 Rn`, `v2 Cn`, `v2 SBn` | [sbc-link-requirements.md](sbc-link-requirements.md) |
 | `LA-` | [sbc-link-v8-logic-adaptations.md](sbc-link-v8-logic-adaptations.md) |
-| `CS-` | [sbc-link-current-state.md](sbc-link-current-state.md) |
-| `SF-` | [sbc-link-findings-upstream.md](sbc-link-findings-upstream.md) |
 | `DF-` | [dsf-findings-upstream.md](dsf-findings-upstream.md) |
 | `OF-` | [open-findings.md](open-findings.md) |
 | `LT §14` | [lab-test-plan.md](lab-test-plan.md), section 14 (lab runs) |
 
 - **Status of statements:** "printer" = seen on the lab printer, with the run in LT §14. "Code" = from reading the
-  code, not tested. Everything open is in section 10.
+  code, not tested. Everything open is in section 12.
 - **Keywords:** MUST, SHOULD, MAY as in RFC 2119.
 
-## 1. Relation to v2 and to the decision "no fork-only v8"
+## 1. Relation to v2 and to drafts 1 to 4
 
-- The v2 decision log (2026-10-08) chose "Negotiation on top of v7 instead of a fork-only v8", because mixed versions
-  keep working and no protocol number collides with upstream (v2 C1). Drafts 1 to 3 kept it: v8 was to be a
-  capability `SessionLayer` on the v7 framing, with protocol version 7 in the header (`RRF/SBC/SbcMessageFormats.h:24`).
-- **Draft 4 reverses that decision for normal operation (D1, D2; Tim, 2026-11-09).** v8 is its own protocol version,
-  with a number from a fork range. It is not 8, so that it cannot collide with a future upstream version 8; the idea is
-  the same as 0x4D50 for ActivateLinkCapabilities. If Duet3D adopts v8, it moves to upstream's number.
-  Reason: the goal is to remove the catch code, and the catch code can only go where v8 runs. Negotiated on top of v7,
-  every mixed pair would run v7 and keep it. As its own version, required for normal operation, v8 removes the fork's
-  v7 catch code of both sides wherever it runs. Mixed stock and fork pairs remain possible for firmware updates only
-  (V8-41, section 7). USB and boards other than SAME70 keep v7 until they are ported (D6), and with it the catch code
-  of the v7 path.
-- v8 is built now, without waiting for upstream, and shown to Christian Hammacher once M1 has passed the lab (D8).
-- **The v2 link features are part of v8 from the first transfer (D14, V8-40):** the v8 transfer header is the extended
-  header of v2, PhaseGuard and SequenceGuard are always on, and there is no activation with 0x4D50. There is no switch
-  window any more, which closes Q8 and, for v8, the switch-window findings OF-S1 and OF-S5.
-- v8 needs two things from the link:
-  - Each transfer is delivered once and in order within a session (v2 R2). Draft 4: also across an interruption
-    within the session lifetime (V8-43). The census shows v2 R2 for single faults with all capabilities active (v2
-    "Implementation status"); multiple faults and the bench test are open.
-  - A session change is visible. Draft 4: a session id per side that changes only on a restart (V8-45). The v2
-    status (0x7FF or 0) does not tell a restart from a connection reset
-    (`DCS/Link/Protocol/Shared/ExtendedLink.cs:47-48`, `:62-65`).
-- v8 takes over four v2 requirements; the v2 document marks them superseded:
-  - v2 R6 (real restarts are caught) becomes the event PeerRestarted (V8-45, V8-46); the stop is the logic's
-    reaction (LA-3);
-  - v2 R8 (total silence) becomes the session lifetime and the event SessionExpired; the stop is the logic's
-    reaction (LA-1);
-  - v2 R9 (integrity) becomes the per-packet check (V8-42);
-  - v2 R13 (dead-man switch) is not a link requirement: its stage 1 moves to the logic and safety work (V8-47, LA-4),
-    its stage 2 is R8.
-- v2 R10 (stop within 100 ms on a disturbed link) stays a link requirement. v8 defines what "expedited" means above
-  the link (V8-19, V8-20) and carries the expedited flag in its header (D5).
+- The v2 decision of 2026-10-08, "negotiation on top of v7 instead of a fork-only v8" (v2 C1), holds again. Draft 4
+  had reversed it with an own protocol version; draft 5 drops that (FD-1). The channel epoch is a link capability on
+  v7, offered and activated like PhaseGuard, SequenceGuard and ExtendedHeader (v2 "Implementation status").
+- v2 R6, R8 and R13 stay v2 requirements, as before draft 4. v2 R9 (integrity) becomes conditional on an EMC test
+  (CE-19, FD-12). v2 R10 (stop within 100 ms on a disturbed link) gets one requirement here (CE-16).
+- The link guarantee the epoch needs is v2 R2: each transfer is delivered once and in order within a connection. The
+  census shows it for single faults with all capabilities active (v2 "Implementation status").
+- There is no session resume (FD-10): a link loss ends the session on both sides as today (RRF
+  `RRF/SBC/SbcInterface.cpp:194-254`, fork emergency stop `:229-230`, `InvalidateResources` `:1717-1780`; DSF
+  `DCS/Link/Adapter/SPI.cs:383-390`, `DCS/Link/LinkService.cs:389-396`, job abort `:1504-1508`).
+- The epoch milestone is shown to Christian Hammacher after it passed the lab (FD-14, old D8).
 
 ## 2. Problem statement
 
 v7 has channels only in the logic: the channel sits in request-specific payloads, and `PacketHeader` has none
-(`RRF/SBC/SbcMessageFormats.h:101-107`). Below that, the protocol knows only transfer positions. Each catch code
-re-derives "which event belongs to what" from position or timing. The catalogue counts 47 catch-code items:
-28 in the session layer, 13 in the logic, 6 in the link; 17 are fork-only.
+(`RRF/SBC/SbcMessageFormats.h:101-107`). Each catch code re-derives "which event belongs to what" from position or
+timing. The catalogue counts 47 catch-code items, 17 of them fork-only.
 
-| # | v7 assumption | Where | Evidence (what broke) | Catch code today |
-|---|---|---|---|---|
-| A-1 | Replies and stack events belong to the first buffered code of the channel (`BufferedCodes[0]`) | `DCS/Link/Channel/Processor.cs:1108-1117`, `:1264-1271`, `:1383-1388`, `:655-665`; channel = first matching destination bit, `DCS/Link/Channel/Manager.cs:107-121` | DF-T10: the reply of a dropped M98 completed the next `G4 P0` (printer, 2026-11-08). OF-T4 out-of-order trigger message. NEW-2: the shared reply FIFO drops a reply silently when full (`RRF/Platform/OutputMemory.cpp:487-506`), code, not observed | RRF drains before abort and prompt (`RRF/SBC/SbcInterface.cpp:1543-1549`, `:1579-1590`), dummy reply (`:1564-1573`), `codeReplySurplus` (RRF #46), DSF `PendingReplies`, Unbuffered M122/M409 (`DCS/Codes/CodeProcessor.cs:202-207`) |
-| A-2 | The pipeline depth is exactly one transfer, counted, never acknowledged | RRF reads DSF's packets of transfer N, then writes what DSF reads in N+1 (`RRF/SBC/SbcInterface.cpp:257-268`, `:310-1359` before `:1389-1643`). USB does the same (`RRF/SBC/DataTransfer.cpp:1302-1357`, `:1362-1371`) | DF-T2, DF-T12 (DCS stopped, printer 2026-11-08 22:01). NEW-1: the USB resend looks one transfer back (`DCS/Link/Adapter/USB.cs:717-721`), against the RRF code; then OF-T13 does not exist. Code, not tested | #134, #158, #88, `BytesReserved` (`DCS/Link/LinkService.cs:452`, `:747-753`), one-ExchangeData read-ahead invalidation (B7) |
-| A-3 | Abort (`InvalidateChannel`) needs no answer and no epoch | RRF closes files silently (`FileAbortSent`, `RRF/SBC/SbcInterface.cpp:903`), drops only ring codes (`:905`); the running code goes on | DF-T1, DF-T2, DF-T10, DF-T11, DF-T12; OF-T11 (daemon.g), OF-T10 open cases | #134, #158, #161, RRF #43, #45, #46 |
-| A-4 | `ResendPacket` is NACK, back-pressure and polling at once, and the copy is reordered | RRF goes on with the later packets (`RRF/SBC/SbcInterface.cpp:1354-1358`). The copy goes into a later transfer (`DCS/Link/Adapter/SPI.cs:821-856`). Side effects before the refusal: InvalidateChannel ends the macro wait (`:883-895`) before the mutex (`:897`); a Code packet resolves a macro wait (`:382-392`) before its refusal (`:394-399`) | DF-T11 resend (printer 2026-11-08 22:39; 2 resends in 2000 aborts on 2026-11-09, LT §14). NEW-3: a refused code overtaken by a later code of its channel, code | #161, `_packetsBeingResent` (`DCS/Link/Adapter/SPI.cs:94`, `:305`, `:841-845`, upstream 86eee4ac0) |
-| A-5 | Shared resources without per-channel credit | One 4096-byte code ring (`RRF/SBC/SbcInterface.cpp:76`, `SbcMessageFormats.h:47`); one 64-entry reply FIFO for all channels (`RRF/SBC/SbcInterface.h:155`, `RRF/Platform/OutputMemory.h:15-19`); one file-operation slot (`SbcInterface.h:110-153`) | DF-T3: trigger2.g's M98 and M112 held back (printer 2026-11-08) | #133 `SpareBufferSpace` (`DCS/Link/LinkInterface.cs:40-44`, `:570-583`) |
-| A-6 | The stop is a packet in the lock-step transfer, completed by counting | `DCS/Link/LinkService.cs:324-335`, `:454-456` (#88); a macro M112 flushes first (`DCS/Codes/Handlers/MCodeHandler.cs:750`) | OF stop path tests: about 503 ms worst case behind a long code transfer that noise keeps failing; OF-P3: M112 replies before RRF processed the stop (lead ≤ 0.05 ms) | #88, priority codes moved to an idle channel (`DCS/Commands/Generic/SimpleCode.cs:110-116`) |
-
-The latest lab evidence: on 2026-11-09 `AbortsCrossingMacroRequests` passed 2000 aborts with all fixes, but still
-logged 2 InvalidateChannel resends, one out-of-order "Macro file … not found" after each, and 249 empty out-of-order
-replies (LT §14, 06:23:59). The catch code works; the protocol still produces the events it catches.
-
-**Draft 4, a second problem:** in v7 a link fault ends or disturbs a print. RRF stops on every lost connection, DSF
-aborts the job after every reconnect, and DCS exits on several kinds of link data. Section 4.10 lists the paths.
-
-## 3. Principles and layering
-
-| Layer | Owns | State | Does not |
+| # | v7 assumption | Evidence | What draft 5 does |
 |---|---|---|---|
-| L: link (v7 framing with the v2 extended header, PhaseGuard and SequenceGuard always on, D14) | Transfers, CRC, response codes, transfer sequence and phase guards, transfer retransmission, resync after an interruption, the link health state | Per link | Know channels or request types; act on the machine |
-| S: session/channel (new, thin) | Session id and lifetime; packet header fields channel, epoch, sequence; per-packet check; message classes; ordering; ACK/NAK; credit; RESET handshake; stale-epoch filter; request ids; the events reported to the logic | Fixed table of 16 channel entries on each side | Take logic mutexes in the packet loop, except to hand over logic requests (V8-7); act on the machine; decide what the logic does on an event |
-| G: logic (unchanged where possible) | G-code execution, macro stack, object model, files; the reactions to link events (logic list) | `GCodeBuffer`, `Processor` | See transfers, packet ids or pipeline depth |
+| A-1 | Replies and stack events belong to the first buffered code of the channel (`DCS/Link/Channel/Processor.cs:1102-1117`) | DF-T10 (printer, 2026-11-08); OF-T4 | Replies and stack events of an older epoch are dropped (CE-14). Matching by position within an epoch stays (FD-3); code identity only on evidence (EG-1) |
+| A-2 | The pipeline depth is exactly one transfer, counted, never acknowledged (`RRF/SBC/SbcInterface.cpp:257-268`) | DF-T2, DF-T12 (printer 2026-11-08) | The abort windows no longer count transfers (CE-13, CE-14). The resend lookup and `BytesReserved` stay; NEW-1 is VF-1 |
+| A-3 | Abort (`InvalidateChannel`) needs no answer and no epoch | DF-T1, T2, T10, T11, T12 | The epoch (CE-5 to CE-15); RRF never refuses InvalidateChannel (CE-7) |
+| A-4 | `ResendPacket` is NACK, back-pressure and polling at once; a refused packet can have acted already | DF-T11 (printer); NEW-3 | InvalidateChannel is never refused (CE-7); copies keep their tag (CE-8); act-before-refuse fixes (VF-3, VF-4); Lock as a pending request (VF-5); per-channel stall only on evidence (EG-2) |
+| A-5 | Shared resources without per-channel credit (`RRF/SBC/SbcInterface.cpp:401-433`, one 64-entry reply FIFO `RRF/Platform/OutputMemory.h:16`) | DF-T3 (printer) | Unchanged: #133 stays; absolute credit only on evidence (EG-3) |
+| A-6 | The stop waits for the transfer in progress and is completed by counting (`DCS/Link/LinkService.cs:313-335`, `:454-456`, `:598-599`) | Stop path tests: about 503 ms worst case (OF "Stop path under SPI faults"); OF-P3 | The stop overtakes retries (CE-16); a halt is never lost (CE-17) |
 
-| ID | Principle | Followed by |
+Latest lab evidence (LT §14, 2026-11-09 morning, run 2): `AbortsCrossingMacroRequests` passed 2000 aborts with all
+fixes, but logged 2 InvalidateChannel resends (06:25:12, 06:27:29), each followed by an out-of-order "M98: Macro file
+… not found", and 249 empty out-of-order replies; DCS discarded 17 crossing macro requests by #134. The run's journal
+was re-read for this draft and shows the same counts. What the epoch does with them:
+
+| Leftover | Cause | With the channel epoch |
 |---|---|---|
-| PR1 | Identity, not position or timing. Late frames are discarded by identity; timers are not used to decide that they stopped. | HTTP/2 RFC 9113 §5.1 ("SHOULD NOT use timers"), §6.4; JSON-RPC 2.0 §4; Modbus TCP guide §4.4.1.3; USB MSC BOT §5.1 |
-| PR2 | Order is kept within a channel. Across channels v8 keeps the order of v7 (PR9); it does not use the freedom that multiplexed protocols give independent streams. | QUIC RFC 9000 §2; SCTP RFC 9260 §1.5.2; SSH RFC 4254 §4; AMQP 0-9-1 §4.6 |
-| PR3 | A few absolute classes; one expedited class that is never refused and never deferred. | RFC 9218 §4.1 (after RFC 9113 §5.3.2 deprecated the tree); CAN 2.0 Part A §2; USB 2.0 §8.4.6.4; caution RFC 6093 §5 |
-| PR4 | Cancellation is a handshake that changes an epoch; repeated requests get the same answer. | RFC 9113 §6.4; RFC 9000 §3.5, §4.4, §13.3; AMQP 0-9-1 §2.3.7; SCTP RFC 6525 §5.2.1 |
-| PR5 | Flow control by absolute, monotonic credit; control traffic is exempt. | RFC 9000 §4.1, §4.2; AMQP 1.0 Part 2 §2.6.7; RFC 9113 §5.2.1; MQTT 5.0 §4.9 |
-| PR6 | One retransmission mechanism per layer. A refusal means "nothing was done". Re-sent content is identical. | RFC 9113 §8.7; MQTT 5.0 §4.4; USB 2.0 §8.6.2; RFC 9000 §2.2 |
-| PR7 | Request state lives on the (channel, epoch) object and dies with it. | RFC 9000 §4.4; CLAUDE.md "Keep state on the object whose lifetime it shares" |
-| PR8 | The firmware never retransmits and keeps no per-message state. DSF holds every copy. | Pattern survey §6; RRF keeps no copy today (`RRF/SBC/DataTransfer.h:238-241`) |
-| PR9 | Logical compatibility: v8 changes how events travel, not which orders the logic can see. Every order the logic sees in v8 is one it can also see in v7; v8 may only remove orders (those the catch code filters today). So the logic meets no new concurrency, and no new wait cycle can form. | RFC 9113, Abstract (HTTP/2 is "an optimized expression of the semantics of" HTTP); CLAUDE.md bug-fix rule 2 ("find a path that already works") |
-| PR10 | **Draft 4. Link faults never end a print.** The link repairs and resyncs for as long as the session lives. Within the session lifetime the link and session layers stay in state and only report events; they have no motion or safety function, and the logic decides what to do. A defined event exists for every case; there is no special case in the link. | Tim, 2026-11-09 (layering rule, section 9 D12); v2 Vision ("nothing that happens on the link may reset it or end the job"), v2 R1, v2 SB1 |
+| 249 empty out-of-order replies | RRF wrote them before it read the abort (LT §14 assessment) | They carry the epoch e of their code and arrive after DSF moved to e+1: dropped and counted (CE-11, CE-14) |
+| 2 × "M98: Macro file … not found" | The M98 was handed to the GB in epoch e; the first InvalidateChannel copy came before `isWaitingForMacro` was set and flagged nothing (OF-T10) | The reply carries e, whichever copy ended the wait: dropped (CE-11, CE-14) |
+| 2 InvalidateChannel resends | RRF refuses InvalidateChannel when the GB mutex is busy (`RRF/SBC/SbcInterface.cpp:897`, `:914-918`) after it acted (`:880-895`) | Gone: RRF never refuses it (CE-7) |
+| 17 crossing macro requests | Written by RRF before it read the abort | Tagged e: dropped by the filter instead of by #134's transfer window (CE-12, CE-14) |
+
+## 3. Principles
+
+| ID | Principle | Status in draft 5 |
+|---|---|---|
+| PR1 | Identity, not position or timing | Partly: the epoch identifies what an abort cancelled; replies are still matched by position within an epoch (FD-3) |
+| PR2 | Order is kept within a channel; across channels the v7 order stays | Holds: nothing reorders packets |
+| PR3 | A few absolute classes; one expedited class | Dropped (no classes). What remains is CE-16: a pending stop overtakes the retries of a transfer |
+| PR4 | Cancellation changes an epoch | Holds, without an acknowledgement packet: InvalidateChannel carries the new epoch and is never refused (CE-7) |
+| PR5 | Flow control by absolute credit | Dropped; only on evidence (EG-3) |
+| PR6 | A refusal means nothing was done; re-sent content is identical | Holds as fixes: CE-7, CE-8, VF-3, VF-4 |
+| PR7 | Request state lives on the (channel, epoch) object | Holds: the epoch is kept on DSF's channel `Processor` and on RRF's `GCodeBuffer` (CLAUDE.md rule 3) |
+| PR8 | The firmware never retransmits and keeps no per-message state | Holds as in v7 (`RRF/SBC/DataTransfer.h:238-241`) |
+| PR9 | **Logical compatibility:** the capability changes how events travel, not which orders the logic can see. Every order the logic sees with ChannelEpoch is one it can also see in v7 with the catch code of DSF 7f26d0ca and RRF 0dccb9efe; the capability may only remove orders (those the catch code filters today). So the logic meets no new concurrency and no new wait cycle | Holds; every requirement has a PR9 column, and section 4.10 checks every V7 item |
+| PR10 | Link faults never end a print (draft 4) | Dropped (FD-10): no session resume. v2 R1 stays the goal of the link; "DCS never exits on link data" stays as VF-1 |
 
 ## 4. Requirements
 
-Columns: **Layer** = L (link) or S (session), section 3. **Removes** = catalogue items (`CC-n`) whose catch code is no
-longer needed in a v8 session. **RAM** = new static RRF RAM; arrays have 16 entries (15 channels,
-`RRF/GCodes/GCodeChannel.h:20`, plus alignment). **Logic** = change to G-layer code that implementing the requirement
-needs; what the logic does on an event is not a requirement here but an item of the logic list.
+Columns: **Layer** = L or S. **Removes** = catalogue items (`CC-n`) whose catch code the requirement makes unnecessary
+in an epoch connection. **PR9** = why the requirement adds no order and no unbounded wait.
 
-### 4.1 Layering, header, classes
+### 4.1 Capability, activation, lifetime
 
-| ID | Layer | Requirement | Pattern | Removes | RAM | Logic |
-|---|---|---|---|---|---|---|
-| V8-1 | S | Both programs MUST have an S layer between L and G as in section 3. L MUST NOT depend on request types; G MUST NOT depend on transfers, packet ids or pipeline depth. **Draft 4:** L and S MUST NOT act on the machine and MUST NOT decide for the logic; they report events (V8-46, V8-47). | P12; AMQP 1.0 Part 2 §2.1.1 | enables all | 0 | none (code moves into S) |
-| V8-2 | S | Every packet MUST carry request, length, channel, epoch and sequence in a fixed header. Global packets use a reserved channel value. Receivers use only the header channel; v7 payload channel fields keep their place and are written equal. Illustration: request (2), length (2), channel (1), epoch (1), sequence (2) = 8 bytes, the size of the v7 header, because `id` and `resendPacketId` are not needed (V8-21). **Draft 4:** the header also carries the per-packet check (V8-42), and every packet starts on an 8-byte boundary, so that a 64-bit field such as `lastModifiedTime` of SetPrintFileInfo (`RRF/SBC/SbcMessageFormats.h:460`) is aligned wherever the packet sits in the transfer (Q11). | P1; RFC 9113 §4.1; AMQP 0-9-1 §2.3.1, §4.2.3 | — | 0 | none |
-| V8-3 | S | Every request type MUST belong to exactly one class (X, C, D, G, section 5) through one fixed table in this spec. No header bit duplicates it. | P5; RFC 9218 §2 | — | 0 | none |
-| V8-4 | S | The may-pass table of section 5 is normative. D packets of one retransmission sequence (V8-6) and direction MUST be processed in sequence order. Packets of different channels MUST reach the logic in the order DSF wrote them, as in v7, and MAY pass each other only where v7 lets them (V8-29). Draft 3: "per sequence" instead of "per channel", and the order rule holds per direction as V8-29 says. | P2, P11; PCIe ordering table (secondary sources only) | — | 0 | none (V8-28) |
+| ID | Layer | Requirement | Removes | PR9 |
+|---|---|---|---|---|
+| CE-1 | L | **Capability bit.** A link capability `ChannelEpoch` = 8 MUST be added after PhaseGuard 1, SequenceGuard 2, ExtendedHeader 4 (`RRF/SBC/SbcMessageFormats.h:139-144`, `DCS/Link/Protocol/Shared/ExtendedLink.cs:13-39`). It is offered in `limits.sbcLinkCapabilities` (`RRF/Platform/RepRap.cpp:324`), shown active in `state.sbcLinkCapabilities` (`:369`) and activated with the existing ActivateLinkCapabilities 0x4D50 (`RRF/SBC/SbcInterface.cpp:1334-1342`, `RRF/SBC/DataTransfer.cpp:826-835`). No new packet type, no new header, protocol version stays 7 (`SbcMessageFormats.h:24`) | — | Link only |
+| CE-2 | L | **Offered everywhere.** RRF MUST offer ChannelEpoch on every board and transport. Today it offers capabilities only inside the SAME70 block (`RRF/SBC/DataTransfer.cpp:475-479`); ChannelEpoch is set outside it. DSF's USB adapter MUST support and activate it: today it supports no capability and never queries (`DCS/Link/Adapter/USB.cs:808`, `:815`; the query needs a supported capability, `DCS/Link/LinkService.cs:1547`). ChannelEpoch concerns packets, not SPI transfers, so it does not depend on the third transfer buffer | — | Link only |
+| CE-3 | L | **Activation before channel traffic.** Activation rides on an object model round trip (`DCS/Link/LinkService.cs:1539-1575`: query of `limits.sbcLinkCapabilities`, ActivateLinkCapabilities, check of `state.sbcLinkCapabilities`). After every connect and reset, DSF MUST NOT run the channel Spins (`:459-462`), which write every Code, MacroStarted, MacroCompleted, InvalidateChannel, Lock and Unlock, until the ChannelEpoch state is known: ActivateLinkCapabilities with ChannelEpoch written, or the capability not offered, or a bound expired (Q23), after which the connection runs without it. RX processing goes on meanwhile. ChannelEpoch MUST NOT wait for the sequence-range condition of ExtendedHeader (`DCS/Link/Adapter/SPI.cs:940-945`); a later request MUST repeat the whole set, because RRF replaces the active set (`RRF/SBC/DataTransfer.cpp:834`) and leaves the extended link if ExtendedHeader is missing (`:829-832`) | — | No new order: events are only delayed, as on a slow link in v7. A new wait, at connect only, bounded; v7 already holds codes at connect until the first buffer report (`DCS/Link/LinkInterface.cs:613`, V7-14). The bound MUST stay well below RRF's 3 s macro wait (`SbcMessageFormats.h:42`), so a macro request at connect does not time out |
+| CE-4 | S | **Epoch lifetime.** Each side keeps one epoch per channel. Both start at 0 when ChannelEpoch is activated in a connection (RRF: when the activation sets the bit and it was not set before, and it marks every `codeEpoch` invalid then; DSF: when it writes the activation). Nothing of the epoch is stamped, set or written while ChannelEpoch is not active. The epochs end with the connection: RRF clears ChannelEpoch with every connection reset (`RRF/SBC/DataTransfer.cpp:1431`) and marks every `codeEpoch` invalid in `InvalidateResources` (`RRF/SBC/SbcInterface.cpp:1717-1780`); DSF resets its epochs where it ends the connection (`DCS/Link/LinkService.cs:389-396`, next to `_queryLinkCapabilities`). DSF MUST NOT reset them in `Processor.Invalidate()` (`DCS/Link/Channel/Processor.cs:1491-1538`), because that also runs on every emergency stop (`DCS/Link/LinkService.cs:1511-1517`, `DCS/Link/LinkInterface.cs:606-612`), while RRF keeps its epochs across a stop | — | Not visible to the logic |
 
-### 4.2 Sequence, acknowledgement, refusal
+### 4.2 Tag
 
-| ID | Layer | Requirement | Pattern | Removes | RAM | Logic |
-|---|---|---|---|---|---|---|
-| V8-5 | S | DSF MUST number D and G packets per (stream, epoch) from 0, 16 bits, compared by RFC 1982 §3.2. A stream is one retransmission sequence: D-code(c) or D-req(c) of a channel (V8-6), or the global stream. RRF MUST report per stream the next sequence it expects, as an absolute value, whenever it changed. DSF keeps every packet until it is acknowledged. Draft 3: two streams per channel. | P3; RFC 9260 §6.5; AMQP 1.0 Part 2 §2.8.10 | CC-25 (resend lookup by transfer position, `DCS/Link/Adapter/SPI.cs:823`), CC-27 (NEW-1, `USB.cs:717-721`) | 64 B (u16 × 2 × 16) | none |
-| V8-6 | S | "Not accepted now" MUST be an acknowledgement with a stall flag at sequence n of one stream. RRF then drops later packets of that stream until n arrives again. DSF resends n, n+1, … of that stream only, with identical content. Other streams go on. Draft 3: each channel c has two streams, D-req(c) and D-code(c). **Draft 4, the general rule: a request that RRF may refuse while the GB mutex is busy MUST NOT block the codes of its channel or the answers that RRF's waits on that channel need.** So every such request goes into D-req(c): Unlock, EvaluateExpression, a Message for channel c (all its chunks, V8-48), SetVariable, DeleteLocalVariable, SetLastCodeResult; PrintStopped goes into D-req(File). D-code(c) holds the other D packets of c: Code, MacroStarted, MacroCompleted, Lock (V8-36). Reason: RRF admits a Code, a MacroStarted and a MacroCompleted for a waiting macro without the mutex (`RRF/SBC/SbcInterface.cpp:382-392`, `:558-566`, `:827-865`), and the mutex holder can be waiting for exactly these: an M98 holds the mutex in its macro wait (E-37, V7-87). In one stream they would stall behind a refused request until RRF's 3 s timeout, a wait v7 does not have, because there the later packet passes the refused one (V7-10). The split adds no order that v7 lacks (Q7): RRF applies a request when it reads it (e.g. `:1131-1140`, `:1307-1314`) but stores a code in its ring (`:401-433`) and runs it later, so the logic orders a request and a code of one channel only by a flush or by waiting for an answer. The one exception is SetLastCodeResult before the next code (V7-62), and v7 already lets the next code pass a refused one (G-7, K10). Examples of requests that can be refused during a macro wait, not things v8 fixes: the stale-variable deletion of M260 and M261 with V (K25, LA-16) and the SetLastCodeResult of a code DSF handles itself (K26, LA-17). Within D-req(c) the order of requests is kept across a refusal, which v7 does not do (K27). A MacroCompleted refused while RRF does not wait stalls D-code(c) harmlessly, because DSF sends nothing else on c until MacroFileClosed (E-17). PrintStopped(normal) needs the File and the File2 mutex (`:521-539`); its stall in D-req(File) is bounded by RRF's main-task waits and accepted. No G packet is refused for a mutex, so a file result never waits behind one (E-38, E-53); G packets can be refused for resources (Q16). | P3, P9; USB 2.0 §8.6.2; MQTT 5.0 §4.6; RFC 9000 §2.2 | CC-26 (`_packetsBeingResent`), NEW-3; CC-31 (Lock polled by resend, `SPI.cs:1107-1120`, `LinkService.cs:615-619`) becomes a pending request (V8-36) | 4 B (stall bitmap per stream kind) | none |
-| V8-48 | S | **Draft 4. One message = one stream.** All chunks of one Message, the Push chunks and the final chunk, MUST go into the same stream, chosen by destination: D-req(c) when channel c is its only destination, the global stream otherwise. The stream MUST NOT depend on whether RRF needs a mutex for a chunk. DSF splits DoCode results and asynchronous results for USB and Aux into chunks with PushFlag (`DCS/Codes/Pipelines/Executed.cs:185-209`); RRF takes the GB mutex only for the final chunk of a message whose only destination is a channel executing on the SBC (`RRF/SBC/SbcInterface.cpp:774-797`). Split by mutex need, the Push chunks would travel in another stream than the final chunk. In v7 a refused final chunk is overtaken by later messages (V7-10); in one stream it is not. | P2, P3 | — | 0 | none |
-| V8-7 | S | RRF MUST NOT refuse a packet that has had an effect. Handlers that today act before they refuse (InvalidateChannel `RRF/SBC/SbcInterface.cpp:883-895`, Code `:382-392`) MUST act only once accepted, or never refuse. Draft 3 adds the two the RRF side found (v7 contract X-6): SetVariable evaluates and assigns, then refuses if its VariableResult does not fit, so the copy of a `var` or `global` fails with "variable '…' already exists" (`:1022-1093`); it MUST reserve the OutputBuffer and the TX room before it assigns. Lock keeps the lock of the movement system it reached when it refuses (`RRF/GCodes/GCodes.cpp:1947-1962`, `:1969-1999`); V8-36 makes it a request that is never refused. Re-evaluating GetObjectModel and EvaluateExpression on a copy has no effect; restarting the burst window (`SbcInterface.cpp:753`) changes only the pacing. | P9; RFC 9113 §8.7 | root of DF-T11 resend; X-6 (K21) | 0 | small: statement order in RRF `SbcInterface::ExchangeData` only |
-| V8-36 | S | **Draft 3. Lock is a pending request, not a stall.** RRF MUST accept LockAllMovementSystemsAndWaitForStandstill (10) and keep it as one pending bit per GB. At every exchange it tries `LockAllMovementSystemsAndWaitForStandstill(gb)` under the GB mutex with `SbcYieldTimeout`, as v7 does for every resent copy (`RRF/SBC/SbcInterface.cpp:606-634`), and sends Locked once that succeeds. The partial lock it keeps between tries stays as in v7 (`RRF/GCodes/GCodes.cpp:1947-1962`), so other channels still cannot add moves to the system it reached. RESET and a session change cancel a pending Lock and release what it holds (`UnlockAll`, `GCodes.cpp:5648-5668`). In v7 such a lock stays until RRF releases it by itself (G-13; the release point `GCodes2.cpp:5016` was seen only in passing). **Draft 4:** what DSF does with a Locked whose request it no longer has is logic (LA-9). | P8 (pending answer), P9 | CC-31; G-13 (K14) | 2 B (pending bitmap) | none in S; LA-9 |
-| V8-8 | S | ACK, NAK, credit and RESET_ACK SHOULD be one C-class "channel state" report with absolute values (epoch, next sequence, stall, credit), so a repeated or reordered report is harmless. It replaces `ResendPacket` (0) and `CodeBufferUpdate` (2). RRF reserves TX space for it as it reserves space for resend headers today (`RRF/SBC/DataTransfer.h:228-231`). | P4 pitfalls; RFC 9000 §4.2 | — | 2 B (dirty bitmap) | none |
+| ID | Layer | Requirement | Removes | PR9 |
+|---|---|---|---|---|
+| CE-5 | S | **Carrier and format.** Once ChannelEpoch is active, `PacketHeader.resendPacketId` (16 bit, `RRF/SBC/SbcMessageFormats.h:101-107`) carries the tag in both directions: bit 15 = tagged, bits 0–5 = epoch, bits 6–14 = 0. 0 means untagged (v7). The field is free outside ResendPacket: DSF writes 0 (`DCS/Link/Protocol/Writer.cs:52`, `DCS/Link/Adapter/SPI.cs:789`, `USB.cs:683`) and reads it only in the resend lookup (`SPI.cs:831`, `USB.cs:729`, called from `DCS/Link/LinkService.cs:613-614`); RRF writes it only in `WritePacketHeader` (`RRF/SBC/DataTransfer.cpp:2290-2303`) and never reads it. In ResendPacket the field keeps its v7 meaning (`RRF/SBC/DataTransfer.h:238-241`). Payloads MUST NOT grow: RRF advances its read pointer only by what each handler reads (`RRF/SBC/DataTransfer.cpp:628-640`; e.g. `ReadCodeChannel` reads 4 bytes, `:705-709`), so a longer payload would garble the later packets of a stock RRF. The channel stays where it is (payload or destination bit). The epoch has 6 bits because the reply path carries it in the free bits of RRF's `MessageType` (CE-11); epochs are compared for equality, so a stale packet matches a newer epoch only after 64 aborts of its channel while it is in flight (Q28) | — | No order change; a stock peer never sees a tag (CE-18) |
+| CE-6 | S | **What is tagged.** DSF tags every packet with a channel field: Code, MacroStarted, MacroCompleted, InvalidateChannel (with the new epoch), Lock, Unlock, EvaluateExpression, SetVariable, DeleteLocalVariable, SetLastCodeResult. RRF tags code replies (Message with `BinaryCodeReplyFlag`) and the stack events ExecuteMacro, AbortFile, WaitForAcknowledgement, MacroFileClosed and MessageAcknowledged. Untagged stay: ResendPacket, ObjectModel, CodeBufferUpdate, generic and targeted messages, EvaluationResult, VariableResult, Locked, DoCode, PrintPaused, file requests and results, and DSF's Message to RRF. DoCode stays untagged because InvalidateChannel does not end it in v7 (V7-53, V7-70) | — | Tagging alone changes nothing |
 
-### 4.3 Cancellation and epochs
+### 4.3 The two companions
 
-| ID | Layer | Requirement | Pattern | Removes | RAM | Logic |
-|---|---|---|---|---|---|---|
-| V8-9 | S | InvalidateChannel MUST become RESET(c, e+1), and RRF MUST never refuse it. On receipt, without the GB mutex, RRF records e+1, ends a macro wait, and purges the ring codes of c (`InvalidateBufferedCodes` needs only a critical section, `RRF/SBC/SbcInterface.cpp:2527-2529`). With the GB mutex, later, it applies `PauseSequenceAborted`, `AbortFile(true)` (`:899-902`). Then it sends RESET_ACK(c, e+1). A repeated RESET(c, e+1) gets the same ACK. DSF sends no D packet on c between RESET and RESET_ACK. **Draft 4:** this is also the guarantee for a job abort: codes of an older epoch are dropped on both sides. PrintStopped(abort) purges the ring codes of File and File2 in RRF without an epoch change (`:509-517`); that DSF resets both channels before it is logic (LA-12). | P6; RFC 9113 §6.4; RFC 9000 §3.5, §13.3; RFC 6525 §5.2.1; AMQP 0-9-1 §2.3.7 | CC-1 (silent closes), CC-6 (#161: `Processor.cs:126-136`, `:883-905`; `ILinkAdapter.cs:203`; `LinkService.cs:620-626`), CC-8 (`invalidationPending`, `GCodeBuffer.h:422`) | 48 B (epoch, pending epoch, flags × 16) | small: the RRF InvalidateChannel handler is split into receipt and apply, with today's calls (`:880-911`). Behaviour as with #161: the channel waits for RRF's answer, now an explicit one |
-| V8-10 | S | Every D packet MUST carry an epoch; receivers MUST drop D packets of another epoch and count them. RRF MUST tag a message with the epoch of the code or request it belongs to, taken when the code was handed to the GB (`FillBuffer`, `:1890-1950`) or the request was made, not with the current channel epoch. The tag of a queued reply is captured when it is queued (`HandleGCodeReply`, `:2353-2406`). Draft 3: (a) the reassembly state of a reply (Push chunks, DSF `_lastPartialMessage`, `DCS/Link/Channel/Processor.cs:1184-1189`) belongs to (channel, epoch) and MUST be discarded with the epoch and on a session change; v7 keeps it across `Invalidate` and prepends it to the next reply (V7-30, G-8). (b) DoCode (12) and the Message that answers it are exempt from the epoch filter: RESET does not end a DoCode in v7 (InvalidateChannel leaves `sendToSbc` and the executing state alone, V7-53, V7-70), and a dropped result would leave RRF's GB "executing on SBC" without a bound. **Draft 4 (Q6):** of RRF's Messages only code replies (`BinaryCodeReplyFlag`) carry an epoch and are filtered. The S layer takes the tag when the reply enters the reply queue, in `HandleGCodeReply` (reached from `RRF/Platform/Platform.cpp:3254-3256`, `:3266-3270`, `:3315-3317`), in link code only; M0 audits every writer of code replies. Generic, targeted and log messages are never dropped: DSF routes them only to the object model, IPC and the event log (`DCS/Link/LinkService.cs:764-813`). The text of a filtered reply still goes to the event log, as DSF logs every message not flagged LogOff before it routes it (`:769-788`). | P6, P7; RFC 9000 §4.4 | CC-2 (#134, `Processor.cs:119-124`, `:888-892`, `:1357-1362`), CC-3 (#158, `:1285-1290`), CC-4 (RRF #45, `SbcInterface.cpp:904`), CC-7 (RRF #46 `codeReplySurplus`: `GCodeBuffer.h:405`, `GCodes.cpp:4450-4458`, `:4584-4593`, `:3703-3708`); A7 (OF-T13); G-8 (K11) | 80 B (code epoch per GB 16 B, tag per FIFO entry 64 × 1 B) | small: one capture point in `HandleGCodeReply`; CLAUDE.md rule 3 prefers passing the identity as a parameter down the reply path (`GCodes.cpp` reply functions) |
-| V8-11 | S | Per-GB request state (`requestedMacroFile` `GCodeBuffer.h:403`, the abort, prompt and closal flags) MUST be bound to the epoch it was created in. RRF MUST NOT send a request of an older epoch; it resolves it locally as failed. This covers state machines that go on after a RESET (OF-T10: G28, `GCodes4.cpp:358-413`). | P6 "what epochs do not fix"; PR7 | CC-5 (RRF #43, `SbcInterface.cpp:891-894`); A5 (OF-T11 daemon.g) | 16 B (request epoch per GB) | small: one compare where requests are written (`:1513-1527`, `:1597-1611`) |
-| V8-12 | S | An RRF abort of all files (`AbortFile`, abortAll) SHOULD be a request for a RESET, which DSF answers with RESET(c, e+1). DSF stays the only writer of epochs. Draft 3 note: DSF's channel then waits for RESET_ACK where v7 sends at once; the wait is E-16 of a DSF abort and bounded as C-4 (the receipt part ends a macro wait, the apply waits for the GB mutex, which RRF's 3 s waits bound), and RRF still runs codes of c only after the abort, as in v7. V8-39 uses the same request. | RFC 9000 §3.5 (STOP_SENDING) | the one-transfer drop after the abort request (`gb->Invalidate()`, `:1575`) for abort-all; late replies after RRF's own abort (G-20, K18) | 0 | small: DSF `HandleAbortFileRequest` (`LinkService.cs:866-889`) issues the RESET after `FilesAborted(true)` |
+| ID | Layer | Requirement | Removes | PR9 |
+|---|---|---|---|---|
+| CE-7 | S | **Companion 1: RRF never refuses InvalidateChannel.** Today RRF acts before it refuses: it flags `codeReplySurplus`, voids an unsent request and ends a macro wait (`RRF/SBC/SbcInterface.cpp:880-895`), then waits 10 ms for the GB mutex (`:897`) and refuses (`:914-918`); this causes the resends of T11 (DF-T11, CC-6). RRF MUST split the handler. **Receipt**, without the GB mutex, always: record the new epoch (CE-4), end a macro wait with an error (`:894`), purge the channel's ring codes (`InvalidateBufferedCodes` needs only a critical section, `:2527-2529`), set "apply pending" (the existing `invalidationPending`, `RRF/GCodes/GCodeBuffer/GCodeBuffer.h:422`). **Apply**, with the GB mutex: `PauseSequenceAborted`, `AbortFile(true)`, `FileAbortSent` (`:901-903`), at once if the 10 ms try succeeds, otherwise wherever the SBC task next holds that mutex, at the latest in the write phase (`:1530-1533`). Until E3 the fork catch code of the v7 path stays in both parts, each now run once: in the receipt the `codeReplySurplus` flag of a code waiting for its macro (`:886-889`, RRF #46) and the voiding of an unsent request (`:893`, RRF #43); in the apply `MacroFileClosedSent` (`:904`, RRF #45) and the flag of a code still running (`:908-911`). The apply MUST NOT purge the ring again (today `:905`), because codes of the new epoch may have arrived since the receipt. `FillBuffer` MUST hold the channel's codes while the apply is pending (add to `:1892-1894`). `FileAbortSent` MUST stay, else RRF would answer DSF's own abort with AbortFile(all), which DSF answers with another InvalidateChannel (CE-15). This is a v7 fix that works with a stock DSF. Without copies, the first-copy guard of `codeReplySurplus` (`firstCopy = !IsInvalidationPending()`, `:882`) is dropped: a second abort while an apply is pending is a new abort, not a copy. `codeReplySurplus` itself (`GCodeBuffer.h:405`) is deleted in E3 | CC-6 (#161), CC-8's first-copy role | v7 already ends the wait before the mutex (`:883-895`, the breaker of C-4); RRF still runs codes of the channel only after the apply, as v7 does after an accepted InvalidateChannel. Removes the resend and its reordering |
+| CE-8 | S | **Companion 2: copies keep their tag.** DSF MUST write a resent copy with the tag of the original. Today the copy gets 0, because `ResendPacket` writes it through `WritePacket` (`DCS/Link/Adapter/SPI.cs:837` → `:782-790`; `USB.cs:735` → `:676-684`). The tag is passed as a parameter, not looked up | — | No order change |
 
-### 4.4 Correlation
+### 4.4 RRF side of the epoch
 
-| ID | Layer | Requirement | Pattern | Removes | RAM | Logic |
-|---|---|---|---|---|---|---|
-| V8-13 | S | Global requests and their answers MUST carry an id that the answer echoes: GetObjectModel/ObjectModel, RRF file requests (17–27) and DSF file results (22–28, 31). Evaluations and variables echo the sequence of their D packet. An answer without a pending id is dropped and logged as a protocol fault. | P8; JSON-RPC 2.0 §4, §6; Modbus TCP guide §4.4.1.3 | CC-32 (one query per transfer, `QuerySent`, `LinkService.cs:470-478`, `:714`), CC-33 (fork key check 4dc381d0, `:716-723`), CC-34 (content match, `:1005-1023`, `:1123-1141`), CC-35 (file slot by state, `SbcInterface.cpp:1204-1207`, `:1221-1224`) | 1 B in the file slot. OM and evaluation answers are written while the request is processed (`:443-494`, `:682-760`), so the id is copied | none |
-| V8-39 | S | **Draft 3. RRF requests carry a number; late answers are dropped.** Every ExecuteMacro and DoCode MUST carry a request number per GB that DSF's answer echoes (MacroStarted, MacroCompleted, the DoCode result). RRF MUST drop and count an answer whose request is no longer pending, which in v7 happens after the 3 s macro timeout (`RRF/GCodes/GCodeBuffer/GCodeBuffer.cpp:1263-1274`): a late MacroStarted gives "none was requested", a late Code runs at the caller's level, a late MacroCompleted(error) pops whatever level is current (V7-37, V7-40). **Draft 4:** RRF MAY request RESET(c) for a request that is no longer pending (V8-12). When it does is logic: after a macro wait that expired once the request had gone out (LA-8, D10). That DSF answers every DoCode, also one it cancels, is logic too (LA-10). | P8, P6 | X-9, X-25 (K23); G-12 (K13) with LA-10 | 16 B (request number per GB) | small: RRF compares the number where answers are read (`SbcInterface.cpp:382-392`, `:558-566`, `:772-808`, `:827-865`) |
-| V8-14 | S | Code replies and stack events (ExecuteMacro with fromCode, WaitForAcknowledgement, single AbortFile, MacroFileClosed, Locked, DoCode results) SHOULD carry the (epoch, sequence) of the code they belong to. DSF matches by identity, not by `BufferedCodes[0]`. RRF keeps the sequence of the code that opened a stack level next to the existing "identity of the command that invoked this macro frame" (`RRF/GCodes/GCodeMachineState.h:250-256`). Later milestone, only if replies by position keep producing findings (D3). | P8 option (b) | CC-9–CC-12 (M99 family: `Processor.cs:650-666`, `GCodes.cpp:4460-4465`, `SbcInterface.cpp:1564-1573`, drains), CC-16–CC-20 (position match, `PendingReplies`, start code by position, Unbuffered M122/M409, `_waitingForPrintCompletion`), CC-22, CC-23, CC-24; NEW-2 becomes detectable | 224 B static (code sequence per GB 32 B, FIFO tag grows to 4 B: +192 B) plus 2 B per pushed level inside the heap-allocated `GCodeMachineState` (`GCodeBuffer.cpp:1061`), ≤ 300 B at full depth on all channels (`MaxStackDepth` 10, `Config/Configuration.h:243`) | medium: DSF `Processor` matching (`:1102-1168`, `:1264-1305`, `:1373-1389`, `:650-724`); RRF `GCodeBuffer` push/pop carries one more field |
+| ID | Layer | Requirement | Removes | PR9 |
+|---|---|---|---|---|
+| CE-9 | S | **Epoch of a code and of the GB's work.** RRF MUST stamp the channel epoch on every code it accepts into the ring, in the free `BufferedCodeHeader.padding` (`RRF/SBC/SbcMessageFormats.h:368-373`; written today only `isPending` and `length`, `RRF/SBC/SbcInterface.cpp:424-426`). `FillBuffer` MUST carry it into a per-GB `codeEpoch` (valid bit + 6-bit epoch) when it hands the code over (`:1910`, `:1945`). **Correction to FD-6 (Q22):** work that RRF starts itself has no ring code. When RRF raises a macro request without a code (`fromCode` false: triggers from `CheckTriggers`, `RRF/GCodes/GCodes.cpp:1052`; daemon.g, `RRF/GCodes/GCodeBuffer/GCodeBuffer.cpp:1258-1260`) or takes a text code (`GCodeBuffer::Put`, `PutAndDecode`, `GCodeBuffer.cpp:294`, `:334`, `:345`: PanelDue, USB, trigger actions), `codeEpoch` MUST become the current channel epoch. Without this, a trigger request after an abort of the Trigger channel would carry the epoch of the last code before the abort and DSF would drop it (RRF then times out after 3 s and the trigger is lost), and the closal of a system macro without codes would be dropped, so DSF's level would wait for it for good (E-17). `InvalidateResources` marks `codeEpoch` invalid; an invalid `codeEpoch` gives no tag (v7 behaviour) | — | Not visible to the logic |
+| CE-10 | S | **Filter of stale DSF packets.** RRF MUST drop and count a tagged Code, MacroStarted or MacroCompleted whose epoch is not the channel epoch, before any side effect: a Code resolves a macro wait at `RRF/SBC/SbcInterface.cpp:383-392` before its buffer check (`:395`); MacroCompleted resolves a wait or pops (`:558-597`); MacroStarted resolves a wait (`:839-842`). Stale copies of the other tagged types are counted and applied as in v7 (Q25); EvaluateExpression and SetVariable MUST still be answered, because DSF waits for the answer | CC-5 (RRF #43) together with CE-12 | Removes orders only: a cancelled code no longer runs after the abort, a stale MacroStarted or MacroCompleted no longer acts on a level of the new epoch |
+| CE-11 | S | **Tag of code replies.** `GCodeBuffer::GetResponseMessageType` (`RRF/GCodes/GCodeBuffer/GCodeBuffer.cpp:1335-1344`) is the only place that builds the reply type of a code from the SBC (`(1u << channel) | BinaryCodeReplyFlag`, `:1340`; no other code sets `BinaryCodeReplyFlag`). It has 15 call sites in 14 lines: `GCodes.cpp:3706`, `:4467`, `:4520`, `:4592`, `:4598`, `:6051`; `GCodes2.cpp:2292` (M122); `GCodes4.cpp:1894`, `:1906`; `GCodes6.cpp:140`; `StringParser.cpp:473`; `GPIO/GpInPort.cpp:90` (two); `SbcInterface.cpp:1568`, `:1571`. It MUST put `codeEpoch` into the free `MessageType` bits: bits 18–23 = epoch, bit 26 = valid (`RRF/Platform/MessageType.h`: destinations end at 0x3FFFF, `:39`; flags are bits 24, 25, 27–31, `:43-50`; bit 26 is unused). The type travels unchanged through the reply FIFO's 32-bit types (`RRF/Platform/OutputMemory.h:178-179`). `DataTransfer::WriteCodeReply` (`RRF/SBC/DataTransfer.cpp:1488-1503`) MUST move it into `resendPacketId` (CE-5) and clear bits 18–23 and 26 in the type it writes. Chunks of different epochs never merge, because the push merge compares the whole type (`SbcInterface.cpp:2369`). Two places compare a type for equality, both with `GenericMessage` (`GCodes2.cpp:2293`, `GCodes6.cpp:141`); an SBC reply type never equals it, with or without the bits; two compare with `NoDestinationMessage` = 0 (`RRF/Platform/RepRap.cpp:762`, `:2367`). Deferred M122 output keeps the type it was given (`RRF/Platform/RepRap.h:57`, `RepRap.cpp:762-766`), so it carries the epoch of the code that asked. Routing tests single bits only (`RRF/Platform/Platform.cpp:3254-3256`, `:3266-3273`, `:3314-3321`). This answers Q6: M122, `GpInPort` and the SD speed test get the tag too | CC-7 (RRF #46 `codeReplySurplus`, `GCodeBuffer.h:405`) in epoch mode | Removes orders only: a reply of an older epoch no longer completes a code of the new one |
+| CE-12 | S | **Stack events and requests.** The stack events of CE-6 MUST carry `codeEpoch` of their GB at the time they are written; `FillBuffer` hands no code to a GB while a closal, an acknowledgement, an abort or a prompt is unsent (`RRF/SBC/SbcInterface.cpp:1892-1894`), so `codeEpoch` cannot change in between. A macro request (`:1513-1527` blocking, `:1597-1611` non-blocking) whose `codeEpoch` is valid and not the channel epoch MUST NOT be written; RRF clears it as failed (`MacroRequestSent`), as the receipt of CE-7 has already ended a blocking wait. This covers state machines that go on after an abort (OF-T10: G28 requests the next homing file, `RRF/GCodes/GCodes4.cpp:358-413`) and daemon.g (OF-T11, A5) | CC-5 (RRF #43), CC-4 (RRF #45) in epoch mode; A5 | Removes orders only: a macro request that fails is a v7 outcome (InvalidateChannel ends a wait with an error, V7-53) |
 
-### 4.5 Flow control
+### 4.5 DSF side of the epoch
 
-| ID | Layer | Requirement | Pattern | Removes | RAM | Logic |
-|---|---|---|---|---|---|---|
-| V8-15 | S | RRF MUST advertise an absolute, monotonic credit limit for code bytes: released + capacity, where "released" counts every code byte RRF received and no longer holds (taken by a GB, purged, or dropped on arrival). 16 bits, RFC 1982. RRF MUST NOT refuse a code within the limit. X and C packets and all RRF→DSF traffic are exempt. Draft 3: a stop or a RESET does not reset the credit; only a session change does (V8-24). DSF MUST NOT zero its view of the limit on an emergency stop, as v7 does (`DCS/Link/LinkInterface.cs:613`), because RRF need not report again: after an EmergencyStop packet it reports only if its ring changes (V7-14, RRF Q2). Codes after a stop then go out and get RRF's "stopped" result (V7-16), an order v7 has whenever the ring was not empty. | P4; RFC 9000 §4.1, §4.2; AMQP 1.0 Part 2 §2.6.7; RFC 9113 §5.2.1; RFC 4254 §5.4 | CC-30 (`BytesReserved`, `LinkService.cs:452`, `:747-753`; `LinkInterface.cs:37`), the cascade refusal (`codeBufferAvailable`, `SbcInterface.cpp:394-414`), NEW-3; G-11 (K12) | 4 B | none |
-| V8-16 | S | The advertised capacity MUST be storable after fragmentation. Today RRF reports the largest contiguous block (`:1394-1399`) and defragments only when 384 bytes or less are free (`:2436-2446`). How the guarantee is met is analysed in M0 (Q4). | P4 pitfalls | — | 0 | none |
-| V8-17 | S | Per-channel limits and a reserve for time-critical channels MUST exist, so codes buffered ahead cannot take the room of a trigger macro. **Draft 4 (D4 = a):** RRF advertises one absolute limit (V8-15); DSF splits it per channel and keeps the reserve. | P4; RFC 9000 §4.1; USB 2.0 §5.5.4 | CC-28 (#133, `LinkInterface.cs:40-44`, `:570-583`; `Processor.cs:1076-1079`), CC-29 (share 82d581d1, `LinkInterface.cs:52`) | 0 | none |
-| V8-18 | S | A reply MUST NOT be dropped silently. If the reply FIFO is full (`OutputMemory.cpp:487-506`), RRF SHOULD record the loss per channel and report it with the next message of that channel. Draft 3: recording the loss MUST NOT add a wait: a producer that finds the FIFO full does not block, as in v7 (V7-28); a blocking producer would hold its GB mutex while it waits for the SBC task, a wait v7 does not have (PR9). | P8 pitfalls | — (NEW-2 has no catch code) | 2 B | none: nobody waits |
+| ID | Layer | Requirement | Removes | PR9 |
+|---|---|---|---|---|
+| CE-13 | S | **Epoch on the channel `Processor`.** DSF MUST keep the epoch on `Processor` and increment it where it writes InvalidateChannel (Spin step 3, `DCS/Link/Channel/Processor.cs:931-937`, only when the write succeeded). In an epoch connection it replaces `_allFilesAbortedSent`, `_allFilesAbortUnconfirmed` and `_allFilesAbortResent` (`:119-136`; on the v7 path they stay until E3) with their uses (`:883-905`, `:1285-1290`, `:1357-1362`, `AllFilesAbortResent`, the out parameter of `ILinkAdapter.ResendPacket` and `DCS/Link/LinkService.cs:620-626`). `_allFilesAborted` (`:117`) stays: it is the trigger to write InvalidateChannel. When the epoch changes or is reset, DSF MUST discard the channel's partial reply (`_lastPartialMessage`, `:1184-1189`), so that no chunk of an older epoch is prepended to the next reply (K11 for aborts). Codes after the abort go out in the next Spin; RRF holds them until the apply (CE-7) | CC-2 (#134), CC-3 (#158), CC-6 (#161) | Same per-channel order as with #161, where DSF held the codes; now RRF holds them. Removes E-16 (the channel's wait for the acceptance of InvalidateChannel) |
+| CE-14 | S | **Filter of stale RRF packets.** At the top of `LinkService.ProcessPacket` (`DCS/Link/LinkService.cs:609`), DSF MUST drop a tagged code reply, ExecuteMacro, AbortFile, WaitForAcknowledgement, MacroFileClosed or MessageAcknowledged whose epoch is not the current epoch of its channel, and count it per channel and request type. The channel comes from the payload or the reply's destination bit (`DCS/Link/Channel/Manager.cs:107-121`). A dropped reply is not routed to the console. **DSF MUST NOT filter answers to its own requests** (EvaluationResult, VariableResult, Locked, ObjectModel; CE-6 leaves them untagged): DSF merges pending evaluations per (channel, expression) (`DCS/Link/LinkInterface.cs:144-153`), so a dropped answer would hang every later identical evaluation | CC-2, CC-3 | Removes orders only: the packets dropped are those the windows of #134 and #158 drop today, plus the replies that RRF #46 suppresses and those it misses (OF-T10) |
+| CE-15 | S | **RRF's own abort of all files.** DSF MUST answer an AbortFile(all) of the current epoch with InvalidateChannel(e+1), by setting `_allFilesAborted` in `FilesAborted(true)` (`DCS/Link/Channel/Processor.cs:646-760`, called from `DCS/Link/LinkService.cs:866-889`). Replies of codes RRF still ran then carry e and are dropped (K18, G-20). RRF's apply of that InvalidateChannel aborts files that are already aborted; whether that is harmless is Q9. Whether RRF requests an abort after its own 3 s macro-wait timeout (old D10) is a logic decision, open (LA-8): it would abort the File channel's print | — (K18 has no catch code; RRF #46 does not cover it) | "InvalidateChannel after RRF's AbortFile(all)" is a v7 order (a DSF abort can cross RRF's abort-all). No wait: DSF does not wait for an answer |
 
-### 4.6 Expedited class and stop
+### 4.6 Stop path and halt (link)
 
-| ID | Layer | Requirement | Pattern | Removes | RAM | Logic |
-|---|---|---|---|---|---|---|
-| V8-19 | S | EmergencyStop and Reset are class X. DSF MUST write them first in a transfer (as `LinkService.cs:324-354` does). RRF MUST execute them on read without a mutex (as `SbcInterface.cpp:336-344` does). They are never refused, never credit-limited, never part of a stream, and idempotent through a stop number. Getting them through a disturbed data phase is v2 R10. **Draft 4 (D5):** the expedited flag lives in the v8 transfer header (V8-40), laid out in M1 and used in M4. Draft 3: the X class covers both kinds of emergency stop. DSF-requested: the EmergencyStop packet stops the hardware in the SBC task, and the main task's next spin aborts every GB, which sends AbortFile(all) to DSF (V7-12). RRF-initiated: `DoEmergencyStop` (`RRF/GCodes/GCodes.cpp:1065-1070`) also runs `GCodes::Reset`, which clears those abort flags again (`RRF/GCodes/GCodeBuffer/GCodeBuffer.cpp:145`), so DSF hears nothing (V7-17); V8-38 reports it. | P5; CAN 2.0 Part A §2; USB 2.0 §8.4.6.4; RFC 9260 §6.6 | CC-40 in part (halt and reset ordering in `Execute`) | 1 B | none |
-| V8-20 | S | RRF MUST answer EmergencyStop with STOP_ACK(stop number), written after `reprap.EmergencyStop()` returned. DSF completes M112 on STOP_ACK instead of one transfer later. | P6/P11 (explicit fence) | CC-37 (#88, `LinkService.cs:315-317`, `:454-456`, `:599`); OF-P3; G-2 on USB once ported (K6, D6) | 1 B | none |
-| V8-21 | S | v8 sessions MUST NOT use `ResendPacket` or `resendPacketId`. The link repeats transfers (v2), S has only V8-6, RRF keeps no copy. | P9; MQTT 5.0 §4.4; RFC 8260 §1.1 | with V8-5 and V8-6: CC-25–CC-27 | 0 | none |
-| V8-22 | — | **Draft 4: moved to the logic list (LA-14).** An M112 read from a macro keeps its flush; that is logic, not link. | — | — | 0 | — |
-| V8-38 | S | **Draft 3. RRF reports its own emergency stops.** When RRF stops without a request from DSF (`DoEmergencyStop`: trigger 0, PanelDue's M112 bytes, an M112 code that RRF executes, a trigger action with M112; `RRF/GCodes/GCodes.cpp:490-499`, `:990-999`, `:1065-1070`; `GCodes2.cpp:1953-1955`), it MUST send an X-class STOPPED(stop number) first in its next transfer. In v7 DSF gets nothing and keeps its macro levels and codes while RRF has popped all of its own and runs the codes left in its ring as "stopped" (V7-17, X-5). **Draft 4 (D9):** the protocol part is the report; DSF's reaction is logic (LA-7). | P5, P6 | X-5 (K20) with LA-7 | 1 B | small: one call in RRF `GCodes::DoEmergencyStop` sets the flag of the S layer |
+| ID | Layer | Requirement | Removes | PR9 |
+|---|---|---|---|---|
+| CE-16 | L | **The stop overtakes retries.** Today the link thread checks the halt request only at the top of its loop (`DCS/Link/LinkService.cs:325-335`; `InvalidateCodes` and the write of the stop happen there in the same iteration, `:327-328`), so a stop waits until `PerformFullTransfer` (`:598`) returned, and its retry loop resends the same TX (`DCS/Link/Adapter/SPI.cs:323-440`). Measured worst case about 503 ms behind a long code transfer that noise keeps failing (OF "Stop path under SPI faults"). When a stop is pending, the next retry MUST carry the stop first instead of resending the old transfer unchanged; the content of the old transfer MUST follow unchanged and MUST NOT be dropped (a dropped GetObjectModel would stay "sent" for good, K16; a dropped file result would make RRF wait 3 s). The stop MUST reach RRF in a transfer that RRF processes: with SequenceGuard RRF answers a repeated sequence number with its last TX without processing DSF's data (`RRF/SBC/DataTransfer.cpp:924-945`), so a stop placed into such a repeat would be lost (Q24). No header change. Acceptance: M112 ≤ 100 ms in 1000 stops under injected noise (AC-4) | — | "RRF processes DSF packets after the stop in the same transfer" is a v7 order: in the iteration that writes the stop, DSF still writes resend copies and file results (`LinkService.cs:434-451`, `:613-627`), object model queries, key changes and messages (`:470-594`), which `InvalidateCodes` does not cancel (V7-94). The v7 contract says DSF writes nothing after the stop (V7-12, X-17); the code writes these non-channel packets. Codes after the stop get "stopped" as in v7 (V7-16) |
+| CE-17 | L | **A halt is never lost (Tim, 2026-11-09).** Rejecting unusable data MUST never drop an emergency stop or the halt state of RRF. Facts: an emergency stop that RRF makes by itself sends no packet of its own: `GCodes::DoEmergencyStop` (`RRF/GCodes/GCodes.cpp:1065-1070`) calls `reprap.EmergencyStop()` and `Reset()` and then sends the generic message "Emergency Stop! Reset the controller to continue."; DSF learns of the halt only through the object model (`state.status` "halted", `RRF/Platform/RepRap.cpp:1983-1989`) and that message (V7-17, K20). DSF's own stop counts as done once the transfer that carried it completed and the RX of that transfer was processed (`DCS/Link/LinkService.cs:454-456`, `:599`; `DCS/Link/LinkInterface.cs:345-356`). Rules: **(a)** On SPI, corrupted data (CRC) is retried as a whole transfer and never processed in part: RRF processes only after both data responses were Success (`RRF/SBC/DataTransfer.cpp:1187-1215`), DSF only after `PerformFullTransfer` returned (`SPI.cs:360-373`, `:440`). On USB there is no transfer CRC and no retry (`RRF/SBC/DataTransfer.cpp:1303-1356`): a failed transfer ends the connection on RRF (`RRF/SBC/SbcInterface.cpp:270-288`) and DSF drops its RX (`DCS/Link/Adapter/USB.cs:363-404`). **(b)** A packet that passed the CRC but cannot be used is a protocol fault: it is rejected, counted and reported to the logic as an event (VF-1, VF-2). Today it ends DCS (`SPI.cs:855`, uncaught by `LinkService.cs:446-450`) or drops the rest of the transfer ("Read invalid packet", `:439-443`). Because the halt is a state, not an edge, DSF MUST then read the object model state again. A rejected or mismatched ObjectModel answer MUST NOT leave its query pending: today the key check discards it and leaves the query "sent" (`LinkService.cs:714-723`, `:470-478`), so no query goes out any more and a halt would never arrive (K16, VF-8). **(c)** DSF's own stop is complete only after a transfer that RRF processed. Over USB a failed transfer returns normally, so the halt of the transfer it dropped completes (`USB.cs:363-404` with `LinkService.cs:454-456`, K6, G-2): VF-9. **(d)** Acceptance AC-5 | — | Reading the state again adds a query, which v7 sends at any time; no new order. A halt request that stays pending is a v7 wait (E-21, 4.5 s) |
 
-### 4.7 Link, session, transport, firmware
+### 4.7 Peers, integrity, counters, RAM
 
-| ID | Layer | Requirement | Pattern | Removes | RAM | Logic |
-|---|---|---|---|---|---|---|
-| V8-40 | L | **Draft 4. The v2 link features are part of v8 from the first transfer (D14).** The v8 transfer header MUST be the extended header of v2 (sequence number with counter and status, Walsh response codes; v2 "Implementation status", capabilities), and PhaseGuard and SequenceGuard MUST be on from the first transfer of a v8 session. There is no activation: ActivateLinkCapabilities (0x4D50) and the query of `limits.sbcLinkCapabilities` (`DCS/Link/LinkService.cs:1539-1575`) are not used in a v8 session. The v8 header also carries the expedited flag (D5) and the session id (V8-45). On SAME70 RRF MUST have the third 8 KB transfer buffer that SequenceGuard needs. Today it takes it from the PBUF pool when there is room and otherwise does not offer SequenceGuard (`RRF/SBC/DataTransfer.cpp:475-479`); what a v8 RRF does then is open (Q18). This closes Q8 and, for v8, the switch-window findings OF-S1 and OF-S5. | v2 C1 (capabilities), P12 | CC-36 (activation via the object model) | 0 (the buffer is allocated today, section 6) | none |
-| V8-41 | L | **Draft 4. Own protocol version, fallback to v7 for updates only (D1, D2, D6).** The v8 transfer header MUST carry v8's own protocol version, a number from a fork range that is not 8 (not chosen yet), until Duet3D adopts v8 and assigns one. On SAME70 over SPI DSF MUST offer only v8 in normal operation. A stock or older RRF answers a v8 header with BadProtocolVersion and sends 7 in its own (`RRF/SBC/DataTransfer.cpp:1115-1118`, `SbcMessageFormats.h:24`); DSF MUST then use v7 only in `UpdateOnly` mode (`DCS -u`, `DCS/Program.cs:58`, `DCS/Settings.cs:42-46`), reusing its downgrade path (`DCS/Link/Adapter/SPI.cs:1883-1893`, log `:1967-1970`), and otherwise report the incompatible firmware without starting normal operation. A v8 RRF MUST accept v7 only for the requests of a firmware update and refuse the others. DSF's update uses object model queries (`DCS/Model/UpdateService.cs:303`, `:340-347`), M997 with B as a code for an expansion board (`DCS/Utility/FirmwareUpdater.cs:170-180`; RRF reads the firmware file like every file in SBC mode, through its file requests, V7-71; not traced further), M997 for the main board through IAP (`:228-234`, V7-18) and M999 as Reset (`:248-254`). How a v8 RRF tells a v7 DSF in the first exchange and how it refuses in v7 is open (Q17). USB and boards other than SAME70 keep v7 for normal operation until they are ported (D6). Consequence: wherever v8 runs, the fork's v7 catch code of both sides is not needed; it stays as long as any transport runs v7 for normal operation. | D1, D2 (section 9) | the v7 catch code on the v8 path (section 7) | 0 | none |
-| V8-42 | S | **Draft 4. Integrity per packet (v2 R9).** Every v8 packet MUST carry a second check, independent of the transfer CRC32 (`RRF/SBC/DataTransfer.cpp:1187`, `:1389`), computed by the sender when it creates the packet and checked by the receiver before it uses the packet. Target: at most 10⁻⁷ undetected corrupted transfers per hour at the worst error rate the spec allows (v2 R9; CRC32 alone gives about 10⁻⁵ per hour when 1 % of transfers are hit at 1,700 per second, v2 decision log 2026-10-08). Because it is end to end per packet, it also protects USB once v8 runs there (D6). The algorithm, its size and what the receiver does with a packet that fails it are open (Q20). | v2 R9 | — | 0 (section 6) | none |
-| V8-23 | S | No rule may depend on transfer numbers, pipeline depth or which transfer carried a packet. SPI and USB MUST behave the same; **draft 4:** for USB once it is ported (D6). Draft 3: the one exception is the read-ahead drop after a stack request (V8-37), which the catalogue keeps (CC-21, Q5). It rests on the depth of one that both links have (V7-1). | P6; RFC 9000 §12.3 (packet numbers apart from stream identity) | A7, C3 (NEW-1, OF-T13) | 0 | none |
-| V8-24 | S | Epochs and sequences MUST start at 0 at every session start and MUST NOT be reset otherwise, except by RESET. A session change discards all channel state on both sides. **Draft 4:** a session change is a new session id of either side or SessionExpired (V8-45); a resync within the session lifetime is not one and keeps all channel state. Draft 3: epochs restart at 0, so they cannot filter what is left of the old session; therefore: (a) RRF MUST clear at a session change every per-GB flag that makes it send a packet: `macroFileClosed`, `messagePromptPending`, `messageAcknowledged` (after it acknowledged the open boxes itself, `RRF/SBC/SbcInterface.cpp:1772`), `invalidated`, `invalidationPending`, `codeReplySurplus`, an unsent `sendToSbc`, `reportPause` (V7-96, X-12; `:1717-1780` vs `RRF/GCodes/GCodeBuffer/GCodeBuffer.cpp:128-150`). In v7 a stale MacroFileClosed pops DSF's base level after a reconnect, and DCS stops (K5). (b) DSF MUST NOT write a D, G or C packet of the old session into the new one; the SPI adapter re-exchanges its pending TX after a reconnect (`DCS/Link/Adapter/SPI.cs:442-477`), and RRF processes it if its number follows (V7-91, G-3, K7). An X packet whose STOP_ACK has not come MUST be sent again. (c) Partial replies and messages are discarded (V8-10). | P10; RFC 9260 §1.3 | X-12 (K5), G-3 (K7) | 0 | small: RRF clears the flags where it ends the session; DSF's SPI adapter drops the pending TX on a session change |
-| V8-35 | S | **Draft 3. Unknown and invalid packets.** (a) **Draft 4:** nothing of v8 is sent in a v7 session, and a v8 session has v8 from its first transfer (V8-40, V8-41). A v7 RRF never reads a v8 packet type, because it refuses the v8 header (`RRF/SBC/DataTransfer.cpp:1115-1118`). What an unknown type does in v7: a v7 RRF ends its read loop at a request number ≥ 32 other than 0x4D50 (`InvalidRequest` = 32) and drops the rest of the transfer, codes included, without a refusal (`RRF/SBC/SbcInterface.cpp:326-330`, `SbcMessageFormats.h:346`); the deprecated numbers below 32 are skipped and acknowledged (`SbcInterface.cpp:674-679`); a v7 DSF ignores unknown types silently (`DCS/Link/LinkService.cs:611-701`). (b) In a v8 session a packet that the receiver cannot use (unknown type, invalid channel, invalid length such as a Code over 384 bytes, `SbcInterface.cpp:350-375`) MUST be rejected for good and counted (V8-27, V8-44): RRF marks it rejected in the channel state report (V8-8), DSF completes the code with an error. It is never a stall, never the end of the read loop, never a silent drop. v7 refuses an over-long code on every copy (V7-20) and drops one with an invalid channel silently (V7-6). | P10, P12 | G-16, X-18 (K4); G-17, X-19 (K24) | 2 B (reject bitmap) | none |
-| V8-37 | S | **Draft 3. The read-ahead drop after a stack request stays (B7).** After RRF wrote ExecuteMacro, AbortFile or WaitForAcknowledgement for channel c, it MUST drop the Code packets of c that DSF wrote before it processed that request, and DSF MUST suspend those codes and send them again after the pop, before newer ones, exactly as v7 does (V7-22: `RRF/SBC/SbcInterface.cpp:376-380`, `:1495-1504`; `DCS/Link/Channel/Processor.cs:158-189`, `:991-1016`). "Before it processed" is the v7 rule "in the next exchange" (V8-23); **draft 4:** B7 stays as it is (Q5). The dropped codes count as received for the sequence (V8-5) and as released for the credit (V8-15); DSF's copies after the pop are new packets with new sequence numbers. | — (PR9, V8-28) | — (CC-21 stays) | 0 | none |
-| V8-25 | L, S | The firmware part MUST use static tables only: no heap allocation in the protocol path, no per-message buffer, no reorder buffer, no new transfer buffer beyond the one of V8-40. Total new static RAM MUST stay below 1 KB, checked with the map file. | PR8; pattern survey §6 | — | — | — |
-| V8-26 | S | The RRF S layer SHOULD be a separate source file without GCodes dependency, so the host harness can compile it unchanged. Today the harness replaces `ExchangeData` and executes no packet (`Tools/sbc-harness/README.md:95`). | — | — | 0 | none |
-| V8-27 | S | M122 on both sides SHOULD count per channel: stale-epoch drops, stalls, go-back-N resends, RESETs, credit waits, rejected packets. Counted, not alarmed (v2 R7). The link counters are V8-46. | v2 R7 | — | ≤ 64 B (u16 × 2 × 16) | none |
+| ID | Layer | Requirement | Removes | PR9 |
+|---|---|---|---|---|
+| CE-18 | S | **Peers without ChannelEpoch.** A fork DSF with a stock RRF, and a stock DSF with a fork RRF, MUST run upstream v7. Nothing of the epoch is written unless ChannelEpoch is active: no tag, no `MessageType` bits on the wire (CE-11). The fork catch code CC-2 to CC-8 is deleted from the v7 path once the printers run the epoch RRF (E3, FD-11, old D2 option b). **Behaviour change** for such pairs: fork DSF + stock RRF gets back DF-T2 (#134 gone), DF-T11 resend (#161 gone, stock RRF refuses) and DF-T12 (#158 gone); DF-T1 and DF-T10 are stock RRF's anyway. Stock DSF + fork RRF gets back DF-T1 (RRF #43 gone), DF-T10 (RRF #46 gone) and DF-T12 (RRF #45 gone); DF-T2 is stock DSF's anyway; DF-T11 does not come back, because CE-7 stays in the fork RRF. DF-T3 does not come back: its fix #133 (CC-28) is no epoch catch code and stays | CC-2 … CC-8 from the v7 path (E3) | v7 behaviour, by definition |
+| CE-19 | L | **Integrity (v2 R9), conditional on an EMC test.** Measure corrupted transfers per hour under IEC 61000-4-3 and IEC 61000-4-6, 1 h each, at the levels of EN IEC 61000-6-2, from the checksum counters (RRF `checksumErrors`, `RRF/SBC/DataTransfer.cpp:1167`, `:1221`). At ≤ 100 corrupted transfers per hour CRC32 alone meets R9: about 2⁻³² undetected per corrupted transfer gives ≤ 2.3 × 10⁻⁸ per hour, below 10⁻⁷. Above that, a second, independent per-transfer CRC trailer is added as a v2 link capability. It can sit after the last packet inside the data length: both read loops read only the number of packets the header names (RRF `RRF/SBC/SbcInterface.cpp:314`, `RRF/SBC/DataTransfer.h:233-236`; DSF `DCS/Link/LinkService.cs:434`, `DCS/Link/Adapter/SPI.cs:523`) and stop at the data length (`RRF/SBC/DataTransfer.cpp:618-621`, `SPI.cs:531-534`). Details Q26 | — | Link only |
+| CE-20 | S | **Counters for the evidence gates.** Both sides MUST count per channel and request type: stale drops (CE-10, CE-14), out-of-order replies that are not stale (DSF, today only logged, `DCS/Link/Channel/Processor.cs:1165`), resends (DSF, today logged, `LinkService.cs:618`) and refusals (RRF, `packetAcknowledged` false, `RRF/SBC/SbcInterface.cpp:1354-1358`), including code refusals. M122 shows them on both sides. Counted, not alarmed (v2 R7) | — | Counting changes no order |
+| CE-21 | L, S | **RAM.** The RRF part MUST use static fields only: no heap allocation, no side table. A tag per reply-FIFO entry (64 entries, `RRF/Platform/OutputMemory.h:16`) would be a side table against CLAUDE.md rule 3 and is not needed, because the FIFO's own type carries the tag (CE-11). New static RAM MUST stay below 1 KB, checked with the map file (section 6) | — | — |
 
-### 4.8 Logical compatibility and deadlock freedom (PR9)
+### 4.8 Logical compatibility (PR9)
 
-| ID | Layer | Requirement | Pattern | Removes | RAM | Logic |
-|---|---|---|---|---|---|---|
-| V8-28 | S | A v8 session MUST be a refinement of v7 for the logic of both sides: every order in which a logic layer sees its events (codes and their replies per channel, macro requests, starts and closals, message boxes, locks, flushes, evaluations, messages, aborts, stops) MUST also be possible in v7 with the catch code of DSF 7f26d0ca and RRF ddec2d001. v8 MAY remove orders, namely those that the catch code removes today (stale replies, requests and closals across an abort, codes overtaking a refused code of their channel). It MUST NOT add any. | PR9; RFC 9113, Abstract | — | 0 | none: this requirement is what keeps it so |
-| V8-29 | S | Across channels, packets MUST be handed to the logic in the order DSF wrote them (RRF: one transfer at a time, packets in order, `RRF/SBC/SbcInterface.cpp:310-1359`; DSF: `DCS/Link/LinkService.cs:434-451`). A packet may be passed only where v7 already lets it be: a stalled packet (V8-6, in v7 a refused one, `:1355-1358`) lets later packets of other channels pass. A stall MUST NOT let a later packet of its own channel pass (v7 does, NEW-3; removing that order is allowed by V8-28). Draft 3, per direction, no more order than v7 has (V7-82): DSF→RRF: RRF hands packets to its logic in the order DSF wrote them (V7-2); DSF writes channel data round robin as in v7 (`DCS/Link/Channel/Manager.cs:72-99`) and keeps causal order (V8-34); it MUST NOT wait to put channels into an order. RRF→DSF: DSF hands packets to its logic in the order RRF wrote them (V7-2); RRF keeps the v7 composition (read-phase answers, the reply FIFO in production order, the file request, per-channel requests in channel-number order, PrintPaused last; V7-4), with the channel state report in place of ResendPacket and CodeBufferUpdate; it MUST NOT hold a request back to order it by the time it was raised, and MUST NOT add a drain that v7 does not have (V7-32). "Own channel" in the stall rule means own stream (V8-6): a stall in D-req(c) lets D-code(c) pass, as v7 lets a later packet pass a refused one. **Draft 4, write order across streams:** packets of one direction MUST be delivered in the order they were written, across all streams; only the later packets of a stalled stream wait, and packets of other streams pass it. This keeps SetPrintFileInfo before the M23 or M32 that follows it and SetLastCodeResult before the next code (V8-34) without a special case, as long as the earlier packet's stream is not stalled. A stalled SetLastCodeResult is passed by the next code as in v7 (G-7). A SetPrintFileInfo behind a stalled packet of the global stream would be passed by the M23, which v7 cannot do: open (Q16). | PR2, PR9 | NEW-3 | 0 | none |
-| V8-30 | S | The spec MUST contain the wait-for graph of every blocking wait on both sides, v7 waits and the new ones of v8 (RESET_ACK, credit, stall, STOP_ACK), each with file:line and its bound, and MUST show that the graph has no cycle that is not broken by a bound. Draft 3: the v7 graph is [sbc-link-v7-contract.md](sbc-link-v7-contract.md) section 15: edges E-1…E-53 of both sides and cycles C-1…C-8. v8 changes it so: E-26…E-28 no longer wait for the link thread (V8-34), which removes C-1 and C-2; E-16 becomes the wait for RESET_ACK with the same bound (V8-9); E-14 becomes the credit wait (V8-15); the resend polling of V7-11 becomes the stall (V8-6), in its own stream so that E-37 cannot wait behind it; E-15 and E-50 become the pending Lock (V8-36). New edges: E-v1 M112 → STOP_ACK, bounded by the 4.5 s of E-21 (V8-20); E-v2 a DSF channel after RRF's abort request → RESET_ACK (V8-12), bounded as C-4. **Draft 4:** C-3 is a logic finding (K3, LA-15) outside v8 (D11). C-4…C-8 stay as in v7, bounded. | PR9 | — | 0 | none |
-| V8-31 | S | X and C packets MUST be handled without waiting: not for D or G traffic, not for a logic mutex, not for the RRF main task. Work that needs a logic mutex (V8-9 "apply") is deferred as a state, not waited for, and the answer (RESET_ACK) is sent once it is done. D and G packets keep their v7 hand-over (`SbcYieldTimeout`, then a stall instead of a resend). The S layer of DSF runs in the packet loop of `LinkService` and MUST NOT await a channel lock there that the logic can hold while it waits for the link. Draft 3: more generally, the DSF packet loop MUST NOT take, synchronously or not, a lock whose holder can wait for the packet loop. In v7 the job lock is such a lock: M23, M32, M37 and the job loop hold it while they wait for SetPrintFileInfo to be written (E-27, E-28), and the loop takes it for PrintPaused and AbortFile on File/File2 (E-7): cycles C-1, C-2. V8-34 removes those waits, so the job lock may stay where it is. The same holds for every lock of V7-83; a new wait for the packet loop under one of them violates this rule. | PR9; RFC 9000 §4.1 (control frames are not flow-controlled) | C-1, C-2 (with V8-34) | 0 | none |
-| V8-32 | S | Every new wait MUST be bounded. A wait that v7 breaks with a timeout MUST NOT become unbounded in v8. Draft 3 replaces the rest of draft 2, which ended the link session when RESET_ACK did not come or a stall or credit wait made no progress within a bound: that ends a session where v7 goes on, e.g. a full code buffer during a long move or M505 waiting for standstill, which is a new order (PR9). Waits that replace a v7 wait keep the v7 bound: RESET_ACK = E-16 (none while RRF refuses; RRF refuses only while its main task holds the GB mutex, and RRF's own 3 s waits bound that, V7-40, V7-71), credit = E-14 (none), a stall = the resend polling of V7-11 (none), the pending Lock = E-15, E-50 (none). These are back-pressure; their liveness is the session lifetime (V8-45), and v8 MUST NOT end the session for them. The only new wait is STOP_ACK (V8-20), bounded by the 4.5 s of M112 (E-21); what DSF does after it is logic (LA-11). | PR9; v2 R6, R8 | — | 0 | none |
-| V8-33 | S | Before M1, the wait-for graph of V8-30 and the list of cross-channel dependencies of the logic (Q7) MUST be complete and reviewed. Any rule of this spec that would add an order or a wait cycle blocks the milestone until it is changed. Draft 3: the graph is in the v7 contract. **Draft 4 (D11 revised):** C-3 (K3), K25 and K26 are logic findings outside v8 (LA-15 to LA-17) and no precondition for M1. K1 and K2 (C-1, C-2) are removed by V8-34; tests that show their reachability are written in M0. Q7 is answered (section 10). | PR9 | — | 0 | none |
-| V8-34 | S | **Draft 3. A request without an answer completes on acceptance.** A DSF packet that the logic awaits as written and that has no answer (E-26: SetPrintFileInfo, PrintStopped, SetLastCodeResult, DeleteLocalVariable, Unlock) MUST be complete for the logic once the S layer has accepted it into its stream (V8-5), not when it is written into a transfer. Accepting MUST NOT wait for the packet loop; the content is captured at acceptance (v7 reads the print file info when it writes, `DCS/Link/LinkService.cs:405`). S MUST write a packet no later than every packet that the logic hands over after the request completed (causal order across streams), so RRF still reads SetPrintFileInfo before the M23 or M32 that follows it (V7-65) and SetLastCodeResult before the next code (V7-62). **Draft 4:** RRF's side of that order is the write order across streams of V8-29, with its condition (Q16). A packet that a session change loses after acceptance is lost as a written packet can be in v7 (V7-91), and the logic is invalidated as today. This removes the waits of the logic on the link thread under the job lock (E-27, E-28) and with them C-1 and C-2. | P3, P11; V8-5 | C-1, C-2 (K1, K2) | 0 | none: `LinkInterface` completes these requests on acceptance (`DCS/Link/LinkInterface.cs:397-406` and the other request methods); `JobProcessor` and `MCodeHandler` stay as they are |
+| ID | Layer | Requirement | Removes | PR9 |
+|---|---|---|---|---|
+| CE-22 | S | **Refinement.** An epoch connection MUST be a refinement of v7 for the logic of both sides: every order in which a logic layer sees its events MUST also be possible in v7 with the catch code of DSF 7f26d0ca and RRF 0dccb9efe. The capability MAY remove orders, namely those the catch code removes today (stale replies, requests, closals and acknowledgements across an abort, stale copies of codes and macro answers). It MUST NOT add any. Section 4.10 checks every V7 item | — | This requirement |
+| CE-23 | S | **Wait-for graph.** The v7 graph is [sbc-link-v7-contract.md](sbc-link-v7-contract.md) section 15. The capability changes it so: E-16 (a channel waits for the acceptance of InvalidateChannel) is gone (CE-7, CE-13); the codes of the channel wait instead in RRF's `FillBuffer` for the apply, bounded as C-4 (the apply needs the GB mutex, which the main task holds at most through its 3 s waits, V7-40, V7-71); the one new wait is the hold at connect (CE-3), bounded by Q23. C-1 to C-3 stay as in v7: C-1 and C-2 are K1 and K2, whose reachability tests come in E0 (Q14); C-3 is a logic finding (K3, LA-15). C-4 to C-8 stay, bounded | — | No new cycle: the hold at connect waits for the link thread only, which holds no logic lock while it waits |
 
-### 4.9 Alignment with the v7 contract
+### 4.9 Message summary
 
-Every item of [sbc-link-v7-contract.md](sbc-link-v7-contract.md) gets one status:
-- **identical**: v8 keeps the v7 behaviour that the logic sees;
-- **changed**: v8 changes it; the difference and the reason are given, and the last column says whether the change
-  only removes orders the logic could see in v7 (PR9, V8-28);
-- **removed**: v8 drops the mechanism; the reason is given;
-- **gap**: draft 2 did not cover the item, or covered it in a way that would add an order, a wait or a cycle; draft 3
-  closes it with the new or amended requirement named in the third column.
+| Dir | v7 request (`RRF/SBC/SbcMessageFormats.h:269-349`) | Tag | Who filters | v7 pairing it replaces in epoch mode |
+|---|---|---|---|---|
+| → RRF | 2 Code, 7 MacroCompleted, 18 MacroStarted | epoch of the channel when written; a copy keeps it | RRF drops stale (CE-10) | copies acting after an abort (A-4) |
+| → RRF | 19 InvalidateChannel | new epoch e+1 | never refused (CE-7) | #161 (resend tracking) |
+| → RRF | 10 Lock, 11 Unlock, 16 EvaluateExpression, 20 SetVariable, 21 DeleteLocalVariable, 29 SetLastCodeResult | epoch | counted, applied as v7 (Q25) | — |
+| → RRF | 0 EmergencyStop, 1 Reset, 3 GetObjectModel, 5 SetPrintFileInfo, 6 PrintStopped, 17 Message, file results, 30 ObjectModelKeyChanged, 0x4D50, IAP | none | — | — |
+| → DSF | 3 Message with `BinaryCodeReplyFlag` | `codeEpoch` via `MessageType` bits (CE-11) | DSF drops stale (CE-14) | RRF #46 suppression; position windows |
+| → DSF | 4 ExecuteMacro, 5 AbortFile, 13 WaitForAcknowledgement, 14 MacroFileClosed, 15 MessageAcknowledged | `codeEpoch` (CE-9, CE-12) | DSF drops stale (CE-14) | #134, #158, RRF #43, RRF #45 |
+| → DSF | 0 ResendPacket (field = packet id), 1 ObjectModel, 2 CodeBufferUpdate, other Messages, 7 PrintPaused, 9 Locked, 11 EvaluationResult, 12 DoCode, 16 VariableResult, file requests | none | never (CE-14) | — |
 
-Counts (draft 4): 45 identical, 33 changed, 3 removed, 20 gap. Draft 4 turns seven identical items into changed ones:
-V7-89, V7-90, V7-92, V7-95 and V7-97 through PR10, V7-98 through D1 and D2, V7-69 through V8-48. Every change,
-including the gap fixes, only removes orders, with one condition: V7-65 holds only once Q16 is solved. Two changes add a
-wait in a case where v7 has none, each bounded and known from v7: V7-13 (STOP_ACK instead of the wait for the transfer,
-with the same 4.5 s bound) and V7-46 (RESET_ACK after RRF's own abort, the wait v7 has after DSF's abort, bounded as
-C-4). V8-34 removes three waits (E-26…E-28). PR10 changes no order the logic sees: a gap within the session lifetime
-looks to the logic like a slow peer, which v7 has up to its timeouts.
+### 4.10 Alignment with the v7 contract
 
-| V7 | Status | v8 requirement(s) | Difference | Reason | Only removes orders (PR9) |
+Every item of [sbc-link-v7-contract.md](sbc-link-v7-contract.md) gets exactly one status for an epoch connection:
+- **identical**: the logic sees the v7 behaviour;
+- **changed**: the capability changes it; the difference and the reason are given, and the last column says why the
+  change only removes orders (PR9, CE-22);
+- **removed**: the mechanism is dropped; the reason is given;
+- **gap**: a v7 behaviour or defect that the capability does not address; the row names the separate v7 fix (`VF-n`),
+  the logic-list item (`LA-n`) or the open question (`Qn`) that takes it.
+
+Counts (draft 5): 49 identical, 25 changed, 3 removed, 24 gap. A script checked that every V7-1 … V7-101 has exactly
+one row (a range such as "V7-74 … V7-79" counts for each item) and that every row that is not identical has a reason
+and a filled PR9 column. Every change only removes orders. One change adds a bounded wait: the hold at connect
+(V7-3, CE-3).
+
+| V7 | Status | Draft 5 | Difference | Reason | Only removes orders (PR9) |
 |---|---|---|---|---|---|
-| V7-1 pipeline depth one | changed | V8-23 | S and the logic no longer depend on the depth; RRF still composes one transfer behind | catch code of A-2 (CC-2, CC-25, CC-30) | yes: events in the old abort windows are dropped by epoch, not by position |
-| V7-2 processing in the writer's order | identical | V8-4, V8-29 | — | — | — |
-| V7-3 DSF's TX order | gap | V8-34, V8-29 (amended), V8-19 | X first, C next, then D and G in the order the logic handed them over, delivered in write order across streams (draft 4), instead of the fixed kind order of `LinkService.Execute` | V8-34 needs causal order to keep SetPrintFileInfo before the M23 without a wait | yes: every hand-over order is one v7 produces when the two packets go into different transfers; only the kind order inside one transfer, for packets the logic did not order, is gone |
-| V7-4 RRF's TX order | identical | V8-29 (amended), V8-8 | the channel state report takes the place of ResendPacket and CodeBufferUpdate; the logic does not see it | — | — |
-| V7-5 pacing | identical | — | — | RRF-internal; v2 R4 asks for the same throughput | — |
-| V7-6 unknown and invalid packets | gap | V8-35 (amended) | nothing of v8 in a v7 session; in a v8 session an unusable packet is rejected and counted | a new v8 type sent to a v7 RRF would end its read loop and drop the rest of the transfer (X-18) | yes: removes the silent loss |
-| V7-7 packet ids, resend lookup | removed | V8-5, V8-21, V8-44 | — | CC-25, CC-27 (NEW-1); the `ArgumentException` that stops DCS goes with it (PR10) | yes |
-| V7-8 refusal | changed | V8-6, V8-7, V8-21 | a stall at sequence n of one stream, go-back-N in that stream; a refusal means nothing was done; RRF still keeps no copy | PR6, PR8 | yes |
-| V7-9 SPI resend guard | removed | V8-6 | — | CC-26 | yes |
-| V7-10 a refused packet is overtaken | gap | V8-6 (amended), V8-29 (amended), V8-48 | a stalled packet is passed by other channels and by the other stream of its channel, not by its own stream; draft 4 states the rule behind the two streams | draft 2 stalled the whole channel, so an answer to RRF's macro wait could wait behind a refused mutex request until RRF's 3 s timeout, a cycle v7 does not have | yes: removes own-stream overtaking (NEW-3, K27), keeps the passing that RRF's waits need |
-| V7-11 why RRF refuses | gap | V8-6 (amended), V8-9, V8-36 | mutex refusals stall D-req(c) only; InvalidateChannel is never refused; Lock becomes a pending request; the 10 ms hand-over stays (V8-31) | as V7-10 | yes |
-| V7-12 EmergencyStop | identical | V8-19 | a stop number makes it idempotent | — | — |
-| V7-13 halt completion | changed | V8-20 | M112 completes on STOP_ACK, written after `reprap.EmergencyStop()` returned; on USB, once ported (D6), a dropped stop cannot complete | OF-P3, G-2 (K6) | yes; the STOP_ACK wait replaces the v7 wait for the transfer and keeps its 4.5 s bound (E-21) |
-| V7-14 code buffer after a stop | gap | V8-15 (amended) | DSF keeps its credit view after a stop | v7 zeroes it and RRF need not report again (G-11, K12) | yes: codes after a stop get RRF's "stopped" result, which v7 also produces whenever the ring was not empty |
-| V7-15 Reset | identical | V8-19 | — | — | — |
-| V7-16 M112 is DSF's | identical | LA-14 (former V8-22) | — | the flush is G-code semantics (wiki: M81 before M112); logic, so it is in the logic list | — |
-| V7-17 RRF-local stops | gap | V8-38 (new), V8-19 (amended) | RRF reports its own stops; DSF's reaction is logic (LA-7) | Tim: both kinds of stop in the X class; X-5 (K20) | yes: "codes cancelled after a halt" is a v7 order (an M112 from DWC can meet an RRF-local stop); decision D9 |
-| V7-18 firmware update | identical | — (class I, v2 C2) | — | v7 stays the update path, also against a v8 RRF (D2, V8-41) | — |
-| V7-19 when DSF writes a Code | changed | V8-9, V8-15 | the block by an unconfirmed abort becomes the wait for RESET_ACK; buffer space becomes credit | CC-6 | yes: same blocking, explicit end |
-| V7-20 code admission | gap | V8-15, V8-35 (new) | a code within the credit is never refused and there is no cascade; an invalid length is rejected for good instead of refused on every copy | CC-30; G-17, X-19 (K24): draft 2 had no answer for a code that can never fit | yes: "code ends with an error" is a v7 outcome |
-| V7-21 flow control by estimate | changed | V8-15, V8-16, V8-17 | absolute credit instead of estimate, spare room and share; DSF splits the one limit (D4) | CC-28, CC-29, CC-30 | yes |
-| V7-22 read-ahead drop (B7) | gap | V8-37 (new), V8-23 (amended) | — (kept) | V8-23 of draft 2 forbade the rule it rests on, with no replacement; Q5: B7 stays as it is | yes: v7 behaviour kept, no order added |
-| V7-23 RRF holds codes while a stack event is unsent | identical | — | — | RRF logic | — |
-| V7-24 per-channel FIFO | identical | V8-4 | — | — | — |
+| V7-1 pipeline depth one | identical | — | the depth stays; the abort windows no longer depend on it (V7-55, V7-56) | — | — |
+| V7-2 processing in the writer's order | identical | — | filters drop packets before processing; the order is unchanged | — | — |
+| V7-3 DSF's TX order | changed | CE-3 | after every connect and reset the channel Spins wait until the ChannelEpoch state is known | the epochs must be in place before the first channel packet | yes: events are only delayed, as on a slow link; the hold is a bounded wait at connect only (Q23) |
+| V7-4 RRF's TX order | identical | — | the tag rides in the header | — | — |
+| V7-5 pacing | identical | — | — | — | — |
+| V7-6 unknown and invalid packets | gap | VF-1; Q21 (K4) | DSF rejects and counts instead of ignoring or stopping; RRF's end of the read loop at ≥ 32 stays (K4) | the capability adds no packet type (CE-1, CE-5), so it does not meet X-18 | n/a here; VF-1 only removes a DCS stop |
+| V7-7 packet ids, resend lookup | gap | VF-1 | the `ArgumentException` that ends DCS (`SPI.cs:855`) and NEW-1 on USB are fixed separately | not an epoch topic (FD-13) | n/a here; VF-1 only removes a DCS stop |
+| V7-8 refusal | changed | CE-8 | a copy keeps the tag of the original | without it, a copy would look untagged and pass the filters | yes: same copies, same order |
+| V7-9 SPI resend guard | identical | — | CC-26 stays | — | — |
+| V7-10 a refused packet is overtaken | changed | CE-10 | a copy of a Code, MacroStarted or MacroCompleted that an abort overtook is dropped | in v7 such a copy runs or acts after the abort | yes: removes "a cancelled code runs after the abort"; NEW-3 and K27 stay (EG-3, Q21) |
+| V7-11 why RRF refuses | changed | CE-7 | InvalidateChannel is never refused; the other refusals stay | DF-T11 (CC-6) | yes: removes the resend of InvalidateChannel; the receipt acts without the mutex as v7 already does (C-4) |
+| V7-12 EmergencyStop | changed | CE-16 | a pending stop goes first into the transfer being retried, ahead of its unchanged content | stop path worst case about 503 ms (A-6) | yes: in v7 RRF already processes DSF packets after the stop in the same transfer (CE-16) |
+| V7-13 halt completion | gap | VF-9; CE-17 (c) | over USB a failed transfer must not complete the halt | K6, G-2 | n/a here; VF-9 keeps the halt pending, a v7 wait (E-21) |
+| V7-14 code buffer after a stop | gap | Q21 (K12) | — | K12 is not an epoch topic; reported per FD-13 | n/a here |
+| V7-15 Reset | identical | — | — | — | — |
+| V7-16 M112 is DSF's | identical | LA-14 | — | — | — |
+| V7-17 RRF-local stops | gap | CE-17 (b); Q27; LA-7 | DSF learns the halt from the object model, also after rejected data; STOPPED is deferred | K20, X-5; Tim's halt rule | n/a here; reading the state again adds no order |
+| V7-18 firmware update | identical | — | — | — | — |
+| V7-19 when DSF writes a Code | changed | CE-13, CE-3 | the block by an unconfirmed abort is gone; codes after an abort go out at once and RRF holds them until the apply; no code before the ChannelEpoch state is known | CC-6 | yes: RRF runs them only after the apply, as v7 runs them only after the accepted abort |
+| V7-20 code admission | gap | Q21 (K24) | — | K24 is not an epoch topic | n/a here |
+| V7-21 flow control by estimate | identical | — | credit dropped (FD-1); CC-28 … CC-30 stay; EG-3 watches it | — | — |
+| V7-22 read-ahead drop (B7) | identical | — | CC-21 stays (Q5) | — | — |
+| V7-23 RRF holds codes while a stack event is unsent | changed | CE-7 | `FillBuffer` also holds the channel's codes while the apply of InvalidateChannel is pending | the apply needs the GB mutex | yes: the same hold v7 has through #161, on the other side |
+| V7-24 per-channel FIFO | identical | — | — | — | — |
 | V7-25 comment codes get no reply | identical | — | — | — | — |
-| V7-26 one final reply per code | changed | V8-10, V8-18; V8-14 (M5) | replies of an old epoch are dropped, a lost reply is reported; position matching stays until M5 | CC-7, NEW-2 | yes |
-| V7-27 reply routing in DSF | identical | V8-2 | the header channel equals the one destination bit RRF sets | — | — |
-| V7-28 one reply FIFO | changed | V8-10, V8-18 (amended) | each entry carries its code's epoch; a full FIFO records the loss; nobody waits | NEW-2 (OF S7); draft 2 left "who waits" open | yes |
-| V7-29 suppressed replies | changed | V8-10 (amended); V8-14 (M5) | `codeReplySurplus` becomes the epoch tag, taken when a code reply enters the reply queue; the M99 suppression stays until M5; the writers of code replies outside `HandleReply` are audited in M0 (Q6) | CC-7 | yes |
-| V7-30 partial replies survive invalidation | gap | V8-10 (amended), V8-24 (amended) | reassembly state dies with the epoch and the session | G-8 (K11) | yes: removes the stale prefix |
-| V7-31 reply and stack event in both orders | identical | V8-14 (M5) | both orders stay until M5 | — | — |
-| V7-32 drains | identical | V8-14 (M5), V8-29 | drains and Unbuffered M122/M409 stay until M5; no new drain | — | — |
+| V7-26 one final reply per code | changed | CE-11, CE-14 | replies of an older epoch are dropped and counted; matching by position stays within an epoch | DF-T10, OF-T10 leftovers | yes: removes "a stale reply completes the next code" |
+| V7-27 reply routing in DSF | identical | — | the `MessageType` bits of the tag never reach the wire | — | — |
+| V7-28 one reply FIFO | changed | CE-11 | each entry's type carries the epoch of its code; entries of different epochs never merge; NEW-2 stays (Q2) | the tag must be taken when the reply is produced | yes: no order change; a merge across epochs is removed |
+| V7-29 suppressed replies | changed | CE-11, CE-14 | `codeReplySurplus` is replaced by DSF's filter; the M99 suppression stays; replies outside `HandleReply` (M122, `GpInPort`, SD speed test) get the tag too | CC-7; OF-T10 writers outside `HandleReply` | yes: the same replies are dropped, plus those #46 misses |
+| V7-30 partial replies survive invalidation | changed | CE-13 | the partial reply of a channel is discarded when its epoch changes or is reset; the emergency stop path keeps K11 | G-8 for aborts | yes: removes a stale prefix |
+| V7-31 reply and stack event in both orders | identical | — | — | — | — |
+| V7-32 drains | identical | — | — | — | — |
 | V7-33 completion for clients | identical | — | — | — | — |
-| V7-34 blocking macro request | changed | V8-11, V8-39 | a request of an older epoch is not sent; the request carries a number | CC-5 (RRF #43) | yes |
+| V7-34 blocking macro request | changed | CE-12, CE-14 | the request carries the epoch; RRF does not write one of an older epoch; DSF drops one of another epoch | CC-2 (#134), CC-5 (RRF #43); K17 stays (EG-1) | yes: a failed macro request is a v7 outcome |
 | V7-35 several macros of one code | identical | — | — | — | — |
-| V7-36 system macros on an empty stack | changed | V8-5, V8-34 | the refusal (MacroCompleted with error) is kept until acknowledged and cannot be lost | G-6 (K9) | yes: removes RRF's 3 s wait for a lost refusal |
-| V7-37 macro that cannot be opened | identical | V8-39 | the case after the start belongs to V7-40 | — | — |
-| V7-38 macro start, implicit start | changed | V8-7 | only an accepted Code starts the macro | DF-T11 family | yes |
-| V7-39 daemon.g | changed | V8-11 | a request of an older epoch is not sent | A5 (OF T11) | yes |
-| V7-40 macro wait timeout | gap | V8-39 (new) | late answers are dropped by request number; RRF may request RESET(c); that it does so after an expired macro wait is logic (LA-8) | X-9, X-25 (K23); draft 2 had request numbers only in the table of section 5 | yes: "channel aborted after a macro request" is a v7 order (an abort can come at any time); decision D10 |
-| V7-41 MacroCompleted | changed | V8-10; V8-14 (M5) | one of an old epoch is dropped; X-7 stays until M5 | a MacroCompleted written before an abort belongs to a level that no longer exists; the epoch identifies it instead of its position (A-2 family, contract V7-41) | yes |
-| V7-42 MacroFileClosed | changed | V8-10, V8-24 (amended) | the epoch replaces #158 and RRF #45; no closal of the old session arrives | CC-3, CC-4; K5 | yes |
-| V7-43 DSF's macro reader | identical | — | — | DSF logic | — |
+| V7-36 system macros on an empty stack | gap | Q21 (K9) | — | K9 is not an epoch topic | n/a here |
+| V7-37 macro that cannot be opened | identical | — | — | — | — |
+| V7-38 macro start, implicit start | changed | CE-10; VF-3 | a stale Code or MacroStarted no longer resolves a macro wait; that a current Code resolves it before its refusal is VF-3 | DF-T11 family | yes |
+| V7-39 daemon.g | changed | CE-9, CE-12 | the daemon request carries the epoch of the moment RRF raised it; one of an older epoch is not sent | A5 (OF-T11) | yes |
+| V7-40 macro wait timeout | gap | LA-8 | whether RRF requests an abort after its timeout is logic, open; K23 stays | FD-8 | n/a here; if decided, "channel aborted after a macro request" is a v7 order |
+| V7-41 MacroCompleted | changed | CE-10 | a stale copy is dropped before it acts; X-7 stays (Q15) | a copy of an older epoch belongs to a level that no longer exists | yes |
+| V7-42 MacroFileClosed | changed | CE-12, CE-14 | tagged; DSF drops one of another epoch; replaces #158 and RRF #45; the old-session case K5 is VF-6 | CC-3, CC-4 | yes |
+| V7-43 DSF's macro reader | identical | — | — | — | — |
 | V7-44 M98 | identical | — | — | — | — |
-| V7-45 single AbortFile, M99 | identical | V8-14 (M5) | — | CC-9…CC-12 stay until M5 | — |
-| V7-46 AbortFile all | changed | V8-12 | RRF's abort of all files asks for RESET(c, e+1); DSF's channel then waits for RESET_ACK | G-20 (K18): late replies get a stale epoch and are dropped | yes; the RESET_ACK wait is E-16 of a DSF abort, bounded as C-4, and RRF runs codes of c only after the abort, as in v7 |
-| V7-47 stack depth | identical | — | — | RRF logic; its overflow uses V7-46 | — |
-| V7-48 WaitForAcknowledgement | identical | V8-14 (M5) | G-14 stays (K15) | — | — |
-| V7-49 MessageAcknowledged | changed | V8-10 | an acknowledgement of an old epoch is dropped (a box at the base level after an abort, OF T10) | in v7 such an acknowledgement pops whatever level is current after the abort (X-11, OF T10); the epoch ties it to the level it was meant for | yes |
+| V7-45 single AbortFile, M99 | changed | CE-12, CE-14 | a single abort of an older epoch is dropped; the M99 catch code CC-9 … CC-12 stays | the epoch ties it to the level it was meant for | yes |
+| V7-46 AbortFile all | changed | CE-15, CE-14 | DSF answers one of the current epoch with InvalidateChannel(e+1); one of another epoch is dropped | K18, G-20 | yes: "InvalidateChannel after RRF's abort-all" is a v7 order; no wait |
+| V7-47 stack depth | identical | — | — | — | — |
+| V7-48 WaitForAcknowledgement | changed | CE-12, CE-14 | one of another epoch is dropped; G-14 (K15) stays (Q21) | stale box of an aborted level | yes |
+| V7-49 MessageAcknowledged | changed | CE-12, CE-14 | one of another epoch is dropped (a box at the base level after an abort, OF-T10) | in v7 it pops whatever level is current | yes |
 | V7-50 cancel with abort | identical | — | — | — | — |
-| V7-51 M291 blocks only lower levels | identical | — | — | logic | — |
-| V7-52 DSF side of an abort | changed | V8-9 | InvalidateChannel becomes RESET(c, e+1) after the same DSF work; G-21 stays (K19) | CC-1 | yes |
-| V7-53 RRF side of InvalidateChannel | changed | V8-9, V8-11, V8-10 (amended) | receipt and apply are split; requests and prompts of the older epoch are resolved locally; DoCode stays untouched as in v7 | CC-5, CC-8 | yes: a prompt resolved as cancelled is what a user can do in v7 |
-| V7-54 refused InvalidateChannel | changed | V8-9 | never refused | CC-6, CC-8 (DF-T11) | yes |
-| V7-55 abort window 1 | removed | V8-10 | — | CC-2 (#134) | yes |
-| V7-56 abort window 2 | changed | V8-9 | the window becomes the wait for RESET_ACK | CC-6 (#161) | yes: same wait (E-16), explicit end |
-| V7-57 Lock | gap | V8-36 (new), V8-6, V8-7 (amended) | Lock is accepted and pending; RRF tries again every exchange; RESET cancels it and releases its lock; DSF's Unlock for a Locked without request is logic (LA-9) | draft 2 made it a stall although a refused Lock keeps the lock it took (X-6); G-13 (K14) | yes: other channels still cannot add moves to the locked system; the Locked wait (E-15) is the v7 wait |
-| V7-58 Unlock | identical | — | section 5 corrected: Unlock frees every resource of the GB (X-24) | — | — |
-| V7-59 EvaluateExpression | changed | V8-13, V8-6 | the result echoes the request's sequence; stream D-req | CC-34 | yes |
-| V7-60 SetVariable, DeleteLocalVariable | gap | V8-13, V8-7 (amended), V8-6 | echo; no assignment before a refusal; stream D-req, which keeps a stale-variable deletion before the creation that follows it | X-6 (K21): draft 2's V8-7 missed SetVariable; K27 (draft 4) | yes: removes "already exists" on a copy and after an overtaken deletion |
-| V7-61 variables only after a flush | identical | — | the stale-variable deletion of M260 and M261 with V without a flush stays; it is a logic finding (K25, LA-16) | — | — |
-| V7-62 SetLastCodeResult | changed | V8-34, V8-6 | completes on acceptance; stream D-req, so a refused copy is still passed by the next code (G-7 stays); the missing flush is a logic finding (K26, LA-17) | E-26 | yes |
-| V7-63 object model | changed | V8-13 | a query id instead of one query per transfer and the key check | CC-32, CC-33, G-18 (K16) | yes |
+| V7-51 M291 blocks only lower levels | identical | — | — | — | — |
+| V7-52 DSF side of an abort | changed | CE-13 | DSF increments the epoch when it writes InvalidateChannel; the payload is unchanged; G-21 (K19) stays (Q21) | CC-1's ambiguity becomes an identity; CC-1's code stays (`_allFilesAborted`, `FileAbortSent`) | yes |
+| V7-53 RRF side of InvalidateChannel | changed | CE-7, CE-12 | receipt without the mutex and apply with it; no second purge; requests of the older epoch are not sent; DoCode stays untouched | CC-4, CC-5, CC-8 | yes: v7 already acts before the mutex |
+| V7-54 refused InvalidateChannel | removed | CE-7 | — | never refused | yes |
+| V7-55 abort window 1 | removed | CE-14 | — | CC-2 (#134): replaced by the filter | yes |
+| V7-56 abort window 2 | removed | CE-7, CE-13 | — | CC-6 (#161): nothing to wait for | yes: removes E-16 |
+| V7-57 Lock | gap | VF-5; LA-9 | Lock as a pending request; the Unlock for a Locked without request is logic | K14, G-13; not an epoch topic | n/a here; VF-5 keeps the Locked wait (E-15) |
+| V7-58 Unlock | identical | — | — | — | — |
+| V7-59 EvaluateExpression | identical | — | the answer is never filtered (CE-14) | — | — |
+| V7-60 SetVariable, DeleteLocalVariable | gap | VF-4; Q21 (K27); Q25 | no assignment before a refusal is VF-4 | K21; K27 | n/a here |
+| V7-61 variables only after a flush | gap | LA-16 | — | K25 is a logic finding | n/a here |
+| V7-62 SetLastCodeResult | gap | LA-17; Q21 (K10) | — | K26 is a logic finding; K10 stays | n/a here |
+| V7-63 object model | gap | VF-8; CE-17 (b) | a rejected or mismatched answer must not leave its query pending | K16, G-18; a halt would never arrive | n/a here; VF-8 removes a permanent block |
 | V7-64 logic waits for the OM | identical | — | — | — | — |
-| V7-65 SetPrintFileInfo | gap | V8-34 (new), V8-31 (amended), V8-29 (amended) | completes on acceptance, delivered before the M23 by the write order across streams | C-1, C-2 (K1, K2): draft 2 kept the wait under the job lock | yes once Q16 is solved: RRF sees the same order unless the global stream stalls before SetPrintFileInfo; the cycle is gone |
+| V7-65 SetPrintFileInfo | gap | Q14 (K1, K2); Q11 (G-19) | the waits under the job lock stay | completion on acceptance was dropped with v8 | n/a here |
 | V7-66 ObjectModelKeyChanged | identical | — | OF-S3 stays a separate fix | — | — |
-| V7-67 print end | gap | V8-34, V8-6 (amended) | completes on acceptance; PrintStopped is in D-req(File), not in the global stream; that DSF resets File and File2 before an abort is logic (LA-12) | in the global stream a PrintStopped refused for the File mutex would hold back the file result that the holder of that mutex waits for (E-53, E-38) until RRF's 3 s timeout | yes |
-| V7-68 PrintPaused | identical | — (D7, LA-13) | — | — | — |
-| V7-69 Message to RRF | changed | V8-6, V8-48 | every chunk of a message goes into one stream chosen by destination; a stalled final chunk keeps later messages of that stream behind it | split by mutex need, the Push chunks of a DoCode result would travel apart from the final chunk, which alone needs the mutex (`RRF/SBC/SbcInterface.cpp:774-797`) | yes: removes later messages overtaking a refused final chunk (V7-10) |
-| V7-70 DoCode | gap | V8-39 (new), V8-10 (amended) | a request number; DoCode is exempt from the epoch filter; DSF's error result for a cancelled DoCode is logic (LA-10) | G-12 (K13); draft 2's epoch filter would drop a DoCode or its result across a RESET, which v7 lets through | yes: an error result is a v7 outcome |
-| V7-71 RRF's file I/O | changed | V8-13, V8-5 | requests and results carry an id; a late result is dropped; results are not lost | CC-35, X-8 (K22), G-6 (K9) | yes |
-| V7-72 stack mirror by position | identical | V8-14 (M5) | — | — | — |
-| V7-73 pop on the base level is fatal | identical | V8-10, V8-24 (amended) | stays; its stale sources (K5, T12) are filtered | — | — |
-| V7-74 … V7-79 level routing, start code, pop effects, flush, prioritized codes, job read-ahead | identical | — | — | DSF and RRF logic, untouched by v8 | — |
-| V7-80 M606 S1 | identical | LA-15 | C-3 is a logic finding (K3) outside v8 (D11) | — | — |
-| V7-81 triggers | identical | — | — | RRF logic | — |
-| V7-82 no cross-channel order | gap | V8-29 (amended) | — (kept): packets are delivered in write order and DSF writes channels round robin | draft 2 stated one direction and "the order DSF wrote them"; RRF→DSF has production order for replies and channel-number order for requests; requiring more would add waits | yes: v7 behaviour kept, no order added |
-| V7-83 the link thread takes logic locks | gap | V8-31 (amended), V8-34 | the packet loop takes no lock whose holder waits for it | C-1, C-2 (K1, K2) | yes |
+| V7-67 print end | gap | LA-12 | DSF writes InvalidateChannel on File and File2 before PrintStopped(abort) | logic (decided by Tim) | n/a here; LA-12 orders an abort before the job cancel, which an IPC abort can do in v7 |
+| V7-68 PrintPaused | identical | LA-13 | — (FD-7) | — | — |
+| V7-69 Message to RRF | identical | — | — | — | — |
+| V7-70 DoCode | gap | LA-10 | untagged and never filtered, as in v7; the error result for a cancelled DoCode is logic | K13, G-12 | n/a here |
+| V7-71 RRF's file I/O | gap | Q21 (K22, K9); EG-4 | — | request ids only on evidence (FD-1) | n/a here |
+| V7-72 stack mirror by position | identical | — | identity only on evidence (FD-3, EG-1) | — | — |
+| V7-73 pop on the base level is fatal | changed | CE-14; VF-6 | its abort source (T12) is filtered by the epoch; its reconnect source (K5) is VF-6 | CC-3 | yes |
+| V7-74 … V7-79 level routing, start code, pop effects, flush, prioritized codes, job read-ahead | identical | — | — | DSF and RRF logic | — |
+| V7-80 M606 S1 | gap | LA-15 | — | C-3 (K3) is a logic finding | n/a here |
+| V7-81 triggers | gap | LA-19 | — | the safety review found that a door trigger can be lost while the link is down (section 11) | n/a here; logic and safety work |
+| V7-82 no cross-channel order | identical | — | — | — | — |
+| V7-83 the link thread takes logic locks | gap | Q14 (K1, K2); LA-15 (C-3) | — | completion on acceptance was dropped with v8 | n/a here |
 | V7-84 completion never blocks the link thread | identical | — | — | — | — |
-| V7-85 DSF waits without timeout | gap | V8-32 (amended), V8-45 | — (kept); the only new wait is STOP_ACK; the liveness of the waits is the session lifetime | draft 2 ended the session when a credit or stall wait made no progress, where v7 goes on | yes: v7 behaviour kept; STOP_ACK is the one new wait (V7-13) |
-| V7-86 … V7-88 RRF task waits | identical | V8-31 | — | the 10 ms hand-over and RRF's waits stay | — |
-| V7-89 link-level bounds | changed | V8-43, V8-44, V8-45 | no retry count: the link retries and resyncs until the session lifetime runs out; RRF's 4 s timeout raises LinkDown instead of ending the connection; DCS no longer stops after 60 s without a transfer, a livelock leads to a resync | PR10: these bounds end a print on a link fault (section 4.10, F-1, F-4, F-5) | yes: a gap within the lifetime looks to the logic like a slow peer, which v7 has up to its timeouts; the logic's own waits still expire (LA-5) |
-| V7-90 fatal errors in DSF's packet loop | changed | V8-44, V8-21 | DCS never stops on link data: an unusable packet or header is rejected and counted; the `ArgumentException` of V7-7 goes with V8-21 | PR10 (F-6, F-7) | yes: removes the DCS stop |
-| V7-91 SPI reconnect | gap | V8-24 (amended), V8-45 | a resync within the lifetime keeps the session and exchanges the pending transfer again, which is then correct; after a new session id no packet of the old session is written, except a stop without STOP_ACK | G-3 (K7); PR10 | yes |
-| V7-92 DSF's SPI reset detection | changed | V8-45 | only a new session id of the peer or SessionExpired ends the session; a timeout, a sequence gap or a resync does not | PR10; the v2 status does not tell a restart from a connection reset | yes: removes the invalidation after a short gap |
-| V7-93 USB failure | changed | V8-20, V8-23 | once USB is ported (D6): a dropped stop cannot complete M112; above L, USB behaves as SPI. Until then v7, with NEW-1 fixed in M0 | G-2 (K6) | yes |
-| V7-94 DSF invalidation | identical | V8-24 | what `Invalidate` does stays; that it runs only after SessionExpired or PeerRestarted is logic (LA-2, LA-3); the zeroing of the code buffer is V7-14 | — | — |
-| V7-95 RRF on a link loss | changed | V8-45, V8-46 | the protocol reports LinkDown and keeps the session; the stop and `InvalidateResources` become the logic's reaction to SessionExpired and PeerRestarted (LA-1, LA-3), no longer to every timeout; the fork's stop on a link loss (CC-41) moves there | PR10 (F-1); v2 R6, R8 | yes: removes the stop on a short gap; the stop after the lifetime is v2 R8 |
-| V7-96 stale RRF flags across a reconnect | gap | V8-24 (amended) | RRF clears them at a session change | X-12 (K5): draft 2 said "as today" | yes |
-| V7-97 what RRF assumes after a reconnect | changed | V8-45 | after a resync within the lifetime nothing is gone; after PeerRestarted or SessionExpired as in v7 | PR10 | yes |
-| V7-98 protocol versions | changed | V8-41 | v8 has its own protocol version from a fork range; on SAME70 over SPI DSF offers only v8 and falls back to v7 only in `UpdateOnly`; a v8 RRF accepts v7 only for a firmware update; USB and other boards keep v7 (D6) | D1, D2: the catch code goes only where v8 is required | yes (link only) |
-| V7-99 protocol < 3 | identical | V8-41 | only on the v7 path | — | — |
-| V7-100 `UpdateOnly` | identical | V8-41 | — | on SAME70 over SPI the only use of v7 against a stock or older RRF (D2) | — |
-| V7-101 link capabilities | changed | V8-40 | no activation in a v8 session: the extended header, PhaseGuard and SequenceGuard are on from the first transfer; the v7 path keeps the handshake | D14: closes Q8 and the switch-window findings (OF-S1, OF-S5); draft 3's capability `SessionLayer` is superseded (D1) | yes (link only) |
+| V7-85 DSF waits without timeout | identical | — | the hold at connect is recorded at V7-3 | — | — |
+| V7-86 … V7-88 RRF task waits | identical | — | the end of the InvalidateChannel refusal is recorded at V7-11 | — | — |
+| V7-89 link-level bounds | identical | — | the retry limit of 10 stays (`DCS/Settings.cs:193`, FD-10) | — | — |
+| V7-90 fatal errors in DSF's packet loop | gap | VF-1 | — | DCS exits on link data | n/a here; VF-1 only removes a DCS stop |
+| V7-91 SPI reconnect | gap | VF-7 | — | K7, G-3: the capability ends with the connection (`DataTransfer.cpp:1431`), so tags do not help | n/a here |
+| V7-92 DSF's SPI reset detection | identical | — | no resume (FD-10) | — | — |
+| V7-93 USB failure | gap | VF-9; CE-17 (c) | — | K6, G-2 | n/a here; VF-9 keeps the halt pending |
+| V7-94 DSF invalidation | changed | CE-4, CE-13 | `Invalidate` after a connection change resets the epochs and the partial replies; `InvalidateCodes` (stop) keeps the epochs | RRF keeps its epochs across a stop | yes: not visible to the logic beyond K11 for aborts |
+| V7-95 RRF on a link loss | identical | — | the epoch state ends with the connection (CE-4), not visible to the logic | — | — |
+| V7-96 stale RRF flags across a reconnect | gap | VF-6 | — | K5, X-12 | n/a here |
+| V7-97 what RRF assumes after a reconnect | identical | — | — | — | — |
+| V7-98 protocol versions | identical | — | no new version (FD-1) | — | — |
+| V7-99 protocol < 3 | identical | — | — | — | — |
+| V7-100 `UpdateOnly` | identical | — | — | — | — |
+| V7-101 link capabilities | changed | CE-1, CE-2, CE-3 | a fourth capability, offered on every board and on USB; DSF's USB adapter activates it | the epoch is a packet feature, not an SPI one | yes (link only); the hold at connect is recorded at V7-3 |
 
-### 4.10 Link faults never end a print (PR10)
+## 5. Separate v7 work
 
-**Draft 4.** Today a link fault ends or disturbs a print on both sides. Each row was re-read for this document.
+Each item is its own PR with unit tests in fork-only files under `src/UnitTests` (CLAUDE.md rule 7). None is part of
+the ChannelEpoch capability; each works without it. Per the fork's rule "every bug found is fixed".
 
-| # | Path | Side | Effect | Where |
+| ID | Layer | Fix | Source | Where |
 |---|---|---|---|---|
-| F-1 | No transfer for 4 s while connected, 500 ms within a transfer, or a connection reset | RRF | "Lost connection to SBC"; emergency stop (fork RRF #21); every GB's files aborted, `printAborted` set, heaters off; RRF stays halted until M999 | `RRF/SBC/SbcInterface.cpp:171-176`, `:194-254` (stop `:229-230`); `InvalidateResources` `:1717-1780` (files `:1770`, `printAborted` `:1776`, heaters `:1779`); `RRF/SBC/SbcMessageFormats.h:43`, `:45` |
-| F-2 | RRF's own waits for DSF: macro 3 s, file requests 3 + 3 s | RRF | The request fails ("Timeout while waiting for macro file …"), a macro goes on as "not found" (V7-40) | `SbcMessageFormats.h:42`; `RRF/GCodes/GCodeBuffer/GCodeBuffer.cpp:1266-1273`; `SbcInterface.cpp:2292-2338` |
-| F-3 | A reconnect after a timeout, a sequence gap, or RRF leaving the extended link | DSF | Counted as a reset: `Invalidate` cancels every code and macro and aborts the job | `DCS/Link/Adapter/SPI.cs:383-390`, `:485-495`, `:1984-1991`; `DCS/Link/LinkService.cs:388-396`, `:1605-1622` (job `:1504-1508`) |
-| F-4 | More than 10 retries of a transfer or of a header | DSF | "Lost connection", then F-3 | `DCS/Settings.cs:193`; `SPI.cs:336-339`, `:1835`, `:442-477` |
-| F-5 | No complete transfer for 60 s, e.g. a livelock | DSF | DCS stops; for RRF the new DCS is a restart (F-1) | `Settings.cs:188`; `SPI.cs:326-331` |
-| F-6 | A header with an invalid format code, a newer protocol version or a too long data length | DSF | DCS stops (the exception ends the link thread, V7-90) | `SPI.cs:1955-1957`, `:1960-1965`, `:1972-1977` |
-| F-7 | A resend request for a packet id DSF cannot find; a packet DSF cannot parse | DSF | DCS stops | `SPI.cs:855`; `LinkService.cs:446-450` |
-| F-8 | A request number ≥ 32 other than 0x4D50 | RRF | The rest of the transfer, codes included, is neither processed nor refused | `SbcInterface.cpp:326-330` |
-| F-9 | A connection reset of RRF | RRF | Its pending TX is dropped and it leaves the extended link | `RRF/SBC/DataTransfer.cpp:1420-1432` |
+| VF-1 | L | **DCS never exits on link data.** Unusable data is rejected and counted, never an exception that ends DCS, never a silent drop of the rest of a transfer without a report. Today: a resend request for an unknown packet id throws `ArgumentException` (`DCS/Link/Adapter/SPI.cs:855`, `USB.cs:746`), which the packet loop does not catch (it catches only `ArgumentOutOfRangeException`, dumps and rethrows it, `DCS/Link/LinkService.cs:446-450`); an invalid format code, a newer protocol version or a too long data length throws (`SPI.cs:1955-1957`, `:1960-1965`, `:1972-1977`); "Read invalid packet" drops the rest of the transfer (`LinkService.cs:439-443`). Includes NEW-1: over USB the resend looks one TX back (`USB.cs:717-721`), while RRF composes its USB answer one transfer behind (`RRF/SBC/DataTransfer.cpp:1303-1356`, `:1365-1367`). After a rejection DSF reads the object model state again (CE-17 (b)) | F-6, F-7 of draft 4; OF-S6; K4 (DSF side) | DSF |
+| VF-2 | L | **Link events and health state.** The link reports to the logic of both sides LinkDown, LinkRestored, ConnectionLost and PeerRestarted, and a protocol fault per rejected packet (VF-1); it offers a health state ok, degraded or down with counters (retries, resyncs, rejected data, checksum errors). The logic decides what to do (LA-6). Constraint: the extended-link session status is the constant 0x7FF (`DCS/Link/Protocol/Shared/ExtendedLink.cs:65`), not a restart counter, so it cannot tell a restart from a connection reset (Q29) | v2 R7, R11; layering rule | both |
+| VF-3 | S | **A Code resolves a macro wait only once accepted.** Today it resolves the wait (`RRF/SBC/SbcInterface.cpp:383-392`) before it can be refused for the cascade (`:395-399`) or for ring room (`:405-414`) | V7-38, B8, A-4 | RRF |
+| VF-4 | S | **SetVariable assigns only once it can answer.** Today it evaluates and assigns, then refuses if its VariableResult does not fit, so the copy of a `var` or `global` fails with "already exists" | K21, X-6 | RRF |
+| VF-5 | S | **Lock as a pending request.** RRF accepts Lock (10; `LockMovementAndWaitForStandstill` in RRF, `LockAllMovementSystemsAndWaitForStandstill` in DSF) and keeps it pending per GB, tries again at every exchange under the GB mutex (`RRF/SBC/SbcInterface.cpp:606-634`) and sends Locked once it succeeds; DSF no longer polls by resend (`DCS/Link/LinkService.cs:615-619`, `SPI.cs:841-845`). An abort or a connection change cancels it and releases what it holds (`UnlockAll`, `RRF/GCodes/GCodes.cpp:5648-5668`) | K14, G-13; CC-31 | both |
+| VF-6 | S | **No stale per-GB flags after a reconnect.** `InvalidateResources` clears `macroFileClosed`, `messagePromptPending`, `invalidated`, `invalidationPending`, `codeReplySurplus`, an unsent `sendToSbc` and `reportPause`, and does not set `messageAcknowledged` itself (`RRF/SBC/SbcInterface.cpp:1717-1780`, `:1772`) | K5, X-12 | RRF |
+| VF-7 | L | **No TX of the old session in the new one.** After a lost connection DSF exchanges the pending TX again (`DCS/Link/Adapter/SPI.cs:442-477`), and RRF processes it if its number follows (`RRF/SBC/DataTransfer.cpp:1396-1443`) | K7, G-3 | both |
+| VF-8 | S | **A mismatched ObjectModel answer does not block the queries.** The key check discards it but leaves the query "sent" (`DCS/Link/LinkService.cs:714-723`, `:470-478`); the query MUST be sent again or failed, so updates and the halt state keep coming (CE-17 (b)) | K16, G-18 | DSF |
+| VF-9 | L | **A failed USB transfer does not complete the halt.** The halt request stays pending and is written again after the reconnect (CE-17 (c); `DCS/Link/Adapter/USB.cs:363-404`, `DCS/Link/LinkService.cs:454-456`, `:599`) | K6, G-2 | DSF |
 
-RRF in stand-alone mode also stops DCS (`SPI.cs:1951-1953`); that is a configuration, not a link fault. F-2 is the
-logic's own timeout, not the link's (LA-5).
-
-| ID | Layer | Requirement | Pattern | Removes | RAM | Logic |
-|---|---|---|---|---|---|---|
-| V8-43 | L | **Time-based retries and resync.** The link MUST repair a failed transfer by retries that are bounded by time, not by a count, and MUST resync (phase and sequence) after an interruption, for as long as the session lives (V8-45). Each side MUST keep its pending transfer across a resync and deliver every transfer once (v2 R2), also after an interruption of up to the session lifetime. A timing value only changes how fast the link retries and when LinkDown is raised (v2 R5). Today a count ends the connection (F-4), RRF resets it after 4 s (F-1) and drops its pending TX (F-9). | v2 R1, R2, R5 | the count of `MaxSbcRetries` (F-4) | 0 | none |
-| V8-44 | L, S | **No exit on link data.** Data that the receiver cannot use, such as a header field out of range, an unknown packet type, an invalid length or channel, or an acknowledgement it cannot match, MUST be rejected and counted (V8-35, V8-46): at the link the transfer is answered as bad and repeated, at the session layer the packet is rejected. It MUST NOT raise an exception that ends the link thread or DCS (F-6, F-7) and MUST NOT end RRF's read loop (F-8). A livelock, where both sides answer each other out of step, MUST lead to a resync, not to a DCS restart (F-5). Out of scope: a DCS crash or restart counts as an intended stop (for RRF a PeerRestarted); an RRF reset is out of scope as in v2. | P12; v2 R1 | the DCS stop after 60 s (F-5) | 0 | none |
-| V8-45 | S | **Session lifetime and resume.** A session is identified by a session id of each side, carried in the v8 header, that changes only when that side restarts (RRF boots, DCS starts). An interruption while both sides stay alive MUST resume the same session, with its codes, stacks, epochs, sequences and pending requests, if valid exchanges return within the session lifetime. The lifetime is the v2 R8 limit: 30 s by default, configurable from 5 to 120 s. A new session id of the peer ends the session (PeerRestarted); reaching the lifetime ends it (SessionExpired). Within the lifetime the link and session layers stay in state: they do not pause, hold, abort or stop anything. Today the v2 status is 0x7FF or 0 and does not tell a restart from a connection reset (`DCS/Link/Protocol/Shared/ExtendedLink.cs:47-48`, `:62-65`), and both sides end the session on every timeout (F-1, F-3). | P10; v2 R6, R8 | CC-43 in part (the invalidation after a timeout; after a restart it stays as LA-3) | 12 B | none |
-| V8-46 | S | **Events to the logic.** The link and session layers MUST report to the logic of both sides: LinkDown (no valid exchange for longer than the retry window of V8-43), LinkRestored (valid exchanges again, same session ids), SessionExpired (no valid exchange for the session lifetime) and PeerRestarted (a new session id of the peer). Each event is reported once per change and none of them is a decision; what the logic does is in the logic list (LA-1 to LA-6). Each side MUST also offer a link health state, ok, degraded (repairs above a set rate, v2 R7) or down, with counters of retries, resyncs, rejected data and failed checks, which the logic can query for DWC and M122. | P12; v2 R7, R11 | — | ≤ 18 B | none |
-| V8-47 | L, S | **No motion or safety function (v2 SB1).** The link and session layers MUST NOT pause, hold or stop motion, switch heaters or outputs, or act on the machine in any other way; an event is all they produce. Delivering a stop that the logic requested (X class, V8-19) is transport, not a function of the link. v2 R13 stage 1 (hold motion after 100 ms without an answer) is therefore not a v8 requirement; it moves to the logic and safety work (LA-4), because motion and safety are not link (Tim, 2026-11-09). R13 stage 2 is the session lifetime (V8-45). | v2 SB1 | — (CC-41, the fork's stop on a link loss, moves to LA-1 and LA-3) | 0 | none |
-
-## 5. Message classes and ordering
-
-| Class | Meaning | Rules |
-|---|---|---|
-| X expedited | Stop and reset, STOP_ACK, and RRF's STOPPED (V8-38) | First in a transfer, executed on read, never refused, never in a stream, idempotent |
-| C session control | RESET, RESET_ACK, channel state (ACK, NAK, reject, credit), RESET request | Never refused, never credit-limited, MUST be able to pass D and G (deadlock avoidance) |
-| D(c) channel data | Everything bound to channel c, in two streams: D-req(c) for the requests RRF may refuse while the GB mutex is busy and for every chunk of a message for c, D-code(c) for the rest (V8-6, V8-48) | In sequence order per (stream, direction, epoch); credit for codes; NAK per stream |
-| G global | Object model, print info, key changes, file operations, messages not for exactly one channel | Global stream with its own sequence; answers matched by id; can stall on a resource refusal (Q16) |
-| I IAP | `WriteIap`, `StartIap` | Outside the session; v7 unchanged (v2 C2) |
-
-**May-pass table** (same direction; row = later packet, column = earlier packet). "Must" means a design that
-blocks it is wrong, as with PCIe posted writes. The PCIe table itself was only seen in secondary sources.
-
-| Later \ earlier | X | C | D same channel | D other channel | G |
-|---|---|---|---|---|---|
-| X | no | must | must | must | must |
-| C | no | no (same channel), may (other) | must | must | must |
-| D | no | no (same channel), may (other) | no (same stream); may (other stream, V8-6) | may | may |
-| G | no | may | may | may | no; file operations stay one at a time |
-
-"may" means: allowed where v7 allows it too (V8-28, V8-29), i.e. when the earlier packet is stalled or waits for
-credit. Otherwise packets keep the order in which they were written, across channels and streams as well (V8-29,
-draft 4); within one transfer they are processed in order, as today. **Barriers** across channels that v8 keeps:
-- X: a stop or reset ends every channel.
-- Lock (10) locks all movement systems; RRF says "currently this is used only by M505"
-  (`RRF/SBC/SbcInterface.cpp:606`). Unlock (11) frees every resource the GB owns except those of the previous level,
-  not only movement (`RRF/GCodes/GCodes.cpp:5648-5668`; draft 3 correction, X-24). The barrier is in the logic
-  (standstill), not in the link.
-- PrintPaused and PrintStopped act on File and File2 together (catalogue A10, `SbcInterface.cpp:506-542`, `:1495-1504`).
-- **Draft 4 (Q7 answered):** beyond these the logic relies on no order across channels. Across streams it relies on
-  SetPrintFileInfo before the M23 or M32 that follows it and on SetLastCodeResult before the next code, both kept by
-  the write order of V8-29 (with Q16).
-
-**v7 messages in v8** (numbers from `RRF/SBC/SbcMessageFormats.h:269-349`):
-
-| Dir | v7 request | v8 class | Identity in v8 | v7 pairing it replaces |
-|---|---|---|---|---|
-| → RRF | 0 EmergencyStop, 1 Reset | X | stop number | completion one transfer later (#88) |
-| → RRF | 2 Code | D-code | (c, e, seq); credit | position of `BufferedCodes` |
-| → RRF | 3 GetObjectModel | G | request id | queue head + one per transfer + key check |
-| → RRF | 5 SetPrintFileInfo, 30 ObjectModelKeyChanged | G | seq | none (S3 framing bug stays a separate fix, OF-S3) |
-| → RRF | 6 PrintStopped | D-req(File), barrier File/File2 (draft 3, V8-6) | seq | final empty reply (`Processor.cs:1129-1134`) |
-| → RRF | 7 MacroCompleted, 18 MacroStarted | D-code | (c, e, seq); request number (V8-39) | "the next code belongs to the macro" (B8) |
-| → RRF | 10 Lock, 11 Unlock | Lock D-code, a pending request (V8-36); Unlock D-req; logic barrier | (c, e, seq) | resend as polling |
-| → RRF | 16 EvaluateExpression, 20 SetVariable, 21 DeleteLocalVariable, 29 SetLastCodeResult | D-req | (c, e, seq), echoed | (channel, expression) or (channel, name) |
-| → RRF | 17 Message | D-req(c) if channel c is its only destination, else G; all chunks of a message in one stream (V8-48) | request number if it answers a DoCode (V8-39); not filtered by epoch then (V8-10) | next targeted message finishes the GB (B9) |
-| → RRF | 19 InvalidateChannel | C: RESET(c, e+1) | new epoch | none (no answer) |
-| → RRF | 22–28, 31 file results | G | request id | `fileOperation` state, late replies skipped |
-| → RRF | 0x4D50 ActivateLinkCapabilities | not sent in a v8 session (D14, V8-40) | — | unchanged on the v7 path |
-| → RRF | 12, 13 IAP | I | — | unchanged |
-| → RRF | 15 FileChunk (deprecated, CAN expansion updates, `SbcMessageFormats.h:328`) | G | request id | synchronous answer |
-| → DSF | 0 ResendPacket, 2 CodeBufferUpdate | C: channel state | absolute values | packet id of a TX two transfers back; free space minus `BytesReserved` |
-| → DSF | 1 ObjectModel | G | request id | order |
-| → DSF | 3 Message (code reply) | D | code epoch (V8-10), code seq (V8-14) | first channel bit, `BufferedCodes[0]`, PushFlag joining |
-| → DSF | 3 Message (generic, targeted, log) | G | none (notification); never dropped (V8-10) | — |
-| → DSF | 4 ExecuteMacro, 13 WaitForAcknowledgement | D | request number; code seq if from a code | start code = `BufferedCodes[0]` |
-| → DSF | 5 AbortFile | single: D; all: C (RESET request) | code seq of the M99 / new epoch | M99 at `[0]`, drains, dummy reply |
-| → DSF | 7 PrintPaused | G, barrier File/File2 | file positions (already identities) | unchanged in M1–M4 (D7, LA-13) |
-| → DSF | 9 Locked, 11 EvaluationResult, 16 VariableResult | D | seq of the request | first lock request; content |
-| → DSF | 12 DoCode | D, not filtered by epoch (V8-10) | request number (V8-39) | — |
-| → DSF | 14 MacroFileClosed, 15 MessageAcknowledged | D | code epoch; level's start code seq (V8-14) | pop the current level |
-| → DSF | 10 FileChunk (deprecated, `:281`); 17–27 file requests | G | request id | one slot, synchronous |
-| → DSF | new: RESET_ACK, STOP_ACK | C; X | epoch; stop number | — |
-| → DSF | new: STOPPED (draft 3, V8-38) | X | stop number | none: v7 sends nothing for an RRF-local stop (V7-17) |
+Not kept (FD-13): time-based retries instead of the retry count (old V8-43); a systemd watchdog for DCS. The safety
+review's point that DCS has none is an open item of the logic list (LA-20), not decided.
 
 ## 6. Firmware RAM budget
 
-Measured basis (M122 of 2026-11-09, see the top; meaning from the RRF code):
-- "static 131040" is RAM up to `_end`, "dynamic 105276 (1744 recycled)" is `mallinfo` in use and free,
-  "never used 95868" is `heapLimit − heapTop`, "free sys stack 172" is in words, 688 bytes
-  (`RRF/Platform/Tasks.cpp:300-314`, `:369-370`).
-- "heap 6144/5036/612" is RRF's string heap, allocated/used/recyclable (`RRF/Platform/Heap.cpp:394-395`), not malloc.
-- The non-cached PBUF pool holds the three 8 KB transfer buffers (`RRF/SBC/DataTransfer.cpp:455-479`), allocated
-  byte by byte from the pool (`RRF/Networking/LwipEthernet/LwipEthernetInterface.cpp:92-119`). The harness models
-  the pool as 16 × 1552 = 24,832 bytes (`Tools/sbc-harness/README.md:111`), which leaves 256 bytes. **Draft 4:** the
-  third buffer, which SequenceGuard needs, is mandatory for v8 on SAME70 (V8-40). RRF allocates it today when the pool
-  has room (`DataTransfer.cpp:475-479`), so it is no new RAM; v8 needs no further buffer there.
+Measured basis: the M122 of 2026-11-09 above. "Never used 95868" is `heapLimit − heapTop`
+(`RRF/Platform/Tasks.cpp:300-314`, `:369-370`, as read for draft 4).
 
 | Item | Bytes | Requirement |
 |---|---|---|
-| Per stream: next expected sequence (u16 × 2 × 16, two D streams per channel since draft 3) | 64 | V8-5 |
-| Stall bitmaps (two stream kinds), dirty and reject bitmaps | 8 | V8-6, V8-8, V8-35 |
-| Pending Lock bitmap (draft 3) | 2 | V8-36 |
-| STOPPED flag (draft 3) | 1 | V8-38 |
-| Request number per GB (draft 3) | 16 | V8-39 |
-| Per channel: epoch, pending epoch, flags (3 × 16) | 48 | V8-9 |
-| Per GB: epoch of the current code; epoch of the pending request (2 × 16) | 32 | V8-10, V8-11 |
-| Reply FIFO tag, 1 B × 64 entries (`OutputMemory.h:15-19`) | 64 | V8-10 |
-| File slot request id (padded) | 4 | V8-13 |
-| Credit: released counter + capacity | 4 | V8-15 |
-| Stop number, STOP_ACK flag | 2 | V8-19, V8-20 |
-| Lost-reply marker | 2 | V8-18 |
-| Counters (if V8-27 is done in RRF) | 64 | V8-27 |
-| Draft 4: session ids of both sides (2 × 2 B, an illustration, Q19), time of the last valid exchange (4 B), lifetime setting (4 B) | 12 | V8-45 |
-| Draft 4: link state and pending events (2 B), link counters (≤ 8 × u16) | ≤ 18 | V8-46 |
-| Draft 4: per-packet check: a field inside each packet, in the existing transfer buffers; a lookup table, if one is used, is `constexpr` in flash as RRF's CRC32 tables are (`RRF/Storage/CRC32.cpp:19`, `:70`, `:106`, `:142`) | 0 | V8-42 |
-| Draft 4: third 8 KB transfer buffer (allocated today) | 0 | V8-40 |
-| **M1–M4 total, with V8-40 to V8-47** | **≈ 341** (draft 3: 311) | 0.36 % of 95,868 |
-| V8-17 per-channel limits in RRF: not needed, D4 = a | (+64) | V8-17 |
-| V8-14: code sequence per GB, FIFO tag 1 → 4 B | +224 | V8-14 |
-| V8-14: 2 B per pushed level in existing heap objects, worst case | ≤ +300 | V8-14 |
-| **Everything, worst case** | **≈ 865** (draft 3: 900 with D4 b) | 0.90 % |
-| Removed: `codeReplySurplus`, `invalidationPending` (2 B per GB, `GCodeBuffer.h:405`, `:422`) | −30 | V8-9, V8-10 |
+| Channel epoch per GB (6 bits in 1 B × 15 GBs, `RRF/GCodes/GCodeChannel.h:20`) | 15 | CE-4, CE-7 |
+| `codeEpoch` per GB (valid bit + 6 bits, 1 B × 15) | 15 | CE-9 |
+| Ring stamp in `BufferedCodeHeader.padding` (exists) | 0 | CE-9 |
+| Apply pending: `invalidationPending` (exists, reused) | 0 | CE-7 |
+| Capability bit in `offeredLinkCapabilities` / `activeLinkCapabilities` (exist) | 0 | CE-1 |
+| Reply tag in the FIFO's `MessageType` (exists, `RRF/Platform/OutputMemory.h:179`) | 0 | CE-11 |
+| **Epoch state** | **30** (the reviews estimated about 31) | |
+| Removed in E3: `codeReplySurplus` (bool × 15, `GCodeBuffer.h:405`) | −15 | CE-7, CE-18 |
+| Counters: stale drops per channel (u16 × 15) | 30 | CE-20 |
+| Counters: refusals per request type (u16 × 32) | 64 | CE-20 |
+| **Total after E3** | **≈ 109** | 0.11 % of 95,868; CE-21 |
 
-Field sizes and wrap-around (RFC 1982 §3.2: values in flight must stay below 2^(n−1)):
+Not measured: padding inside `GCodeBuffer` (the new bytes may fit into existing padding), flash, CPU. Whether static
+growth reduces "never used" byte for byte is not checked.
 
-| Field | Bits | Bound on values in flight |
-|---|---|---|
-| Sequence per stream | 16 | Credit bounds codes: the ring holds at most 170 codes (4096 / 24, smallest code 4 + 20 bytes, `SbcMessageFormats.h:368-385`), far below 2^15 |
-| Epoch per channel | 8 | One RESET in flight per channel (V8-9); 2 bits would do, 8 leave margin |
-| Credit counter | 16 | Capacity 4096 < 2^15 |
-| Request number, stop number | 8 | RRF waits for each blocking request (`SbcMaxRequestTime` 3 s, `SbcMessageFormats.h:42`) |
-| Session id (draft 4) | 16 (illustration) | Changes only on a restart of its side; form and size open (Q19) |
+## 7. Migration, milestones, evidence gates
 
-Not estimated: flash, CPU, the bytes per packet on the wire for the per-packet check (v2 R4), SBC task stack (1400
-words, `SbcInterface.cpp:39-43`; the RRF stack analyzer in `Tools/` can check it), padding inside
-`GCodeMachineState`. Whether static growth reduces "never used" byte for byte is not checked.
-
-## 7. Migration and compatibility
-
-**Version (draft 4, V8-40, V8-41).**
-- v8 has its own protocol version from a fork range, required for normal operation on SAME70 over SPI (D1, D2). There
-  is no capability handshake for it. Draft 3's capability bit `SessionLayer` = 8 is superseded (D1, D14); the v2
-  capabilities `PhaseGuard` 1, `SequenceGuard` 2 and `ExtendedHeader` 4 (`RRF/SBC/SbcMessageFormats.h:139-144`,
-  `DCS/Link/Protocol/Shared/ExtendedLink.cs:13-33`) are always on in v8 and keep their handshake on the v7 path.
-- DSF falls back to v7 only in `UpdateOnly`; a v8 RRF accepts v7 only for a firmware update (V8-41, Q17).
-- USB and boards other than SAME70 keep v7 until they are ported (D6). Today RRF offers the v2 capabilities only on
-  SAME70 (`RRF/SBC/DataTransfer.cpp:475-479`) and DSF's USB adapter has none (`DCS/Link/Adapter/USB.cs:808`, `:815`).
-
-**Coexistence.**
+### 7.1 Coexistence
 
 | DSF | RRF | Result |
 |---|---|---|
-| fork with v8 | fork with v8, SAME70 over SPI | v8 session |
-| fork with v8 | stock, or older fork | firmware update only, over v7 in `UpdateOnly`; no normal operation (D2) |
-| stock | fork with v8, SAME70 over SPI | firmware update only, over v7; the v8 RRF refuses the other v7 requests (D2, Q17) |
+| fork with ChannelEpoch | fork with ChannelEpoch, any board, SPI or USB | epoch connection |
+| fork with ChannelEpoch | stock or older fork | v7; until E3 with the fork catch code, after E3 upstream v7 (CE-18) |
+| stock | fork with ChannelEpoch | v7 with CE-7; until E3 with the RRF catch code, after E3 upstream v7 plus CE-7 (CE-18) |
 | stock | stock | v7 as upstream |
-| any | over USB, or a board other than SAME70 | v7 as today until ported (D6) |
 
-**Removal plan.** Catch code can be deleted from the v8 path once the gate passes. Where v8 runs, v7 carries only
-firmware updates (D2), so the fork's v7 catch code of both sides is not needed there. It stays as long as any transport
-runs v7 for normal operation (D6: USB, boards other than SAME70).
+### 7.2 Milestones
 
-| Milestone | Content | Catch code no longer needed (catalogue `CC-n`) | Gate before deletion |
+| Milestone | Content | Catch code no longer needed (catalogue `CC-n`) | Gate |
 |---|---|---|---|
-| M0 | Preparation: RRF S layer as its own file (V8-26), harness extension, fake firmware v8 mode. **Draft 4:** NEW-1 fixed on USB v7 as a normal fork fix with its own test (Q1, D6). Harness analysis of Q2–Q4 before the credit design of M3 is fixed. Fake-firmware tests of Q9, Q14 (reachability of C-1, C-2 and C-3, K1–K3) and Q15. Audit of every writer of code replies (Q6). The wait-for graph and the cross-channel dependencies reviewed (V8-30, Q7, V8-33) | none | existing suites green; the M0 tests written; V8-33 reviewed |
-| M1 | V8-1–V8-4, V8-9–V8-12, V8-23, V8-24, V8-35, V8-37, V8-40, V8-41; the expedited flag laid out in the header (D5) | CC-1–CC-8 (A0, #134, #158, RRF #45, RRF #43, #161, RRF #46 both parts). 7 of them fork-only. CC-36 (activation, fork-only, D14) | the TriggerFuzz abort tests and `TriggerMacros.TriggerChannelWorksAfterInvalidationDuringTriggerRequest` (DF-T1, T2, T10, T11, T12) green in v8 mode with the catch code removed; lab `AbortsCrossingMacroRequests` with `LAB_ABORT_ITERATIONS=2000`: no block, no stack underrun, no "none was requested", **no out-of-order reply**; draft 4: a fork DSF with a stock RRF runs only the firmware update, and the update works |
-| M2 | V8-5–V8-8, V8-21, V8-34, V8-36, V8-48 | CC-25, CC-26, CC-27, CC-31 | NAK of every D request type at every position with other channels interleaved (fake firmware `FailBufferLocks`); harness replay of the S layer with 0 differences; the same tests over the USB adapter once ported. Draft 3: an M98 whose macro answer follows a refused DeleteLocalVariable starts without a timeout; PrintPaused and AbortFile(File) sent while M23 waits for SetPrintFileInfo (C-1) do not block. Draft 4: the chunks of a DoCode result stay together across a refused final chunk; a `var` after a refused stale-variable deletion succeeds (K27) |
-| M3 | V8-15–V8-18 | CC-28, CC-29, CC-30 | `TriggerMacros.TriggerMacroGetsSpareCodeBufferRoom`, `LinkInterfaceRequests.CodesBufferedAheadLeaveSpareRoom`; lab `CodeBufferReserve.TriggerMacroGetsRoomWhileOtherChannelsReadAhead` (DF-T3, LT §14, 2026-11-08) |
-| M4 | V8-13, V8-19, V8-20, V8-38, V8-39; the expedited flag used (D5) | CC-32, CC-33, CC-34, CC-35, CC-37, CC-40 | `StopPath`, `StopPathFuzz`, `M112RepliesOnlyOnceRrfIsStopped` (OF-P3) pass; object model tests across a DCS restart (LT §9, "Failed to find query") |
-| M5 (D3) | V8-14, only if replies by position keep producing findings | CC-9–CC-12, CC-16–CC-20, CC-22–CC-24 (all upstream content) | `ChannelProcessor` (`M99WithoutReply`, `M99ReplyBeforeAbortRequest`, `M99ReadAheadAfterM99`, `ReplyForStartCodeBeforeMacroFileClosed`, `PrintCompletionReply…`) rewritten for identity; a lab sequence of 3 × M122 + M291 S2 (B4) |
-| not placed | V8-42–V8-47 (integrity, PR10); milestone open (Q19) | the count of F-4 and the DCS stop of F-5 (not catalogue items) | AC9–AC13 |
+| E0 preparation | Fake firmware epoch mode (`src/UnitTests/FakeFirmware/FakeFirmware.cs`); the counters of CE-20 on both sides, also in v7 mode for a baseline; K1/K2 reachability tests (Q14); tests of Q9 and Q15 | none | existing suites green; the E0 tests written |
+| E1 | CE-7: RRF never refuses InvalidateChannel (a v7 fix, works with stock DSF) | CC-6 (#161) where RRF has E1; CC-8's first-copy role | lab `AbortsCrossingMacroRequests` 2000 aborts: 0 "Resending packet" for InvalidateChannel, 0 blocks |
+| E2 | ChannelEpoch: CE-1 … CE-6, CE-8 … CE-15, CE-16, CE-20 | in epoch mode CC-2, CC-3, CC-4, CC-5, CC-7 (with CC-6, CC-8 from E1): 7 of the 17 fork-only items. CC-1 is upstream design: its ambiguity is resolved, its code stays (`_allFilesAborted`, `FileAbortSent`, CE-7) | lab 2000 aborts with 0 out-of-order replies, 0 resends, 0 blocks; the fake-firmware abort tests green with CC-2 … CC-8 switched off in epoch mode (AC-1, AC-2); then shown to Christian Hammacher (FD-14) |
+| E3 | Delete CC-2 … CC-8 from the v7 path of both sides once the printers run the epoch RRF (CE-18); delete `codeReplySurplus` | CC-2 … CC-8 | the coexistence cases of 7.1 behave as stated (AC-7) |
+| then | Evidence gates (7.3) | — | — |
 
-V8-22 is no longer in M4; it moved to the logic list (LA-14). Not removed by v8: CC-13 (`IsTriggerBusy`, upstream
-content), CC-14/CC-15 (pause, D7), CC-21 (B7 read-ahead invalidation, Q5), CC-38 (priority codes hop channels, logic),
-CC-39 (RRF #25, safety boundary v2 SB1), CC-41 (stop on a lost connection: it moves to the logic list as the reaction
-to SessionExpired and PeerRestarted, LA-1, LA-3), CC-42 (RRF-internal), CC-43 (invalidate on reset; the part after a
-timeout goes with V8-45, the part after a restart stays as LA-3), CC-44–CC-46 (the v2 link, now part of v8, V8-40),
-CC-47 (RRF-internal mutex). That is 34 of 47 items removable on the v8 path (draft 3: 33), among them 10 of the 11
-fork-only items of the session layer and the fork-only activation CC-36 of the link layer.
+The decision text said "CC-1 … CC-8 deleted". The code says otherwise for CC-1: without `FileAbortSent`
+(`RRF/SBC/SbcInterface.cpp:903`) RRF would answer DSF's own abort with AbortFile(all), which DSF answers with another
+InvalidateChannel (CE-15), a loop. So CC-1 stays. The separate v7 fixes (section 5) are independent of the milestones.
 
-## 8. Verification
+Not removed: CC-1 (code kept, see above), CC-9 … CC-12 (M99 family), CC-13, CC-14/CC-15 (pause, FD-7), CC-16 … CC-20
+and CC-22 … CC-24 (matching by position, FD-3), CC-21 (B7, Q5), CC-25 … CC-27 (resend lookup; CC-27 is NEW-1, fixed
+by VF-1), CC-28 … CC-30 (buffer estimate), CC-31 (VF-5), CC-32 … CC-35 (correlation of global requests), CC-36
+(capability activation, now also used by ChannelEpoch), CC-37, CC-38, CC-40 (stop path), CC-39, CC-41 … CC-47 (link
+and RRF-internal).
 
-- **Unit tests** in fork-only files under `src/UnitTests` (CLAUDE.md rule 7):
-  - The fake firmware (`src/UnitTests/FakeFirmware/FakeFirmware.cs`) gets a v8 mode that implements the RRF side of
-    this spec. Every requirement gets a test.
-  - Every existing test of a deleted catch code keeps running in v8 mode. Those tests are the regression set.
-  - Draft 4: the M0 tests of Q9, Q14 and Q15 in v7 mode first; fault injection of PR10 (interruptions up to and beyond
-    the session lifetime, restarts of either side, malformed data at every field) in v8 mode.
-- **RRF host harness** (`firmware/RepRapFirmware/Tools/sbc-harness`): today it compiles `DataTransfer.cpp` and
-  `TaskLoop` unchanged and replaces `ExchangeData`. With V8-26 it also compiles the S layer. A
-  `PortMatchesRealFirmware`-style replay (`src/UnitTests/SPI/LinkRecovery.cs`) compares the fake firmware's S layer
-  with the real one; pass = 0 differences. Draft 4: the analysis of Q2–Q4 in M0.
-- **Fuzzing** (`src/UnitTests/Fuzz`): a session fuzzer adds random NAKs, RESETs, credit stalls, interruptions and RRF
-  restarts across channels to `TriggerFuzz` and `StopPathFuzz`. Invariants: every code completes exactly once; no reply
-  reaches another code; no channel stays blocked; no DCS stop.
-- **Lab** (`src/LabPrinterTests`, procedure LT): `AbortsCrossingMacroRequests` (2000 aborts), the T3 trigger check,
-  M112 under load, a full print. Plus v2 R4: codes/s and transfers/s within 2 % of v7 on a clean link. Draft 4: the
-  PR10 gates AC9–AC12 during a print, with ESD as in the v2 R3 test.
+### 7.3 Evidence gates
+
+The counters of CE-20 run on both sides in this run set: 3 × 2000 aborts (`AbortsCrossingMacroRequests`,
+`src/LabPrinterTests/AbortsCrossingMacroRequests.cs`), `TriggerFuzz` (`src/UnitTests/Fuzz/TriggerFuzz.cs`),
+`CodeBufferReserve` (`src/LabPrinterTests/CodeBufferReserve.cs`) and 10 full prints. A counter above 0 together with
+a symptom triggers the next step, each as a capability of its own:
+
+| ID | Counter and symptom | Next step |
+|---|---|---|
+| EG-1 | An out-of-order reply that is not stale | Code identity (old V8-14) |
+| EG-2 | A resend other than Lock | Per-channel stall (old V8-6) |
+| EG-3 | A code refused within DSF's estimate | Absolute credit (old V8-15) |
+| EG-4 | An object model or file mismatch | Request ids (old V8-13) |
+| EG-5 | K18 seen (a reply after RRF's own abort that the epoch did not drop) | A RESET request (old V8-12) |
+
+## 8. Verification and acceptance
+
+- **Unit tests** in fork-only files under `src/UnitTests`: the fake firmware gets an epoch mode that implements the
+  RRF side of section 4. Every requirement gets a test. Every existing test of a deleted catch code keeps running in
+  epoch mode; those tests are the regression set.
+- **RRF host harness** (`firmware/RepRapFirmware/Tools/sbc-harness`): the `PortMatchesRealFirmware`-style replay
+  (`src/UnitTests/SPI/LinkRecovery.cs`) covers CE-16 with SequenceGuard repeats.
+- **Fuzzing** (`src/UnitTests/Fuzz`): `TriggerFuzz` and `StopPathFuzz` with aborts, refusals and RRF restarts.
+  Invariants: every code completes exactly once; no reply reaches another code; no channel stays blocked; no DCS stop.
+- **Lab** (`src/LabPrinterTests`, procedure LT): the run set of 7.3, M112 under load, the EMC test of CE-19.
 
 | Acceptance | Pass when |
 |---|---|
-| AC1 | 2000 aborts: 0 blocks, 0 "Out-of-order reply", 0 "Resending packet", stale drops counted only in M122 |
-| AC2 | No code is completed by a message of another code in any fuzz run (identity check in the fake firmware) |
-| AC3 | M112 completes only after STOP_ACK in every StopPath case |
-| AC4 | No refusal of a credited code in any run |
-| AC5 | New static RRF RAM ≤ 1 KB by map file; no new heap allocation in the S layer (code review) |
-| AC6 | Draft 4: the combinations of section 7 behave as stated: a v8 session with fork DSF and RRF; only the firmware update, and a working one, with a stock or older RRF and with a stock DSF; v7 as today over USB and on boards other than SAME70 |
-| AC7 | No deadlock: in every fuzz and lab run each code ends (reply, cancel or error) within the bound of V8-32; a watchdog in the fake firmware host flags any channel that has work but makes no progress |
-| AC8 | Refinement (V8-28): the same scripted input in v7 mode and v8 mode gives per channel the same sequence of logic events, apart from the events that the v7 catch code drops |
-| AC9 | Draft 4: fault injection (every single fault, bursts, interruptions of every line shorter than the lifetime) and ESD during a print: no job abort and no emergency stop caused by a link fault within the session lifetime; LinkDown and LinkRestored logged on both sides |
-| AC10 | Draft 4: DCS never exits on injected malformed data (header fields, unknown types, invalid lengths and channels, acknowledgements it cannot match); each is rejected and counted |
-| AC11 | Draft 4: a DCS freeze (`kill -STOP`, then `kill -CONT`) shorter than the lifetime: the session resumes, the job continues, and LinkDown and LinkRestored are logged on both sides |
-| AC12 | Draft 4: a freeze longer than the lifetime raises SessionExpired on both sides |
-| AC13 | Draft 4: integrity (V8-42): analysis plus a fault-injection estimate at the worst allowed error rate gives ≤ 10⁻⁷ undetected corrupted transfers per hour, as the v2 R9 test asks |
+| AC-1 | 3 × 2000 aborts in epoch mode: 0 blocks, 0 "Out-of-order reply", 0 "Resending packet", stale drops only in the counters |
+| AC-2 | The fake-firmware abort tests (`TriggerFuzz` abort cases, `TriggerMacros.TriggerChannelWorksAfterInvalidationDuringTriggerRequest`, the DF-T1, T2, T10, T11, T12 tests) green in epoch mode with CC-2 … CC-8 switched off |
+| AC-3 | No code is completed by a message of another code in any fuzz run (identity check in the fake firmware) |
+| AC-4 | M112 ≤ 100 ms in 1000 stops under injected noise, on the plain and the extended link; no stop lost, also when a retry is a SequenceGuard repeat (CE-16) |
+| AC-5 | Halt (CE-17): malformed packets and corrupted transfers injected next to an RRF-local emergency stop (an M112 trigger in RRF) and next to ObjectModel answers that carry status halted: DSF reports halted within a bounded time, never misses it, and DCS does not exit. A dropped transfer during DSF's M112: the stop is not reported done until RRF processed it |
+| AC-6 | New static RRF RAM ≤ 1 KB by map file; no heap allocation and no side table (CE-21) |
+| AC-7 | The coexistence cases of 7.1 behave as stated, before and after E3; an epoch connection over the USB adapter and on a board other than SAME70 in the fake firmware |
+| AC-8 | Refinement (CE-22): the same scripted input in v7 mode and epoch mode gives per channel the same sequence of logic events, apart from the events that the v7 catch code drops |
+| AC-9 | No deadlock: in every fuzz and lab run each code ends (reply, cancel or error); a watchdog in the fake firmware host flags any channel that has work but makes no progress |
+| AC-10 | The hold at connect (CE-3) ends within its bound in every connect and reset case of the census, and a macro request at connect is answered before RRF's 3 s timeout |
+| AC-11 | EMC test of CE-19: corrupted transfers per hour measured; ≤ 100 per hour, or the trailer of CE-19 is specified |
 
-## 9. Decisions (Tim, 2026-11-09)
+## 9. Unchanged decisions and boundaries
 
-All decisions were made by Tim in an interview on 2026-11-09. The options of draft 3 are kept where they existed.
-"Basis" marks a reason that is not Tim's own words.
+- Matching by position stays within an epoch (FD-3); pause stays v7 (FD-7, LA-13).
+- Logic defects stay on the logic list: K3 (C-3, LA-15), K25 (LA-16), K26 (LA-17), the Q13 cases (LA-18).
+- B7 stays as it is (Q5).
 
-| # | Question | Decision | Reason | Applied in |
-|---|---|---|---|---|
-| D1 | How v8 relates to the 2026-10-08 decision "negotiation on top of v7" (v2 C1) | (b) its own protocol version, with a number from a fork range: not 8, so that it cannot collide with a future upstream version 8, the same idea as 0x4D50 for ActivateLinkCapabilities. It moves to upstream's number if Duet3D adopts v8. This reverses the 2026-10-08 decision for normal operation; draft 3 had recommended (c), negotiation now | The catch code can only be removed where v8 runs, so v8 has to run everywhere it can; negotiated on top of v7, every mixed pair would keep v7 and its catch code. Mixed stock and fork pairs remain possible for firmware updates | section 1, V8-41, section 7, v2 decision log |
-| D2 | What happens to the v7 path and its catch code | (c) v8 is required for normal operation, except `UpdateOnly`. DSF speaks only v8; a stock RRF answers BadProtocolVersion, and DSF then uses v7 only in `UpdateOnly`. A v8 RRF accepts v7 only for firmware-update requests and refuses the rest. Exception: D6 | Consequence: the fork's v7 catch code of both sides can be removed wherever v8 runs | V8-41, section 7 |
-| D3 | How replies find their code | (a) the epoch tag first (V8-10, M1); (b) code identity (V8-14, M5) only if replies by position keep producing findings | Basis: (b) is the only part that changes logic code noticeably | V8-14, section 7 M5 |
-| D4 | Where per-channel credit and the reserve live (V8-17) | (a) RRF advertises one absolute limit; DSF splits it per channel and keeps the reserve | Basis: DSF is the only sender and knows the job streams (`LinkInterface.cs:52`); the exact absolute limit removes the guesswork | V8-17, section 6 |
-| D5 | Where the expedited flag lives (v2 R10) | In the v8 header, which is the extended header (D14); laid out in M1, used in M4 | Basis: with the v2 link inside v8 there is no separate v2 header to put it in | V8-19, V8-40, section 7 |
-| D6 | USB and boards other than SAME70 | v8 first on SAME70 over SPI. USB and other boards keep v7 for normal operation until they are ported, an explicit exception to D2. NEW-1 (USB resend, OF-S6) is fixed for USB v7 in M0 | Basis: the v2 link features exist only on SAME70 over SPI (`RRF/SBC/DataTransfer.cpp:475-479`, `DCS/Link/Adapter/USB.cs:808`); the lab printer has no USB setup (OF-T13). Consequence: the catch code of the v7 path stays as long as any transport runs v7 for normal operation | V8-23, V8-41, section 7 |
-| D7 | Pause and print stop (A10) | (a) keep the v7 mechanism until M4, then decide with data; it is logic (LA-13) | Basis: the pause position logic is not analysed | LA-13 |
-| D8 | When to show this to Christian Hammacher | (b) after M1 has passed the lab. v8 is built now, without waiting for upstream | Not given; draft 3 had recommended (a) | section 1 |
-| D9 | How DSF learns of an emergency stop that RRF made by itself (V7-17) | Protocol: RRF reports it with an X-class STOPPED (V8-38). Logic: DSF reacts as after its own M112, with `InvalidateCodes` (LA-7) | Both kinds of stop in the X class (Tim); only this leaves the two stacks equal (V7-72) | V8-38, LA-7 |
-| D10 | Late answers after RRF's macro wait expired (V7-40) | Protocol: late answers are dropped by request number; RRF may request RESET(c) (V8-39, V8-12). Logic: RRF requests RESET(c) when a macro wait expires after the request went out (LA-8) | Only this leaves the stacks equal. Behaviour change: the channel's whole stack is aborted instead of the caller going on after "not found"; only when DSF answers later than 3 s | V8-39, LA-8 |
-| D11 | When to fix the v7 cycles C-1 to C-3 and the defects of the logic (K1 to K3, K25, K26) | Revised by the layering rule: K3 (C-3), the corrected K25 and K26 are logic findings outside v8 (LA-15 to LA-17), and V8-33 no longer needs them fixed before M1. K1 and K2 (C-1, C-2) are removed by V8-34 (protocol); tests that show their reachability are written in M0 | Logic defects are not protocol requirements (D12) | V8-33, LA-15–LA-17, section 7 M0 |
-| D12 | Layering | This document holds only link and session requirements, each tagged with its layer; the protocol defines events and guarantees; every logic reaction and every logic defect is in the logic list. Link faults never end a print (PR10) | Tim: "We must not mix levels: motion is not link, and safety is neither link nor protocol. If the link is down it must signal event-based to the logic; the logic decides." and "no special cases in the link — if it is not defined, it does not exist" | section 3, section 4.10, logic list |
-| D13 | Reporting v7 bugs to Duet3D | The safety-relevant K findings (K1–K3, K6, K12) go to Christian Hammacher once a test proves each and shows that it is not fork code; the rest with the M1 presentation (D8) | Basis: CLAUDE.md "No guessing"; a report must rest on a test | section 10 |
-| D14 | The v2 link features in v8 | Part of v8 from the first transfer: the v8 header is the extended header, PhaseGuard and SequenceGuard are always on, no activation with 0x4D50. The third 8 KB transfer buffer is mandatory for v8 on SAME70 | Closes Q8 and, for v8, the switch-window findings OF-S1 and OF-S5 | V8-40, section 6, section 7 |
+## 10. Decisions
 
-## 10. Open questions and what is unverified
+### 10.1 History
+
+- Drafts 1 to 3 designed v8 as a capability `SessionLayer` on v7. Draft 4 recorded an interview with Tim
+  (decisions D1 to D14 of draft 4): its own protocol version, the v2 link features always on, streams, credit,
+  RESET_ACK, STOP_ACK, request ids, session resume, a per-packet check.
+- Three expert reviews of draft 4 followed on 2026-11-09 (section 11).
+- Tim then decided the minimal design below (FD-1 to FD-14).
+
+### 10.2 Final decisions (Tim, 2026-11-09, after the reviews)
+
+| # | Decision | Applied in |
+|---|---|---|
+| FD-1 | **Direction.** No v8: no own version number, no new header, no streams, stall or go-back-N, no RESET_ACK, no STOP_ACK, no credit, no request ids, no session resume, no code identity for now. Instead a channel epoch on v7 plus evidence gates | sections 1, 4, 7.3 |
+| FD-2 | **Carrier and switch-on.** A link capability `ChannelEpoch` = 8, offered in `limits.sbcLinkCapabilities`, activated with 0x4D50. RRF offers it outside the SAME70-only block, on every board and on USB; DSF holds channel traffic until the capability state is known, a bounded wait at connect | CE-1 … CE-3 |
+| FD-3 | **The tag.** `resendPacketId` carries the epoch in both directions; payloads do not grow. Code identity only on evidence | CE-5, CE-6, EG-1 |
+| FD-4 | **Companion 1.** RRF never refuses InvalidateChannel: receipt without the mutex, apply with it; `FillBuffer` holds the channel's codes until the apply; reuse `invalidationPending`, delete `codeReplySurplus`. A plain v7 fix | CE-7; deletion of `codeReplySurplus` in E3 (section 7.2) |
+| FD-5 | **Companion 2.** DSF's resent copies keep their tag | CE-8 |
+| FD-6 | **RRF side.** Stamp the epoch on accepted codes, carry it to `codeEpoch` in `FillBuffer`, filter stale Code, MacroStarted, MacroCompleted before their side effects; reply tag through `GetResponseMessageType` and free `MessageType` bits into `resendPacketId`; stack events carry `codeEpoch`; stale requests fail locally; `InvalidateResources` marks `codeEpoch` invalid | CE-9 … CE-12 (with the correction of Q22) |
+| FD-7 | **DSF side.** The epoch on the channel `Processor`, replacing the three abort flags; one filter at the top of `ProcessPacket`; answers to DSF requests are never filtered | CE-13, CE-14 (reset point corrected, CE-4) |
+| FD-8 | **RRF's own abort.** DSF answers AbortFile(all) with InvalidateChannel(e+1). Whether RRF requests an abort after its 3 s macro-wait timeout is logic, open | CE-15, LA-8 |
+| FD-9 | **Stop overtakes retries.** A pending stop goes first into the next retry; M112 ≤ 100 ms in 1000 stops under noise; no header change | CE-16, AC-4 |
+| FD-10 | **No session resume.** A link loss ends the session as today; the retry limit of 10 stays; time-based retries are not kept | sections 1, 5 |
+| FD-11 | **Peers without ChannelEpoch** run upstream v7; the fork catch code is deleted from the v7 path once the printers run the epoch RRF. The 2026-10-08 decision "negotiation on top of v7" (v2 C1) holds | CE-18, E3, v2 document |
+| FD-12 | **Integrity (v2 R9)** conditional on an EMC test: ≤ 100 corrupted transfers per hour, else a second per-transfer CRC trailer | CE-19, AC-11 |
+| FD-13 | **Separate v7 work**, each its own PR with unit tests: DCS never exits on link data (incl. NEW-1), link events and health state, and the bug fixes act-before-refuse, Lock as a pending request, stale flags after a reconnect, the old session's TX; added on 2026-11-09: the halt rule with K16 and K6. Not kept: time-based retries, a systemd watchdog (open item LA-20). Safety-relevant K findings (K1–K3, K6, K12) go to Christian Hammacher once a test proves each and shows it is not fork code | section 5, CE-17 |
+| FD-14 | **Unchanged from earlier decisions.** Epoch only, identity on evidence (old D3); pause stays v7 (old D7); shown to Christian Hammacher after the epoch milestone passed the lab (old D8, E2); Q12: watch H1 and H2 afterwards; logic defects stay on the logic list; K1/K2 reachability tests in E0. STOPPED from RRF (old D9) and STOP_ACK (old D5): deferred; STOPPED only as a capability of its own once a test shows the RRF-local-stop problem (K20, X-5) — **deferred, needs Tim's confirmation** (Q27) | sections 7, 9, 12 |
+
+Draft 4's decisions: D1 and D2 reversed (FD-1, FD-11); D3 kept (FD-14); D4 dropped with credit; D5 dropped (no
+expedited flag; CE-16 needs no header); D6 superseded (ChannelEpoch on every board and on USB; NEW-1 in VF-1); D7
+kept; D8 kept for E2; D9 deferred (Q27); D10 now logic, open (LA-8); D11 kept for K3, K25, K26, while K1 and K2 are
+open again (Q14), because V8-34 was dropped; D12 kept, but PR10 dropped; D13 kept (FD-13); D14 dropped: the v2 link
+features stay capabilities.
+
+### 10.3 What happened to the v8 requirements of drafts 1 to 4
+
+| v8 requirement | Fate in draft 5 |
+|---|---|
+| V8-1 S layer between L and G | Dropped. The epoch lives in existing objects (`Processor`, `GCodeBuffer`) |
+| V8-2 fixed header with channel, epoch, sequence | Dropped. The tag rides in `resendPacketId` (CE-5) |
+| V8-3 message classes | Dropped |
+| V8-4 may-pass table | Dropped; the v7 order stays (PR2) |
+| V8-5 sequence numbers per stream | Dropped; on evidence (EG-2) |
+| V8-6 stall in two streams per channel | Dropped; on evidence (EG-2) |
+| V8-48 one message, one stream | Dropped with V8-6 |
+| V8-7 no refusal after an effect | Kept as CE-7 (InvalidateChannel), VF-3 (Code), VF-4 (SetVariable) |
+| V8-36 Lock as a pending request | Kept as VF-5 |
+| V8-8 channel state report | Dropped |
+| V8-9 RESET and RESET_ACK | Replaced by CE-7 (never refused, receipt and apply), without an answer packet |
+| V8-10 epoch on channel data, tag taken when the reply is produced | Kept in reduced form: CE-5, CE-6, CE-9, CE-11, CE-14 |
+| V8-11 requests bound to their epoch | Kept: CE-12 |
+| V8-12 RRF's abort as a RESET request | Replaced by CE-15 (DSF answers AbortFile(all) with InvalidateChannel); a RESET request only on evidence (EG-5) |
+| V8-13 request ids for global requests | Dropped; on evidence (EG-4) |
+| V8-39 request numbers for RRF requests | Dropped; the timeout reaction is logic (LA-8, open) |
+| V8-14 code identity | Dropped for now (FD-3); on evidence (EG-1) |
+| V8-15 … V8-17 absolute credit, storable capacity, per-channel limits | Dropped; on evidence (EG-3) |
+| V8-18 no silent reply loss | Dropped; NEW-2 stays open (Q2) |
+| V8-19 expedited class | Dropped; CE-16 keeps the stop ahead of retries |
+| V8-20 STOP_ACK | Dropped; CE-17 (c) |
+| V8-21 no ResendPacket | Dropped; ResendPacket stays |
+| V8-22 macro M112 flush | Already logic in draft 4 (LA-14) |
+| V8-38 STOPPED | Deferred, needs Tim's confirmation (Q27); CE-17 (b) makes sure DSF sees the halt |
+| V8-40 v2 link features always on | Dropped; they stay capabilities (v2 C1) |
+| V8-41 own protocol version | Dropped (FD-1) |
+| V8-42 per-packet integrity check | Replaced by CE-19 (v2 R9 conditional on an EMC test) |
+| V8-23 no rule on transfer numbers | Dropped as a requirement; the epoch removes the abort windows' dependence on them |
+| V8-24 a session change clears state | Split: VF-6 (K5), VF-7 (K7); epochs CE-4 |
+| V8-35 unknown and invalid packets | VF-1 (DSF); RRF's K4 open (Q21) |
+| V8-37 B7 stays | Unchanged (V7-22 identical) |
+| V8-25 static RAM < 1 KB | Kept: CE-21 |
+| V8-26 S layer as its own source file | Dropped |
+| V8-27 counters | Kept: CE-20 |
+| V8-28 refinement | Kept: CE-22 |
+| V8-29 cross-channel write order | Dropped; the v7 order stays |
+| V8-30 wait-for graph | Kept: CE-23 |
+| V8-31 control packets without waiting | Kept for InvalidateChannel: the receipt of CE-7 |
+| V8-32 every new wait bounded | Kept: the hold at connect (CE-3, Q23) |
+| V8-33 graph reviewed before M1 | Replaced by the E0 reachability tests (Q14) |
+| V8-34 completion on acceptance | Dropped; K1 and K2 open again (Q14) |
+| V8-43 time-based retries and resync | Dropped (FD-10) |
+| V8-44 no exit on link data | Kept as VF-1 |
+| V8-45 session lifetime and resume | Dropped (FD-10) |
+| V8-46 events to the logic | Kept as VF-2 |
+| V8-47 no motion or safety function in the link | Kept as a principle (layering rule) |
+
+## 11. Review of the v8 plan (2026-11-09)
+
+Three reviews of draft 4 were made on 2026-11-09: by an embedded link owner, by a DSF architect and by a
+safety/real-time engineer. The review reports are not in the repository; this section summarises them as they were
+handed to this draft. Every code statement taken from them was checked again (section 0); where the code said
+otherwise, this draft follows the code and says so (FD-6 → Q22, FD-7 → CE-4, the E2 gate → section 7.2, FD-11 →
+CE-18).
+
+- **Agreed by all three:** the channel epoch is enough for the ordering problems, together with the two companions
+  (RRF never refuses InvalidateChannel; resent copies keep their tag). Drop the version bump, the new header, the
+  streams, RESET_ACK, STOP_ACK, credit and session resume.
+- **Disagreed on:** session resume, integrity, and the stop path. Tim decided: no resume (FD-10); integrity
+  conditional on an EMC test (FD-12); the stop overtakes retries without a header change (FD-9).
+- **The DSF architect's stage D** became the evidence gates (7.3): counters first, more protocol only when a counter
+  and a symptom show the need.
+- **Findings of the safety review that are not link topics** go to the logic and safety list, not into this document:
+  - Under v2 SB2 a door opened while the link is down can be lost: RRF clears the trigger bit
+    (`RRF/GCodes/GCodes.cpp:1016`) before it requests `triggerN.g` (`:1052`); with no SBC connected the request fails
+    at once (`RRF/GCodes/GCodeBuffer/GCodeBuffer.cpp:1246-1250`), otherwise after 3 s (`:1263-1274`); triggers react
+    to edges only (`RRF/GCodes/TriggerItem.cpp:52-75`); `CheckTriggers` runs in the main loop (`GCodes.cpp:517`),
+    which does not run while a spin (`:590`) waits for a macro from the SBC (up to 3 s, V7-40); only a trigger whose
+    action is M112 alone fires as trigger 0 (`:987`, executed at `:997-998`). LA-19.
+  - There is no systemd watchdog for DCS: the unit has `Type=notify` and `Restart=always` but no `WatchdogSec`
+    (`pkg/common/duetcontrolserver/usr/lib/systemd/system/duetcontrolserver.service`). LA-20, open, not decided.
+  - The extended-link "session status" is the constant 0x7FF (`DCS/Link/Protocol/Shared/ExtendedLink.cs:65`), not a
+    restart counter. LA-21; also a constraint of VF-2 (Q29).
+
+## 12. Open questions and what is unverified
 
 | # | Question | Status |
 |---|---|---|
-| Q1 | NEW-1: RRF composes its USB answer one transfer behind (`DataTransfer.cpp:1302-1357`, `:1362-1371`), so `USB.cs:717-721` looks into the wrong buffer, may copy the wrong packet, or throws `ArgumentException`, which `LinkService.cs:446` does not catch | Decided: fixed for USB v7 in M0 (D6). Code reading, not tested. OF-T13 relied on the `USB.cs` comment and probably does not exist |
-| Q2 | NEW-2: can the 64-entry reply FIFO fill in practice (stalled link, M122 chunks)? | Decided: harness analysis in M0, before the credit design of M3 is fixed |
-| Q3 | NEW-3: can RRF refuse a code that DSF's estimate allowed? | Decided: harness analysis in M0, before the credit design of M3 is fixed |
-| Q4 | Is logical credit always physically storable, given that `DefragmentBufferedCodes` runs only when 384 bytes or less are free and moves one gap per run (`SbcInterface.cpp:2436-2525`)? | Decided: harness analysis in M0, before the credit design of M3 is fixed |
-| Q5 | B7: how RRF tells in-flight read-ahead codes from new ones after a push without counting ExchangeData | Decided: B7 stays as it is (V8-37). B7 is upstream design and has no known failure |
-| Q6 | Does every message of a code pass one capture point for its tag? OF-T10 lists writers outside `HandleReply` (M122 `GCodes2.cpp:2292`, `GpInPort.cpp:90`, `GCodes4.cpp:1894`) | Decided: only code replies (`BinaryCodeReplyFlag`) are filtered by epoch; the tag is taken when a reply enters the reply queue, in link code only, and M0 audits every writer. Generic, targeted and log messages are never dropped; a filtered reply's text still goes to the log (V8-10) |
-| Q7 | Cross-channel dependencies in the logic beyond Lock, pause and stop | Answered by an inventory: the only reliance across channels and streams that the logic has is SetPrintFileInfo (global stream) before the M23 or M32 that follows it (`DCS/Files/JobProcessor.cs:356`, `DCS/Link/LinkService.cs:403-410`; RRF applies it on read without an answer, `RRF/SBC/SbcInterface.cpp:497-503`), plus, within one channel, SetLastCodeResult before the next code (V7-62; the inventory of the interview named only the first, this document adds the second). None between data packets of two channels. None between another request and a code of the same channel, because RRF applies requests when it reads them (e.g. `SbcInterface.cpp:1131-1140`, `:1307-1314`) while codes are stored in the ring (`:401-433`) and run later; DSF orders the two only by a flush or by waiting for an answer. Both orders are kept by the write order of V8-29, the first one under Q16 |
-| Q8 | The switch point of `SessionLayer` within a connection, given the switch-window findings of the extended header (OF-S1, OF-S5) | Closed: v8 has the v2 link from the first transfer and no switch (D14, V8-40) |
-| Q9 | Is `AbortFile(true)` harmless when RRF already aborted all files itself (V8-12)? | Decided: a fake-firmware test in M0 |
-| Q10 | Does a refused `LockAllMovementSystemsAndWaitForStandstill` have side effects (V8-7)? | Answered in draft 3: yes, it keeps the lock of the movement system it reached and releases only the lower ones (`RRF/GCodes/GCodes.cpp:1947-1962`, `:1969-1999`); V8-36 |
-| Q11 | SetPrintFileInfo alignment: the 64-bit `lastModifiedTime` (`SbcMessageFormats.h:460`) after another packet in the same transfer (catalogue D4, `LinkService.cs:407`) | Decided: v8 starts every packet on an 8-byte boundary (V8-2); no v7 fix. On SAME70 over SPI v7 carries only updates, which send no SetPrintFileInfo. On the v7 paths of D6 no ActivateLinkCapabilities is written (`USB.cs:808`, `:815`; RRF offers no capability outside SAME70, `DataTransfer.cpp:433`, `:475-479`), so nothing precedes SetPrintFileInfo there (`LinkService.cs:399-410`) |
-| Q12 | H1 ("Daemon: Out-of-order reply ''" after a DCS start) and H2 ("Failed to find suitable stack level for flush request") | Decided: watch them after M1. Causes not known |
-| Q13 | Which DSF-internal codes complete without a flush while an earlier RRF code of their level runs, and so write a mutex request (SetLastCodeResult, DeleteLocalVariable) during RRF's macro wait? K25 and K26 are two cases | Answered: missing flushes are logic, out of the v8 scope (LA-16 to LA-18). V8-6 does not depend on the list |
-| Q14 | Can C-1, C-2 and C-3 be reached (v7 contract section 15)? | Decided: fake-firmware tests in M0, sending PrintPaused or AbortFile(File) while M23 or M606 S1 holds the job lock |
-| Q15 | Can a MacroCompleted cross an RRF-side pop and mark the next outer macro finished (X-7)? | Decided: a fake-firmware test in M0; V8-14 (M5) would remove it |
-| Q16 | **Draft 4. Can the global stream stall before SetPrintFileInfo?** RRF refuses GetObjectModel and a Message not for exactly one channel when it has no OutputBuffer or TX room (`RRF/SBC/SbcInterface.cpp:451-471`, `:810-822`). With go-back-N in the global stream (V8-6), a SetPrintFileInfo written after such a packet waits, and the M23 in D-code(File) passes it (V8-29), which v7 cannot do: v7 writes SetPrintFileInfo first in its transfer (`DCS/Link/LinkService.cs:405-407`), RRF never refuses it (`SbcInterface.cpp:497-503`), and the M23 goes out only after it (E-27). This contradicts "the write order covers SetPrintFileInfo before the M23 without a special case". A fix in the sense of V8-6 would put the global packets that RRF may refuse for resources into a stream of their own | Open, for Tim |
-| Q17 | **Draft 4. Version handshake with a v7 DSF.** A stock DSF in normal mode stops with "Invalid protocol version" when RRF's header carries a number above 7 (`DCS/Link/Adapter/SPI.cs:1960-1965`), and in `UpdateOnly` it adopts RRF's number into its own header (`:1883-1893`) while it keeps writing v7 packets. How a v8 RRF tells a v7 DSF from a v8 DSF in the first exchange, which number it presents, and how it refuses requests in a v7 session (v7 has no rejection: a refusal makes DSF resend, V7-8, and a dropped packet leaves DSF waiting, V7-85) are open. So is whether a normal-mode fork DSF should also accept M997 over v7 against a stock RRF, or only `DCS -u` | Open |
-| Q18 | **Draft 4.** What a v8 RRF on SAME70 does when it cannot allocate the third transfer buffer (V8-40). Today it then offers no SequenceGuard (`RRF/SBC/DataTransfer.cpp:475-479`) | Open |
-| Q19 | **Draft 4. PR10 details:** the milestone of V8-42 to V8-47 (their header fields would belong to the M1 layout, as the expedited flag does); the form and size of the session id; how both sides agree on the configured lifetime (5–120 s, v2 R8); the retry window after which LinkDown is raised | Open |
-| Q20 | **Draft 4. Integrity details (V8-42):** the algorithm and size of the check, and what a receiver does with a packet that fails it: it cannot trust the header, and RRF keeps no copy (PR8) | Open |
+| Q1 | NEW-1: the USB resend looks into the wrong TX | Decided: fixed in VF-1. Code reading, not tested |
+| Q2 | NEW-2: can the 64-entry reply FIFO fill in practice? | Open; EG-1 would show it as a non-stale out-of-order reply |
+| Q3 | NEW-3: can RRF refuse a code that DSF's estimate allowed? | Closed into EG-3 |
+| Q4 | Is logical credit physically storable? | Closed: no credit (FD-1) |
+| Q5 | B7 read-ahead drop | Decided: B7 stays |
+| Q6 | Does every message of a code pass one capture point for its tag? | Answered: `GetResponseMessageType` builds every SBC reply type; 15 call sites; bits 18–23 and 26 are free (CE-11) |
+| Q7 | Cross-channel dependencies of the logic | Closed: the capability keeps the v7 order across channels |
+| Q8 | Switch point of the session layer within a connection | Closed: ChannelEpoch is activated before any channel packet (CE-3). The switch-window findings OF-S1 and OF-S5 of the extended header stay open in open-findings.md |
+| Q9 | Is `AbortFile(true)` harmless when RRF already aborted all files itself (CE-15)? | Decided: a fake-firmware test in E0 |
+| Q10 | Side effects of a refused Lock | Answered in draft 3: it keeps the lock it reached (VF-5) |
+| Q11 | SetPrintFileInfo alignment after ActivateLinkCapabilities in one TX (G-19) | Open again: with the capabilities negotiated on v7 (FD-11) the case of G-19 stays; whether the alignment matters was not checked |
+| Q12 | H1 ("Daemon: Out-of-order reply ''" after a DCS start), H2 ("Failed to find suitable stack level for flush request") | Decided: watch them after E2 |
+| Q13 | DSF-internal codes that write mutex requests during a macro wait | Answered: logic (LA-16 … LA-18) |
+| Q14 | Can C-1, C-2 and C-3 be reached (K1–K3)? | Decided: fake-firmware tests in E0. K1 and K2 have no fix in draft 5 |
+| Q15 | Can a MacroCompleted cross an RRF-side pop (X-7)? | Decided: a fake-firmware test in E0 |
+| Q16 | Can the global stream stall before SetPrintFileInfo? | Closed: no streams |
+| Q17 | Version handshake with a v7 DSF | Closed: no own version |
+| Q18 | Third transfer buffer missing on a v8 RRF | Closed: as today, SequenceGuard is offered only with the buffer (`RRF/SBC/DataTransfer.cpp:478`) |
+| Q19 | PR10 details (lifetime, session id, LinkDown window) | Closed: no resume. The LinkDown window moves to Q29 |
+| Q20 | Per-packet check details | Closed: replaced by CE-19; trailer details Q26 |
+| Q21 | **New.** v7 defects that neither the capability nor section 5 fixes: K4 (RRF side), K9, K10, K11 (stop path), K12, K15, K17, K19, K22, K24, K27, NEW-2. Fix each or not? K12 is safety-relevant and is reported per FD-13 once a test proves it | Open, for Tim |
+| Q22 | **New. Tag of work that RRF started itself.** FD-6 says stack events carry `codeEpoch` from `FillBuffer`. The code shows two cases where the GB's last ring code is not the work the event belongs to: a macro request without a code (trigger, daemon.g) after an abort of its channel, which DSF would drop (trigger lost after RRF's 3 s timeout), and the closal of a system macro without codes, which DSF would drop (its level waits for good, E-17). CE-9 sets `codeEpoch` to the channel epoch when RRF raises such a request or takes a text code | Open: confirm CE-9 |
+| Q23 | **New.** The bound of the hold at connect (CE-3), in transfers, and that the connection then runs without ChannelEpoch. Illustration: 16 transfers, the bound DSF uses for the extended switch (V7-101); at the idle pacing of 25 ms (`RRF/SBC/SbcMessageFormats.h:37`) that is 0.4 s, below RRF's 3 s macro wait. The capability query waits behind other object model queries (one per transfer, `DCS/Link/LinkService.cs:470-478`) | Open |
+| Q24 | **New.** How the stop of CE-16 reaches RRF when the retry is a SequenceGuard repeat that RRF answers without processing (`RRF/SBC/DataTransfer.cpp:924-945`) | Open, design in E2, checked by the census replay (AC-4) |
+| Q25 | **New.** Should RRF also drop stale copies of DeleteLocalVariable, SetLastCodeResult, Unlock and Lock (CE-10)? EvaluateExpression and SetVariable must be answered in any case | Open; the counters of CE-20 show whether stale copies occur |
+| Q26 | **New.** Algorithm and placement of the per-transfer CRC trailer, if the EMC test exceeds 100 corrupted transfers per hour (CE-19) | Open until the EMC test |
+| Q27 | **New.** STOPPED from RRF (old D9) as a capability of its own once a test shows the RRF-local-stop problem (K20, X-5); STOP_ACK (old D5) likewise deferred | Deferred, needs Tim's confirmation |
+| Q28 | **New.** The epoch has 6 bits, not 8 as the example of FD-3: the reply path has only bits 18–23 and 26 free in `MessageType` (`RRF/Platform/MessageType.h:16-50`). A stale packet matches a newer epoch only after 64 aborts of its channel while it is in flight | Open: confirm |
+| Q29 | **New.** Thresholds of VF-2 (LinkDown window, rate for "degraded") and how PeerRestarted is told from a connection reset without a restart counter (`ExtendedLink.cs:65`) | Open |
 
 Also unverified:
-- The M122 figures are one reading on one printer and configuration; they change with the configuration.
-- RAM figures are estimates from field sizes; padding, `StaticSemaphore_t` and `GCodeMachineState` sizes were not
-  measured.
-- The PBUF pool size comes from the harness model, not from the board's `lwipopts.h:267` expression.
-- DSF line numbers come from the catalogue, made at 808d56fa; `src/DuetControlServer` has no change since, and the
-  resend, abort, reply and buffer-space lines were re-read. RRF lines were re-read at 0dccb9efe for the packet loop,
-  InvalidateChannel, the per-channel requests, the reply FIFO, the code ring, the USB transfer, the transfer buffers
-  and the M122 RAM report; the rest come from the catalogue at the same commit. The pattern survey cited RRF at
-  cde4e4fa1; this document uses current lines only.
-- The protocol references below were opened by the pattern survey, not again for this document.
-- Draft 3: the v7 contract and its alignment (section 4.9) come from reading the code; none of its 27 findings K1–K27
-  was tested. The requirements V8-34 to V8-39 and the stream split of V8-6 are designed on paper only.
-- Draft 4: the decisions of section 9 are recorded from the interview of 2026-11-09. The new requirements V8-40 to
-  V8-48 are designed on paper only. Every code reference added in draft 4 was re-read at the commits of section 0:
-  the link exits and timeouts of section 4.10, the version check and downgrade, the buffer allocation, the message
-  chunks and their mutex, PrintStopped, the reply queue and the message routing in DSF.
+- The M122 figures are one reading on one printer and configuration.
+- RAM figures are field counts; padding was not measured.
+- The review reports were not available to this draft; section 11 rests on their summary.
+- Everything in sections 4 and 5 is designed on paper; none of the K findings was tested.
+- The USB bus CRC and retry below `DoTransferUsb` was not read; CE-17 (a) assumes nothing about it.
+- RRF lines were re-read at 0dccb9efe for the capability offer and activation, the packet header and its writers,
+  the read pointer, the packet loop, Code, MacroCompleted, MacroStarted, InvalidateChannel, the write phase,
+  `FillBuffer`, `InvalidateBufferedCodes`, `InvalidateResources`, the reply FIFO and `HandleGCodeReply`,
+  `GetResponseMessageType` and its callers, `MessageType`, `Platform::Message`, `DoEmergencyStop`,
+  `RepRap::EmergencyStop`, `CheckTriggers`, `RequestMacroFile`, `TriggerItem::Check`, the sequence guard, the header
+  checks and the USB transfer. DSF lines were re-read at 7f26d0ca for `ExtendedLink`, `Writer`, the SPI and USB packet
+  writers and resend, the retry loop, the header checks, `LinkService.Execute`, `ProcessPacket`, `HandleObjectModel`,
+  `HandleAbortFileRequest`, `InvalidateCodes`, `Invalidate`, `UpdateLinkCapabilities`, the `Processor` abort flags,
+  Spin, `FilesAborted`, `Invalidate`, `LinkInterface` evaluations and `EmergencyStopAsync`, `Settings` and the systemd
+  unit.
 
-## 11. References
+## 13. References
 
-Opened by the pattern survey (text search, section numbers from the documents):
-- HTTP/2: RFC 9113 §2, §4.1, §5, §5.1, §5.1.1, §5.2.1, §5.3.1, §5.3.2, §6.4, §6.8, §8.7. Priorities: RFC 9218 §2, §4.1.
-- QUIC: RFC 9000 §2, §2.1, §2.2, §3.5, §4.1, §4.2, §4.4, §4.5, §4.6, §12.3, §13.3, §19.4, §19.5; RFC 9002 §4.2.
-- SCTP: RFC 9260 §1.3, §1.5.2, §6.5, §6.6; RFC 6525 §4.1, §4.4, §5.2.1, §5.2.2; RFC 8260 §1.1 (only §1.1 and §3 read).
-- SSH connection protocol: RFC 4254 §4, §5, §5.2, §5.3, §5.4.
-- TCP: RFC 9293 §3.4.1, §3.8.5; urgent data: RFC 6093 §2.1, §3.1, §5. Serial numbers: RFC 1982 §3.2.
-- MQTT 5.0 (OASIS, 2019-03-07): §2.2.1, §4.4, §4.6, §4.9, §4.10.
-- AMQP 1.0 (OASIS, 2012-10-29) Part 2: §2.1.1, §2.5.6, §2.6.6, §2.6.7, §2.6.10, §2.8.10. AMQP 0-9-1 (2008-11-13):
-  §2.3.1, §2.3.7, §4.2.3, §4.3, §4.6, §4.7; `amqp0-9-1.xml` classes channel and basic (no section numbers).
-- JSON-RPC 2.0: §4, §4.1, §6. gRPC: `doc/PROTOCOL-HTTP2.md` at grpc/grpc cf61c7d62a.
-- USB 2.0: §5.3.2, §5.5.4, §5.5.5, §8.4.6.4, §8.5.1, §8.6.2, §8.6.4. USB Mass Storage Bulk-Only 1.0: §3.4, §5.1, §6.3.1.
-- Modbus Messaging on TCP/IP Implementation Guide V1.0b: §3.1.3, §4.2.1, §4.4.1.3.
-- Bosch CAN 2.0 Part A §2, §3.1.4 (a re-typeset copy, not Bosch's site); TI SLOA101B.
+Protocol references of the pattern survey (opened by the survey, not again for this draft): HTTP/2 RFC 9113; QUIC
+RFC 9000; SCTP RFC 9260, RFC 6525; SSH RFC 4254; RFC 1982; MQTT 5.0; AMQP 1.0 and 0-9-1; JSON-RPC 2.0; USB 2.0; Modbus
+TCP; CAN 2.0. Section numbers are in [sbc-link-v8-patterns.md](sbc-link-v8-patterns.md).
+Standards named by CE-19: IEC 61000-4-3, IEC 61000-4-6, EN IEC 61000-6-2 (as in v2 "Normative basis").
 
-Not opened (secondary sources only): PCI Express Base Specification (ordering table, posted/non-posted passing,
-flow-control credit types; from patent US 8,495,265 B2 and a Design & Reuse article on PCIe 6.1 UIO). CiA 301.
-ISO 11898-1.
-
-Repository: [sbc-link-v8-logic-adaptations.md](sbc-link-v8-logic-adaptations.md), [sbc-link-v7-contract.md](sbc-link-v7-contract.md),
+Repository: [sbc-link-v8-logic-adaptations.md](sbc-link-v8-logic-adaptations.md),
+[sbc-link-v7-contract.md](sbc-link-v7-contract.md), [sbc-link-v8-catalogue.md](sbc-link-v8-catalogue.md),
 [sbc-link-requirements.md](sbc-link-requirements.md), [sbc-link-current-state.md](sbc-link-current-state.md),
 [sbc-link-findings-upstream.md](sbc-link-findings-upstream.md), [dsf-findings-upstream.md](dsf-findings-upstream.md),
 [open-findings.md](open-findings.md), [rrf-local-trigger-actions.md](rrf-local-trigger-actions.md),
-[lab-test-plan.md](lab-test-plan.md). Duet3D wiki: `User_manual/Reference/Gcodes.md` (M112), clone at a106ad4.
+[lab-test-plan.md](lab-test-plan.md).
