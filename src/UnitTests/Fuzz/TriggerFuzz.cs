@@ -857,6 +857,31 @@ public class TriggerFuzz
         Assert.That(host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.None.EqualTo("G4 P90001"));
     }
 
+    [Test]
+    public async Task NextCodeGetsItsOwnReplyWhenRrfAsksForTheAbortAgain()
+    {
+        // The case on the lab printer (2026-11-08 22:39 UTC): the M98 waits for its macro, so the main task holds the buffer mutex and RRF asks for
+        // the InvalidateChannel again (FailBufferLocks). The first copy flags M98 before it ends the wait (SbcInterface.cpp:880-886), the copy flags nothing
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        host.Firmware.OnCode("G4", code => (code.Text == "G4 P2") ? FakeReply.Ok("reply of G4 P2") : null);
+        Task<string> m98 = await AbortWhileRrfCannotLockAsync(host);
+        Task<string> next = host.StartCode("G4 P2");
+        host.Firmware.ReleaseTransfers();
+        try
+        {
+            await m98.WaitAsync(Timeout);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled by the abort
+        }
+
+        Assert.That(await next.WaitAsync(Timeout), Is.EqualTo("reply of G4 P2\n"));
+        Assert.That(InvalidateChannelTransfers(host, CodeChannel.HTTP), Has.Length.EqualTo(2), "RRF did not ask for the InvalidateChannel again");
+        Assert.That(CodeReplies(host, "M98 P\"http-macro.g\""), Is.Empty, "RRF replied to M98, which DSF had dropped");
+        Assert.That(CodeReplies(host, "G4 P2"), Has.Length.EqualTo(1));
+    }
+
     /// <summary>
     /// Let M400 run on HTTP until the returned event is set, then it finishes with the reply "late reply of M400"
     /// </summary>
