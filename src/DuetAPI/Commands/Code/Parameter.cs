@@ -238,6 +238,16 @@ public class CodeParameter
 
     #region Explicit cast operators
     /// <summary>
+    /// Check if a float rounds to a whole number in the given range, as Convert.ToInt32, ToUInt32 and ToInt64 require.
+    /// A value that does not fit is refused like a long or uint that won't fit, NaN and infinite values never fit
+    /// </summary>
+    /// <param name="value">Value to check</param>
+    /// <param name="min">Smallest whole number of the target type</param>
+    /// <param name="max">Largest whole number of the target type</param>
+    /// <returns>Whether the value can be converted</returns>
+    private static bool Fits(float value, double min, double max) => value >= min - 0.5 && value < max + 0.5;
+
+    /// <summary>
     /// Explicit conversion operator to float
     /// </summary>
     /// <param name="codeParameter">Target object</param>
@@ -306,7 +316,7 @@ public class CodeParameter
             {
                 return intValue;
             }
-            if (codeParameter.ParsedValue is float floatValue)
+            if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, int.MinValue, int.MaxValue))
             {
                 return Convert.ToInt32(floatValue);
             }
@@ -331,7 +341,7 @@ public class CodeParameter
         {
             return intValue;
         }
-        if (codeParameter.ParsedValue is float floatValue)
+        if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, int.MinValue, int.MaxValue))
         {
             return Convert.ToInt32(floatValue);
         }
@@ -357,11 +367,11 @@ public class CodeParameter
             {
                 return driverIdValue;
             }
-            if (codeParameter.ParsedValue is int intValue)
+            if (codeParameter.ParsedValue is int intValue && intValue >= 0)
             {
                 return Convert.ToUInt32(intValue);
             }
-            if (codeParameter.ParsedValue is float floatValue)
+            if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, uint.MinValue, uint.MaxValue))
             {
                 return Convert.ToUInt32(floatValue);
             }
@@ -390,11 +400,11 @@ public class CodeParameter
         {
             return driverIdValue;
         }
-        if (codeParameter.ParsedValue is int intValue)
+        if (codeParameter.ParsedValue is int intValue && intValue >= 0)
         {
             return Convert.ToUInt32(intValue);
         }
-        if (codeParameter.ParsedValue is float floatValue)
+        if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, uint.MinValue, uint.MaxValue))
         {
             return Convert.ToUInt32(floatValue);
         }
@@ -424,7 +434,7 @@ public class CodeParameter
             {
                 return Convert.ToInt64(uintValue);
             }
-            if (codeParameter.ParsedValue is float floatValue)
+            if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, long.MinValue, long.MaxValue))
             {
                 return Convert.ToInt64(floatValue);
             }
@@ -456,7 +466,7 @@ public class CodeParameter
         {
             return Convert.ToInt64(uintValue);
         }
-        if (codeParameter.ParsedValue is float floatValue)
+        if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, long.MinValue, long.MaxValue))
         {
             return Convert.ToInt64(floatValue);
         }
@@ -605,11 +615,11 @@ public class CodeParameter
         {
             return [intValue];
         }
-        if (codeParameter.ParsedValue is float floatValue)
+        if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, int.MinValue, int.MaxValue))
         {
             return [Convert.ToInt32(floatValue)];
         }
-        if (codeParameter.ParsedValue is float[] floatArray)
+        if (codeParameter.ParsedValue is float[] floatArray && floatArray.All(value => Fits(value, int.MinValue, int.MaxValue)))
         {
             return floatArray.Select(Convert.ToInt32).ToArray();
         }
@@ -654,11 +664,11 @@ public class CodeParameter
         {
             return intArray.Select(Convert.ToUInt32).ToArray();
         }
-        if (codeParameter.ParsedValue is float floatValue && floatValue >= 0F)
+        if (codeParameter.ParsedValue is float floatValue && floatValue >= 0F && Fits(floatValue, uint.MinValue, uint.MaxValue))
         {
             return [Convert.ToUInt32(floatValue)];
         }
-        if (codeParameter.ParsedValue is float[] floatArray && floatArray.All(value => value >= 0F))
+        if (codeParameter.ParsedValue is float[] floatArray && floatArray.All(value => value >= 0F && Fits(value, uint.MinValue, uint.MaxValue)))
         {
             return floatArray.Select(Convert.ToUInt32).ToArray();
         }
@@ -695,7 +705,7 @@ public class CodeParameter
         {
             return [Convert.ToInt64(uintValue)];
         }
-        if (codeParameter.ParsedValue is float floatValue)
+        if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, long.MinValue, long.MaxValue))
         {
             return [Convert.ToInt64(floatValue)];
         }
@@ -707,7 +717,7 @@ public class CodeParameter
         {
             return uintArray.Select(Convert.ToInt64).ToArray();
         }
-        if (codeParameter.ParsedValue is float[] floatArray)
+        if (codeParameter.ParsedValue is float[] floatArray && floatArray.All(value => Fits(value, long.MinValue, long.MaxValue)))
         {
             return floatArray.Select(Convert.ToInt64).ToArray();
         }

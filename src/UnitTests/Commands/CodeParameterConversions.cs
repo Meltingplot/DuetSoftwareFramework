@@ -133,6 +133,11 @@ public class CodeParameterConversions
 
         // int and int? accept int and float, which Convert.ToInt32 rounds to the nearest even number (Parameter.cs:301-340)
         yield return new TestCaseData(-4, "int", -4).SetName("IntFromInt");
+        // The largest float below 2^31 and -2^31 still fit
+        yield return new TestCaseData(2147483520f, "int", 2147483520).SetName("IntFromLargestFloat");
+        yield return new TestCaseData(-2147483648f, "int", int.MinValue).SetName("IntFromSmallestFloat");
+        yield return new TestCaseData(4294967040f, "uint", 4294967040u).SetName("UIntFromLargestFloat");
+        yield return new TestCaseData(-0.4f, "uint", 0u).SetName("UIntFromFloatThatRoundsToZero");
         yield return new TestCaseData(2.5f, "int", 2).SetName("IntFromFloat");
         yield return new TestCaseData(-4, "int?", -4).SetName("NullableIntFromInt");
         yield return new TestCaseData(3.5f, "int?", 4).SetName("NullableIntFromFloat");
@@ -238,6 +243,24 @@ public class CodeParameterConversions
         yield return new TestCaseData(new[] { -1f }, "uint[]").SetName("UIntArrayFromNegativeFloatArray");
         yield return new TestCaseData("x", "long[]").SetName("LongArrayFromString");
         yield return new TestCaseData(1, "DriverId[]").SetName("DriverIdArrayFromInt");
+
+        // Values that Convert.ToInt32, ToUInt32 and ToInt64 refuse with an OverflowException are refused the same way. Found by the weekly fuzz
+        // run (GCodeExecutionFuzz seed 1754056457): M20 S31e9 threw an OverflowException past Code.ProcessInternally (MCodeHandler.cs:142)
+        yield return new TestCaseData(31e9f, "int").SetName("IntFromHugeFloat");
+        yield return new TestCaseData(2147483648f, "int").SetName("IntFromTwoToThe31");
+        yield return new TestCaseData(float.NaN, "int?").SetName("NullableIntFromNaN");
+        yield return new TestCaseData(-1, "uint").SetName("UIntFromNegativeInt");
+        yield return new TestCaseData(5e9f, "uint").SetName("UIntFromHugeFloat");
+        yield return new TestCaseData(-1, "uint?").SetName("NullableUIntFromNegativeInt");
+        yield return new TestCaseData(-1f, "uint?").SetName("NullableUIntFromNegativeFloat");
+        yield return new TestCaseData(float.PositiveInfinity, "long").SetName("LongFromInfinity");
+        yield return new TestCaseData(1e19f, "long?").SetName("NullableLongFromHugeFloat");
+        yield return new TestCaseData(3e9f, "int[]").SetName("IntArrayFromHugeFloat");
+        yield return new TestCaseData(new[] { 1f, -3e9f }, "int[]").SetName("IntArrayFromHugeFloatArray");
+        yield return new TestCaseData(5e9f, "uint[]").SetName("UIntArrayFromHugeFloat");
+        yield return new TestCaseData(new[] { 1f, 5e9f }, "uint[]").SetName("UIntArrayFromHugeFloatArray");
+        yield return new TestCaseData(float.NegativeInfinity, "long[]").SetName("LongArrayFromInfinity");
+        yield return new TestCaseData(new[] { 1f, 1e19f }, "long[]").SetName("LongArrayFromHugeFloatArray");
     }
 
     private static object? Convert(CodeParameter? parameter, string conversion) => conversion switch
