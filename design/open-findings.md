@@ -119,6 +119,15 @@ The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the tr
 - **S5. A lost connection in the switch window of the extended link gives RRF a regular number it takes in sequence.** From reading the code, not tested.
   - In the window, RRF has switched and DSF has not (`_extendedRequested` without `_extendedTx`, `SPI.cs:422-433`).
   - The catch advances the sequence number only when DSF was on the extended link (`leavingExtendedLink = _extendedTx`, `:454`), so the fix of #138 does not apply there. This is the same cause as the plain-link part of P4.
+- **S6. Over USB, DSF looks for a packet that RRF asks for again in the wrong transfer.** From reading the code, not tested (the lab printer has no USB link).
+  - `USB.ResendPacket` searches the previous TX buffer, because "the firmware sees our data before composing its response" (`USB.cs:717-721`). RRF however composes its USB answer one transfer behind (`RRF/SBC/DataTransfer.cpp:1303-1357`, as T13).
+  - So DSF can copy another packet with the same id, or find none and throw `ArgumentException` (`USB.cs:746`). The packet loop only dumps and rethrows an `ArgumentOutOfRangeException` (`LinkService.cs:446-450`) and catches nothing else, so the exception would end LinkService and DCS, as for G2 in `dsf-findings-upstream.md`. The USB adapter also has no `_packetsBeingResent` guard like `SPI.cs:94`.
+  - Catalogue NEW-1 in `sbc-link-v8-catalogue.md`.
+- **S7. RRF drops a code reply when its shared reply FIFO is full, and the later replies of that channel shift by one.** From reading the code, not observed.
+  - One 64-entry `OutputStack` holds the replies of all channels (`RRF/SBC/SbcInterface.h:155`, `RRF/Platform/OutputMemory.h:15-19`). On a full stack, `Push` releases the buffer and logs `OutputStackOverflow` (`RRF/Platform/OutputMemory.cpp:487-506`).
+  - DSF matches replies by position (`Processor.cs:1108-1117`). Catalogue NEW-2; v8 requirement V8-18.
+- **S8. A code that RRF refuses for lack of buffer space can be overtaken by a later code of its channel.** From reading the code, not shown.
+  - DSF writes the next code into the following transfer before it reads the resend request of the refused one, and RRF may accept the later one. Whether RRF can refuse a code that DSF's buffer estimate allowed is not shown. Catalogue NEW-3; v8 requirements V8-6 and V8-15.
 
 ### HTTP: DuetWebServer and DuetHttpClient (#123)
 
@@ -240,10 +249,9 @@ Measured in the fake firmware without link faults:
   - daemon.g: at the base level of the Daemon channel, RRF requests daemon.g without waiting (`GCodeBuffer.cpp:1258-1260`). If InvalidateChannel arrives before that request has gone out, RRF closes the file but still sends the request.
   - The second case, a resent InvalidateChannel, was seen on the printer and is fixed by #161 (`design/dsf-findings-upstream.md`, T11 resend).
   - The lab test `AbortsCrossingMacroRequests` (#139) ran again on 2026-11-08 22:37 UTC with RRF 3.7.0+1.mp.9-dev.2 (#43, #45): T12 did not occur in 165 aborts, the run stopped at the resend case. It needs a run with #161 and the RRF fix for T10.
-- **T13. On the USB link the abort window of #134 also covers data that RRF wrote after it read the InvalidateChannel.** From reading the code, not tested.
-  - The window assumes the order of the SPI link: RRF writes the data of a transfer before it reads DSF's packets of that transfer (`Processor.cs`, doc of `_allFilesAbortedSent`). Over USB the firmware sees DSF's data before it composes its response, says the comment of `USB.ResendPacket` (`USB.cs:717-720`); not checked against the USB transport of RRF.
-  - So over USB DSF discards a macro request that RRF makes after the abort in the same exchange, e.g. for a trigger. RRF gives it up after `SbcMaxRequestTime` (3 s, `SbcMessageFormats.h:42`), and the trigger macro does not run.
-  - The CHX uses the SPI link ("Connected to controller over SPI" in the lab journal).
+- **T13. Probably no finding: the abort window of #134 fits the USB link as well.** From reading the code.
+  - T13 assumed that over USB RRF answers a transfer only after it has read DSF's packets of that transfer, as the comment of `USB.ResendPacket` says (`USB.cs:717-720`).
+  - RRF's `DoTransferUsb` sends the TX buffer that the previous `ExchangeData` composed (`RRF/SBC/DataTransfer.cpp:1303-1357`), so over USB RRF answers one transfer later, as over SPI. The comment is wrong, see S6.
 - **T4. A missing trigger macro is not shown after DSF has run a code on the Trigger channel.** RRF reports it as a pushed code reply (`GCodes.cpp:3703-3706`), DSF takes it as an out-of-order reply and holds it back (`Processor.cs:1122-1127`, `LinkService.cs:727-733, 762-776`). This fits the field journal line "Trigger: Out-of-order reply: 'Macro file trigger8.g not found'", not proven to be the same event. Test: `Codes.TriggerMacros.MissingTriggerMacroAfterCodeOfDsfOnTriggerChannel`.
 - **T5. M581.1 with SBC fields succeeds and creates the trigger although its expression fails** (upstream 4229f552). RRF returns an error and creates nothing (`TriggerItem.cpp:328-339`, wiki M581.1). Test: `Codes.SbcTriggerEvaluation.ErrorInExpressionIsReported`.
 - **T6. A later evaluation error of such a trigger is only logged, and the trigger stays enabled.** RRF disables it and reports it (`TriggerItem.cpp:133-149`). Test: `ErrorInLaterEvaluationDisablesTheTrigger`.
