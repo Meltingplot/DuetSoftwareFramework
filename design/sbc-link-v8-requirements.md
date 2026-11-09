@@ -1,6 +1,8 @@
 # SBC link v8: session and channel layer requirements
 
-Status: draft 1, 2026-11-09. Nothing here is agreed or implemented. No code was changed for it.
+Status: draft 2, 2026-11-09. Nothing here is agreed or implemented. No code was changed for it.
+Draft 2 adds Tim's requirement of the same day: "The protocol must guarantee a logical compatibility to the current
+implementation, so that we do not create deadlocks due to concurrency" (PR9, section 4.8, V8-4, section 5, AC7, AC8).
 Audience: Tim, later Christian Hammacher (Duet3D). The reader knows DSF and RRF, not the working papers.
 Scope: the layer between the link and the logic: channels, ordering, priority and overtaking, cancellation,
 correlation, flow control, and retransmission above the link.
@@ -90,13 +92,14 @@ replies (LT §14, 06:23:59). The catch code works; the protocol still produces t
 | ID | Principle | Followed by |
 |---|---|---|
 | PR1 | Identity, not position or timing. Late frames are discarded by identity; timers are not used to decide that they stopped. | HTTP/2 RFC 9113 §5.1 ("SHOULD NOT use timers"), §6.4; JSON-RPC 2.0 §4; Modbus TCP guide §4.4.1.3; USB MSC BOT §5.1 |
-| PR2 | Order is kept within a channel, never across channels except at named barriers. | QUIC RFC 9000 §2; SCTP RFC 9260 §1.5.2; SSH RFC 4254 §4; AMQP 0-9-1 §4.6 |
+| PR2 | Order is kept within a channel. Across channels v8 keeps the order of v7 (PR9); it does not use the freedom that multiplexed protocols give independent streams. | QUIC RFC 9000 §2; SCTP RFC 9260 §1.5.2; SSH RFC 4254 §4; AMQP 0-9-1 §4.6 |
 | PR3 | A few absolute classes; one expedited class that is never refused and never deferred. | RFC 9218 §4.1 (after RFC 9113 §5.3.2 deprecated the tree); CAN 2.0 Part A §2; USB 2.0 §8.4.6.4; caution RFC 6093 §5 |
 | PR4 | Cancellation is a handshake that changes an epoch; repeated requests get the same answer. | RFC 9113 §6.4; RFC 9000 §3.5, §4.4, §13.3; AMQP 0-9-1 §2.3.7; SCTP RFC 6525 §5.2.1 |
 | PR5 | Flow control by absolute, monotonic credit; control traffic is exempt. | RFC 9000 §4.1, §4.2; AMQP 1.0 Part 2 §2.6.7; RFC 9113 §5.2.1; MQTT 5.0 §4.9 |
 | PR6 | One retransmission mechanism per layer. A refusal means "nothing was done". Re-sent content is identical. | RFC 9113 §8.7; MQTT 5.0 §4.4; USB 2.0 §8.6.2; RFC 9000 §2.2 |
 | PR7 | Request state lives on the (channel, epoch) object and dies with it. | RFC 9000 §4.4; CLAUDE.md "Keep state on the object whose lifetime it shares" |
 | PR8 | The firmware never retransmits and keeps no per-message state. DSF holds every copy. | Pattern survey §6; RRF keeps no copy today (`RRF/SBC/DataTransfer.h:238-241`) |
+| PR9 | Logical compatibility: v8 changes how events travel, not which orders the logic can see. Every order the logic sees in v8 is one it can also see in v7; v8 may only remove orders (those the catch code filters today). So the logic meets no new concurrency, and no new wait cycle can form. | RFC 9113, Abstract (HTTP/2 is "an optimized expression of the semantics of" HTTP); CLAUDE.md bug-fix rule 2 ("find a path that already works") |
 
 ## 4. Requirements
 
@@ -111,7 +114,7 @@ change to the G layer.
 | V8-1 | Both programs MUST have an S layer between L and G as in section 3. L MUST NOT depend on request types; G MUST NOT depend on transfers, packet ids or pipeline depth. | P12; AMQP 1.0 Part 2 §2.1.1 | enables all | 0 | none (code moves into S) |
 | V8-2 | Every packet MUST carry request, length, channel, epoch and sequence in a fixed, 4-byte-aligned header. Global packets use a reserved channel value. Receivers use only the header channel; v7 payload channel fields keep their place and are written equal. Illustration: request (2), length (2), channel (1), epoch (1), sequence (2) = 8 bytes, the size of the v7 header, because `id` and `resendPacketId` are not needed (V8-21). | P1; RFC 9113 §4.1; AMQP 0-9-1 §2.3.1, §4.2.3 | — | 0 | none |
 | V8-3 | Every request type MUST belong to exactly one class (X, C, D, G, section 5) through one fixed table in this spec. No header bit duplicates it. | P5; RFC 9218 §2 | — | 0 | none |
-| V8-4 | The may-pass table of section 5 is normative. D packets of one channel and direction MUST be processed in sequence order. Packets of different channels MAY pass each other, except at the barriers listed there. | P2, P11; PCIe ordering table (secondary sources only) | — | 0 | none, if the barrier list is complete (Q7) |
+| V8-4 | The may-pass table of section 5 is normative. D packets of one channel and direction MUST be processed in sequence order. Packets of different channels MUST reach the logic in the order DSF wrote them, as in v7, and MAY pass each other only where v7 lets them (V8-29). | P2, P11; PCIe ordering table (secondary sources only) | — | 0 | none (V8-28) |
 
 ### 4.2 Sequence, acknowledgement, refusal
 
@@ -166,6 +169,17 @@ change to the G layer.
 | V8-26 | The RRF S layer SHOULD be a separate source file without GCodes dependency, so the host harness can compile it unchanged. Today the harness replaces `ExchangeData` and executes no packet (`Tools/sbc-harness/README.md:95`). | — | — | 0 | none |
 | V8-27 | M122 on both sides SHOULD count per channel: stale-epoch drops, stalls, go-back-N resends, RESETs, credit waits. Counted, not alarmed (v2 R7). | v2 R7 | — | ≤ 64 B (u16 × 2 × 16) | none |
 
+### 4.8 Logical compatibility and deadlock freedom (PR9)
+
+| ID | Requirement | Pattern | Removes | RAM | Logic |
+|---|---|---|---|---|---|
+| V8-28 | A v8 session MUST be a refinement of v7 for the logic of both sides: every order in which a logic layer sees its events (codes and their replies per channel, macro requests, starts and closals, message boxes, locks, flushes, evaluations, messages, aborts, stops) MUST also be possible in v7 with the catch code of DSF 7f26d0ca and RRF ddec2d001. v8 MAY remove orders, namely those that the catch code removes today (stale replies, requests and closals across an abort, codes overtaking a refused code of their channel). It MUST NOT add any. | PR9; RFC 9113, Abstract | — | 0 | none: this requirement is what keeps it so |
+| V8-29 | Across channels, packets MUST be handed to the logic in the order DSF wrote them (RRF: one transfer at a time, packets in order, `RRF/SBC/SbcInterface.cpp:310-1359`; DSF: `DCS/Link/LinkService.cs:434-451`). A packet may be passed only where v7 already lets it be: a stalled packet (V8-6, in v7 a refused one, `:1355-1358`) lets later packets of other channels pass. A stall MUST NOT let a later packet of its own channel pass (v7 does, NEW-3; removing that order is allowed by V8-28). | PR2, PR9 | NEW-3 | 0 | none |
+| V8-30 | The spec MUST contain the wait-for graph of every blocking wait on both sides, v7 waits and the new ones of v8 (RESET_ACK, credit, stall, STOP_ACK), each with file:line and its bound, and MUST show that the graph has no cycle that is not broken by a bound. Initial edges, incomplete: (1) the RRF main task holds `gb.mutex` while an M98 waits for its macro from DSF (`RRF/GCodes/GCodes.cpp:590`, `RRF/GCodes/GCodeBuffer/GCodeBuffer.cpp:1244-1276`), bounded by `SbcMaxRequestTime` 3 s (`RRF/SBC/SbcMessageFormats.h:42`); (2) the RRF SBC task waits for `gb.mutex` at most `SbcYieldTimeout` 10 ms, then asks for a resend (`RRF/SBC/SbcInterface.cpp:45`, `:897`); (3) DSF `AbortAllAsync` holds the channel lock while it awaits the abort of the channel's files (`DCS/Link/LinkInterface.cs:557-563`); (4) a DSF code waits for its reply without a bound (`BufferedCodes`); the T2 block was this wait; (5) new in v8: a DSF channel waits for RESET_ACK (V8-9), for credit (V8-15) and for the end of a stall (V8-6). | PR9 | — | 0 | none |
+| V8-31 | X and C packets MUST be handled without waiting: not for D or G traffic, not for a logic mutex, not for the RRF main task. Work that needs a logic mutex (V8-9 "apply") is deferred as a state, not waited for, and the answer (RESET_ACK) is sent once it is done. D and G packets keep their v7 hand-over (`SbcYieldTimeout`, then a stall instead of a resend). The S layer of DSF runs in the packet loop of `LinkService` and MUST NOT await a channel lock there that the logic can hold while it waits for the link (edge 3 of V8-30). | PR9; RFC 9000 §4.1 (control frames are not flow-controlled) | — | 0 | none |
+| V8-32 | Every new wait MUST be bounded. If RESET_ACK or STOP_ACK does not come within the bound, or a stall or credit wait makes no progress within it, the link session ends (v2 R6) and both sides discard their channel state (V8-24), as after a link loss today. The bound is to be fixed with v2 R8 (silence limit). A wait that v7 breaks with a timeout MUST NOT become unbounded in v8. | PR9; v2 R6, R8 | — | 0 | none |
+| V8-33 | Before M1, the wait-for graph of V8-30 and the list of cross-channel dependencies of the logic (Q7) MUST be complete and reviewed. Any rule of this spec that would add an order or a wait cycle blocks the milestone until it is changed. | PR9 | — | 0 | none |
+
 ## 5. Message classes and ordering
 
 | Class | Meaning | Rules |
@@ -186,7 +200,8 @@ blocks it is wrong, as with PCIe posted writes. The PCIe table itself was only s
 | D | no | no (same channel), may (other) | no | may | may |
 | G | no | may | may | may | no; file operations stay one at a time |
 
-Passing happens only through placement in a transfer, NAK stalls and credit waits; within one transfer packets
+"may" means: allowed where v7 allows it too (V8-28, V8-29), i.e. when the earlier packet is stalled or waits for
+credit. Otherwise packets keep the order in which DSF wrote them, across channels as well; within one transfer they
 are processed in order, as today. **Barriers** across channels that v8 keeps:
 - X: a stop or reset ends every channel.
 - Lock/Unlock (10/11) lock all movement systems; RRF says "currently this is used only by M505"
@@ -294,7 +309,7 @@ checked.
 
 | Milestone | Content | Catch code no longer needed (catalogue `CC-n`) | Gate before deletion |
 |---|---|---|---|
-| M0 | Preparation: RRF S layer as its own file (V8-26), harness extension, fake firmware v8 mode. NEW-1 is fixed in v7 separately, as a normal fork fix with its own test | none | existing suites green |
+| M0 | Preparation: RRF S layer as its own file (V8-26), harness extension, fake firmware v8 mode. The wait-for graph and the cross-channel dependencies (V8-30, Q7, V8-33). NEW-1 is fixed in v7 separately, as a normal fork fix with its own test | none | existing suites green; V8-33 reviewed |
 | M1 | V8-1–V8-4, V8-9–V8-12, V8-23, V8-24 | CC-1–CC-8 (A0, #134, #158, RRF #45, RRF #43, #161, RRF #46 both parts). 7 of them fork-only | the TriggerFuzz abort tests and `TriggerMacros.TriggerChannelWorksAfterInvalidationDuringTriggerRequest` (DF-T1, T2, T10, T11, T12) green in v8 mode with the catch code removed; lab `AbortsCrossingMacroRequests` with `LAB_ABORT_ITERATIONS=2000`: no block, no stack underrun, no "none was requested", **no out-of-order reply** |
 | M2 | V8-5–V8-8, V8-21 | CC-25, CC-26, CC-27, CC-31 | NAK of every D request type at every position with other channels interleaved (fake firmware `FailBufferLocks`); harness replay of the S layer with 0 differences; the same tests over the USB adapter |
 | M3 | V8-15–V8-18 | CC-28, CC-29, CC-30 | `TriggerMacros.TriggerMacroGetsSpareCodeBufferRoom`, `LinkInterfaceRequests.CodesBufferedAheadLeaveSpareRoom`; lab `CodeBufferReserve.TriggerMacroGetsRoomWhileOtherChannelsReadAhead` (DF-T3, LT §14, 2026-11-08) |
@@ -331,6 +346,8 @@ session layer.
 | AC4 | No refusal of a credited code in any run |
 | AC5 | New static RRF RAM ≤ 1 KB by map file; no new heap allocation in the S layer (code review) |
 | AC6 | All four combinations of section 7 run; the v7 combinations behave as today |
+| AC7 | No deadlock: in every fuzz and lab run each code ends (reply, cancel or error) within the bound of V8-32; a watchdog in the fake firmware host flags any channel that has work but makes no progress |
+| AC8 | Refinement (V8-28): the same scripted input in v7 mode and v8 mode gives per channel the same sequence of logic events, apart from the events that the v7 catch code drops |
 
 ## 9. Decisions for Tim
 
@@ -355,7 +372,7 @@ session layer.
 | Q4 | Is logical credit always physically storable, given that `DefragmentBufferedCodes` runs only when 384 bytes or less are free and moves one gap per run (`SbcInterface.cpp:2436-2525`)? | Not analysed |
 | Q5 | B7: how RRF tells in-flight read-ahead codes from new ones after a push without counting ExchangeData: a per-channel generation counter, or a stack-level tag. RRF levels pushed by M120 (`localPush`) may not exist in DSF | Not analysed; B7 is upstream design and has no known failure |
 | Q6 | Does every message of a code pass one capture point for its tag? OF-T10 lists writers outside `HandleReply` (M122 `GCodes2.cpp:2292`, `GpInPort.cpp:90`, `GCodes4.cpp:1894`) | Not checked |
-| Q7 | Cross-channel dependencies in the logic beyond Lock, pause and stop | Not listed; V8-4 depends on it |
+| Q7 | Cross-channel dependencies in the logic beyond Lock, pause and stop | Not listed; V8-29, V8-30 and V8-33 depend on it; to be done in M0 |
 | Q8 | The switch point of `SessionLayer` within a connection, given the switch-window findings of the extended header (OF-S1, OF-S5) | Open |
 | Q9 | Is `AbortFile(true)` harmless when RRF already aborted all files itself (V8-12)? | Not checked |
 | Q10 | Does a refused `LockAllMovementSystemsAndWaitForStandstill` have side effects (V8-7)? | Not checked |
