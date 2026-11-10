@@ -104,18 +104,24 @@ public class EmergencyStopEpoch
     {
         // Review finding: the stop pops every stack to the base level (Processor.Invalidate), then a MacroFileClosed that RRF wrote before the stop popped
         // again ("Stack underrun"), which faulted the link thread before the stop went out. The closal comes in the data pending at the stop or in the
-        // data of the transfer that carries the stop. A tagged one is stale now; an untagged one (V7, RecordApply) is dropped by the window of #134,
-        // which the armed channel opens as after an abort
+        // data of the transfer that carries the stop. In the data pending at the stop it is processed before the codes are invalidated and pops the
+        // macro it was sent for (#170). In the data of the transfer of the stop a tagged one is stale; an untagged one (V7, RecordApply) is dropped by
+        // the window of #134, which the armed channel opens as after an abort
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware => firmware.Model = model);
         host.WriteMacro("short.g", "G4 P1\n");
         await host.ExecuteAsync("G4 P0");
         Hold(host);
         Task<string> m98 = host.StartCode("M98 P\"short.g\"");
-        for (int i = 0; i < 200 && !host.Firmware.IsMacroFileClosedPending(CodeChannel.HTTP); i++)
+
+        // RRF's main task has closed the macro once its stack is back at the base level; the SBC task writes the closal with the next transfer
+        bool started = false;
+        for (int i = 0; i < 200 && !((started |= host.Firmware.GetStackDepth(CodeChannel.HTTP) > 0) && host.Firmware.GetStackDepth(CodeChannel.HTTP) == 0); i++)
         {
             Step(host);
         }
-        Assert.That(host.Firmware.IsMacroFileClosedPending(CodeChannel.HTTP), Is.True, "RRF did not close the macro");
+        Assert.That(started && host.Firmware.GetStackDepth(CodeChannel.HTTP) == 0, Is.True, "RRF did not close the macro");
+        Assert.That(host.Firmware.GetPendingPackets().Concat(host.Firmware.GetSentPackets()).Any(packet => packet.Request == FirmwareRequest.MacroFileClosed), Is.False,
+            "RRF wrote the closal already");
         if (!closalInTheTransferOfTheStop)
         {
             // RRF writes the closal with the next transfer, which reaches DSF before LinkService takes the stop

@@ -321,12 +321,9 @@ public sealed class LinkService(
             TaskCompletionSource? writtenHaltRequest = null;
             using (linkInterface.FirmwareActionLock.Lock(stoppingToken))
             {
-                // Check if an emergency stop has been requested
+                // Check if an emergency stop has been requested. It is written first and transferred as soon as the data RRF sent before it has been processed
                 if (linkInterface.FirmwareHaltRequest is not null)
                 {
-                    // The stop ends the work of every channel as an abort of all files does: RRF's packets of the current epoch are stale from here on,
-                    // and each channel writes InvalidateChannel(e+1) in a later Spin, never before the stop
-                    InvalidateCodes(true);
                     ushort tag = _connection.Tag();
                     if (linkAdapter.WriteEmergencyStop(tag))
                     {
@@ -449,29 +446,50 @@ public sealed class LinkService(
             }
 
             // Process incoming packets
-            for (int i = 0; i < linkAdapter.PacketsToRead; i++)
+            try
             {
-                try
+                for (int i = 0; i < linkAdapter.PacketsToRead; i++)
                 {
-                    PacketHeader? packet = linkAdapter.ReadNextPacket();
-                    if (packet is null)
+                    try
                     {
-                        logger.LogError("Read invalid packet");
-                        break;
+                        PacketHeader? packet = linkAdapter.ReadNextPacket();
+                        if (packet is null)
+                        {
+                            logger.LogError("Read invalid packet");
+                            break;
+                        }
+                        ProcessPacket(packet.Value);
                     }
-                    ProcessPacket(packet.Value);
+                    catch (ArgumentOutOfRangeException)
+                    {
+                        linkAdapter.DumpMalformedPacket();
+                        throw;
+                    }
                 }
-                catch (ArgumentOutOfRangeException)
-                {
-                    linkAdapter.DumpMalformedPacket();
-                    throw;
-                }
+            }
+            catch when (writtenHaltRequest is not null)
+            {
+                // The emergency stop must reach RRF even if the data RRF sent before it cannot be processed
+                linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken);
+                throw;
             }
             linkInterface.BytesReserved = 0;
 
             // RRF has carried out the emergency stop that went out with the last transfer, and the data it sent before has been processed
             transferredHaltRequest?.SetResult();
             transferredHaltRequest = null;
+
+            // Transfer an emergency stop at once, like a reset. The codes are invalidated only now, because the data RRF sent before the stop
+            // belongs to them, e.g. the closal of a macro file that DSF still has on the stack. The stop ends the work of every channel as an abort of
+            // all files does: RRF's packets of the current epoch are stale from here on, also those that come with the transfer of the stop, and each
+            // channel writes InvalidateChannel(e+1) in a later Spin, never before the stop
+            if (writtenHaltRequest is not null)
+            {
+                InvalidateCodes(true);
+                linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken);
+                transferredHaltRequest = writtenHaltRequest;
+                continue;
+            }
 
             // Process pending codes, macro files and requests for resource locks/unlocks as well as flush requests
             if (!skipChannels)
@@ -642,7 +660,6 @@ public sealed class LinkService(
             // Do another full SPI transfer. It ends with this service, like the loop around it, else a transfer that does not complete keeps the
             // service from stopping until the shutdown timeout
             linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken);
-            transferredHaltRequest = writtenHaltRequest;
         }
         while (!stoppingToken.IsCancellationRequested);
     }
