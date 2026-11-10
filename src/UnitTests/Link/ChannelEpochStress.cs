@@ -52,6 +52,14 @@ namespace UnitTests.Link;
 /// <item>Epoch pair: 0, 0, 0, 0, 0, 0, 0, 0; 1252 dropped by their tag</item>
 /// <item>Epoch pair without the catch code of E3 (DSF's windows, RRF #46): 0, 0, 0, 0, 0, 0, 0, 0; 1867 dropped by their tag</item>
 /// </list>
+/// Measured again on 2026-11-10 after the four decisions of that day (marker on DSF's first packet, RRF's hold until that packet, the standalone behaviour
+/// of a code that survives an abort, stale replies shown as messages), same seed and aborts:
+/// <list type="bullet">
+/// <item>DSF with the epoch and RRF 0dccb9efe (V7): 522, 305, 502, 258, 120, 36, 43, 0; 1327 untagged macro requests of RRF</item>
+/// <item>DSF with the epoch and the RRF of E1 (RecordApply): 403, 0, 474, 344, 0, 39, 0, 0; 1256 untagged macro requests</item>
+/// <item>Epoch pair: 0, 0, 0, 0, 0, 0, 0, 0; 1235 dropped by their tag, 0 stale replies shown (RRF #46 suppresses them), 0 untagged macro requests</item>
+/// <item>Epoch pair without the catch code of E3: 0, 0, 0, 0, 0, 0, 0, 0; 1838 dropped by their tag, 364 stale replies shown, 0 untagged macro requests</item>
+/// </list>
 /// </para>
 /// </summary>
 [TestFixture]
