@@ -207,6 +207,95 @@ public class ChannelEpochWithDsf
         }
     }
 
+    private static string[] ExecutedTexts(FakeFirmwareHost host, CodeChannel channel) => [.. host.Firmware.GetExecutedCodes(channel).Select(code => code.Text)];
+
+    private static int OutOfOrderReplies(FakeFirmwareHost host, CodeChannel channel)
+    {
+        using (Dsf(host, channel).Lock())
+        {
+            return Dsf(host, channel).OutOfOrderReplies;
+        }
+    }
+
+    [TestCase(true)]
+    [TestCase(false)]
+    public async Task ToolChangeThatSurvivesAnAbortRunsItsOtherMacros(bool codeReplySurplus)
+    {
+        // Decision of 2026-11-10 on LA-25 (C): a T-code at the base level survives an abort inside tfree, as in standalone RRF, and RRF asks for tpre and
+        // tpost as system macros with the new epoch. DSF runs them in order. G4 P1, which ran in tfree at the abort, goes on in RRF and ends on the
+        // level of tpre. A code sent after the abort runs after the T-code has ended and gets its own reply: RRF holds it in its ring while the state
+        // machine runs and drops it with the next macro request, DSF suspends it under the system macro and sends it again (v7). No reply completes
+        // another code. With RRF #46 (codeReplySurplus) the late reply of G4 P1 is suppressed in RRF, without it DSF drops it by its epoch
+        bool release = false;
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
+        {
+            firmware.CodeReplySurplus = codeReplySurplus;
+            firmware.OnCode("T1", _ => FakeReply.ToolChange("tfree0.g", "tpre1.g", "tpost1.g"));
+            firmware.OnCode("G4", code => (code.Text == "G4 P1" && !release) ? FakeReply.NotFinished : FakeReply.Ok($"reply of {code.Text}"));
+        });
+        host.WriteMacro("tfree0.g", "G4 P1\nG4 P2\n");
+        host.WriteMacro("tpre1.g", "G4 P3\n");
+        host.WriteMacro("tpost1.g", "G4 P4\n");
+        Task<string> t1 = host.StartCode("T1");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P1", Timeout), Is.True, "tfree0.g did not run");
+        await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
+        Task<string> next = host.StartCode("G4 P5");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetSentPackets().Count(packet => packet.Request == FirmwareRequest.ExecuteMacro) == 2, Timeout), Is.True,
+            "T1 did not go on with tpre1.g");
+        release = true;
+
+        Assert.That(await next.WaitAsync(Timeout), Is.EqualTo("reply of G4 P5\n"));
+        Assert.That(ExecutedTexts(host, CodeChannel.HTTP), Is.EqualTo(new[] { "T1", "G4 P1", "G4 P3", "G4 P4", "G4 P5" }));
+        FakePacket[] requests = [.. host.Firmware.GetSentPackets().Where(packet => packet.Request == FirmwareRequest.ExecuteMacro && packet.Channel == CodeChannel.HTTP)];
+        Assert.That(requests.Select(packet => (packet.Text, packet.IsFromCode, packet.Epoch)),
+            Is.EqualTo(new[] { ("tfree0.g", true, 0), ("tpre1.g", false, 1), ("tpost1.g", false, 1) }));
+        Assert.That(host.Firmware.GetSentPackets().Any(packet => packet.IsCodeReply && packet.Text.Length == 0 && packet.RelatedCode?.Text == "T1" && packet.Epoch == 0), Is.True,
+            "T1 did not end in RRF with a reply of its own epoch");
+
+        // T1 ended in DSF with the abort, not with a reply of another code
+        string? t1Reply = null;
+        try
+        {
+            t1Reply = await t1.WaitAsync(Timeout);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled by the abort
+        }
+        Assert.That(t1Reply ?? string.Empty, Does.Not.Contain("reply of"));
+        Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.Zero);
+        Assert.That(host.Firmware.MovementLockOwner, Is.Null);
+    }
+
+    [Test]
+    public async Task HomingCodeThatSurvivesAnAbortEndsWithAnError()
+    {
+        // Decision of 2026-11-10 on LA-25 (C1): the routine of the abort clears toBeHomed as AbortPrint does, so a G28 whose homing file the abort popped
+        // ends with "Failed to home axes", a reply of the old epoch. The next code gets its own reply
+        bool release = false;
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
+        {
+            firmware.CodeReplySurplus = false;
+            firmware.OnCode("G28", _ => FakeReply.Home('X', 'Y'));
+            firmware.OnCode("G4", code => (code.Text == "G4 P1" && !release) ? FakeReply.NotFinished : FakeReply.Ok());
+        });
+        host.WriteMacro("homex.g", "G1 H1 X-300\nG4 P1\n");
+        host.WriteMacro("homey.g", "G1 H1 Y-300\n");
+        Task<string> g28 = host.StartCode("G28");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P1", Timeout), Is.True, "homex.g did not run");
+        await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
+        await IgnoreCancellation(g28);
+        Task<string> next = host.StartCode("M115");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetReceivedCodes(CodeChannel.HTTP).Any(code => code.Text == "M115"), Timeout), Is.True);
+        release = true;
+
+        Assert.That(await next.WaitAsync(Timeout), Does.Not.Contain("home"));
+        FakePacket error = host.Firmware.GetSentPackets().Single(packet => packet.IsCodeReply && packet.Text.StartsWith("Failed to home axes"));
+        Assert.That(error.Epoch, Is.Zero);
+        Assert.That(host.Firmware.GetSentPackets().Count(packet => packet.Request == FirmwareRequest.ExecuteMacro), Is.EqualTo(1), "G28 asked for homey.g");
+        Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.Zero);
+    }
+
     [Test]
     public async Task TaggedAbortOfAllFilesIsAnsweredWithInvalidateChannel()
     {

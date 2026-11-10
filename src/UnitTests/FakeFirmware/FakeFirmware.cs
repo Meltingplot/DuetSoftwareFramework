@@ -610,8 +610,8 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <summary>
-    /// Whether a channel has nothing to do: no file on its stack, no macro request, no code being executed, no message box and no file abort
-    /// that DSF has yet to be told about. For the trigger channel this means that the next pending trigger macro can be requested
+    /// Whether a channel has nothing to do: no file on its stack, no macro request, no code being executed, no state machine step, no message box and
+    /// no file abort that DSF has yet to be told about. For the trigger channel this means that the next pending trigger macro can be requested
     /// (GCodes::IsTriggerBusy, GCodes.cpp:423-433)
     /// </summary>
     /// <param name="channel">Code channel</param>
@@ -623,7 +623,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
             FakeGCodeBuffer gb = _gcodes[channel];
             return !gb.IsDoingFile && !gb.IsWaitingForMacro && gb.PendingMacroCall is null && gb.CurrentCode is null &&
                 !gb.MachineState.WaitingForAcknowledgement && !gb.IsAbortRequested && gb.MachineState.Previous is null && gb.SbcCode is null &&
-                !gb.IsAbortRecorded && !_gcodes.HasQueuedSbcCode(channel);
+                !gb.IsAbortRecorded && !_gcodes.HasQueuedSbcCode(channel) && gb.MachineState.State == FakeMachineState.MachineStateKind.Normal;
         }
     }
 
@@ -637,6 +637,34 @@ public sealed partial class FakeFirmware : ILinkAdapter
         lock (_lock)
         {
             return _gcodes[channel].CurrentCode;
+        }
+    }
+
+    /// <summary>
+    /// Whether a tool change is in progress (GCodes::doingToolChange), see <see cref="FakeReply.ToolChange"/>
+    /// </summary>
+    public bool IsDoingToolChange
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _gcodes.DoingToolChange;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Axes that are homed (GCodes::axesHomed), see <see cref="FakeReply.Home"/>
+    /// </summary>
+    public IReadOnlyCollection<char> AxesHomed
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return [.. _gcodes.AxesHomed];
+            }
         }
     }
 
@@ -1162,22 +1190,12 @@ public sealed partial class FakeFirmware : ILinkAdapter
                 gb.MacroFileClosedSent();
             }
 
-            // Handle blocking macro requests. One of a code of an older epoch is not written but ends the wait with an error at once, e.g. a G28 that
-            // survived the abort and asks for its next homing file (CE-12 (b))
+            // Handle blocking macro requests
             if (gb.IsWaitingForMacro && gb.IsMacroRequestPending)
             {
-                if (Model == FakeRrfModel.Epoch && gb.IsMacroStartedByCode && gb.IsEpochKnown && gb.CodeEpoch is byte codeEpoch && codeEpoch != gb.Epoch)
-                {
-                    gb.MacroRequestSent();
-                    gb.ResolveMacroRequest(true, false);
-                }
-                else
-                {
-                    WritePacket(new FakePacket { Request = FirmwareRequest.ExecuteMacro, Channel = gb.Channel, Text = gb.RequestedMacroFile!, IsFromCode = gb.IsMacroStartedByCode,
-                        Tag = gb.IsMacroStartedByCode ? CodeTag(gb) : ChannelTag(gb) });
-                    gb.MacroRequestSent();
-                    gb.IsInvalidated = true;
-                }
+                WriteMacroRequest(gb);
+                gb.MacroRequestSent();
+                gb.IsInvalidated = true;
             }
 
             // Deal with other requests unless we are still waiting in a semaphore
@@ -1227,8 +1245,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                 // Handle non-blocking macro requests (e.g. daemon.g)
                 if (gb.IsMacroRequestPending)
                 {
-                    WritePacket(new FakePacket { Request = FirmwareRequest.ExecuteMacro, Channel = gb.Channel, Text = gb.RequestedMacroFile!, IsFromCode = gb.IsMacroStartedByCode,
-                        Tag = gb.IsMacroStartedByCode ? CodeTag(gb) : ChannelTag(gb) });
+                    WriteMacroRequest(gb);
                     gb.MacroRequestSent();
                     gb.IsInvalidated = true;
                 }
@@ -1338,11 +1355,40 @@ public sealed partial class FakeFirmware : ILinkAdapter
     private ushort ChannelTag(FakeGCodeBuffer gb) => (Model == FakeRrfModel.Epoch && gb.IsEpochKnown) ? FakeTag.Of(gb.Epoch) : (ushort)0;
 
     /// <summary>
-    /// Tag source (1) of CE-9: the epoch of the code that the packet belongs to (codeEpoch), none if it is invalid or the channel epoch unknown
+    /// Tag source (1) of CE-9: the epoch of the code that the packet belongs to, the stamp of the latest frame, none if it is invalid or the channel
+    /// epoch unknown
     /// </summary>
     /// <param name="gb">G-code buffer</param>
     /// <returns>Tag</returns>
-    private ushort CodeTag(FakeGCodeBuffer gb) => (Model == FakeRrfModel.Epoch && gb.IsEpochKnown && gb.CodeEpoch is byte epoch) ? FakeTag.Of(epoch) : (ushort)0;
+    private ushort CodeTag(FakeGCodeBuffer gb) => (Model == FakeRrfModel.Epoch && gb.IsEpochKnown && gb.MachineState.CodeEpoch is byte epoch) ? FakeTag.Of(epoch) : (ushort)0;
+
+    /// <summary>
+    /// Write the pending macro request of a buffer (ExecuteMacro). The request of a code carries the stamp of that code (CE-9 source (1)). While the
+    /// channel epoch is known, one of a code whose stamp is not that epoch (another epoch, or an invalid stamp) is written as a request without a code
+    /// (fromCode false) with the channel epoch, so that DSF starts it as a system macro: such a code survived an abort or the end of a connection at the
+    /// base level and goes on as in standalone RRF (decision of 2026-11-10, replaces CE-12 (b)). While the channel epoch is unknown the request is
+    /// written as in v7, with fromCode as it is and untagged
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    private void WriteMacroRequest(FakeGCodeBuffer gb)
+    {
+        bool fromCode = gb.IsMacroStartedByCode;
+        ushort tag;
+        if (!fromCode)
+        {
+            tag = ChannelTag(gb);
+        }
+        else if (Model == FakeRrfModel.Epoch && gb.IsEpochKnown && gb.MachineState.CodeEpoch != gb.Epoch)
+        {
+            fromCode = false;
+            tag = ChannelTag(gb);
+        }
+        else
+        {
+            tag = CodeTag(gb);
+        }
+        WritePacket(new FakePacket { Request = FirmwareRequest.ExecuteMacro, Channel = gb.Channel, Text = gb.RequestedMacroFile!, IsFromCode = fromCode, Tag = tag });
+    }
 
     /// <summary>
     /// Record an abort of a channel on the SBC task (design/sbc-link-v8-requirements.md CE-7, "Record"). It takes no buffer mutex, so it is never

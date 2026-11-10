@@ -138,19 +138,17 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     public bool IsGated { get; set; }
 
     /// <summary>
-    /// Epoch of the code from DSF that the buffer runs or ran last (codeEpoch, CE-9), null if invalid. FillBuffer carries it over from the stamp of the
-    /// code in the ring. Its replies and its macro requests carry it
-    /// </summary>
-    public byte? CodeEpoch { get; set; }
-
-    /// <summary>
-    /// Forget the epoch of the channel, as after boot, InvalidateResources and the first marker (CE-4)
+    /// Forget the epoch of the channel, as after boot, InvalidateResources and the first marker (CE-4). The stamp of every frame becomes invalid
+    /// (<see cref="FakeMachineState.CodeEpoch"/>), so that a code that survived the end of the connection is of no epoch of the next one
     /// </summary>
     public void ForgetEpoch()
     {
         IsEpochKnown = IsGated = false;
         Epoch = 0;
-        CodeEpoch = null;
+        for (FakeMachineState? ms = MachineState; ms is not null; ms = ms.Previous)
+        {
+            ms.CodeEpoch = null;
+        }
     }
 
     /// <summary>
@@ -283,8 +281,9 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
         {
             if (MachineState.LastCodeFromSbc)
             {
-                // The epoch of the code goes into the free bits 18-23 and 26, which WriteCodeReply moves into the header (CE-11)
-                uint epochBits = (CodeEpoch is byte epoch) ? ((uint)epoch << FakeTag.TypeEpochShift) | FakeTag.TypeEpochValid : 0;
+                // The epoch of the code goes into the free bits 18-23 and 26, which WriteCodeReply moves into the header (CE-11). It is the stamp of the
+                // latest frame
+                uint epochBits = (MachineState.CodeEpoch is byte epoch) ? ((uint)epoch << FakeTag.TypeEpochShift) | FakeTag.TypeEpochValid : 0;
                 return (MessageTypeFlags)((1u << (int)Channel) | epochBits) | MessageTypeFlags.BinaryCodeReplyFlag;
             }
             return Channel switch
@@ -327,7 +326,7 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
         MachineState.LastCodeFromSbc = true;
         HasJustStartedMacro = false;
         IsCodeReplySurplus = false;     // the dropped code has finished, or this code belongs to a macro that the dropped code has started since
-        CodeEpoch = code.Stamp;         // FillBuffer carries the stamp of the ring over (CE-9)
+        MachineState.CodeEpoch = code.Stamp;    // FillBuffer carries the stamp of the ring over to the latest frame (CE-9)
         CurrentCode = code;
         IsExecuting = false;
     }

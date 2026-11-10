@@ -270,10 +270,11 @@ public class FakeFirmwareEpoch
     }
 
     [Test]
-    public void MacroRequestOfACodeOfAnOlderEpochFailsAtOnce()
+    public void MacroRequestOfACodeOfAnOlderEpochIsASystemMacroRequest()
     {
-        // CE-12 (b), AC-15: a G28 that survived the abort asks for its next homing file. The request is not written, the wait ends at once with an
-        // error instead of after SbcMaxRequestTime, and the reply of the code carries its old epoch (OF-T10)
+        // Decision of 2026-11-10, replaces CE-12 (b): a code that survived the abort at the base level asks for a macro. The request goes out as one
+        // without a code (fromCode false) with the channel epoch, so that DSF starts it as a system macro; the final reply of the code carries its own
+        // old epoch
         _firmware.CodeReplySurplus = false;
         bool release = false;
         _firmware.OnCode("G28", _ => release ? FakeReply.CallMacro("homey.g") : FakeReply.NotFinished);
@@ -283,11 +284,141 @@ public class FakeFirmwareEpoch
         Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, T(2)), Is.True);
         Transfer();
         release = true;
-        TransferUntil(() => _delivered.Any(packet => packet.IsCodeReply && packet.Text.Contains("homey.g")), "G28 did not end");
+        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 1, "G28 did not request its macro");
+        FakePacket request = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[0];
+        Assert.That(request.IsFromCode, Is.False, "The request of the old code was written as one of a code");
+        Assert.That(request.Tag, Is.EqualTo(T(2)));
+
+        // DSF finds the macro empty; the code ends with its own epoch
+        Assert.That(_firmware.WriteMacroCompleted(CodeChannel.HTTP, false, T(2)), Is.True);
+        TransferUntil(() => _delivered.Any(packet => packet.IsCodeReply), "G28 did not end");
         Assert.That(_firmware.IsIdle(CodeChannel.HTTP), Is.True);
-        Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.HTTP), Is.Empty, "The macro request of the old code was written");
-        FakePacket reply = _delivered.Single(packet => packet.IsCodeReply && packet.Text.Contains("homey.g"));
+        Transfer();
+        FakePacket[] replies = [.. _delivered.Where(packet => packet.IsCodeReply)];
+        Assert.That(replies, Has.Length.EqualTo(1));
+        Assert.That(replies[0].Tag, Is.EqualTo(T(1)));
+    }
+
+    [Test]
+    public void ToolChangeGoesOnAfterAnAbortWithSystemMacros()
+    {
+        // Decision of 2026-11-10 on LA-25 (C1-C3): the routine of the abort cleans up the state machine as AbortPrint does (doingToolChange false) but
+        // leaves the state of the base level, so a T-code whose tfree the abort popped goes on as in standalone RRF and asks for tpre and tpost. Both
+        // go out as system macro requests with the new epoch. The codes of tpre carry the new epoch and do not overwrite the stamp of the T-code on
+        // the level below, so the tpost request after tpre is still a system macro request and the final reply of the T-code carries its old epoch
+        _firmware.CodeReplySurplus = false;
+        _firmware.OnCode("T1", _ => FakeReply.ToolChange("tfree0.g", "tpre1.g", "tpost1.g"));
+        _firmware.OnCode("G4", code => FakeReply.Ok($"reply of {code.Text}"));
+        KnowEpoch(CodeChannel.HTTP, 1);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "T1"), T(1)), Is.True);
+        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 1, "T1 did not request tfree0.g");
+        FakePacket tfree = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[0];
+        Assert.That((tfree.Text, tfree.IsFromCode, tfree.Tag), Is.EqualTo(("tfree0.g", true, T(1))));
+        Assert.That(_firmware.WriteMacroStarted(CodeChannel.HTTP, T(1)), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P1"), T(1)), Is.True);
+        TransferUntil(() => Replies("reply of G4 P1").Length == 1, "tfree0.g did not run");
+        Assert.That(_firmware.IsDoingToolChange, Is.True);
+
+        // Abort inside tfree0.g
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, T(2)), Is.True);
+        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 2, "T1 did not go on with tpre1.g");
+        Assert.That(_firmware.IsDoingToolChange, Is.False, "The routine did not clean up the state machine (AbortStateMachine)");
+        FakePacket tpre = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[1];
+        Assert.That((tpre.Text, tpre.IsFromCode, tpre.Tag), Is.EqualTo(("tpre1.g", false, T(2))));
+
+        // tpre1.g runs a code of the new epoch
+        Assert.That(_firmware.WriteMacroStarted(CodeChannel.HTTP, T(2)), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P2"), T(2)), Is.True);
+        TransferUntil(() => Replies("reply of G4 P2").Length == 1, "tpre1.g did not run");
+        Assert.That(Replies("reply of G4 P2")[0].Tag, Is.EqualTo(T(2)));
+        Assert.That(_firmware.WriteMacroCompleted(CodeChannel.HTTP, false, T(2)), Is.True);
+        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 3, "T1 did not go on with tpost1.g");
+        FakePacket tpost = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[2];
+        Assert.That((tpost.Text, tpost.IsFromCode, tpost.Tag), Is.EqualTo(("tpost1.g", false, T(2))), "The codes of tpre1.g overwrote the stamp of T1");
+
+        // tpost1.g is empty, then T1 ends with a reply of its own epoch and releases the movement lock
+        int replies = _delivered.Count(packet => packet.IsCodeReply);
+        Assert.That(_firmware.WriteMacroCompleted(CodeChannel.HTTP, false, T(2)), Is.True);
+        TransferUntil(() => _delivered.Count(packet => packet.IsCodeReply) > replies, "T1 did not end");
+        Assert.That(_firmware.IsIdle(CodeChannel.HTTP), Is.True);
+        FakePacket final = _delivered.Last(packet => packet.IsCodeReply);
+        Assert.That((final.Text, final.Tag), Is.EqualTo((string.Empty, T(1))));
+        Assert.That(_firmware.MovementLockOwner, Is.Null);
+    }
+
+    [Test]
+    public void HomingCodeEndsWithAnErrorAfterAnAbort()
+    {
+        // Decision of 2026-11-10 on LA-25 (C1): AbortStateMachine clears toBeHomed, the G28 at the base level goes on in homing2 and ends with "Failed
+        // to home axes", as G28 does after AbortPrint in standalone RRF. The reply carries the old epoch, DSF shows it as a message. The homing file
+        // ran a code before the abort; without one the reply would be a push message, because AbortFile leaves macroJustStarted set
+        _firmware.CodeReplySurplus = false;
+        _firmware.OnCode("G28", _ => FakeReply.Home('X', 'Y'));
+        KnowEpoch(CodeChannel.HTTP, 1);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G28"), T(1)), Is.True);
+        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 1, "G28 did not request homex.g");
+        FakePacket homex = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[0];
+        Assert.That((homex.Text, homex.IsFromCode, homex.Tag), Is.EqualTo(("homex.g", true, T(1))));
+        Assert.That(_firmware.WriteMacroStarted(CodeChannel.HTTP, T(1)), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G91"), T(1)), Is.True);
+        Transfers(2);
+
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, T(2)), Is.True);
+        TransferUntil(() => _delivered.Any(packet => packet.IsCodeReply && packet.Text.StartsWith("Failed to home axes")), "G28 did not end with an error");
+        Assert.That(_firmware.IsIdle(CodeChannel.HTTP), Is.True);
+        FakePacket reply = _delivered.Single(packet => packet.IsCodeReply && packet.Text.StartsWith("Failed to home axes"));
         Assert.That(reply.Tag, Is.EqualTo(T(1)));
+        Assert.That(reply.MessageType.HasFlag(MessageTypeFlags.ErrorMessageFlag) && !reply.MessageType.HasFlag(MessageTypeFlags.PushFlag), Is.True);
+        Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.HTTP), Has.Length.EqualTo(1), "G28 asked for another homing file");
+        Assert.That(_firmware.MovementLockOwner, Is.Null);
+    }
+
+    [Test]
+    public void HomingCodeHomesItsAxesWithoutAnAbort()
+    {
+        // The model of G28 without an abort: home<axis>.g of each axis in turn, the G1 H1 in it homes the axis, the code ends with an empty reply
+        _firmware.OnCode("G28", _ => FakeReply.Home('X', 'Y'));
+        KnowEpoch(CodeChannel.HTTP, 1);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G28"), T(1)), Is.True);
+        foreach ((string file, string move, int count) in new[] { ("homex.g", "G1 H1 X-300", 1), ("homey.g", "G1 H1 Y-300", 2) })
+        {
+            TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == count, $"G28 did not request {file}");
+            Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[count - 1].Text, Is.EqualTo(file));
+            Assert.That(_firmware.WriteMacroStarted(CodeChannel.HTTP, T(1)), Is.True);
+            Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, move), T(1)), Is.True);
+            Transfers(2);
+            Assert.That(_firmware.WriteMacroCompleted(CodeChannel.HTTP, false, T(1)), Is.True);
+        }
+        TransferUntil(() => _firmware.IsIdle(CodeChannel.HTTP), "G28 did not end");
+        Transfers(2);
+        Assert.That(_delivered.Where(packet => packet.IsCodeReply && packet.Text.Length > 0), Is.Empty, "G28 failed");
+        Assert.That(_delivered.Count(packet => packet.IsCodeReply), Is.EqualTo(3), "G28 did not reply");
+        Assert.That(_firmware.AxesHomed, Is.EquivalentTo(new[] { 'X', 'Y' }));
+    }
+
+    [TestCase(true)]
+    [TestCase(false)]
+    public void SurvivingCodeAfterALostConnection(bool marker)
+    {
+        // Decision of 2026-11-10 (C2): a T-code that survives a lost connection (InvalidateResources, and the emergency stop of RRF) has an invalid stamp.
+        // Its next request waits for DSF's first packet of the next connection. With the marker the epoch is 0 and known, and the request goes out as a
+        // system macro request with epoch 0. Without it (a stock DSF) the epoch stays unknown and the request goes out as in v7
+        _firmware.OnCode("T1", _ => FakeReply.ToolChange("tfree0.g", "tpre1.g", "tpost1.g"));
+        KnowEpoch(CodeChannel.HTTP, 1);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "T1"), T(1)), Is.True);
+        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 1, "T1 did not request tfree0.g");
+        Assert.That(_firmware.WriteMacroStarted(CodeChannel.HTTP, T(1)), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G91"), T(1)), Is.True);
+        Transfers(2);
+
+        _firmware.SimulateConnectionLoss();
+        Transfers(3);
+        Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.HTTP), Has.Length.EqualTo(1), "tpre1.g was requested before DSF's first packet");
+
+        Assert.That(_firmware.WriteGetObjectModel("state", "v", marker ? FakeTag.FirstMarker : (ushort)0), Is.True);
+        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 2, "T1 did not go on with tpre1.g");
+        FakePacket tpre = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[1];
+        Assert.That((tpre.Text, tpre.IsFromCode, tpre.Tag), Is.EqualTo(marker ? ("tpre1.g", false, T(0)) : ("tpre1.g", true, (ushort)0)));
     }
 
     [Test]
