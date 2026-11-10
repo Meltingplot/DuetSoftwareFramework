@@ -281,6 +281,31 @@ Hinweise:
 - **A-4:** `M98.n` steht nicht im Wiki. Das Soll stammt nur aus dem Code und #108.
 - **A-5, Makrozeilen:** Ausgaben eines Makros erreichen die `M98`-Antwort nicht (`LabTest.cs:103`). Der Test wertet daher Globals und Journal aus.
 
+### Kanal-Epoche (Meilensteine E1 und E2), geplant
+
+Stand 2026-11-10: noch nicht gelaufen. Die Änderung liegt auf den Branches `feature/sbc-channel-epoch` in DSF und in RRF und ist auf keinem Drucker. Alle Sollwerte sind **neu**: Sie stammen aus dem Code und aus der Fake-Firmware der Unit-Tests ([sbc-link-v8-requirements.md](sbc-link-v8-requirements.md), Abschnitt 10.8). Der RRF-Teil lief bisher nirgends, er ist nur gebaut und gelesen. Jeder Lauf braucht einen Firmware-Side-Load mit eigener Versionsangabe und Tims Freigabe.
+
+E1 wird mit dem heutigen DSF geprüft (RRF neu), E2 mit beiden Seiten neu.
+
+| ID | Meilenstein | Stufe | Ablauf | Soll |
+|---|---|---|---|---|
+| EP-1 | E1 | 3 | `AbortsCrossingMacroRequests` mit 2000 Abbrüchen | Keine Neusendung von InvalidateChannel, kein blockierter Kanal. `M122`: "longest abort apply" und "Slowest loop" notieren (offene Frage Q38, Sollgrenze unter 3 s) |
+| EP-2 | E1 | 3 | Abbruch, während RRF auf ein Makro wartet: einmal aus einem Trigger, einmal während der Haupt-Task auf das Makro eines anderen Kanals wartet | Kein `Timeout while waiting for macro file` nach 3 s |
+| EP-3 | E1 | 4 | Druck läuft auf File. Auf HTTP eine `M291 S2`-Box offen lassen, dann HTTP abbrechen | Der Druck läuft weiter, `M291` antwortet abschließend, kein MessageAcknowledged |
+| EP-4 | E1 | 4 | Abbruch eines ruhenden Kanals, der die Bewegungssperre hält; danach Bewegung auf einem anderen Kanal. Zweiter Fall: Abbruch während `G28` zwischen zwei Homing-Dateien | Fall 1: der andere Kanal kann sofort fahren. Fall 2: `G28` behält Sperre und Homing-Liste, kein anderer Kanal fährt dazwischen |
+| EP-5 | E1 | 2 | Verbindung trennen (DCS beenden), je einmal mit einem offenen Zustand: geschlossenes Makro noch nicht gemeldet, offene Box, offene Quittung, DoCode noch nicht gesendet, Pause noch nicht gemeldet. Auf SPI und auf USB | Nach dem Neuverbinden kein `Stack underrun` und kein Ereignis der alten Verbindung (Befund K5) |
+| EP-6 | E1 | 4 | `M25` kreuzt einen Jobabbruch | Kein PrintPaused nach dem Abbruch, neue Jobcodes werden angenommen, der Pausenzustand ist abgeschlossen |
+| EP-7 | E1 | 3 | DoCode vom PanelDue kreuzt einen Abbruch von Aux; `daemon.g` kreuzt einen Abbruch von Daemon | Beide Kanäle arbeiten danach weiter (T11) |
+| EP-8 | E2 | 3 | `AbortsCrossingMacroRequests` mit 2000 Abbrüchen, beide Seiten mit Epoche | 0 Out-of-order replies, 0 Neusendungen, 0 blockierte Kanäle. Verworfene Pakete erscheinen nur in den Zählern beider Seiten |
+| EP-9 | E2 | 2 | RRF-Neustart, den DSF nicht bemerkt (`M122 P1001`), und DCS-Neustart, den RRF nicht bemerkt. Auf SPI und auf USB | `config.g` läuft, kein toter Kanal, danach auf jedem benutzten Kanal dieselbe Epoche auf beiden Seiten |
+| EP-10 | E2 | 3 | Ein Abbruch aller Dateien durch RRF selbst kreuzt einen Abbruch durch DSF | Kein Kanal bleibt gesperrt, der Zähler der Sperre ist plausibel |
+| EP-11 | E2 | 2 | SPI-Bytes mitschneiden | `config.g` wird nach dem Boot ohne Tag angefordert. Code-Antworten und lange `M122`-Teile tragen das Tag, im Nachrichtentyp sind die Bits 18 bis 23 und 26 null. PanelDue, USB und Telnet zeigen dieselben Texte wie vorher |
+| EP-12 | E2 | 3 | Heutiges DSF gegen das E2-RRF, Regressionsblock 1 | Verhalten wie v7, bis auf die Punkte von E1 |
+| EP-13 | E2 | 3 | `M596`/`M606` mit File2, dann Abbruch von File2 | Tags und PrintPaused wie in CE-12 der Anforderungen beschrieben; der Fork von File2 (`GCodeBuffer::ForkFrom`) ist ungeprüft |
+| EP-14 | E2 | – | MB6XD und Mini5plus | Nur gebaut, kein Lauf möglich (kein Gerät im Labor) |
+
+Bestehensregel für E2 aus den Anforderungen (Abschnitt 7.2): 2000 Abbrüche mit 0 Out-of-order replies, 0 Neusendungen und 0 Blockaden. Vergleichswert vom 2026-11-09 mit dem erweiterten v7-Link (Abschnitt 14): 2 Neusendungen und 249 leere Out-of-order replies.
+
 ### Manuelle Prüfungen (Stufe 4, Tim vor Ort)
 
 | ID | Änderung | Ablauf | Soll |
