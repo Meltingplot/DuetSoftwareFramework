@@ -211,6 +211,79 @@ public class ChannelEpochWithDsf
         }
     }
 
+    /// <summary>
+    /// Let a reply of epoch 0 wait in <see cref="Processor.PendingReplies"/>, as a reply does that arrives while a message box is open (PV 3,
+    /// Processor.HandleReply). The calls are the ones LinkService makes for the packets WaitForAcknowledgement and Message
+    /// </summary>
+    private static void ParkReply(Processor processor, string text)
+    {
+        MessageTypeFlags http = (MessageTypeFlags)(1 << (int)CodeChannel.HTTP) | MessageTypeFlags.BinaryCodeReplyFlag;
+        using (processor.Lock())
+        {
+            processor.WaitForAcknowledgement();
+            Assert.That(processor.HandleReply(http, text, FakeTag.Of(0)), Is.True);
+            Assert.That(processor.PendingReplies, Has.Count.EqualTo(1));
+        }
+    }
+
+    [TestCase(300)]
+    [TestCase(1)]
+    public async Task WaitingReplyOfAnAbortedEpochCompletesNoCodeOfTheNextOne(int codes)
+    {
+        // A reply that waits in PendingReplies when DSF aborts the channel belongs to the old epoch. It keeps its tag, so when it is taken after
+        // InvalidateChannel(e+1) it is stale and shown as a message, whether it is taken for the first buffered code of the new epoch (300 codes: they
+        // do not fit into one Spin, which returns before the queue is emptied) or at the end of a Spin (1 code), where it is no out-of-order reply
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        await host.ExecuteAsync("G4 P1");
+        host.Firmware.HoldTransfers();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, Timeout), Is.True);
+        Processor processor = Dsf(host, CodeChannel.HTTP);
+        ParkReply(processor, "old reply of epoch 0");
+        await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
+
+        List<Task<string>> tasks = [.. Enumerable.Range(0, codes).Select(i => host.StartCode($"G4 P{i} A\"{new string('x', 150)}\""))];
+        for (int i = 0; i < 100; i++)
+        {
+            using (processor.Lock())
+            {
+                if (processor.CurrentState.PendingCodes.Reader.Count >= Math.Min(codes, 30))
+                {
+                    break;
+                }
+            }
+            await Task.Delay(50);
+        }
+        host.Firmware.ReleaseTransfers();
+
+        string[] replies = await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.That(replies, Is.All.EqualTo("\n"), "A code of epoch 1 got another reply");
+        Assert.That(Messages(host), Has.One.EqualTo("old reply of epoch 0"));
+        using (processor.Lock())
+        {
+            Assert.That(processor.PendingReplies, Is.Empty);
+            Assert.That(processor.OutOfOrderReplies, Is.Zero);
+            Assert.That(processor.ShownStaleReplies, Is.EqualTo(1));
+        }
+    }
+
+    [Test]
+    public async Task WaitingReplyEndsWithTheConnection()
+    {
+        // Where a connection ends the epochs start at 0 again (CE-4), so a waiting reply of epoch 0 of the old connection would look current in the new
+        // one. It is discarded with the connection. The transfers are held, so that no Spin takes the reply meanwhile
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        host.Firmware.HoldTransfers();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, Timeout), Is.True);
+        Processor processor = Dsf(host, CodeChannel.HTTP);
+        ParkReply(processor, "reply of the old connection");
+        using (processor.Lock())
+        {
+            processor.ResetEpoch();
+            Assert.That(processor.PendingReplies, Is.Empty);
+        }
+        host.Firmware.ReleaseTransfers();
+    }
+
     [Test]
     public async Task PartsOfAStaleReplyAreJoinedApartFromTheReplyOfTheCurrentCode()
     {

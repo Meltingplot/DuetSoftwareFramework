@@ -262,6 +262,13 @@ public sealed class Processor
         Epoch = 0;
         DiscardPartialReply();
         _stalePartialReply = null;
+
+        // The epochs start at 0 again, so a reply of the old connection that waits here would look current
+        if (PendingReplies.Count > 0)
+        {
+            _logger.LogDebug("Discarding {Count} pending replies of the old connection", PendingReplies.Count);
+            PendingReplies.Clear();
+        }
     }
 
     /// <summary>
@@ -583,9 +590,10 @@ public sealed class Processor
 
     /// <summary>
     /// Queue of code replies for codes that pushed the stack (e.g. macro files or blocking messages).
-    /// Replies must be consumed in arrival order, else multi-chunk replies are reassembled wrongly
+    /// Replies must be consumed in arrival order, else multi-chunk replies are reassembled wrongly.
+    /// Each reply keeps the tag of its packet (CE-11), so that one of work that DSF has ended while it waited is decided by its tag when it is taken
     /// </summary>
-    public Queue<Tuple<MessageTypeFlags, string>> PendingReplies { get; } = new();
+    public Queue<(MessageTypeFlags Flags, string Reply, ushort Tag)> PendingReplies { get; } = new();
 
     /// <summary>
     /// Print diagnostics of this class
@@ -1020,9 +1028,9 @@ public sealed class Processor
     /// </summary>
     private void ResolvePendingReplies()
     {
-        while (BufferedCodes.Count > 0 && PendingReplies.TryDequeue(out Tuple<MessageTypeFlags, string>? reply))
+        while (BufferedCodes.Count > 0 && PendingReplies.TryDequeue(out (MessageTypeFlags Flags, string Reply, ushort Tag) reply))
         {
-            HandleReply(reply.Item1, reply.Item2);
+            HandleReply(reply.Flags, reply.Reply, reply.Tag);
         }
     }
 
@@ -1197,10 +1205,13 @@ public sealed class Processor
             CurrentState.SetBusy(false);
         }
 
-        // Log untracked code replies
-        while (PendingReplies.TryDequeue(out Tuple<MessageTypeFlags, string>? reply))
+        // Log untracked code replies. One of work that DSF has ended since it was queued is no out-of-order reply
+        while (PendingReplies.TryDequeue(out (MessageTypeFlags Flags, string Reply, ushort Tag) reply))
         {
-            _logger.LogWarning("Pending out-of-order reply: '{Reply}'", reply.Item2);
+            if (!HandleStaleReply(reply.Flags, reply.Reply, reply.Tag))
+            {
+                _logger.LogWarning("Pending out-of-order reply: '{Reply}'", reply.Reply);
+            }
         }
     }
 
@@ -1279,12 +1290,8 @@ public sealed class Processor
     /// <returns>Whether the reply could be processed</returns>
     public bool HandleReply(MessageTypeFlags flags, string reply, ushort tag = 0)
     {
-        if (IsStale(tag, Protocol.FirmwareRequests.Request.Message))
+        if (HandleStaleReply(flags, reply, tag))
         {
-            if (!IsAhead(ChannelEpoch.EpochOf(tag)))
-            {
-                ShowStaleReply(flags, reply, tag);
-            }
             return true;
         }
 
@@ -1319,7 +1326,7 @@ public sealed class Processor
                     _waitingForPrintCompletion = false;
                     return true;
                 }
-                PendingReplies.Enqueue(new Tuple<MessageTypeFlags, string>(flags, reply));
+                PendingReplies.Enqueue((flags, reply, tag));
                 return true;
             }
         }
@@ -1334,7 +1341,7 @@ public sealed class Processor
             }
             else if (_linkAdapter.ProtocolVersion >= 3)
             {
-                PendingReplies.Enqueue(new Tuple<MessageTypeFlags, string>(flags, reply));
+                PendingReplies.Enqueue((flags, reply, tag));
                 return true;
             }
         }
@@ -1353,6 +1360,26 @@ public sealed class Processor
             _logger.LogWarning("Out-of-order reply (flags {Flags}): '{Reply}'", flags, reply);
         }
         return false;
+    }
+
+    /// <summary>
+    /// Check if a reply belongs to work that DSF has ended (CE-14) and show it as a message then, unless its epoch is ahead
+    /// </summary>
+    /// <param name="flags">Message flags</param>
+    /// <param name="reply">Reply</param>
+    /// <param name="tag">Tag of the reply</param>
+    /// <returns>Whether the reply is stale and has been dealt with</returns>
+    private bool HandleStaleReply(MessageTypeFlags flags, string reply, ushort tag)
+    {
+        if (!IsStale(tag, Protocol.FirmwareRequests.Request.Message))
+        {
+            return false;
+        }
+        if (!IsAhead(ChannelEpoch.EpochOf(tag)))
+        {
+            ShowStaleReply(flags, reply, tag);
+        }
+        return true;
     }
 
     /// <summary>
@@ -1426,6 +1453,7 @@ public sealed class Processor
     /// Holds the last incomplete code reply
     /// </summary>
     private string? _lastPartialMessage;
+
 
     /// <summary>
     /// Process a firmware code reply
