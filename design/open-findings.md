@@ -447,3 +447,24 @@ These come from reading the code for [sbc-link-v7-contract.md](sbc-link-v7-contr
   - `InvalidateRegular` and `Pop` resolve every request of that queue false, the Unlock included, and never write it (`Processor.cs:1462-1465`, `:211-215`). `InvalidateRegular` runs on every abort of the channel (`:731`, `:823`).
   - DSF queues the Unlock when it disposes the movement lock (`LinkInterface.cs:439-443`); the only user is M505 (`MCodeHandler.cs:957-990`). If the channel is aborted between that dispose and the next Spin, RRF never gets the Unlock. It keeps the lock until `UnlockAll` in `HandleResult` when the GB's next code ends (RRF `GCodes2.cpp:5112-5116`); until then no other GB can take the movement lock (RRF `GCodes.cpp:5540-5555`).
   - Channel epoch (draft 8, CE-25 (a), FD-27): the routine that RRF's main task runs at the abort releases the channel's locks if the GB is idle, which it is after M505, because M505 flushes first (`MCodeHandler.cs:958`). If a code of the GB still runs at the apply, the lock stays until that code ends, as in v7. With a stock RRF the finding stays as described ([logic adaptations](sbc-link-v8-logic-adaptations.md) LA-22).
+
+## Found by the first implementation of the channel epoch (2026-11-10)
+
+From the abort stress test against the fake firmware (`src/UnitTests/Link/ChannelEpochStress.cs` on the branch
+`feature/sbc-channel-epoch`, seed 20261109, 2000 aborts). The fake firmware is a C# model of RRF; nothing here was seen on a
+printer unless it says so.
+
+- **K29. After a refused InvalidateChannel the reply of the code that still runs completes the next code (gap in RRF #46, fork code).** Read in RRF at ddec2d001 and reproduced in the fake firmware: 70 cases per 2000 aborts.
+  - RRF #46 flags the running code as "reply surplus" only for the first copy of InvalidateChannel (`firstCopy = !gb->IsInvalidationPending()`, `SbcInterface.cpp:882`), and only inside the branch that got the GB mutex (`:897-911`).
+  - If the first copy does not get the mutex, it sets `invalidationPending` and is refused (`:914-918`). The resent copy then has `firstCopy == false`, so the code is never flagged, and its reply goes to the next code DSF sends on the channel.
+  - Channel epoch: gone at the source in milestone E1, because RRF no longer refuses InvalidateChannel (CE-7); from E2 the reply also carries the epoch of its code and is dropped (CE-11, CE-14).
+- **K30. The "Macro file not found" warning of a trigger request that an abort ended is prepended to the next code's reply.** Read in RRF at ddec2d001 and reproduced in the fake firmware (67 cases per 2000 aborts). Not checked against the lab protocol whether the remaining T10 case there is this one.
+  - `DoFileMacro` sends the warning as a pushed code reply whenever the last code of the GB came from the SBC and the request is not a helper macro (`isCodeReply`, `GCodes.cpp:3703-3706` at ddec2d001). A trigger request (`AsyncSystemMacroCode`) is not excluded there, although it is not started by a code (`:3699`).
+  - A DSF without the epoch appends the pushed text to the reply of the next code of that channel. Not checked: whether upstream RRF has the same condition.
+  - Channel epoch: the reply carries the epoch of the code and is dropped by DSF (CE-11, CE-14); the request itself is voided by the record (CE-7).
+- **K31. A code that RRF passes on to DSF (DoCode) and that flushes its channel waits forever if DSF has codes buffered on the same channel.** Seen as a hang of the test harness, DSF side read in the code; not seen on hardware.
+  - M929 flushes its channel before it runs (`MCodeHandler.cs:1150`); as a DoCode it runs in DSF's own pipeline (`Processor.cs`, `DoFirmwareCode`).
+  - While the DoCode is open, RRF's GB is "executing on the SBC" and takes no further code (K13), so the buffered codes that the flush waits for never finish.
+  - Needs DSF codes on a channel whose input RRF reads as text (USB, Aux, PanelDue). How likely that is in the field is not known. Not addressed by the channel epoch.
+- **K13, correction.** A channel abort in DSF does not cancel a DoCode: it runs in DSF's own pipeline, outside the channel's stack. K13 therefore needs a cancellation that reaches the `SimpleCode`; which ones do is still not listed.
+- **T11 (a daemon request one transfer after InvalidateChannel) is reproduced** in the fake firmware: the request arrives after the window of #134 has closed, DSF waits for a closal that never comes and holds the Daemon channel (43 blocks per 2000 aborts). Test: `RecordApplyWithDsf.DaemonChannelWorksAfterAnAbortCrossingADaemonRequest`. Gone with E1 (CE-12: RRF writes nothing for the GB between record and apply).
