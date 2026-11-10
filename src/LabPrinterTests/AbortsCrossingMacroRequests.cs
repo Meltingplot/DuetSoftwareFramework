@@ -43,6 +43,12 @@ public partial class AbortsCrossingMacroRequests : LabTest
     /// </summary>
     private const string DiscardMessage = "was requested before RRF got the abort of all files. Discarding request.";
 
+    /// <summary>
+    /// Message of a DSF with the channel epoch for a macro request of RRF that it dropped by its tag, because the request is of the epoch that the
+    /// abort ended (Processor.IsStale, #167). There the tag decides and the fix above is not reached, so this line shows that the window was hit
+    /// </summary>
+    private static readonly string EpochDropMessage = $"{Channel}: Dropped ExecuteMacro of epoch";
+
     [OneTimeSetUp]
     public async Task UploadMacroAsync()
     {
@@ -166,7 +172,8 @@ public partial class AbortsCrossingMacroRequests : LabTest
     private static partial Regex LogLevelRegex();
 
     /// <summary>
-    /// The channel keeps working after every abort. With the fix, the debug log counts the requests it discarded, which shows that the window was hit.
+    /// The channel keeps working after every abort. The debug log counts the crossing requests that DSF discarded, by the fix or, with the channel
+    /// epoch, by their tag, which shows that the window was hit. journald limits the rate of the debug log, so the counts are lower bounds.
     /// The log level of DCS is set to debug for the loop (M111 P-1 S, MCodeHandler.cs:691-712) and set back afterwards
     /// </summary>
     [Test, Explicit("Runs about a minute of aborts; a block costs a DCS restart and M999, and RRF 3.7.0+1.mp.8 can block the channel through T1 with the fix as well")]
@@ -210,9 +217,10 @@ public partial class AbortsCrossingMacroRequests : LabTest
 
         string journal = await Lab.ReadJournalAsync(cursor);
         int discarded = journal.Split('\n').Count(line => line.Contains(DiscardMessage));
+        int droppedByTag = journal.Split('\n').Count(line => line.Contains(EpochDropMessage));
         int notRequested = journal.Split('\n').Count(line => line.Contains("but none was requested"));
         TestContext.Progress.WriteLine($"Script: {output.Trim()}");
-        TestContext.Progress.WriteLine($"DCS discarded {discarded} crossing requests; the journal has {notRequested} lines about a macro RRF did not request");
+        TestContext.Progress.WriteLine($"DCS discarded {discarded} crossing requests by the fix and {droppedByTag} by their channel epoch; the journal has {notRequested} lines about a macro RRF did not request");
 
         using JsonDocument result = JsonDocument.Parse(output.Trim().Split('\n').Last());
         string? error = result.RootElement.TryGetProperty("error", out JsonElement errorElement) ? errorElement.GetString() : null;
@@ -237,10 +245,10 @@ public partial class AbortsCrossingMacroRequests : LabTest
         }
         if (blocked)
         {
-            Assert.Fail($"{Channel} was blocked after an abort ({block}), DCS discarded {discarded} crossing requests before. " +
+            Assert.Fail($"{Channel} was blocked after an abort ({block}), DCS discarded {discarded} crossing requests by the fix and {droppedByTag} by their channel epoch before. " +
                 "Without #134 this is T2. With it, it can be T1 (RRF sends a request it gave up, SbcInterface.cpp:880-883 and 1576-1590), which #134 does not cover");
         }
-        if (discarded == 0)
+        if (discarded == 0 && droppedByTag == 0)
         {
             Assert.Inconclusive($"No abort crossed a macro request in {result.RootElement.GetProperty("iterations")} iterations, or DCS has no fix that reports it");
         }
