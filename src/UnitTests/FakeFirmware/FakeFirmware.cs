@@ -950,8 +950,8 @@ public sealed partial class FakeFirmware : ILinkAdapter
                 // can be refused, because a copy does not carry it (CE-8; SbcInterface.cpp:333-357 at 4d687cec0). Read while a packet of this connection
                 // has been read already, it means that DSF has ended the connection that RRF still runs (owner decision D-B of 2026-11-10): RRF ends it
                 // as a lost one first, with the emergency stop and InvalidateResources, and then handles this packet as the first one of the new
-                // connection. The message "Lost connection to SBC (the SBC has started a new connection)" is not modelled; InvalidateResources would
-                // discard it before it reaches DSF (:1906-1909)
+                // connection. The message "Lost connection to SBC (the SBC has started a new connection)" is not modelled: it is a NetworkInfoMessage
+                // (USB, aux, log), which does not go to the SBC (MessageType.h:62, :72, Platform.cpp:3254-3258)
                 if (_sbcPacketRead)
                 {
                     EndConnection();
