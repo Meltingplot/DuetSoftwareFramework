@@ -13,7 +13,7 @@ internal static class ChannelEpoch
     public const ushort Tagged = 0x8000;
 
     /// <summary>
-    /// Bit 14, from DSF to RRF only: the first tagged packet DSF wrote in a connection. RRF forgets every channel epoch on it (CE-4)
+    /// Bit 14, from DSF to RRF only: the first packet DSF wrote in a connection, whatever its type. RRF sets every channel epoch to 0 on it (CE-4)
     /// </summary>
     public const ushort FirstMarker = 0x4000;
 

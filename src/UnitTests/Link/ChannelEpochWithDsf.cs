@@ -94,24 +94,52 @@ public class ChannelEpochWithDsf
     }
 
     [Test]
-    public async Task FirstTaggedPacketOfAConnectionCarriesTheMarker()
+    public async Task FirstPacketOfAConnectionCarriesTheMarker()
     {
-        // CE-4: only the first tagged packet DSF writes after it started or ended a connection carries the first marker. A restart of RRF that DSF
-        // notices ends the connection, resets the epochs and arms the marker again
+        // CE-4 (decision of 2026-11-10): the first packet DSF writes after it started or ended a connection carries the first marker, whatever its type.
+        // Here, as in production, that is a GetObjectModel (the query of the link capabilities, LinkService.UpdateLinkCapabilities), which has no
+        // channel and carries the marker alone. A restart of RRF that DSF notices ends the connection, resets the epochs and arms the marker again
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
         await host.ExecuteAsync("G4 P1");
         await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
         await host.ExecuteAsync("G4 P2");
+        FakeSbcRequest first = host.Firmware.GetReceivedRequests()[0];
+        Assert.That(first.Request, Is.EqualTo(SbcRequest.GetObjectModel));
+        Assert.That(first.Tag, Is.EqualTo(FakeTag.FirstMarker), "The first packet does not carry the marker alone");
         Assert.That(host.Firmware.GetReceivedRequests().Count(request => (request.Tag & FakeTag.FirstMarker) != 0), Is.EqualTo(1));
+        Assert.That(host.Firmware.GetReceivedRequests().Where(request => ChannelRequests.Contains(request.Request)).Select(request => request.Tag & FakeTag.FirstMarker),
+            Is.All.Zero, "A channel packet carries the marker although it was not the first packet");
         Assert.That(Epoch(host, CodeChannel.HTTP), Is.EqualTo(1));
 
+        // DSF resets the epochs before it writes anything of the new connection, so once the second marker is there they are 0. A code started while
+        // DSF handles the reset may be cancelled, so the code goes after it
         host.Firmware.SimulateReset();
-        Assert.That(host.Firmware.WaitUntil(firmware => !firmware.IsResetPending, Timeout), Is.True, "DSF did not see the reset");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetReceivedRequests().Count(request => (request.Tag & FakeTag.FirstMarker) != 0) == 2, Timeout), Is.True,
+            "DSF wrote no marker after the reset");
         await host.ExecuteAsync("G4 P3", CodeChannel.Telnet);
         Assert.That(Epoch(host, CodeChannel.HTTP), Is.Zero, "The epoch was not reset with the connection");
         FakeSbcRequest[] markers = [.. host.Firmware.GetReceivedRequests().Where(request => (request.Tag & FakeTag.FirstMarker) != 0)];
         Assert.That(markers, Has.Length.EqualTo(2));
-        Assert.That(FakeTag.EpochOf(markers[1].Tag), Is.Zero);
+        Assert.That(markers[1].Id, Is.Zero, "The marker of the second connection is not on the first packet of its transfer");
+        Assert.That(markers[1].Tag, Is.EqualTo(FakeTag.FirstMarker));
+    }
+
+    [Test]
+    public void MarkerGoesOnTheFirstPacketThatIsWritten()
+    {
+        // CE-4: every kind of packet takes the marker while it is pending: one without a channel alone, a channel packet with its epoch, a packet whose
+        // tag was decided before (a DoCode result) with that tag. Only a packet that was written clears it, one that could not be written leaves it
+        EpochConnection connection = new();
+        Assert.That(connection.Tag(), Is.EqualTo(ChannelEpoch.FirstMarker));
+        Assert.That(connection.Tag((byte)3), Is.EqualTo(ChannelEpoch.Tag(3) | ChannelEpoch.FirstMarker));
+        Assert.That(connection.Mark(ChannelEpoch.Tag(5)), Is.EqualTo(ChannelEpoch.Tag(5) | ChannelEpoch.FirstMarker));
+
+        ushort notWritten = connection.Tag();
+        Assert.That(connection.Tag(), Is.EqualTo(notWritten), "Asking for the tag cleared the marker");
+        connection.Written(connection.Tag());
+        Assert.That(connection.Tag(), Is.Zero);
+        Assert.That(connection.Tag((byte)3), Is.EqualTo(ChannelEpoch.Tag(3)));
+        Assert.That(connection.Mark(ChannelEpoch.Tag(5)), Is.EqualTo(ChannelEpoch.Tag(5)));
     }
 
     [Test]

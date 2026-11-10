@@ -846,10 +846,11 @@ public sealed partial class FakeFirmware : ILinkAdapter
             ushort tag = (Model == FakeRrfModel.Epoch) ? request.Tag : (ushort)0;
             if ((tag & FakeTag.FirstMarker) != 0)
             {
-                // DSF's first tagged packet after it started or ended a connection (CE-4). DSF writes it where all its epochs are 0, so every channel
-                // epoch is 0 from here on, not unknown as CE-4 says: then RRF tags the packets of a channel before DSF has sent anything on it, and a
-                // request that crosses DSF's first abort of that channel is dropped by its tag instead of passing untagged (Q34). An InvalidateChannel
-                // in this packet then moves its channel on as usual
+                // DSF's first packet after it started or ended a connection, whatever its type, usually a GetObjectModel (CE-4). DSF writes it where all
+                // its epochs are 0, so every channel epoch is 0 from here on, not unknown as CE-4 says: then RRF tags the packets of a channel before DSF
+                // has sent anything on it, and a request that crosses DSF's first abort of that channel is dropped by its tag instead of passing untagged
+                // (Q34). It acts before the packet can be refused, because a copy does not carry it (CE-8). An InvalidateChannel with the marker then
+                // moves its channel on as usual
                 foreach (FakeGCodeBuffer buffer in _gcodes.Buffers)
                 {
                     buffer.ForgetEpoch();
@@ -1897,16 +1898,16 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <inheritdoc />
-    public bool WriteEmergencyStop() => AddRequest(new FakeSbcRequest { Request = SbcRequest.EmergencyStop });
+    public bool WriteEmergencyStop(ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.EmergencyStop, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteReset()
+    public bool WriteReset(ushort tag)
     {
         lock (_lock)
         {
             // SPI.cs discards the other packets of this transfer
             _incoming.Clear();
-            return AddRequest(new FakeSbcRequest { Request = SbcRequest.Reset });
+            return AddRequest(new FakeSbcRequest { Request = SbcRequest.Reset, Tag = tag });
         }
     }
 
@@ -1924,19 +1925,19 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <inheritdoc />
-    public bool WriteGetObjectModel(string key, string flags) => AddRequest(new FakeSbcRequest { Request = SbcRequest.GetObjectModel, Text = key, Argument = flags });
+    public bool WriteGetObjectModel(string key, string flags, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.GetObjectModel, Text = key, Argument = flags, Tag = tag });
 
     /// <inheritdoc />
     public LinkCapabilities SupportedLinkCapabilities { get; set; } = LinkCapabilities.All;
 
     /// <inheritdoc />
-    public bool WriteActivateLinkCapabilities(LinkCapabilities capabilities) => AddRequest(new FakeSbcRequest { Request = SbcRequest.ActivateLinkCapabilities, LinkCapabilities = capabilities });
+    public bool WriteActivateLinkCapabilities(LinkCapabilities capabilities, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.ActivateLinkCapabilities, LinkCapabilities = capabilities, Tag = tag });
 
     /// <inheritdoc />
-    public bool WritePrintFileInfo(GCodeFileInfo info) => AddRequest(new FakeSbcRequest { Request = SbcRequest.SetPrintFileInfo, Text = info.FileName });
+    public bool WritePrintFileInfo(GCodeFileInfo info, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.SetPrintFileInfo, Text = info.FileName, Tag = tag });
 
     /// <inheritdoc />
-    public bool WritePrintStopped(PrintStoppedReason reason) => AddRequest(new FakeSbcRequest { Request = SbcRequest.PrintStopped, PrintStoppedReason = reason });
+    public bool WritePrintStopped(PrintStoppedReason reason, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.PrintStopped, PrintStoppedReason = reason, Tag = tag });
 
     /// <inheritdoc />
     public bool WriteMacroCompleted(CodeChannel channel, bool error, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.MacroCompleted, Channel = channel, Flag = error, Tag = tag });
@@ -1948,7 +1949,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
     public bool WriteUnlock(CodeChannel channel, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.Unlock, Channel = channel, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteFileChunk(Span<byte> data, long fileLength) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileChunk });
+    public bool WriteFileChunk(Span<byte> data, long fileLength, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileChunk, Tag = tag });
 
     /// <inheritdoc />
     public bool WriteEvaluateExpression(CodeChannel channel, string expression, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.EvaluateExpression, Channel = channel, Text = expression, Tag = tag });
@@ -1969,33 +1970,33 @@ public sealed partial class FakeFirmware : ILinkAdapter
     public bool WriteDeleteLocalVariable(CodeChannel channel, string varName, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.DeleteLocalVariable, Channel = channel, Text = varName, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteCheckFileExistsResult(bool exists) => AddRequest(new FakeSbcRequest { Request = SbcRequest.CheckFileExistsResult, Flag = exists });
+    public bool WriteCheckFileExistsResult(bool exists, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.CheckFileExistsResult, Flag = exists, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteFileDeleteResult(bool success) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileDeleteResult, Flag = success });
+    public bool WriteFileDeleteResult(bool success, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileDeleteResult, Flag = success, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteFileListResult(IList<FileSystemInfo> entries, bool endOfList) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileListResult, Flag = endOfList });
+    public bool WriteFileListResult(IList<FileSystemInfo> entries, bool endOfList, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileListResult, Flag = endOfList, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteOpenFileResult(uint fileHandle, long length) => AddRequest(new FakeSbcRequest { Request = SbcRequest.OpenFileResult });
+    public bool WriteOpenFileResult(uint fileHandle, long length, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.OpenFileResult, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteFileReadResult(Span<byte> data, int bytesRead) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileReadResult });
+    public bool WriteFileReadResult(Span<byte> data, int bytesRead, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileReadResult, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteFileWriteResult(bool success) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileWriteResult, Flag = success });
+    public bool WriteFileWriteResult(bool success, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileWriteResult, Flag = success, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteFileSeekResult(bool success) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileSeekResult, Flag = success });
+    public bool WriteFileSeekResult(bool success, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileSeekResult, Flag = success, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteFileTruncateResult(bool success) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileTruncateResult, Flag = success });
+    public bool WriteFileTruncateResult(bool success, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileTruncateResult, Flag = success, Tag = tag });
 
     /// <inheritdoc />
     public bool WriteSetLastCodeResult(CodeChannel channel, CodeResult result, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.SetLastCodeResult, Channel = channel, CodeResult = result, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteObjectModelKeyChanged(string key) => AddRequest(new FakeSbcRequest { Request = SbcRequest.ObjectModelKeyChanged, Text = key });
+    public bool WriteObjectModelKeyChanged(string key, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.ObjectModelKeyChanged, Text = key, Tag = tag });
     #endregion
 }

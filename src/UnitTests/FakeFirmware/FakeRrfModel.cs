@@ -35,7 +35,7 @@ internal static class FakeTag
     /// <summary>Bit 15: the packet is tagged</summary>
     public const ushort Tagged = 0x8000;
 
-    /// <summary>Bit 14, DSF to RRF only: first tagged packet of a connection</summary>
+    /// <summary>Bit 14, DSF to RRF only: first packet of a connection, whatever its type</summary>
     public const ushort FirstMarker = 0x4000;
 
     /// <summary>Bits 0-5: the epoch</summary>

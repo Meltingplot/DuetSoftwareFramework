@@ -345,7 +345,7 @@ public class FakeFirmwareEpoch
     [Test]
     public void CopyKeepsTheTagWithoutTheMarker()
     {
-        // CE-8: a refused packet is written again with the tag of the original, but not with the first marker, which only the first tagged packet of a
+        // CE-8: a refused packet is written again with the tag of the original, but not with the first marker, which only the first packet of a
         // connection carries (CE-4)
         _firmware.FailBufferLocks(CodeChannel.HTTP, 1);
         Assert.That(_firmware.WriteEvaluateExpression(CodeChannel.HTTP, "1+1", Marker(0)), Is.True);

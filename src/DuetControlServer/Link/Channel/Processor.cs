@@ -242,7 +242,7 @@ public sealed class Processor
     }
 
     /// <summary>
-    /// Reset the epoch where a connection ends (CE-4). RRF forgets its epochs at the first marker of the next connection
+    /// Reset the epoch where a connection ends (CE-4). RRF sets its epochs to 0 at the first marker of the next connection
     /// </summary>
     public void ResetEpoch()
     {

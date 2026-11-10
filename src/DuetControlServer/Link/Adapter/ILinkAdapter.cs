@@ -240,14 +240,16 @@ public interface ILinkAdapter
     /// <summary>
     /// Request an emergency stop
     /// </summary>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    bool WriteEmergencyStop();
+    bool WriteEmergencyStop(ushort tag);
 
     /// <summary>
     /// Request a firmware reset
     /// </summary>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    bool WriteReset();
+    bool WriteReset(ushort tag);
 
     /// <summary>
     /// Request a code to be executed
@@ -262,8 +264,9 @@ public interface ILinkAdapter
     /// </summary>
     /// <param name="key">Object model key to query</param>
     /// <param name="flags">Object model flags to query</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    bool WriteGetObjectModel(string key, string flags);
+    bool WriteGetObjectModel(string key, string flags, ushort tag);
 
     /// <summary>
     /// Capabilities of the link that this adapter can use
@@ -275,22 +278,25 @@ public interface ILinkAdapter
     /// Only for firmware that offers them in limits.sbcLinkCapabilities
     /// </summary>
     /// <param name="capabilities">Capabilities to activate</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    bool WriteActivateLinkCapabilities(Protocol.Shared.LinkCapabilities capabilities);
+    bool WriteActivateLinkCapabilities(Protocol.Shared.LinkCapabilities capabilities, ushort tag);
 
     /// <summary>
     /// Notify the firmware that a file print has started
     /// </summary>
     /// <param name="info">Information about the file being printed</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    bool WritePrintFileInfo(GCodeFileInfo info);
+    bool WritePrintFileInfo(GCodeFileInfo info, ushort tag);
 
     /// <summary>
     /// Notify that a file print has been stopped
     /// </summary>
     /// <param name="reason">Reason why the print has been stopped</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    bool WritePrintStopped(PrintStoppedReason reason);
+    bool WritePrintStopped(PrintStoppedReason reason, ushort tag);
 
     /// <summary>
     /// Notify the firmware about a completed macro file. This function is only used for macro files that the firmware requested
@@ -322,8 +328,9 @@ public interface ILinkAdapter
     /// </summary>
     /// <param name="data">File chunk data</param>
     /// <param name="fileLength">Total length of the file in bytes</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>Whether the firmware has been written successfully</returns>
-    bool WriteFileChunk(Span<byte> data, long fileLength);
+    bool WriteFileChunk(Span<byte> data, long fileLength, ushort tag);
 
     /// <summary>
     /// Write a request for an expression evaluation
@@ -383,60 +390,68 @@ public interface ILinkAdapter
     /// Send back whether a file exists or not
     /// </summary>
     /// <param name="exists">Whether the file exists</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    bool WriteCheckFileExistsResult(bool exists);
+    bool WriteCheckFileExistsResult(bool exists, ushort tag);
 
     /// <summary>
     /// Send back whether a file or directory could be deleted
     /// </summary>
     /// <param name="success">Whether the file operation was successful</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    bool WriteFileDeleteResult(bool success);
+    bool WriteFileDeleteResult(bool success, ushort tag);
 
     /// <summary>
     /// Send back part of a directory listing
     /// </summary>
     /// <param name="entries">Entries to send back</param>
     /// <param name="endOfList">Whether the final entry of the directory is part of this response</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    bool WriteFileListResult(IList<FileSystemInfo> entries, bool endOfList);
+    bool WriteFileListResult(IList<FileSystemInfo> entries, bool endOfList, ushort tag);
 
     /// <summary>
     /// Write the new file handle and file length of the file that has just been opened
     /// </summary>
     /// <param name="fileHandle">New file handle or noFileHandle if the file could not be opened</param>
     /// <param name="length">Length of the file</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    bool WriteOpenFileResult(uint fileHandle, long length);
+    bool WriteOpenFileResult(uint fileHandle, long length, ushort tag);
 
     /// <summary>
     /// Write requested read data from a file
     /// </summary>
     /// <param name="data">File data</param>
     /// <param name="bytesRead">Number of bytes read or negative on error</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    bool WriteFileReadResult(Span<byte> data, int bytesRead);
+    bool WriteFileReadResult(Span<byte> data, int bytesRead, ushort tag);
 
     /// <summary>
     /// Tell RRF if the last file block could be written
     /// </summary>
     /// <param name="success">If the file data could be written</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    bool WriteFileWriteResult(bool success);
+    bool WriteFileWriteResult(bool success, ushort tag);
 
     /// <summary>
     /// Tell RRF if the seek operation was successful
     /// </summary>
     /// <param name="success">If the seek operation succeeded</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    bool WriteFileSeekResult(bool success);
+    bool WriteFileSeekResult(bool success, ushort tag);
 
     /// <summary>
     /// Tell RRF if the seek operation was successful
     /// </summary>
     /// <param name="success">If the seek operation succeeded</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    bool WriteFileTruncateResult(bool success);
+    bool WriteFileTruncateResult(bool success, ushort tag);
 
     /// <summary>
     /// Write the last code result for a specific code channel
@@ -451,6 +466,7 @@ public interface ILinkAdapter
     /// Notify RRF that an object model key has changed
     /// </summary>
     /// <param name="key">Key that has changed</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    bool WriteObjectModelKeyChanged(string key);
+    bool WriteObjectModelKeyChanged(string key, ushort tag);
 }

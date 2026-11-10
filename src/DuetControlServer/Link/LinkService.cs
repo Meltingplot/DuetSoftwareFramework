@@ -325,8 +325,10 @@ public sealed class LinkService(
                 if (linkInterface.FirmwareHaltRequest is not null)
                 {
                     InvalidateCodes();
-                    if (linkAdapter.WriteEmergencyStop())
+                    ushort tag = _connection.Tag();
+                    if (linkAdapter.WriteEmergencyStop(tag))
                     {
+                        _connection.Written(tag);
                         logger.LogWarning("Emergency stop");
                         writtenHaltRequest = linkInterface.FirmwareHaltRequest;
                         linkInterface.FirmwareHaltRequest = null;
@@ -338,8 +340,10 @@ public sealed class LinkService(
                 if (linkInterface.FirmwareResetRequest is not null)
                 {
                     Invalidate();
-                    if (linkAdapter.WriteReset())
+                    ushort tag = _connection.Tag();
+                    if (linkAdapter.WriteReset(tag))
                     {
+                        _connection.Written(tag);
                         logger.LogWarning("Resetting controller");
                         linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken);
                         linkInterface.FirmwareResetRequest.SetResult();
@@ -391,8 +395,8 @@ public sealed class LinkService(
                 Invalidate();
                 eventLogger.LogOutput(MessageType.Warning, "Connection to controller has been reset");
 
-                // The capabilities of the link end with the connection, and so do the epochs of the channels. The first tagged packet of the next
-                // connection carries the first marker, on which RRF forgets its epochs as well (CE-4)
+                // The capabilities of the link end with the connection, and so do the epochs of the channels. The first packet of the next connection,
+                // whatever its type, carries the first marker, on which RRF sets its epochs to 0 as well (CE-4)
                 _queryLinkCapabilities = true;
                 _connection = new EpochConnection();
                 foreach (Channel.Processor channel in channels)
@@ -411,16 +415,19 @@ public sealed class LinkService(
             bool printStopped = false;
             using (linkInterface.PrintStateLock.Lock(stoppingToken))
             {
-                if (linkInterface.SetPrintInfoRequest is not null && linkAdapter.WritePrintFileInfo(model.Job.File))
+                ushort tag = _connection.Tag();
+                if (linkInterface.SetPrintInfoRequest is not null && linkAdapter.WritePrintFileInfo(model.Job.File, tag))
                 {
                     // The packet providing file info has be sent first because it includes a time_t value that must reside on a 64-bit boundary!
+                    _connection.Written(tag);
                     linkInterface.SetPrintInfoRequest.SetResult();
                     linkInterface.SetPrintInfoRequest = null;
                 }
                 else
                 {
-                    if (linkInterface.StopPrintRequest is not null && linkAdapter.WritePrintStopped(linkInterface.StopPrintReason))
+                    if (linkInterface.StopPrintRequest is not null && linkAdapter.WritePrintStopped(linkInterface.StopPrintReason, tag))
                     {
+                        _connection.Written(tag);
                         // Only a print that really ran to the end makes RRF execute stop.g and reply once more. A simulation exits
                         // early in RRF's StopPrint, and after M0/M1/M2 it has run stop.g for that code long before this notification
                         printStopped = (linkInterface.StopPrintReason == PrintStoppedReason.NormalCompletion) && !jobProcessor.IsSimulating && !jobProcessor.IsStoppedByCode;
@@ -479,9 +486,11 @@ public sealed class LinkService(
             // Only allow one object model query per transfer because the response is usually quite large
             lock (linkInterface.ModelQueryRequests)
             {
+                ushort tag = _connection.Tag();
                 if (linkInterface.ModelQueryRequests.TryPeek(out ModelQueryRequest? request) &&
-                    !request.QuerySent && linkAdapter.WriteGetObjectModel(request.Key, request.Flags))
+                    !request.QuerySent && linkAdapter.WriteGetObjectModel(request.Key, request.Flags, tag))
                 {
+                    _connection.Written(tag);
                     request.QuerySent = true;
                 }
             }
@@ -491,8 +500,10 @@ public sealed class LinkService(
             {
                 foreach (string key in linkInterface.UpdatedObjectModelKeys.ToList())
                 {
-                    if (linkAdapter.WriteObjectModelKeyChanged(key))
+                    ushort tag = _connection.Tag();
+                    if (linkAdapter.WriteObjectModelKeyChanged(key, tag))
                     {
+                        _connection.Written(tag);
                         linkInterface.UpdatedObjectModelKeys.Remove(key);
                     }
                     else
@@ -613,9 +624,10 @@ public sealed class LinkService(
                         continue;
                     }
 
-                    if (linkAdapter.WriteMessage(message.Flags, message.Message, message.Tag))
+                    ushort tag = _connection.Mark(message.Tag);
+                    if (linkAdapter.WriteMessage(message.Flags, message.Message, tag))
                     {
-                        _connection.Written(message.Tag);
+                        _connection.Written(tag);
                         linkInterface.MessagesToSend.Dequeue();
                     }
                     else
@@ -1007,6 +1019,7 @@ public sealed class LinkService(
     /// <returns>Asynchronous task</returns>
     private void HandleFileChunkRequest()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadFileChunkRequest(out string filename, out uint offset, out int maxLength);
         logger.LogDebug("Received file chunk request for {File}, offset {Offset}, maxLength {MaxLength}", filename, offset, maxLength);
 
@@ -1037,7 +1050,7 @@ public sealed class LinkService(
             Span<byte> buffer = stackalloc byte[maxLength];
             int bytesRead = fs.Read(buffer);
 
-            linkAdapter.WriteFileChunk((bytesRead > 0) ? buffer[..bytesRead] : [], fs.Length);
+            Answered(linkAdapter.WriteFileChunk((bytesRead > 0) ? buffer[..bytesRead] : [], fs.Length, tag), tag);
         }
         catch (Exception e)
         {
@@ -1045,7 +1058,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to send requested file chunk of {File}", filename);
             }
-            linkAdapter.WriteFileChunk(null, 0);
+            Answered(linkAdapter.WriteFileChunk(null, 0, tag), tag);
         }
     }
 
@@ -1227,6 +1240,7 @@ public sealed class LinkService(
     /// </summary>
     private void HandleCheckFileExists()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadCheckFileExists(out string filename);
         logger.LogDebug("Checking if file {File} exists", filename);
 
@@ -1234,7 +1248,7 @@ public sealed class LinkService(
         {
             string physicalFile = filePathResolver.ToPhysical(filename);
             bool exists = File.Exists(physicalFile);
-            linkAdapter.WriteCheckFileExistsResult(exists);
+            Answered(linkAdapter.WriteCheckFileExistsResult(exists, tag), tag);
         }
         catch (Exception e)
         {
@@ -1242,7 +1256,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to check if file {File} exists", filename);
             }
-            linkAdapter.WriteCheckFileExistsResult(false);
+            Answered(linkAdapter.WriteCheckFileExistsResult(false, tag), tag);
         }
     }
 
@@ -1252,6 +1266,7 @@ public sealed class LinkService(
     /// <param name="recursive">Delete file or directory recursively</param>
     private void HandleDeleteFileOrDirectory(bool recursive)
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadDeleteFileOrDirectory(out string filename);
         logger.LogDebug("Attempting to delete {File}", filename);
 
@@ -1266,7 +1281,7 @@ public sealed class LinkService(
             {
                 File.Delete(physicalFile);
             }
-            linkAdapter.WriteFileDeleteResult(true);
+            Answered(linkAdapter.WriteFileDeleteResult(true, tag), tag);
         }
         catch (Exception e)
         {
@@ -1274,7 +1289,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to delete file or directory {File}", filename);
             }
-            linkAdapter.WriteFileDeleteResult(false);
+            Answered(linkAdapter.WriteFileDeleteResult(false, tag), tag);
         }
     }
 
@@ -1286,6 +1301,7 @@ public sealed class LinkService(
     /// </summary>
     private void HandleSecureDeleteFile()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadDeleteFileOrDirectory(out string filename);
         logger.LogDebug("Attempting to securely delete {File}", filename);
 
@@ -1318,7 +1334,7 @@ public sealed class LinkService(
             // File.Delete is a no-op if the file is missing, so it is safe outside the exists-check;
             // placed after the if-block so the using declaration has disposed fs before the unlink
             File.Delete(physicalFile);
-            linkAdapter.WriteFileDeleteResult(true);
+            Answered(linkAdapter.WriteFileDeleteResult(true, tag), tag);
         }
         catch (Exception e)
         {
@@ -1326,7 +1342,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to securely delete {File}", filename);
             }
-            linkAdapter.WriteFileDeleteResult(false);
+            Answered(linkAdapter.WriteFileDeleteResult(false, tag), tag);
         }
     }
 
@@ -1337,6 +1353,7 @@ public sealed class LinkService(
     /// </summary>
     private void HandleGetFileList()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadGetFileList(out string directory, out uint startIndex, out uint maxLength);
         logger.LogDebug("Listing {Directory} from entry {StartIndex}", directory, startIndex);
 
@@ -1377,7 +1394,7 @@ public sealed class LinkService(
             entries.Clear();
             endOfList = true;
         }
-        linkAdapter.WriteFileListResult(entries, endOfList);
+        Answered(linkAdapter.WriteFileListResult(entries, endOfList, tag), tag);
     }
 
     /// <summary>
@@ -1385,6 +1402,7 @@ public sealed class LinkService(
     /// </summary>
     private void HandleOpenFile()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadOpenFile(out string filename, out bool forWriting, out bool append, out long preAllocSize);
         logger.LogDebug("Opening {File} for {Operation} ({NotAppending}appending), prealloc {Prealloc}", filename, forWriting ? "writing" : "reading", append ? string.Empty : "not ", preAllocSize);
 
@@ -1415,7 +1433,7 @@ public sealed class LinkService(
             _openFiles.Add(_openFileHandleCounter, fs);
 
             logger.LogDebug("File {File} opened with handle #{Handle}", filename, _openFileHandleCounter);
-            linkAdapter.WriteOpenFileResult(_openFileHandleCounter, fs.Length);
+            Answered(linkAdapter.WriteOpenFileResult(_openFileHandleCounter, fs.Length, tag), tag);
         }
         catch (Exception e)
         {
@@ -1423,7 +1441,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to open {File} for {Operation}", filename, forWriting ? "writing" : "reading");
             }
-            linkAdapter.WriteOpenFileResult(Consts.NoFileHandle, 0);
+            Answered(linkAdapter.WriteOpenFileResult(Consts.NoFileHandle, 0, tag), tag);
         }
     }
 
@@ -1433,6 +1451,7 @@ public sealed class LinkService(
     /// <returns>Asynchronous task</returns>
     private void HandleReadFile()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadFileRequest(out uint handle, out int maxLength);
         logger.LogTrace("Reading up to {MaxLength} bytes from file #{Handle}", maxLength, handle);
 
@@ -1446,7 +1465,7 @@ public sealed class LinkService(
             int bytesRead = fs.Read(data);
 
             // Send it back
-            linkAdapter.WriteFileReadResult((bytesRead > 0) ? data[..bytesRead] : [], bytesRead);
+            Answered(linkAdapter.WriteFileReadResult((bytesRead > 0) ? data[..bytesRead] : [], bytesRead, tag), tag);
         }
         catch (Exception e)
         {
@@ -1454,7 +1473,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to read {MaxLength} bytes from file #{Handle}", maxLength, handle);
             }
-            linkAdapter.WriteFileReadResult([], -1);
+            Answered(linkAdapter.WriteFileReadResult([], -1, tag), tag);
         }
     }
 
@@ -1464,6 +1483,7 @@ public sealed class LinkService(
     /// <returns>Asynchronous task</returns>
     private void HandleWriteFile()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadWriteRequest(out uint handle, out ReadOnlySpan<byte> data);
         logger.LogTrace("Writing {DataLength} bytes to file #{Handle}", data.Length, handle);
 
@@ -1474,7 +1494,7 @@ public sealed class LinkService(
             fs.Write(data);
 
             // Send it back
-            linkAdapter.WriteFileWriteResult(true);
+            Answered(linkAdapter.WriteFileWriteResult(true, tag), tag);
         }
         catch (Exception e)
         {
@@ -1482,7 +1502,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to write {DataLength} bytes to file #{Handle}", data.Length, handle);
             }
-            linkAdapter.WriteFileWriteResult(false);
+            Answered(linkAdapter.WriteFileWriteResult(false, tag), tag);
         }
     }
 
@@ -1491,6 +1511,7 @@ public sealed class LinkService(
     /// </summary>
     private void HandleSeekFile()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadSeekFile(out uint handle, out long offset);
         logger.LogTrace("Seeking to position {Offset} in file #{Handle}", offset, handle);
 
@@ -1501,7 +1522,7 @@ public sealed class LinkService(
             fs.Seek(offset, SeekOrigin.Begin);
 
             // Send it back
-            linkAdapter.WriteFileSeekResult(true);
+            Answered(linkAdapter.WriteFileSeekResult(true, tag), tag);
         }
         catch (Exception e)
         {
@@ -1509,7 +1530,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to go to position {Offset} in file #{Handle}", offset, handle);
             }
-            linkAdapter.WriteFileSeekResult(false);
+            Answered(linkAdapter.WriteFileSeekResult(false, tag), tag);
         }
     }
 
@@ -1518,6 +1539,7 @@ public sealed class LinkService(
     /// </summary>
     private void HandleTruncateFile()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadTruncateFile(out uint handle);
         logger.LogDebug("Truncating file #{Handle}", handle);
 
@@ -1529,7 +1551,7 @@ public sealed class LinkService(
             logger.LogDebug("Truncated file #{Handle} at byte {Length}", handle, fs.Length);
 
             // Send it back
-            linkAdapter.WriteFileTruncateResult(true);
+            Answered(linkAdapter.WriteFileTruncateResult(true, tag), tag);
         }
         catch (Exception e)
         {
@@ -1537,7 +1559,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to truncate file #{Handle}", handle);
             }
-            linkAdapter.WriteFileTruncateResult(false);
+            Answered(linkAdapter.WriteFileTruncateResult(false, tag), tag);
         }
     }
 
@@ -1591,6 +1613,19 @@ public sealed class LinkService(
         using (channels[channel.Value].Lock())
         {
             return channels[channel.Value].IsStale(tag, request);
+        }
+    }
+
+    /// <summary>
+    /// Keep track of an answer to a file request of RRF for the first marker (CE-4). The answer is lost if it could not be written, as before
+    /// </summary>
+    /// <param name="written">Whether the answer was written</param>
+    /// <param name="tag">Tag it was written with, from <see cref="EpochConnection.Tag()"/></param>
+    private void Answered(bool written, ushort tag)
+    {
+        if (written)
+        {
+            _connection.Written(tag);
         }
     }
 
@@ -1685,8 +1720,10 @@ public sealed class LinkService(
             }
         }
 
-        if (_linkCapabilitiesToActivate != LinkCapabilities.None && linkAdapter.WriteActivateLinkCapabilities(_linkCapabilitiesToActivate))
+        ushort tag = _connection.Tag();
+        if (_linkCapabilitiesToActivate != LinkCapabilities.None && linkAdapter.WriteActivateLinkCapabilities(_linkCapabilitiesToActivate, tag))
         {
+            _connection.Written(tag);
             _activatedLinkCapabilities = _linkCapabilitiesToActivate;
             _linkCapabilitiesToActivate = LinkCapabilities.None;
             _linkCapabilitiesQuery = linkInterface.RequestObjectModel("state.sbcLinkCapabilities", string.Empty);

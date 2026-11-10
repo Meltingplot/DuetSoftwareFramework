@@ -734,7 +734,7 @@ public class USB : IDiagnostics, ILinkAdapter
                 sbcRequest = (Protocol.SbcRequests.Request)header.Request;
                 invalidatedChannel = (sbcRequest == Protocol.SbcRequests.Request.InvalidateChannel)
                     ? MemoryMarshal.Read<CodeChannelHeader>(buffer.Slice(headerSize, header.Length)).Channel : null;
-                // The copy keeps the tag of the original, but not the first marker, which only the first tagged packet of a connection carries (CE-8)
+                // The copy keeps the tag of the original, but not the first marker, which only the first packet of a connection carries (CE-4, CE-8)
                 WritePacket(sbcRequest, header.Length, (ushort)(header.ResendPacketId & ~ChannelEpoch.FirstMarker));
                 buffer.Slice(headerSize, header.Length).CopyTo(GetWriteBuffer(header.Length));
                 return;
@@ -752,23 +752,25 @@ public class USB : IDiagnostics, ILinkAdapter
     /// <summary>
     /// Request an emergency stop
     /// </summary>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteEmergencyStop()
+    public bool WriteEmergencyStop(ushort tag)
     {
         if (!CanWritePacket())
         {
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.EmergencyStop);
+        WritePacket(Protocol.SbcRequests.Request.EmergencyStop, 0, tag);
         return true;
     }
 
     /// <summary>
     /// Request a firmware reset
     /// </summary>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteReset()
+    public bool WriteReset(ushort tag)
     {
         if (!CanWritePacket())
         {
@@ -777,7 +779,7 @@ public class USB : IDiagnostics, ILinkAdapter
 
         _txPointer = 0;
         _resetting = true;
-        WritePacket(Protocol.SbcRequests.Request.Reset);
+        WritePacket(Protocol.SbcRequests.Request.Reset, 0, tag);
         return true;
     }
 
@@ -815,16 +817,18 @@ public class USB : IDiagnostics, ILinkAdapter
     /// Ask the firmware to activate capabilities of the link, which USB does not support
     /// </summary>
     /// <param name="capabilities">Capabilities to activate</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>False</returns>
-    public bool WriteActivateLinkCapabilities(LinkCapabilities capabilities) => false;
+    public bool WriteActivateLinkCapabilities(LinkCapabilities capabilities, ushort tag) => false;
 
     /// <summary>
     /// Request the key of a object module of a specific module
     /// </summary>
     /// <param name="key">Object model key to query</param>
     /// <param name="flags">Object model flags to query</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteGetObjectModel(string key, string flags)
+    public bool WriteGetObjectModel(string key, string flags, ushort tag)
     {
         // Serialize the request first to see how much space it requires
         Span<byte> span = stackalloc byte[_bufferSize - Marshal.SizeOf<PacketHeader>()];
@@ -837,7 +841,7 @@ public class USB : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.GetObjectModel, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.GetObjectModel, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -846,8 +850,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// Notify the firmware that a file print has started
     /// </summary>
     /// <param name="info">Information about the file being printed</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WritePrintFileInfo(GCodeFileInfo info)
+    public bool WritePrintFileInfo(GCodeFileInfo info, ushort tag)
     {
         // Serialize the request first to see how much space it requires
         Span<byte> span = stackalloc byte[_bufferSize - Marshal.SizeOf<PacketHeader>()];
@@ -860,7 +865,7 @@ public class USB : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.SetPrintFileInfo, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.SetPrintFileInfo, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -869,8 +874,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// Notify that a file print has been stopped
     /// </summary>
     /// <param name="reason">Reason why the print has been stopped</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WritePrintStopped(PrintStoppedReason reason)
+    public bool WritePrintStopped(PrintStoppedReason reason, ushort tag)
     {
         int dataLength = Marshal.SizeOf<Protocol.SbcRequests.PrintStoppedHeader>();
         if (!CanWritePacket(dataLength))
@@ -878,7 +884,7 @@ public class USB : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.PrintStopped, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.PrintStopped, dataLength, tag);
         Protocol.Writer.WritePrintStopped(GetWriteBuffer(dataLength), reason);
         return true;
     }
@@ -1315,8 +1321,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="data">File chunk data</param>
     /// <param name="fileLength">Total length of the file in bytes</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>Whether the firmware has been written successfully</returns>
-    public bool WriteFileChunk(Span<byte> data, long fileLength)
+    public bool WriteFileChunk(Span<byte> data, long fileLength, ushort tag)
     {
         // Serialize the request first to see how much space it requires
         Span<byte> span = stackalloc byte[_bufferSize - Marshal.SizeOf<PacketHeader>()];
@@ -1329,7 +1336,7 @@ public class USB : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.FileChunk, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.FileChunk, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1478,8 +1485,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// Send back whether a file exists or not
     /// </summary>
     /// <param name="exists">Whether the file exists</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteCheckFileExistsResult(bool exists)
+    public bool WriteCheckFileExistsResult(bool exists, ushort tag)
     {
         int dataLength = Marshal.SizeOf<Protocol.SbcRequests.BooleanHeader>();
         if (!CanWritePacket(dataLength))
@@ -1487,7 +1495,7 @@ public class USB : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.CheckFileExistsResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.CheckFileExistsResult, dataLength, tag);
         Protocol.Writer.WriteBoolean(GetWriteBuffer(dataLength), exists);
         return true;
     }
@@ -1496,8 +1504,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// Send back whether a file or directory could be deleted
     /// </summary>
     /// <param name="success">Whether the file operation was successful</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteFileDeleteResult(bool success)
+    public bool WriteFileDeleteResult(bool success, ushort tag)
     {
         int dataLength = Marshal.SizeOf<Protocol.SbcRequests.BooleanHeader>();
         if (!CanWritePacket(dataLength))
@@ -1505,7 +1514,7 @@ public class USB : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.FileDeleteResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.FileDeleteResult, dataLength, tag);
         Protocol.Writer.WriteBoolean(GetWriteBuffer(dataLength), success);
         return true;
     }
@@ -1515,8 +1524,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="entries">Entries to send back</param>
     /// <param name="endOfList">Whether the final entry of the directory is part of this response</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteFileListResult(IList<FileSystemInfo> entries, bool endOfList)
+    public bool WriteFileListResult(IList<FileSystemInfo> entries, bool endOfList, ushort tag)
     {
         // Serialize the request first to see how much space it requires
         Span<byte> span = stackalloc byte[_bufferSize - Marshal.SizeOf<PacketHeader>()];
@@ -1529,7 +1539,7 @@ public class USB : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.FileListResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.FileListResult, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1539,8 +1549,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="fileHandle">New file handle or noFileHandle if the file could not be opened</param>
     /// <param name="length">Length of the file</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteOpenFileResult(uint fileHandle, long length)
+    public bool WriteOpenFileResult(uint fileHandle, long length, ushort tag)
     {
         // Serialize the request first to see how much space it requires
         Span<byte> span = stackalloc byte[_bufferSize - Marshal.SizeOf<PacketHeader>()];
@@ -1553,7 +1564,7 @@ public class USB : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.OpenFileResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.OpenFileResult, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1563,8 +1574,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="data">File data</param>
     /// <param name="bytesRead">Number of bytes read or negative on error</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteFileReadResult(Span<byte> data, int bytesRead)
+    public bool WriteFileReadResult(Span<byte> data, int bytesRead, ushort tag)
     {
         // Serialize the request first to see how much space it requires
         Span<byte> span = stackalloc byte[_bufferSize - Marshal.SizeOf<PacketHeader>()];
@@ -1577,7 +1589,7 @@ public class USB : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.FileReadResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.FileReadResult, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1586,8 +1598,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// Tell RRF if the last file block could be written
     /// </summary>
     /// <param name="success">If the file data could be written</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteFileWriteResult(bool success)
+    public bool WriteFileWriteResult(bool success, ushort tag)
     {
         int dataLength = Marshal.SizeOf<Protocol.SbcRequests.BooleanHeader>();
         if (!CanWritePacket(dataLength))
@@ -1595,7 +1608,7 @@ public class USB : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.FileWriteResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.FileWriteResult, dataLength, tag);
         Protocol.Writer.WriteBoolean(GetWriteBuffer(dataLength), success);
         return true;
     }
@@ -1604,8 +1617,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// Tell RRF if the seek operation was successful
     /// </summary>
     /// <param name="success">If the seek operation succeeded</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteFileSeekResult(bool success)
+    public bool WriteFileSeekResult(bool success, ushort tag)
     {
         int dataLength = Marshal.SizeOf<Protocol.SbcRequests.BooleanHeader>();
         if (!CanWritePacket(dataLength))
@@ -1613,7 +1627,7 @@ public class USB : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.FileSeekResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.FileSeekResult, dataLength, tag);
         Protocol.Writer.WriteBoolean(GetWriteBuffer(dataLength), success);
         return true;
     }
@@ -1622,8 +1636,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// Tell RRF if the seek operation was successful
     /// </summary>
     /// <param name="success">If the seek operation succeeded</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteFileTruncateResult(bool success)
+    public bool WriteFileTruncateResult(bool success, ushort tag)
     {
         int dataLength = Marshal.SizeOf<Protocol.SbcRequests.BooleanHeader>();
         if (!CanWritePacket(dataLength))
@@ -1631,7 +1646,7 @@ public class USB : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.FileTruncateResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.FileTruncateResult, dataLength, tag);
         Protocol.Writer.WriteBoolean(GetWriteBuffer(dataLength), success);
         return true;
     }
@@ -1660,8 +1675,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// Notify RRF that an object model key has changed
     /// </summary>
     /// <param name="key">Key that has changed</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteObjectModelKeyChanged(string key)
+    public bool WriteObjectModelKeyChanged(string key, ushort tag)
     {
         int dataLength = Marshal.SizeOf<StringHeader>() + Encoding.UTF8.GetByteCount(key);
         if (!CanWritePacket(dataLength))
@@ -1669,7 +1685,7 @@ public class USB : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.ObjectModelKeyChanged, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.ObjectModelKeyChanged, dataLength, tag);
         Protocol.Writer.WriteStringRequest(GetWriteBuffer(dataLength), key);
         return true;
     }

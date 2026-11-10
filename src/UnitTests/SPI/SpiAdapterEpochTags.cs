@@ -55,7 +55,7 @@ public class SpiAdapterEpochTags
 
         Assert.That(dsf.WriteInvalidateChannel(CodeChannel.Trigger, FirstTag), Is.True);
         Assert.That(dsf.WriteUnlock(CodeChannel.SBC, Tag2), Is.True);
-        Assert.That(dsf.WriteGetObjectModel("state", "v"), Is.True);
+        Assert.That(dsf.WriteGetObjectModel("state", "v", 0), Is.True);
         dsf.PerformFullTransfer();
 
         FakeRrfSpi.ProcessedPacket[] packets = [.. rrf.GetProcessedPackets()];
@@ -65,6 +65,38 @@ public class SpiAdapterEpochTags
 
         // The payload is the one of v7: the channel only (Writer.WriteCodeChannel), so a stock RRF reads the packets as before
         Assert.That(packets.Single(packet => packet.Request == SbcRequest.InvalidateChannel).Payload, Has.Length.EqualTo(4));
+    }
+
+    [Test]
+    public void PacketWithoutAChannelCarriesTheMarkerAloneAndItsCopyNone()
+    {
+        // CE-4, CE-8: DSF's first packet of a connection carries the first marker whatever its type, in production a GetObjectModel. The header field
+        // then holds the marker alone, and a copy that RRF asks for holds 0
+        bool refuse = true;
+        FakeRrfSpi rrf = new(_ => false)
+        {
+            RecordPackets = true,
+            Respond = (request, id, _) => (request == SbcRequest.GetObjectModel && refuse) ? [(FirmwareRequest.ResendPacket, [], id)] : []
+        };
+        SpiAdapter dsf = CreateAdapter(rrf);
+        dsf.PerformFullTransfer(true);
+        Assert.That(dsf.WriteGetObjectModel("state", "v", ChannelEpoch.FirstMarker), Is.True);
+        dsf.PerformFullTransfer();
+        refuse = false;
+        dsf.PerformFullTransfer();
+
+        for (int i = 0; i < dsf.PacketsToRead && dsf.ReadNextPacket() is PacketHeader packet; i++)
+        {
+            if ((FirmwareRequest)packet.Request == FirmwareRequest.ResendPacket)
+            {
+                dsf.ResendPacket(packet, out _, out _);
+            }
+        }
+        dsf.PerformFullTransfer();
+
+        FakeRrfSpi.ProcessedPacket[] copies = [.. rrf.GetProcessedPackets().Where(packet => packet.Request == SbcRequest.GetObjectModel)];
+        Assert.That(copies.Select(packet => packet.Tag), Is.EqualTo(new[] { ChannelEpoch.FirstMarker, (ushort)0 }));
+        Assert.That(copies[1].Payload, Is.EqualTo(copies[0].Payload));
     }
 
     [Test]

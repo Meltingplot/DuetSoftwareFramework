@@ -8,7 +8,7 @@ namespace DuetControlServer.Link;
 internal sealed class EpochConnection
 {
     /// <summary>
-    /// Whether the next tagged packet is DSF's first one of this connection and carries the first marker
+    /// Whether the next packet DSF writes, whatever its type, is its first one of this connection and carries the first marker
     /// </summary>
     private bool _firstMarkerPending = true;
 
@@ -19,16 +19,31 @@ internal sealed class EpochConnection
     public bool PeerTags { get; private set; }
 
     /// <summary>
-    /// Tag for a packet of a channel, with the first marker if no tagged packet was written in this connection yet
+    /// Tag for a packet without a channel: the first marker alone on DSF's first packet of this connection, else 0. On it RRF sets every channel
+    /// epoch to 0, which they are in DSF at that point (CE-4)
+    /// </summary>
+    /// <returns>Value of the header field</returns>
+    public ushort Tag() => _firstMarkerPending ? ChannelEpoch.FirstMarker : (ushort)0;
+
+    /// <summary>
+    /// Tag for a packet of a channel, with the first marker if it is DSF's first packet of this connection
     /// </summary>
     /// <param name="epoch">Epoch of the channel</param>
     /// <returns>Tag</returns>
-    public ushort Tag(byte epoch) => (ushort)(ChannelEpoch.Tag(epoch) | (_firstMarkerPending ? ChannelEpoch.FirstMarker : 0));
+    public ushort Tag(byte epoch) => (ushort)(ChannelEpoch.Tag(epoch) | Tag());
 
     /// <summary>
-    /// Called when a tagged packet has been written. A packet that could not be written did not carry the marker to RRF
+    /// Tag for a packet whose tag was decided before, e.g. the result of a DoCode, which carries the tag of its DoCode (CE-6): the first marker is
+    /// added if it is DSF's first packet of this connection
     /// </summary>
-    /// <param name="tag">Tag of the written packet</param>
+    /// <param name="tag">Tag of the packet without the first marker</param>
+    /// <returns>Value of the header field</returns>
+    public ushort Mark(ushort tag) => (ushort)(tag | Tag());
+
+    /// <summary>
+    /// Called when a packet has been written. A packet that could not be written did not carry the marker to RRF
+    /// </summary>
+    /// <param name="tag">Value of the header field of the written packet</param>
     public void Written(ushort tag)
     {
         if ((tag & ChannelEpoch.FirstMarker) != 0)
