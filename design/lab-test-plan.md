@@ -632,3 +632,29 @@ Rückbau geprüft: ja, nach beiden Läufen (kein Side-Load gemountet, /var/tmp/l
 
 Bewertung: T2 (#134), T12 (#158, RRF #45) und die Neusendung von T11 (#161) sind auf der Hardware behoben, der Kanal blieb bei beiden Neusendungen frei. T10 (RRF #46) wirkt: Die Antwort "Macro file ... not found" landet nicht mehr beim nächsten Code. Offen bleibt der Fall, in dem die erste Kopie vor dem Warten auf das Makro kommt (`open-findings.md`, T10): dann erscheint die Fehlermeldung als Out-of-order reply in der Konsole. Die leeren Out-of-order replies sind Antworten, die RRF vor dem Lesen des Abbruchs geschrieben hat.
 
+
+### 2026-11-10 mittags: Kanal-Epoche, erster Lauf auf der Hardware, bestanden mit offenen Prüfungen
+
+```
+Datum, Zeit (UTC): 2026-11-10, 11:43 Flash, 11:44:48 bis 11:57:56 Lauf 1, 12:02:49 bis 12:15:20 Lauf 2, 14:00 Flash erneut, 14:01:30 bis 14:06:16 Lauf 3, 14:07:06 bis 14:09:16 Lauf 4, 14:09 Rückbau
+Anlass, PR, Commit: Kanal-Epoche, DSF #167 (81f31216) und RRF #47 (c1a9df6b6), Prüfungen EP-1, EP-8, EP-12 und EP-21 in Teilen
+DSF: 3.7.0+mp.13 im Image; in den Läufen 2 bis 4 Side-Load von 81f31216
+RRF: 3.7.0+1.mp.9-dev.4 (RRF #47 c1a9df6b6, sha256 c919109f6cefff12...), Firmware-Side-Load, Erweiterungen unverändert mp.4
+Stufen und Freigabe durch: 2 und 3, Tim ("you can sideload dsf and rrf on the lab printer and test it there when the unit tests are all green"); M112 der Kategorie Approval für diesen Lauf freigegeben ("ja")
+Link: erweiterter Link in allen Läufen aktiv ("Link capabilities All are active" nach jedem Verbindungsaufbau)
+Lauf 1, Standard-Suite, neue RRF gegen das DSF des Images: 31 bestanden, 5 fehlgeschlagen, 2 übersprungen. Watchdog-Neustarts 5 x, wieder da nach 12,0 bis 12,4 s. Journal: 0 Lost connection, 0 Out-of-order reply, 0 in den Fehlerkategorien
+Lauf 2, Standard-Suite, beide Seiten neu: 36 bestanden, 0 fehlgeschlagen, 2 übersprungen. Watchdog-Neustarts 5 x, 12,1 bis 12,4 s. Journal: 0 Lost connection, 1 x "Daemon: Out-of-order reply ''" 7 ms nach dem Start des Image-DCS beim Entfernen des Side-Loads
+Lauf 3, AbortsCrossingMacroRequests mit 2000 Abbrüchen, beide Seiten neu: alle 2000 "done", kein Block, 0 Out-of-order reply, 0 Lost connection, 0 Neusendungen. Das v7-Fenster verwarf 0 Requests; der Test endet deshalb als "inconclusive", weil er nur dessen Zeilen zählt. Im Debug-Journal (journald unterdrückte 263908 Zeilen, die Zahlen sind Untergrenzen): DSF verwarf über das Tag 45 x Message, 15 x ExecuteMacro, 3 x MacroFileClosed auf Telnet ("Dropped ... of epoch N, current epoch is N")
+Lauf 4, IntrusiveCodes.M112StaysHaltedUntilM999, beide Seiten neu: bestanden. M112 beantwortet, Status halted bis M999, kein "Stack underrun"
+Unterbrechung: Ein erster Versuch von Lauf 3 um 12:16 endete mit "Network error: Connection timed out", weil der Drucker ausgeschaltet wurde (Tim). Nach dem Neustart des SBC lief wieder die Image-Firmware mp.8; die Test-RRF wurde um 14:00 erneut geflasht
+Rückbau geprüft: ja, 14:11 (fw-sideload.sh remove, RRF 3.7.0+1.mp.8, kein Side-Load gemountet, /var/tmp/lab-tests weg, 0:/macros/lab-tests und sys/trigger30.g weg, OTA-Timer aktiv, idle, Heizungen aus, Erweiterungen laufen)
+```
+
+Bewertung:
+- Die RRF aus #47 lief zum ersten Mal. Sie startet, führt `config.g` aus und hält den erweiterten Link, gegen das DSF des Images (das nie taggt) und gegen das DSF aus #167.
+- Die fünf Fehlschläge von Lauf 1 kommen nicht von der neuen RRF:
+  - `RefusedMacroPaths` (3 Tests) und `CodeBufferReserve`: die Fixes DSF #132 und #133 sind nicht im Tag `v3.7.0+mp.13`. Mit dem DSF aus dem Branch bestehen alle vier (Lauf 2).
+  - `MessageBoxes.OneBoxAfterM122`: Kollision mit dem Selbsttest der Maschine, der um 11:49:55 auf HTTP startete und selbst zwei Boxen öffnet (`check-quick.g`, Zeile 23; `maintenance/self-test`, Zeile 100). Der Test zählt jede Box im Objektmodell. Einzeln wiederholt: 3 von 3 bestanden. Der Test sollte nur seine eigene Box zählen.
+- EP-8: mit der Epoche auf beiden Seiten 0 Out-of-order replies und 0 Neusendungen bei 2000 Abbrüchen. Vergleichswert vom 2026-11-09 auf dem erweiterten v7-Link: 249 leere Out-of-order replies und 2 Neusendungen. Die verworfenen Pakete im Debug-Journal zeigen, dass RRF taggt und DSF über das Tag filtert.
+- Die Zeile "Daemon: Out-of-order reply ''" nach dem DCS-Start ist das bekannte Muster. Sie passt zu dem offenen Punkt, dass eine Antwort der alten Verbindung in der neuen ankommt (Anforderungen, Abschnitt 10.9; Entscheidung offen). Bewiesen ist die Ursache nicht.
+- Nicht geprüft: die Zeile "Channel epochs" im `M122` der RRF (die Zähler sind nach dem Reset am Ende eines Laufs weg), EP-9, EP-18 bis EP-20 und EP-22 als eigene Prüfungen, alles mit Bewegung (EP-15 bis EP-17), kein Druck. `AbortsCrossingMacroRequests` sollte die über das Tag verworfenen Requests zählen, damit der Test mit der Epoche ein Ergebnis hat.
