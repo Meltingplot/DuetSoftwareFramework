@@ -115,6 +115,20 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     public bool IsCodeReplySurplus { get; set; }
 
     /// <summary>
+    /// Flag the replies of the code being executed as surplus where a channel abort records or applies it (RRF #46, SbcInterface.cpp:991, :2009),
+    /// but only if they would go out untagged: the stamp of the latest frame, which the replies carry, is invalid or the channel epoch is unknown.
+    /// A reply with a valid stamp while the epoch is known goes out, and DSF decides by its tag (decision of 2026-11-10), as DSF's v7 windows act only
+    /// on untagged packets. The models without the epoch never know an epoch, so for them every such code is flagged as before
+    /// </summary>
+    public void MarkCodeReplySurplus()
+    {
+        if (!IsEpochKnown || MachineState.CodeEpoch is null)
+        {
+            IsCodeReplySurplus = true;
+        }
+    }
+
+    /// <summary>
     /// Whether the SBC task has recorded an abort of this channel that the main task has yet to apply (abortRecorded, the byte of invalidationPending
     /// renamed, design/sbc-link-v8-requirements.md CE-7). The SBC task sets it, the main task clears it after the routine. Not used by
     /// <see cref="FakeRrfModel.V7"/>

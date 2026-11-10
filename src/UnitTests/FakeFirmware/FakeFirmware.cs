@@ -133,7 +133,8 @@ public sealed partial class FakeFirmware : ILinkAdapter
 
     /// <summary>
     /// Whether the fork catch code of RRF #46 (codeReplySurplus, GCodeBuffer.h:405) suppresses the replies of a code that DSF dropped at its abort.
-    /// It stays until milestone E3 (CE-7), switch it off to model E3
+    /// It stays until milestone E3 (CE-7), switch it off to model E3. With the channel epoch it acts only on a code whose replies would go out
+    /// untagged (<see cref="FakeGCodeBuffer.MarkCodeReplySurplus"/>)
     /// </summary>
     public bool CodeReplySurplus { get; set; } = true;
 
@@ -1418,10 +1419,10 @@ public sealed partial class FakeFirmware : ILinkAdapter
         InvalidateBufferedCodes(gb.Channel);
         gb.IsInvalidated = false;
 
-        // Until E3 the fork catch code of RRF #46 flags a code that waits for its macro (:886-889)
+        // Until E3 the fork catch code of RRF #46 flags a code that waits for its macro (:886-889, :991 in the branch), unless its replies are tagged
         if (CodeReplySurplus && gb.IsWaitingForMacro && gb.IsMacroStartedByCode)
         {
-            gb.IsCodeReplySurplus = true;
+            gb.MarkCodeReplySurplus();
         }
 
         // Flag the abort for the main task before the next packet is read

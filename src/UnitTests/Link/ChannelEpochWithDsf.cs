@@ -295,7 +295,7 @@ public class ChannelEpochWithDsf
         // tpost as system macros with the new epoch. DSF runs them in order. G4 P1, which ran in tfree at the abort, goes on in RRF and ends on the
         // level of tpre. A code sent after the abort runs after the T-code has ended and gets its own reply: RRF holds it in its ring while the state
         // machine runs and drops it with the next macro request, DSF suspends it under the system macro and sends it again (v7). No reply completes
-        // another code. With RRF #46 (codeReplySurplus) the late reply of G4 P1 is suppressed in RRF, without it DSF drops it by its epoch
+        // another code. The late reply of G4 P1 carries the old epoch, so RRF #46 (codeReplySurplus) does not suppress it and DSF decides by its tag
         bool release = false;
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
         {
@@ -335,23 +335,24 @@ public class ChannelEpochWithDsf
         Assert.That(t1Reply ?? string.Empty, Does.Not.Contain("reply of"));
         Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.Zero);
 
-        // The late reply of G4 P1 is of the old epoch and is shown as a message, the empty final reply of T1 is not shown. The replies of the codes of
-        // tpre and tpost are shown as well, as DSF shows the output of every system macro
-        Assert.That(Messages(host).Count(message => message == "reply of G4 P1"), Is.EqualTo(codeReplySurplus ? 0 : 1));
+        // The late reply of G4 P1 is of the old epoch and is shown as a message, with and without RRF #46, the empty final reply of T1 is not shown. The
+        // replies of the codes of tpre and tpost are shown as well, as DSF shows the output of every system macro
+        Assert.That(Messages(host).Count(message => message == "reply of G4 P1"), Is.EqualTo(1));
         Assert.That(Messages(host).Where(message => message != "reply of G4 P1"), Is.EquivalentTo(new[] { "reply of G4 P3", "reply of G4 P4" }));
         Assert.That(host.Firmware.MovementLockOwner, Is.Null);
     }
 
-    [Test]
-    public async Task HomingCodeThatSurvivesAnAbortEndsWithAnError()
+    [TestCase(true)]
+    [TestCase(false)]
+    public async Task HomingCodeThatSurvivesAnAbortEndsWithAnError(bool codeReplySurplus)
     {
         // Decision of 2026-11-10 on LA-25 (C1): the routine of the abort clears toBeHomed as AbortPrint does, so a G28 whose homing file the abort popped
         // ends with "Failed to home axes", a reply of the old epoch. DSF shows it as an error message that belongs to no code (decision of 2026-11-10),
-        // and the next code gets its own reply
+        // and the next code gets its own reply. RRF #46 does not suppress it, because it carries a tag
         bool release = false;
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
         {
-            firmware.CodeReplySurplus = false;
+            firmware.CodeReplySurplus = codeReplySurplus;
             firmware.OnCode("G28", _ => FakeReply.Home('X', 'Y'));
             firmware.OnCode("G4", code => (code.Text == "G4 P1" && !release) ? FakeReply.NotFinished : FakeReply.Ok());
         });

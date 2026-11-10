@@ -60,6 +60,9 @@ namespace UnitTests.Link;
 /// <item>Epoch pair: 0, 0, 0, 0, 0, 0, 0, 0; 1235 dropped by their tag, 0 stale replies shown (RRF #46 suppresses them), 0 untagged macro requests</item>
 /// <item>Epoch pair without the catch code of E3: 0, 0, 0, 0, 0, 0, 0, 0; 1838 dropped by their tag, 364 stale replies shown, 0 untagged macro requests</item>
 /// </list>
+/// After RRF #46 was limited to codes whose replies go out untagged (same day): V7 514, 305, 502, 258, 120, 30, 43, 0 and RecordApply 403, 0, 474, 345,
+/// 0, 39, 0, 0 (both unchanged in the model, the differences are run-to-run spread); epoch pair 0, 0, 0, 0, 0, 0, 0, 0 with 1850 dropped by their tag and
+/// 364 stale replies shown; without the catch code 0, 0, 0, 0, 0, 0, 0, 0 with 1848 dropped and 364 shown
 /// </para>
 /// </summary>
 [TestFixture]

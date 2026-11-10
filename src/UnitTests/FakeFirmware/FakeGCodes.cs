@@ -412,10 +412,11 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
                 {
                     EndChannelWork(gb);
 
-                    // Until E3 the fork catch code of RRF #46 stays: a code that still runs has replies that DSF does not expect (SbcInterface.cpp:907-911)
+                    // Until E3 the fork catch code of RRF #46 stays: a code that still runs has replies that DSF does not expect (SbcInterface.cpp:2005-2009).
+                    // It is flagged here, on the level that AbortFile has left, unless its replies are tagged
                     if (firmware.CodeReplySurplus && gb.MachineState.LastCodeFromSbc && !gb.IsCompletelyIdle)
                     {
-                        gb.IsCodeReplySurplus = true;
+                        gb.MarkCodeReplySurplus();
                     }
                     gb.IsAbortRecorded = false;
                 }

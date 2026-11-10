@@ -269,6 +269,41 @@ public class FakeFirmwareEpoch
         Assert.That(Replies("reply of G4 P6").Single().Tag, Is.EqualTo(T(2)));
     }
 
+    [TestCase(true)]
+    [TestCase(false)]
+    public void CatchCodeSuppressesOnlyUntaggedReplies(bool tagged)
+    {
+        // Decision of 2026-11-10: RRF #46 (codeReplySurplus, on here) flags a code that still runs at the abort only if its replies would go out
+        // untagged. With a tag the late reply goes out and DSF decides by it; towards a DSF that does not tag (here an untagged code and an untagged
+        // InvalidateChannel, so the epoch stays unknown) it is suppressed as before
+        bool release = false;
+        _firmware.OnCode("G4", code => (code.Text == "G4 P5" && !release) ? FakeReply.NotFinished : FakeReply.Ok($"reply of {code.Text}"));
+        if (tagged)
+        {
+            KnowEpoch(CodeChannel.HTTP, 1);
+        }
+        else
+        {
+            Assert.That(_firmware.WriteGetObjectModel("state", "v", 0), Is.True);
+        }
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P5"), tagged ? T(1) : (ushort)0), Is.True);
+        TransferUntil(() => _firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P5", "G4 P5 did not start");
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, tagged ? T(2) : (ushort)0), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P6"), tagged ? T(2) : (ushort)0), Is.True);
+        Transfer();
+        release = true;
+        TransferUntil(() => Replies("reply of G4 P6").Length == 1, "G4 P6 did not reply");
+        if (tagged)
+        {
+            Assert.That(Replies("reply of G4 P5").Single().Tag, Is.EqualTo(T(1)));
+        }
+        else
+        {
+            Assert.That(Replies("reply of G4 P5"), Is.Empty, "RRF #46 did not suppress the untagged late reply");
+            Assert.That(Replies("reply of G4 P6").Single().IsTagged, Is.False);
+        }
+    }
+
     [Test]
     public void MacroRequestOfACodeOfAnOlderEpochIsASystemMacroRequest()
     {
