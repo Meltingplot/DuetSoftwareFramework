@@ -145,6 +145,9 @@ public class ChannelEpochStress
         public int DsfEpochDrops;
         /// <summary>Tagged packets of another epoch, drops by the gate and ignored repeats in RRF (CE-10, CE-24, CE-7)</summary>
         public int RrfEpochDrops;
+        /// <summary>Macro requests that RRF wrote without a tag. With the epoch pair there are none: RRF writes nothing of a channel before it has read
+        /// DSF's first packet, which carries the marker (decisions of 2026-11-10)</summary>
+        public int UntaggedMacroRequests;
         /// <summary>Host restarts the run needed to recover from a block or a stop</summary>
         public int Restarts;
         /// <summary>Details of the wrong completions and the stale events, by kind</summary>
@@ -167,7 +170,7 @@ public class ChannelEpochStress
             StringBuilder builder = new();
             builder.Append($"aborts={Aborts} outOfOrder={OutOfOrderReplies} resends={Resends} invalidateResends={InvalidateChannelResends} windowDrops={WindowDrops} ");
             builder.Append($"wrongCompletions={WrongCompletions} staleEffects={StaleEventEffects} probesCancelled={ProbesCancelled} blocks={Blocks} dcsStops={DcsStops} ");
-            builder.Append($"dsfEpochDrops={DsfEpochDrops} rrfEpochDrops={RrfEpochDrops} restarts={Restarts}");
+            builder.Append($"dsfEpochDrops={DsfEpochDrops} rrfEpochDrops={RrfEpochDrops} untaggedMacroRequests={UntaggedMacroRequests} restarts={Restarts}");
             foreach (KeyValuePair<string, int> detail in Details)
             {
                 builder.Append($"\n  {detail.Key}: {detail.Value}");
@@ -273,6 +276,30 @@ public class ChannelEpochStress
                 Assert.That(value, Is.Zero, $"{name}: {counters}");
             }
             Assert.That(counters.Resends, Is.Zero, $"Resends: {counters}");
+            Assert.That(counters.UntaggedMacroRequests, Is.Zero, $"UntaggedMacroRequests: {counters}");
+        });
+    }
+
+    /// <summary>
+    /// The daemon case alone, where the first daemon.g request of RRF crossed DSF's first abort of the channel untagged and fell into the window of #134
+    /// while the first marker was on DSF's first channel packet only (1 drop with seed 20261109 and 100 aborts at 843ae3b5). With and without the catch
+    /// code of E3, nothing of it is left
+    /// </summary>
+    /// <param name="withoutCatchCode">Whether the catch code of E3 is switched off</param>
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task DaemonCaseHasNoSymptoms(bool withoutCatchCode)
+    {
+        Options options = withoutCatchCode ? WithoutCatchCode with { Name = "daemon without catch code", Only = [Situation.DaemonRequest] }
+            : new Options("daemon", Only: [Situation.DaemonRequest]);
+        Counters counters = await RunAsync(options, Seed, 100);
+        Assert.Multiple(() =>
+        {
+            foreach ((string name, int value) in counters.Symptoms)
+            {
+                Assert.That(value, Is.Zero, $"{name}: {counters}");
+            }
+            Assert.That(counters.UntaggedMacroRequests, Is.Zero, $"UntaggedMacroRequests: {counters}");
         });
     }
 
@@ -421,6 +448,7 @@ public class ChannelEpochStress
                 Counters.Details["RRF: Macro file has been started but none was requested"] = _rrfStaleStarts;
             }
             Counters.RrfEpochDrops += firmware.EpochCounterTotal;
+            Counters.UntaggedMacroRequests += packets.Count(packet => packet.Request == FirmwareRequest.ExecuteMacro && !packet.IsTagged);
             foreach (Processor processor in _host.Services.GetRequiredService<Manager>())
             {
                 using (processor.Lock())

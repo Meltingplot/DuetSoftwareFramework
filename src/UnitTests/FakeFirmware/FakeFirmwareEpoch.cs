@@ -114,10 +114,47 @@ public class FakeFirmwareEpoch
     [Test]
     public void WritesNoTagWhileTheEpochIsUnknown()
     {
-        // CE-4: a request before any DSF packet of the channel (config.g at boot, RepRap.cpp:627-637) is untagged, not tagged with a start value
+        // CE-4: towards an SBC whose first packet carries no marker (a stock DSF, or a DSF that did not notice the restart of RRF), a request before any
+        // DSF packet of the channel (config.g at boot, RepRap.cpp:627-637) is untagged, not tagged with a start value
         _firmware.RequestMacro(CodeChannel.Trigger, "config.g");
+        Assert.That(_firmware.WriteGetObjectModel("state", "v", 0), Is.True);
         TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.Trigger).Length == 1, "config.g was not requested");
         Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.Trigger)[0].IsTagged, Is.False);
+    }
+
+    [Test]
+    public void HoldsChannelPacketsUntilTheFirstSbcPacket()
+    {
+        // Decision of 2026-11-10: until RRF has read DSF's first packet of the connection, it writes nothing that belongs to a channel. config.g, which
+        // RRF requests as soon as the SBC is connected (RepRap.cpp:627-637), waits for it and then carries epoch 0 of DSF's first marker
+        _firmware.RequestMacro(CodeChannel.Trigger, "config.g");
+        Transfers(3);
+        Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.Trigger), Is.Empty, "config.g was requested before DSF's first packet");
+        Assert.That(_firmware.IsIdle(CodeChannel.Trigger), Is.False, "The request was dropped");
+
+        Assert.That(_firmware.WriteGetObjectModel("state", "v", FakeTag.FirstMarker), Is.True);
+        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.Trigger).Length == 1, "config.g was not requested after DSF's first packet");
+        Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.Trigger)[0].Tag, Is.EqualTo(T(0)));
+    }
+
+    [Test]
+    public void HoldsChannelPacketsAgainAfterALostConnection()
+    {
+        // The flag ends with the connection (InvalidateResources). A system macro that RRF asks for after the loss is requested once DSF's first packet
+        // of the next connection has been read, with the epoch of its marker. Packets without a channel, such as the buffer update, are not held
+        Assert.That(_firmware.WriteGetObjectModel("state", "v", FakeTag.FirstMarker), Is.True);
+        Transfer();
+        _firmware.SimulateConnectionLoss();
+        int lossTransfer = _firmware.TransferCount;
+        _firmware.RequestMacro(CodeChannel.Trigger, "trigger3.g", true);
+        Transfers(3);
+        Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.Trigger), Is.Empty, "trigger3.g was requested before DSF's first packet");
+        Assert.That(_firmware.GetSentPackets().Any(packet => packet.Request == Request.CodeBufferUpdate && packet.Transfer > lossTransfer), Is.True,
+            "The buffer update was held");
+
+        Assert.That(_firmware.WriteGetObjectModel("state", "v", FakeTag.FirstMarker), Is.True);
+        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.Trigger).Length == 1, "trigger3.g was not requested after DSF's first packet");
+        Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.Trigger)[0].Tag, Is.EqualTo(T(0)));
     }
 
     [Test]

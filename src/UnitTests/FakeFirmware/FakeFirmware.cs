@@ -704,6 +704,14 @@ public sealed partial class FakeFirmware : ILinkAdapter
     private readonly List<(MessageTypeFlags type, StringBuilder text, FakeCode? code, bool isOutputBuffer)> _gcodeReply = [];
     private bool _repRapStopped;
 
+    /// <summary>
+    /// Whether the SBC task has read the header of a packet from DSF in this connection, of any type and with or without the first marker. It is false
+    /// after boot and after a lost connection (InvalidateResources). While it is false, the RRF of milestone E2 writes nothing that belongs to a channel
+    /// (decision of 2026-11-10): its first requests of a channel go out once it knows whether DSF tags, and with the marker of a DSF that tags they
+    /// carry an epoch. Without the marker the epochs stay unknown and RRF writes untagged packets, as in v7
+    /// </summary>
+    private bool _sbcPacketRead;
+
     // Logs
     private readonly List<FakeCode> _receivedCodes = [], _executedCodes = [], _discardedCodes = [];
     private readonly List<FakePacket> _sentPackets = [];
@@ -724,6 +732,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
         _txPackets.Clear();
         _sendBufferUpdate = true;
         _repRapStopped = false;
+        _sbcPacketRead = false;
         ObjectModel.ClearGlobals();
         SetActiveLinkCapabilities(LinkCapabilities.None);
         _hadReset = true;
@@ -841,6 +850,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
         {
             bool acknowledged = true;
             FakeGCodeBuffer? gb = (request.Channel < CodeChannel.Unknown) ? _gcodes[request.Channel] : null;
+            _sbcPacketRead = true;
 
             // Only the RRF of milestone E2 reads the tags of DSF (CE-5), the others see 0 there
             ushort tag = (Model == FakeRrfModel.Epoch) ? request.Tag : (ushort)0;
@@ -1117,6 +1127,12 @@ public sealed partial class FakeFirmware : ILinkAdapter
             _sendBufferUpdate = false;
         }
 
+        // Nothing of a channel is written before the SBC task has read DSF's first packet of the connection (milestone E2). It is held, not dropped
+        if (Model == FakeRrfModel.Epoch && !_sbcPacketRead)
+        {
+            return;
+        }
+
         // Deal with code channel requests
         foreach (FakeGCodeBuffer gb in _gcodes.Buffers)
         {
@@ -1380,6 +1396,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
     /// </summary>
     private void InvalidateResources()
     {
+        _sbcPacketRead = false;
         _codeBuffer.Clear();
         _codeBufferUsed = 0;
         _sendBufferUpdate = true;

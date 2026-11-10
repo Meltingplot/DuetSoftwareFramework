@@ -125,6 +125,27 @@ public class ChannelEpochWithDsf
     }
 
     [Test]
+    public async Task RrfRequestBeforeDsfsFirstPacketCarriesAnEpoch()
+    {
+        // Decision of 2026-11-10: RRF writes nothing of a channel before it has read DSF's first packet of the connection, so a macro request that RRF
+        // makes at boot goes out with epoch 0 of DSF's marker, not untagged. Without the query of the link capabilities DSF's first packet is the first
+        // poll of the object model (UpdateService). The fake runs its main task after the SBC task, so the request is written one transfer after the
+        // connect and DSF's poll is there by then; this test therefore also passes without the hold, which FakeFirmwareEpoch checks at the adapter
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
+        {
+            firmware.SupportedLinkCapabilities = DuetControlServer.Link.Protocol.Shared.LinkCapabilities.None;
+            firmware.RequestMacro(CodeChannel.Trigger, "boot.g");
+        });
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetSentPackets().Any(packet => packet.Request == FirmwareRequest.ExecuteMacro), Timeout), Is.True,
+            "boot.g was not requested");
+        FakePacket request = host.Firmware.GetSentPackets().First(packet => packet.Request == FirmwareRequest.ExecuteMacro);
+        FakeSbcRequest first = host.Firmware.GetReceivedRequests()[0];
+        Assert.That(request.Tag, Is.EqualTo(FakeTag.Of(0)));
+        Assert.That(first.Tag & FakeTag.FirstMarker, Is.Not.Zero);
+        Assert.That(request.Transfer, Is.GreaterThan(first.Transfer), "RRF wrote the request before it had read DSF's first packet");
+    }
+
+    [Test]
     public void MarkerGoesOnTheFirstPacketThatIsWritten()
     {
         // CE-4: every kind of packet takes the marker while it is pending: one without a channel alone, a channel packet with its epoch, a packet whose
