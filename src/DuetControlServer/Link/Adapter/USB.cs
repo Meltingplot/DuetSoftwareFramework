@@ -673,14 +673,16 @@ public class USB : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="request">SBC request to send</param>
     /// <param name="dataLength">Length of the extra payload</param>
-    private void WritePacket(Protocol.SbcRequests.Request request, int dataLength = 0)
+    /// <param name="tag">Tag of the channel epoch, which goes into ResendPacketId. A firmware without the epoch ignores that field outside
+    /// ResendPacket (design/sbc-link-v8-requirements.md CE-5)</param>
+    private void WritePacket(Protocol.SbcRequests.Request request, int dataLength = 0, ushort tag = 0)
     {
         PacketHeader header = new()
         {
             Request = (ushort)request,
             Id = _packetId++,
             Length = (ushort)dataLength,
-            ResendPacketId = 0
+            ResendPacketId = tag
         };
 
         Span<byte> span = _txBuffer.Value[_txPointer..].Span;
@@ -732,7 +734,8 @@ public class USB : IDiagnostics, ILinkAdapter
                 sbcRequest = (Protocol.SbcRequests.Request)header.Request;
                 invalidatedChannel = (sbcRequest == Protocol.SbcRequests.Request.InvalidateChannel)
                     ? MemoryMarshal.Read<CodeChannelHeader>(buffer.Slice(headerSize, header.Length)).Channel : null;
-                WritePacket(sbcRequest, header.Length);
+                // The copy keeps the tag of the original, but not the first marker, which only the first tagged packet of a connection carries (CE-8)
+                WritePacket(sbcRequest, header.Length, (ushort)(header.ResendPacketId & ~ChannelEpoch.FirstMarker));
                 buffer.Slice(headerSize, header.Length).CopyTo(GetWriteBuffer(header.Length));
                 return;
             }
@@ -782,8 +785,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// Request a code to be executed
     /// </summary>
     /// <param name="code">Code to send</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteCode(Code code)
+    public bool WriteCode(Code code, ushort tag)
     {
         // Attempt to serialize the code first
         Span<byte> span = stackalloc byte[_settings.MaxCodeBufferSize];
@@ -797,7 +801,7 @@ public class USB : IDiagnostics, ILinkAdapter
         _numMeasuredCodes++;
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.Code, codeLength);
+        WritePacket(Protocol.SbcRequests.Request.Code, codeLength, tag);
         span[..codeLength].CopyTo(GetWriteBuffer(codeLength));
         return true;
     }
@@ -885,8 +889,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="channel">Code channel of the finished macro</param>
     /// <param name="error">Whether an error occurred</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteMacroCompleted(CodeChannel channel, bool error)
+    public bool WriteMacroCompleted(CodeChannel channel, bool error, ushort tag)
     {
         int dataLength = Marshal.SizeOf<Protocol.SbcRequests.MacroCompleteHeader>();
         if (!CanWritePacket(dataLength))
@@ -894,7 +899,7 @@ public class USB : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.MacroCompleted, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.MacroCompleted, dataLength, tag);
         Protocol.Writer.WriteMacroCompleted(GetWriteBuffer(dataLength), channel, error);
         return true;
     }
@@ -903,8 +908,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// Request the movement systems to be locked and wait for standstill
     /// </summary>
     /// <param name="channel">Code channel that requires the lock</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel channel)
+    public bool WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel channel, ushort tag)
     {
         int dataLength = Marshal.SizeOf<CodeChannelHeader>();
         if (!CanWritePacket(dataLength))
@@ -912,7 +918,7 @@ public class USB : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.LockAllMovementSystemsAndWaitForStandstill, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.LockAllMovementSystemsAndWaitForStandstill, dataLength, tag);
         Protocol.Writer.WriteCodeChannel(GetWriteBuffer(dataLength), channel);
         return true;
     }
@@ -921,8 +927,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// Release all acquired locks again
     /// </summary>
     /// <param name="channel">Code channel that releases the locks</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteUnlock(CodeChannel channel)
+    public bool WriteUnlock(CodeChannel channel, ushort tag)
     {
         int dataLength = Marshal.SizeOf<CodeChannelHeader>();
         if (!CanWritePacket(dataLength))
@@ -930,7 +937,7 @@ public class USB : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.Unlock, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.Unlock, dataLength, tag);
         Protocol.Writer.WriteCodeChannel(GetWriteBuffer(dataLength), channel);
         return true;
     }
@@ -1332,8 +1339,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="channel">Where to evaluate the expression</param>
     /// <param name="expression">Expression to evaluate</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>Whether the evaluation request has been written successfully</returns>
-    public bool WriteEvaluateExpression(CodeChannel channel, string expression)
+    public bool WriteEvaluateExpression(CodeChannel channel, string expression, ushort tag)
     {
         // Serialize the request first to see how much space it requires
         Span<byte> span = stackalloc byte[_bufferSize - Marshal.SizeOf<PacketHeader>()];
@@ -1346,7 +1354,7 @@ public class USB : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.EvaluateExpression, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.EvaluateExpression, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1356,8 +1364,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="flags">Message flags</param>
     /// <param name="message">Message content</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>Whether the firmware has been written successfully</returns>
-    public bool WriteMessage(MessageTypeFlags flags, string message)
+    public bool WriteMessage(MessageTypeFlags flags, string message, ushort tag)
     {
         // Serialize the request first to see how much space it requires
         Span<byte> span = stackalloc byte[_bufferSize - Marshal.SizeOf<PacketHeader>()];
@@ -1370,7 +1379,7 @@ public class USB : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.Message, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.Message, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1379,8 +1388,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// Notify RepRapFirmware that a macro file could be started
     /// </summary>
     /// <param name="channel">Code channel that requires the lock</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteMacroStarted(CodeChannel channel)
+    public bool WriteMacroStarted(CodeChannel channel, ushort tag)
     {
         int dataLength = Marshal.SizeOf<CodeChannelHeader>();
         if (!CanWritePacket(dataLength))
@@ -1388,7 +1398,7 @@ public class USB : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.MacroStarted, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.MacroStarted, dataLength, tag);
         Protocol.Writer.WriteCodeChannel(GetWriteBuffer(dataLength), channel);
         return true;
     }
@@ -1397,8 +1407,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// Called when a code channel is supposed to be invalidated (e.g. via abort keyword)
     /// </summary>
     /// <param name="channel">Code channel that requires the lock</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteInvalidateChannel(CodeChannel channel)
+    public bool WriteInvalidateChannel(CodeChannel channel, ushort tag)
     {
         int dataLength = Marshal.SizeOf<CodeChannelHeader>();
         if (!CanWritePacket(dataLength))
@@ -1406,7 +1417,7 @@ public class USB : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.InvalidateChannel, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.InvalidateChannel, dataLength, tag);
         Protocol.Writer.WriteCodeChannel(GetWriteBuffer(dataLength), channel);
         return true;
     }
@@ -1418,8 +1429,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// <param name="createVariable">Whether the variable should be created or updated</param>
     /// <param name="varName">Name of the variable including global or var prefix</param>
     /// <param name="expression">New value of the variable</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteSetVariable(CodeChannel channel, bool createVariable, string varName, string expression)
+    public bool WriteSetVariable(CodeChannel channel, bool createVariable, string varName, string expression, ushort tag)
     {
         // Serialize the request first to see how much space it requires
         Span<byte> span = stackalloc byte[_bufferSize - Marshal.SizeOf<PacketHeader>()];
@@ -1432,7 +1444,7 @@ public class USB : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.SetVariable, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.SetVariable, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1442,8 +1454,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="channel">G-code channel</param>
     /// <param name="varName">Name of the variable excluding var prefix</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteDeleteLocalVariable(CodeChannel channel, string varName)
+    public bool WriteDeleteLocalVariable(CodeChannel channel, string varName, ushort tag)
     {
         // Serialize the request first to see how much space it requires
         Span<byte> span = stackalloc byte[_bufferSize - Marshal.SizeOf<PacketHeader>()];
@@ -1456,7 +1469,7 @@ public class USB : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.DeleteLocalVariable, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.DeleteLocalVariable, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1628,8 +1641,9 @@ public class USB : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="channel">Code channel</param>
     /// <param name="result">Last code result</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteSetLastCodeResult(CodeChannel channel, CodeResult result)
+    public bool WriteSetLastCodeResult(CodeChannel channel, CodeResult result, ushort tag)
     {
         int dataLength = Marshal.SizeOf<Protocol.SbcRequests.SetLastCodeResultHeader>();
         if (!CanWritePacket(dataLength))
@@ -1637,7 +1651,7 @@ public class USB : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.SetLastCodeResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.SetLastCodeResult, dataLength, tag);
         Protocol.Writer.WriteSetLastCodeResult(GetWriteBuffer(dataLength), channel, result);
         return true;
     }

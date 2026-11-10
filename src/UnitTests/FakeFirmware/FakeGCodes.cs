@@ -180,6 +180,13 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
     public void QueueSbcCode(CodeChannel channel, string code) => _sbcCodes.Enqueue((channel, code));
 
     /// <summary>
+    /// Whether a text code of a channel waits to be taken by the main task
+    /// </summary>
+    /// <param name="channel">Code channel</param>
+    /// <returns>Whether one is queued</returns>
+    public bool HasQueuedSbcCode(CodeChannel channel) => _sbcCodes.Any(item => item.channel == channel);
+
+    /// <summary>
     /// Channels whose files the main task aborts on its next spin, see <see cref="FakeFirmware.AbortAllFiles"/>
     /// </summary>
     private readonly HashSet<CodeChannel> _abortAllFiles = [];
@@ -737,6 +744,15 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
     private ActResult HandleCode(FakeGCodeBuffer gb, FakeCode code)
     {
         FakeReply? reply = firmware.RunCodeHandler(code);
+        if (reply is { IsMacroCall: true })
+        {
+            bool? started = DoFileMacro(gb, reply.Text, false, code.MajorNumber ?? 0, [], code);
+            if (started is null)
+            {
+                return ActResult.Blocked;
+            }
+            return started.Value ? HandleResult(gb, CodeResult.Ok, string.Empty) : HandleResult(gb, CodeResult.Error, $"Macro file {reply.Text} not found");
+        }
         if (reply is not null)
         {
             return HandleResult(gb, reply.Result, reply.Text);

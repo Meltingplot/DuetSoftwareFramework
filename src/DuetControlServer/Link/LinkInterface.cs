@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -80,8 +81,8 @@ public sealed partial class LinkInterface(
     internal PrintStoppedReason StopPrintReason;
     internal TaskCompletionSource? StopPrintRequest;
 
-    // Miscellaneous requests
-    internal readonly Queue<Tuple<MessageTypeFlags, string>> MessagesToSend = new();
+    // Miscellaneous requests. The tag is that of the DoCode request a message is the result of, 0 for other messages (CE-6)
+    internal readonly Queue<(MessageTypeFlags Flags, string Message, ushort Tag)> MessagesToSend = new();
 
     /// <summary>
     /// Print diagnostics of this class
@@ -527,10 +528,11 @@ public sealed partial class LinkInterface(
     /// </summary>
     /// <param name="flags">Message flags</param>
     /// <param name="message">Message content</param>
+    /// <param name="tag">Tag of the DoCode request whose result this is, 0 for other messages (design/sbc-link-v8-requirements.md CE-6)</param>
     /// <exception cref="InvalidOperationException">Incompatible firmware or not connected over SPI</exception>
     /// <exception cref="NotSupportedException">Incompatible firmware version</exception>
     /// <exception cref="ArgumentException">Invalid parameter</exception>
-    public void SendMessage(MessageTypeFlags flags, string message)
+    public void SendMessage(MessageTypeFlags flags, string message, ushort tag = 0)
     {
         if (linkAdapter.ProtocolVersion == 1)
         {
@@ -543,7 +545,7 @@ public sealed partial class LinkInterface(
 
         lock (MessagesToSend)
         {
-            MessagesToSend.Enqueue(new Tuple<MessageTypeFlags, string>(flags, message));
+            MessagesToSend.Enqueue((flags, message, tag));
         }
     }
 
@@ -569,17 +571,55 @@ public sealed partial class LinkInterface(
     /// <param name="codeLength">Length of the binary code in bytes</param>
     /// <param name="mayUseSpareRoom">Whether the code may use the spare room for time-critical codes. The firmware shares its code buffer
     /// among all channels, so codes that are buffered ahead must leave that room free</param>
+    /// <param name="tag">Tag of the channel epoch</param>
     /// <returns>Whether the code could be sent</returns>
-    internal bool SendCode(Code code, int codeLength, bool mayUseSpareRoom)
+    internal bool SendCode(Code code, int codeLength, bool mayUseSpareRoom, ushort tag)
     {
         int spareRoom = mayUseSpareRoom ? 0 : SpareBufferSpace;
-        if (BufferSpace - spareRoom > codeLength && linkAdapter.WriteCode(code))
+        if (BufferSpace - spareRoom > codeLength && linkAdapter.WriteCode(code, tag))
         {
             BytesReserved += codeLength;
             BufferSpace -= codeLength;
             return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Fail the code result, evaluation and variable requests of a channel, written or not, because its epoch has changed
+    /// (design/sbc-link-v8-requirements.md CE-25). RRF drops the requests of an older epoch without an answer (CE-10) and DSF drops their answers
+    /// (CE-14), so nothing may wait for them. These requests live here, not on the channel, so the channel calls this where it changes its epoch.
+    /// They are failed as <see cref="InvalidateCodes"/> fails those of every channel on an emergency stop
+    /// </summary>
+    /// <param name="channel">Channel whose epoch has changed</param>
+    internal void FailChannelRequests(CodeChannel channel)
+    {
+        lock (SetLastCodeResultRequests)
+        {
+            foreach (SetLastCodeResultRequest request in SetLastCodeResultRequests.Where(request => request.Channel == channel).ToList())
+            {
+                request.SetCanceled();
+                SetLastCodeResultRequests.Remove(request);
+            }
+        }
+
+        lock (EvaluateExpressionRequests)
+        {
+            foreach (EvaluateExpressionRequest request in EvaluateExpressionRequests.Where(request => request.Channel == channel).ToList())
+            {
+                request.SetCanceled();
+                EvaluateExpressionRequests.Remove(request);
+            }
+        }
+
+        lock (VariableRequests)
+        {
+            foreach (VariableRequest request in VariableRequests.Where(request => request.Channel == channel).ToList())
+            {
+                request.SetCanceled();
+                VariableRequests.Remove(request);
+            }
+        }
     }
 
     /// <summary>

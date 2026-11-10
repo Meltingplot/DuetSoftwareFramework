@@ -391,8 +391,17 @@ public sealed class LinkService(
                 Invalidate();
                 eventLogger.LogOutput(MessageType.Warning, "Connection to controller has been reset");
 
-                // The capabilities of the link end with the connection
+                // The capabilities of the link end with the connection, and so do the epochs of the channels. The first tagged packet of the next
+                // connection carries the first marker, on which RRF forgets its epochs as well (CE-4)
                 _queryLinkCapabilities = true;
+                _connection = new EpochConnection();
+                foreach (Channel.Processor channel in channels)
+                {
+                    using (channel.Lock())
+                    {
+                        channel.ResetEpoch();
+                    }
+                }
             }
 
             // Activate the capabilities of the link that RRF offers
@@ -458,7 +467,7 @@ public sealed class LinkService(
             // Process pending codes, macro files and requests for resource locks/unlocks as well as flush requests
             if (!skipChannels)
             {
-                channels.Spin();
+                channels.Spin(_connection);
             }
 
             // Request object model updates
@@ -499,8 +508,16 @@ public sealed class LinkService(
             {
                 foreach (SetLastCodeResultRequest request in linkInterface.SetLastCodeResultRequests.ToList())
                 {
-                    if (linkAdapter.WriteSetLastCodeResult(request.Channel, request.Result))
+                    if (channels[request.Channel].IsAbortUnsent)
                     {
+                        // Nothing of the channel goes out before its InvalidateChannel, which fails this request (CE-25 (f))
+                        continue;
+                    }
+
+                    ushort tag = _connection.Tag(channels[request.Channel].Epoch);
+                    if (linkAdapter.WriteSetLastCodeResult(request.Channel, request.Result, tag))
+                    {
+                        _connection.Written(tag);
                         request.SetResult();
                         linkInterface.SetLastCodeResultRequests.Remove(request);
                     }
@@ -520,11 +537,14 @@ public sealed class LinkService(
                 {
                     foreach (EvaluateExpressionRequest request in linkInterface.EvaluateExpressionRequests)
                     {
-                        if (!request.Written)
+                        if (!request.Written && !channels[request.Channel].IsAbortUnsent)
                         {
-                            if (linkAdapter.WriteEvaluateExpression(request.Channel, request.Expression))
+                            ushort tag = _connection.Tag(channels[request.Channel].Epoch);
+                            if (linkAdapter.WriteEvaluateExpression(request.Channel, request.Expression, tag))
                             {
+                                _connection.Written(tag);
                                 request.Written = true;
+                                request.Tag = (ushort)(tag & ~ChannelEpoch.FirstMarker);
 
                                 numEvaluationsSent++;
                                 if (numEvaluationsSent >= Consts.MaxEvaluationRequestsPerTransfer)
@@ -546,11 +566,14 @@ public sealed class LinkService(
                 {
                     foreach (VariableRequest request in linkInterface.VariableRequests.ToList())
                     {
-                        if (!request.Written)
+                        if (!request.Written && !channels[request.Channel].IsAbortUnsent)
                         {
-                            if ((request.Expression is not null && linkAdapter.WriteSetVariable(request.Channel, request.CreateVariable, request.VariableName, request.Expression)) ||
-                                (request.Expression is null && linkAdapter.WriteDeleteLocalVariable(request.Channel, request.VariableName)))
+                            ushort tag = _connection.Tag(channels[request.Channel].Epoch);
+                            if ((request.Expression is not null && linkAdapter.WriteSetVariable(request.Channel, request.CreateVariable, request.VariableName, request.Expression, tag)) ||
+                                (request.Expression is null && linkAdapter.WriteDeleteLocalVariable(request.Channel, request.VariableName, tag)))
                             {
+                                _connection.Written(tag);
+                                request.Tag = (ushort)(tag & ~ChannelEpoch.FirstMarker);
                                 if (request.Expression is null)
                                 {
                                     request.SetResult(null);
@@ -580,10 +603,19 @@ public sealed class LinkService(
             // Send pending messages
             lock (linkInterface.MessagesToSend)
             {
-                while (linkInterface.MessagesToSend.TryPeek(out Tuple<MessageTypeFlags, string>? message))
+                while (linkInterface.MessagesToSend.TryPeek(out (MessageTypeFlags Flags, string Message, ushort Tag) message))
                 {
-                    if (linkAdapter.WriteMessage(message.Item1, message.Item2))
+                    // The result of a DoCode of an older epoch is not sent: RRF has ended that DoCode at the abort and drops the chunks (CE-25 (e), CE-10)
+                    if (ChannelEpoch.IsTagged(message.Tag) && TryGetDestinationChannel(message.Flags, out CodeChannel destination) &&
+                        !channels[destination].IsResultOfCurrentEpoch(message.Tag))
                     {
+                        linkInterface.MessagesToSend.Dequeue();
+                        continue;
+                    }
+
+                    if (linkAdapter.WriteMessage(message.Flags, message.Message, message.Tag))
+                    {
+                        _connection.Written(message.Tag);
                         linkInterface.MessagesToSend.Dequeue();
                     }
                     else
@@ -608,6 +640,11 @@ public sealed class LinkService(
     /// <returns>Asynchronous task</returns>
     private void ProcessPacket(PacketHeader packet)
     {
+        // Outside ResendPacket the header field carries the tag of the channel epoch (CE-5). A packet of another epoch is dropped by its handler,
+        // with the channel locked, because DSF aborts a channel under that lock (Processor.IsStale)
+        ushort tag = ((Request)packet.Request != Request.ResendPacket) ? packet.ResendPacketId : (ushort)0;
+        _connection.Received(tag);
+
         switch ((Request)packet.Request)
         {
             case Request.ResendPacket:
@@ -632,40 +669,40 @@ public sealed class LinkService(
                 HandleCodeBufferUpdate();
                 break;
             case Request.Message:
-                HandleMessage();
+                HandleMessage(tag);
                 break;
             case Request.ExecuteMacro:
-                HandleMacroRequest();
+                HandleMacroRequest(tag);
                 break;
             case Request.AbortFile:
-                HandleAbortFileRequest();
+                HandleAbortFileRequest(tag);
                 break;
             case Request.PrintPaused:
-                HandlePrintPaused();
+                HandlePrintPaused(tag);
                 break;
             case Request.Locked:
-                HandleResourceLocked();
+                HandleResourceLocked(tag);
                 break;
             case Request.FileChunk:
                 HandleFileChunkRequest();
                 break;
             case Request.EvaluationResult:
-                HandleEvaluationResult();
+                HandleEvaluationResult(tag);
                 break;
             case Request.DoCode:
-                HandleDoCode();
+                HandleDoCode(tag);
                 break;
             case Request.WaitForAcknowledgement:
-                HandleWaitForAcknowledgement();
+                HandleWaitForAcknowledgement(tag);
                 break;
             case Request.MacroFileClosed:
-                HandleMacroFileClosed();
+                HandleMacroFileClosed(tag);
                 break;
             case Request.MessageAcknowledged:
-                HandleMessageAcknowledgement();
+                HandleMessageAcknowledgement(tag);
                 break;
             case Request.VariableResult:
-                HandleVariableResult();
+                HandleVariableResult(tag);
                 break;
             case Request.CheckFileExists:
                 HandleCheckFileExists();
@@ -761,7 +798,7 @@ public sealed class LinkService(
     /// <summary>
     /// Process an incoming message
     /// </summary>
-    private void HandleMessage()
+    private void HandleMessage(ushort tag)
     {
         linkAdapter.ReadMessage(out MessageTypeFlags flags, out string reply);
         logger.LogTrace("Received message [{Flags}] {Message}", flags, reply);
@@ -790,7 +827,7 @@ public sealed class LinkService(
         // Check if this is a code reply
         if (flags.HasFlag(MessageTypeFlags.BinaryCodeReplyFlag))
         {
-            if (!channels.HandleReply(flags, reply))
+            if (!channels.HandleReply(flags, reply, tag))
             {
                 // Must be a left-over error message...
                 OutputGenericMessage(flags, reply);
@@ -842,7 +879,7 @@ public sealed class LinkService(
     /// <summary>
     /// Handle a macro request
     /// </summary>
-    private void HandleMacroRequest()
+    private void HandleMacroRequest(ushort tag)
     {
         linkAdapter.ReadMacroRequest(out CodeChannel channel, out bool fromCode, out string filename);
         logger.LogTrace("Received macro request for file {File} on channel {Channel}", filename, channel);
@@ -851,7 +888,10 @@ public sealed class LinkService(
         {
             using (channels[channel].Lock())
             {
-                channels[channel].DoMacroFile(filename, fromCode);
+                if (!channels[channel].IsStale(tag, Request.ExecuteMacro))
+                {
+                    channels[channel].DoMacroFile(filename, fromCode, ChannelEpoch.IsTagged(tag), _connection);
+                }
             }
         }
         else if (!settings.Value.UpdateOnly)
@@ -863,7 +903,7 @@ public sealed class LinkService(
     /// <summary>
     /// Handle a file abort request
     /// </summary>
-    private void HandleAbortFileRequest()
+    private void HandleAbortFileRequest(ushort tag)
     {
         linkAdapter.ReadAbortFile(out CodeChannel channel, out bool abortAll);
         if (channel != CodeChannel.Daemon)
@@ -879,7 +919,10 @@ public sealed class LinkService(
         {
             using (channels[channel].Lock())
             {
-                channels[channel].FilesAborted(abortAll);
+                if (!channels[channel].IsStale(tag, Request.AbortFile))
+                {
+                    channels[channel].FilesAborted(abortAll, ChannelEpoch.IsTagged(tag));
+                }
             }
         }
         else if (!settings.Value.UpdateOnly)
@@ -892,9 +935,18 @@ public sealed class LinkService(
     /// Deal with paused print events
     /// </summary>
     /// <returns>Asynchronous task</returns>
-    private void HandlePrintPaused()
+    private void HandlePrintPaused(ushort tag)
     {
         linkAdapter.ReadPrintPaused(out uint filePosition, out uint filePosition2, out PrintPausedReason pauseReason);
+        using (channels[CodeChannel.File].Lock())
+        {
+            // PrintPaused carries the epoch of File (CE-6). Here the check and the pause below do not share one lock, as an abort of File meanwhile
+            // would void the pause anyway (the job is aborted with it)
+            if (channels[CodeChannel.File].IsStale(tag, Request.PrintPaused))
+            {
+                return;
+            }
+        }
         logger.LogDebug("Received print pause notification for file position {Offset}/{Offset2}, reason {PauseReason}", (filePosition == Consts.NoFilePosition) ? "(none)" : filePosition.ToString(), (filePosition2 == Consts.NoFilePosition) ? "(none)" : filePosition2.ToString(), pauseReason);
 
         // Update the object model
@@ -928,7 +980,7 @@ public sealed class LinkService(
     /// Deal with the confirmation that a resource has been locked
     /// </summary>
     /// <returns>Asynchronous task</returns>
-    private void HandleResourceLocked()
+    private void HandleResourceLocked(ushort tag)
     {
         linkAdapter.ReadCodeChannel(out CodeChannel channel);
         logger.LogTrace("Received resource locked notification for channel {Channel}", channel);
@@ -937,7 +989,10 @@ public sealed class LinkService(
         {
             using (channels[channel].Lock())
             {
-                channels[channel].ResourceLocked();
+                if (!channels[channel].IsStale(tag, Request.Locked))
+                {
+                    channels[channel].ResourceLocked();
+                }
             }
         }
         else if (!settings.Value.UpdateOnly)
@@ -997,16 +1052,20 @@ public sealed class LinkService(
     /// <summary>
     /// Handle the result of an evaluated expression
     /// </summary>
-    private void HandleEvaluationResult()
+    private void HandleEvaluationResult(ushort tag)
     {
         linkAdapter.ReadEvaluationResult(out CodeChannel? channel, out string expression, out object? result);
         logger.LogDebug("Received evaluation result for expression via {Channel}: {Expression} = {Result}", channel, expression, result);
+        if (IsStaleAnswer(channel, tag, Request.EvaluationResult))
+        {
+            return;
+        }
 
         lock (linkInterface.EvaluateExpressionRequests)
         {
             foreach (EvaluateExpressionRequest request in linkInterface.EvaluateExpressionRequests)
             {
-                if (request.Written && (channel == null || request.Channel == channel) && request.Expression == expression)
+                if (request.Written && (channel == null || request.Channel == channel) && request.Expression == expression && (!ChannelEpoch.IsTagged(tag) || request.Tag == tag))
                 {
                     if (result is Exception exception)
                     {
@@ -1031,7 +1090,7 @@ public sealed class LinkService(
     /// <summary>
     /// Handle a firmware request to perform a G/M/T-code in DSF
     /// </summary>
-    private void HandleDoCode()
+    private void HandleDoCode(ushort tag)
     {
         linkAdapter.ReadDoCode(out CodeChannel channel, out string code);
         logger.LogTrace("Received firmware code request on channel {Channel} => {Code}", channel, code);
@@ -1040,7 +1099,11 @@ public sealed class LinkService(
         {
             using (channels[channel].Lock())
             {
-                channels[channel].DoFirmwareCode(code);
+                // A DoCode of an older epoch is not run, RRF has ended it at the abort (CE-14, CE-25)
+                if (!channels[channel].IsStale(tag, Request.DoCode))
+                {
+                    channels[channel].DoFirmwareCode(code, tag);
+                }
             }
         }
         else if (!settings.Value.UpdateOnly)
@@ -1052,7 +1115,7 @@ public sealed class LinkService(
     /// <summary>
     /// Handle a firmware request to wait for a message to be acknowledged
     /// </summary>
-    private void HandleWaitForAcknowledgement()
+    private void HandleWaitForAcknowledgement(ushort tag)
     {
         linkAdapter.ReadCodeChannel(out CodeChannel channel);
         logger.LogTrace("Received wait for message acknowledgement on channel {Channel}", channel);
@@ -1061,7 +1124,10 @@ public sealed class LinkService(
         {
             using (channels[channel].Lock())
             {
-                channels[channel].WaitForAcknowledgement();
+                if (!channels[channel].IsStale(tag, Request.WaitForAcknowledgement))
+                {
+                    channels[channel].WaitForAcknowledgement();
+                }
             }
         }
         else if (!settings.Value.UpdateOnly)
@@ -1073,7 +1139,7 @@ public sealed class LinkService(
     /// <summary>
     /// Handle a firmware request that is sent when RRF has internally closed a macro file
     /// </summary>
-    private void HandleMacroFileClosed()
+    private void HandleMacroFileClosed(ushort tag)
     {
         linkAdapter.ReadCodeChannel(out CodeChannel channel);
         logger.LogTrace("Received file closal on channel {Channel}", channel);
@@ -1082,7 +1148,10 @@ public sealed class LinkService(
         {
             using (channels[channel].Lock())
             {
-                channels[channel].MacroFileClosed();
+                if (!channels[channel].IsStale(tag, Request.MacroFileClosed))
+                {
+                    channels[channel].MacroFileClosed(ChannelEpoch.IsTagged(tag));
+                }
             }
         }
         else if (!settings.Value.UpdateOnly)
@@ -1094,7 +1163,7 @@ public sealed class LinkService(
     /// <summary>
     /// Handle a firmware request that is sent when RRF has successfully acknowledged a blocking message
     /// </summary>
-    private void HandleMessageAcknowledgement()
+    private void HandleMessageAcknowledgement(ushort tag)
     {
         linkAdapter.ReadCodeChannel(out CodeChannel channel);
         logger.LogTrace("Received message acknowledgement on channel {Channel}", channel);
@@ -1103,7 +1172,10 @@ public sealed class LinkService(
         {
             using (channels[channel].Lock())
             {
-                channels[channel].MessageAcknowledged();
+                if (!channels[channel].IsStale(tag, Request.MessageAcknowledged))
+                {
+                    channels[channel].MessageAcknowledged();
+                }
             }
         }
         else if (!settings.Value.UpdateOnly)
@@ -1115,16 +1187,20 @@ public sealed class LinkService(
     /// <summary>
     /// Handle the result of a variable assignment
     /// </summary>
-    private void HandleVariableResult()
+    private void HandleVariableResult(ushort tag)
     {
         linkAdapter.ReadEvaluationResult(out CodeChannel? channel, out string varName, out object? result);
         logger.LogTrace("Received variable assignment result for {Channel}: {Variable} = {Result}", channel, varName, result);
+        if (IsStaleAnswer(channel, tag, Request.VariableResult))
+        {
+            return;
+        }
 
         lock (linkInterface.VariableRequests)
         {
             foreach (VariableRequest request in linkInterface.VariableRequests)
             {
-                if (request.VariableName == varName && (channel == null || request.Channel == channel))
+                if (request.VariableName == varName && (channel == null || request.Channel == channel) && (!ChannelEpoch.IsTagged(tag) || request.Tag == tag))
                 {
                     if (result is Exception exception)
                     {
@@ -1493,6 +1569,49 @@ public sealed class LinkService(
         }
     }
     
+    /// <summary>
+    /// State of the channel epoch for the current connection (CE-4). Replaced where a connection ends
+    /// </summary>
+    private EpochConnection _connection = new();
+
+    /// <summary>
+    /// Check if an answer to a request of DSF (EvaluationResult, VariableResult) is of another epoch than the current one of its channel (CE-14).
+    /// The answer is matched outside the channel lock, so it also only answers a request that was written with its tag
+    /// </summary>
+    /// <param name="channel">Channel of the answer</param>
+    /// <param name="tag">Tag of the answer</param>
+    /// <param name="request">Type of the answer</param>
+    /// <returns>Whether the answer is dropped</returns>
+    private bool IsStaleAnswer(CodeChannel? channel, ushort tag, Request request)
+    {
+        if (channel is null || channel >= CodeChannel.Unknown || !ChannelEpoch.IsTagged(tag))
+        {
+            return false;
+        }
+        using (channels[channel.Value].Lock())
+        {
+            return channels[channel.Value].IsStale(tag, request);
+        }
+    }
+
+    /// <summary>
+    /// Get the channel of a message whose only destination is one code channel, as the result of a DoCode is (Executed.cs:177)
+    /// </summary>
+    /// <param name="flags">Message flags</param>
+    /// <param name="channel">Destination channel</param>
+    /// <returns>Whether there is exactly one destination channel</returns>
+    private static bool TryGetDestinationChannel(MessageTypeFlags flags, out CodeChannel channel)
+    {
+        uint destinations = (uint)flags & ((1u << (int)CodeChannel.Unknown) - 1);
+        if (destinations != 0 && (destinations & (destinations - 1)) == 0)
+        {
+            channel = (CodeChannel)System.Numerics.BitOperations.TrailingZeroCount(destinations);
+            return true;
+        }
+        channel = CodeChannel.Unknown;
+        return false;
+    }
+
     /// <summary>
     /// Invalidate pending codes and code-relevant requests due to an emergency stop
     /// </summary>

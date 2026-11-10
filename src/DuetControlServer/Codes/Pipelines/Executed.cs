@@ -204,7 +204,7 @@ public sealed class Executed : PipelineBase
                             }
 
                             MessageTypeFlags chunkFlags = (i + chunkLength < encodedMessage.Length) ? flags | MessageTypeFlags.PushFlag : flags;
-                            _linkInterface.SendMessage(chunkFlags, Encoding.UTF8.GetString(encodedMessage, i, chunkLength));
+                            _linkInterface.SendMessage(chunkFlags, Encoding.UTF8.GetString(encodedMessage, i, chunkLength), code.FirmwareTag);
                             i += chunkLength;
                         }
                     }

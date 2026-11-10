@@ -122,6 +122,38 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     public bool IsAbortRecorded { get; set; }
 
     /// <summary>
+    /// Epoch of the channel (6 bits), valid if <see cref="IsEpochKnown"/>. RRF keeps it in one byte per channel with the two flags below (CE-4, CE-24)
+    /// </summary>
+    public byte Epoch { get; set; }
+
+    /// <summary>
+    /// Whether RRF knows the epoch of the channel, from the first tagged DSF packet of the channel in this connection (adopt rule, CE-4)
+    /// </summary>
+    public bool IsEpochKnown { get; set; }
+
+    /// <summary>
+    /// Abort gate: set where RRF writes a tagged AbortFile(all), cleared by the record of the InvalidateChannel DSF answers it with (CE-24). While it is
+    /// set, every DSF packet of the channel except InvalidateChannel is dropped
+    /// </summary>
+    public bool IsGated { get; set; }
+
+    /// <summary>
+    /// Epoch of the code from DSF that the buffer runs or ran last (codeEpoch, CE-9), null if invalid. FillBuffer carries it over from the stamp of the
+    /// code in the ring. Its replies and its macro requests carry it
+    /// </summary>
+    public byte? CodeEpoch { get; set; }
+
+    /// <summary>
+    /// Forget the epoch of the channel, as after boot, InvalidateResources and the first marker (CE-4)
+    /// </summary>
+    public void ForgetEpoch()
+    {
+        IsEpochKnown = IsGated = false;
+        Epoch = 0;
+        CodeEpoch = null;
+    }
+
+    /// <summary>
     /// Whether the buffer is completely idle, see GCodeBuffer::IsCompletelyIdle (GCodeBuffer.cpp:951-954): the state of the latest frame is normal and
     /// the buffer is neither ready nor executing. A text code that DSF executes (executingOnSbc) counts as idle, one that is yet to be sent does not,
     /// because RRF runs it again on every spin until it has gone out (GCodes2.cpp:603-606)
@@ -251,7 +283,9 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
         {
             if (MachineState.LastCodeFromSbc)
             {
-                return (MessageTypeFlags)(1u << (int)Channel) | MessageTypeFlags.BinaryCodeReplyFlag;
+                // The epoch of the code goes into the free bits 18-23 and 26, which WriteCodeReply moves into the header (CE-11)
+                uint epochBits = (CodeEpoch is byte epoch) ? ((uint)epoch << FakeTag.TypeEpochShift) | FakeTag.TypeEpochValid : 0;
+                return (MessageTypeFlags)((1u << (int)Channel) | epochBits) | MessageTypeFlags.BinaryCodeReplyFlag;
             }
             return Channel switch
             {
@@ -293,6 +327,7 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
         MachineState.LastCodeFromSbc = true;
         HasJustStartedMacro = false;
         IsCodeReplySurplus = false;     // the dropped code has finished, or this code belongs to a macro that the dropped code has started since
+        CodeEpoch = code.Stamp;         // FillBuffer carries the stamp of the ring over (CE-9)
         CurrentCode = code;
         IsExecuting = false;
     }
@@ -533,6 +568,7 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
         IsWaitingForMacro = HasJustStartedMacro = MacroFileError = IsMacroEmpty = IsMacroFileClosed = false;
         IsAbortRequested = IsAbortAllRequested = IsMessagePromptPending = IsMessageAcknowledged = IsInvalidated = IsInvalidationPending = IsCodeReplySurplus = false;
         IsAbortRecorded = false;
+        ForgetEpoch();
         RequestedMacroFile = null;
         SbcCode = null;
         IsSendRequested = IsExecutingOnSbc = false;

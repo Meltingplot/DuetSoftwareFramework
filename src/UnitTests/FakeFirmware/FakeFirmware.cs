@@ -34,8 +34,9 @@ namespace UnitTests.FakeFirmware;
 /// src/GCodes/GCodeBuffer/GCodeBuffer.cpp. Packets are passed as objects, there is no binary encoding and the transfer buffer size is not limited
 /// </para>
 /// <para>
-/// Channel aborts follow <see cref="Model"/>: the InvalidateChannel handler of fork RRF 0dccb9efe (<see cref="FakeRrfModel.V7"/>), or the record by
-/// the SBC task and the apply by the main task of design/sbc-link-v8-requirements.md (<see cref="FakeRrfModel.RecordApply"/>, the default). The fake
+/// Channel aborts follow <see cref="Model"/>: the InvalidateChannel handler of fork RRF 0dccb9efe (<see cref="FakeRrfModel.V7"/>), the record by the SBC
+/// task and the apply by the main task of design/sbc-link-v8-requirements.md (<see cref="FakeRrfModel.RecordApply"/>), or that plus the channel epoch
+/// (<see cref="FakeRrfModel.Epoch"/>, the default), whose tags travel in the header field resendPacketId (<see cref="FakePacket.Tag"/>). The fake
 /// has one loop for both RRF tasks, so the record happens while the SBC task reads the requests of a transfer and the apply at the start of the main
 /// task's spin that follows; <see cref="ApplyDelay"/> puts transfers in between
 /// </para>
@@ -105,7 +106,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
     /// <summary>
     /// RRF that the fake models. Set it before DSF connects
     /// </summary>
-    public FakeRrfModel Model { get; set; } = FakeRrfModel.RecordApply;
+    public FakeRrfModel Model { get; set; } = FakeRrfModel.Epoch;
 
     /// <summary>
     /// Number of transfers that RRF's main task needs after the SBC task recorded a channel abort to reach the top of its next spin, where it applies
@@ -622,7 +623,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
             FakeGCodeBuffer gb = _gcodes[channel];
             return !gb.IsDoingFile && !gb.IsWaitingForMacro && gb.PendingMacroCall is null && gb.CurrentCode is null &&
                 !gb.MachineState.WaitingForAcknowledgement && !gb.IsAbortRequested && gb.MachineState.Previous is null && gb.SbcCode is null &&
-                !gb.IsAbortRecorded;
+                !gb.IsAbortRecorded && !_gcodes.HasQueuedSbcCode(channel);
         }
     }
 
@@ -840,6 +841,31 @@ public sealed partial class FakeFirmware : ILinkAdapter
         {
             bool acknowledged = true;
             FakeGCodeBuffer? gb = (request.Channel < CodeChannel.Unknown) ? _gcodes[request.Channel] : null;
+
+            // Only the RRF of milestone E2 reads the tags of DSF (CE-5), the others see 0 there
+            ushort tag = (Model == FakeRrfModel.Epoch) ? request.Tag : (ushort)0;
+            if ((tag & FakeTag.FirstMarker) != 0)
+            {
+                // DSF's first tagged packet after it started or ended a connection (CE-4). DSF writes it where all its epochs are 0, so every channel
+                // epoch is 0 from here on, not unknown as CE-4 says: then RRF tags the packets of a channel before DSF has sent anything on it, and a
+                // request that crosses DSF's first abort of that channel is dropped by its tag instead of passing untagged (Q34). An InvalidateChannel
+                // in this packet then moves its channel on as usual
+                foreach (FakeGCodeBuffer buffer in _gcodes.Buffers)
+                {
+                    buffer.ForgetEpoch();
+                    buffer.IsEpochKnown = true;
+                }
+            }
+            if (DropByEpoch(request, gb, tag))
+            {
+                if (request.Request == SbcRequest.Code)
+                {
+                    _receivedCodes.Add(request.Code!);
+                    _discardedCodes.Add(request.Code!);
+                }
+                continue;
+            }
+
             switch (request.Request)
             {
                 case SbcRequest.EmergencyStop:
@@ -854,7 +880,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     return;
 
                 case SbcRequest.Code:
-                    acknowledged = StoreCode(request.Code!, gb!, ref codeBufferAvailable);
+                    acknowledged = StoreCode(request.Code!, gb!, tag, ref codeBufferAvailable);
                     break;
 
                 case SbcRequest.GetObjectModel:
@@ -902,7 +928,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                 case SbcRequest.LockAllMovementSystemsAndWaitForStandstill:
                     if (TryLockBuffer(gb!) && _gcodes.LockAllMovementSystemsAndWaitForStandstill(gb!))
                     {
-                        WritePacket(new FakePacket { Request = FirmwareRequest.Locked, Channel = request.Channel });
+                        WritePacket(new FakePacket { Request = FirmwareRequest.Locked, Channel = request.Channel, Tag = AnswerTag(tag) });
                     }
                     else
                     {
@@ -934,7 +960,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                             // WriteEvaluationError sends the message as an expression, which DSF turns into an exception
                             result = new CodeParserException(e.Message);
                         }
-                        WritePacket(new FakePacket { Request = FirmwareRequest.EvaluationResult, Channel = request.Channel, Text = request.Text, Value = result });
+                        WritePacket(new FakePacket { Request = FirmwareRequest.EvaluationResult, Channel = request.Channel, Text = request.Text, Value = result, Tag = AnswerTag(tag) });
                     }
                     else
                     {
@@ -974,7 +1000,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     break;
 
                 case SbcRequest.InvalidateChannel when Model != FakeRrfModel.V7:
-                    RecordAbort(gb!);
+                    RecordAbort(gb!, tag);
                     break;
 
                 case SbcRequest.InvalidateChannel:
@@ -1017,7 +1043,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                 case SbcRequest.SetVariable:
                     if (TryLockBuffer(gb!))
                     {
-                        SetVariable(gb!, request.Flag, request.Text, request.Argument);
+                        SetVariable(gb!, request.Flag, request.Text, request.Argument, AnswerTag(tag));
                     }
                     else
                     {
@@ -1115,16 +1141,26 @@ public sealed partial class FakeFirmware : ILinkAdapter
             // Deal with macro files being closed
             if (gb.IsMacroFileClosed)
             {
-                WritePacket(new FakePacket { Request = FirmwareRequest.MacroFileClosed, Channel = gb.Channel });
+                WritePacket(new FakePacket { Request = FirmwareRequest.MacroFileClosed, Channel = gb.Channel, Tag = ChannelTag(gb) });
                 gb.MacroFileClosedSent();
             }
 
-            // Handle blocking macro requests
+            // Handle blocking macro requests. One of a code of an older epoch is not written but ends the wait with an error at once, e.g. a G28 that
+            // survived the abort and asks for its next homing file (CE-12 (b))
             if (gb.IsWaitingForMacro && gb.IsMacroRequestPending)
             {
-                WritePacket(new FakePacket { Request = FirmwareRequest.ExecuteMacro, Channel = gb.Channel, Text = gb.RequestedMacroFile!, IsFromCode = gb.IsMacroStartedByCode });
-                gb.MacroRequestSent();
-                gb.IsInvalidated = true;
+                if (Model == FakeRrfModel.Epoch && gb.IsMacroStartedByCode && gb.IsEpochKnown && gb.CodeEpoch is byte codeEpoch && codeEpoch != gb.Epoch)
+                {
+                    gb.MacroRequestSent();
+                    gb.ResolveMacroRequest(true, false);
+                }
+                else
+                {
+                    WritePacket(new FakePacket { Request = FirmwareRequest.ExecuteMacro, Channel = gb.Channel, Text = gb.RequestedMacroFile!, IsFromCode = gb.IsMacroStartedByCode,
+                        Tag = gb.IsMacroStartedByCode ? CodeTag(gb) : ChannelTag(gb) });
+                    gb.MacroRequestSent();
+                    gb.IsInvalidated = true;
+                }
             }
 
             // Deal with other requests unless we are still waiting in a semaphore
@@ -1139,13 +1175,19 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     }
 
                     bool abortAll = gb.IsAbortAllRequested;
-                    WritePacket(new FakePacket { Request = FirmwareRequest.AbortFile, Channel = gb.Channel, AbortAll = abortAll });
+                    ushort abortTag = ChannelTag(gb);
+                    WritePacket(new FakePacket { Request = FirmwareRequest.AbortFile, Channel = gb.Channel, AbortAll = abortAll, Tag = abortTag });
+                    if (abortAll && FakeTag.IsTagged(abortTag))
+                    {
+                        // A tagged abort of all files closes the gate until DSF answers it with InvalidateChannel(e+1) (CE-24)
+                        gb.IsGated = true;
+                    }
 
                     // Send back a final code reply for codes that started the last macros, else the corresponding code will never finish
                     if (!abortAll && gb.MachineState.State == FakeMachineState.MachineStateKind.Normal &&
                         (!gb.MachineState.LastCodeFromSbc || gb.MachineState.MacroStartedByCode))
                     {
-                        WritePacket(new FakePacket { Request = FirmwareRequest.Message, MessageType = gb.ResponseMessageType, Channel = gb.Channel });
+                        WriteCodeReply(gb.ResponseMessageType, string.Empty, null, gb.Channel);
                     }
                     gb.FileAbortSent();
                     gb.IsInvalidated = true;
@@ -1155,20 +1197,21 @@ public sealed partial class FakeFirmware : ILinkAdapter
                 if (gb.MachineState.WaitingForAcknowledgement && gb.IsMessagePromptPending)
                 {
                     WriteQueuedCodeReplies();
-                    WritePacket(new FakePacket { Request = FirmwareRequest.WaitForAcknowledgement, Channel = gb.Channel });
+                    WritePacket(new FakePacket { Request = FirmwareRequest.WaitForAcknowledgement, Channel = gb.Channel, Tag = ChannelTag(gb) });
                     gb.MessagePromptSent();
                     gb.IsInvalidated = true;
                 }
                 else if (gb.IsMessageAcknowledged)
                 {
-                    WritePacket(new FakePacket { Request = FirmwareRequest.MessageAcknowledged, Channel = gb.Channel });
+                    WritePacket(new FakePacket { Request = FirmwareRequest.MessageAcknowledged, Channel = gb.Channel, Tag = ChannelTag(gb) });
                     gb.MessageAcknowledgementSent();
                 }
 
                 // Handle non-blocking macro requests (e.g. daemon.g)
                 if (gb.IsMacroRequestPending)
                 {
-                    WritePacket(new FakePacket { Request = FirmwareRequest.ExecuteMacro, Channel = gb.Channel, Text = gb.RequestedMacroFile!, IsFromCode = gb.IsMacroStartedByCode });
+                    WritePacket(new FakePacket { Request = FirmwareRequest.ExecuteMacro, Channel = gb.Channel, Text = gb.RequestedMacroFile!, IsFromCode = gb.IsMacroStartedByCode,
+                        Tag = gb.IsMacroStartedByCode ? CodeTag(gb) : ChannelTag(gb) });
                     gb.MacroRequestSent();
                     gb.IsInvalidated = true;
                 }
@@ -1176,7 +1219,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                 // Send pending firmware codes (SbcInterface.cpp:1613-1634). Explicit line numbers are not emulated
                 if (gb.IsSendRequested)
                 {
-                    WritePacket(new FakePacket { Request = FirmwareRequest.DoCode, Channel = gb.Channel, Text = gb.SbcCode! });
+                    WritePacket(new FakePacket { Request = FirmwareRequest.DoCode, Channel = gb.Channel, Text = gb.SbcCode!, Tag = ChannelTag(gb) });
                     gb.SentToSbc();
                 }
             }
@@ -1186,12 +1229,127 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <summary>
+    /// Counters of the channel epoch (CE-20). Read them with <see cref="EpochCounterTotal"/> while DSF is connected
+    /// </summary>
+    public FakeEpochCounters EpochCounters { get; } = new();
+
+    /// <summary>
+    /// Sum of the counters of the channel epoch
+    /// </summary>
+    public int EpochCounterTotal
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return EpochCounters.Total;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Requests whose tag the filter checks, in addition to the chunks of a DoCode result (CE-10). InvalidateChannel is decided by its record
+    /// </summary>
+    private static readonly HashSet<SbcRequest> FilteredRequests =
+    [
+        SbcRequest.Code, SbcRequest.MacroStarted, SbcRequest.MacroCompleted, SbcRequest.LockAllMovementSystemsAndWaitForStandstill, SbcRequest.Unlock,
+        SbcRequest.EvaluateExpression, SbcRequest.SetVariable, SbcRequest.DeleteLocalVariable, SbcRequest.SetLastCodeResult
+    ];
+
+    /// <summary>
+    /// Apply the adopt rule (CE-4), the gate (CE-24) and the filter of stale DSF packets (CE-10) to a request, before any side effect of it
+    /// </summary>
+    /// <param name="request">Request from DSF</param>
+    /// <param name="gb">Buffer of the request's channel, if any</param>
+    /// <param name="tag">Tag of the request as RRF reads it</param>
+    /// <returns>Whether the request is dropped. A dropped request gets no answer and is not asked for again</returns>
+    private bool DropByEpoch(FakeSbcRequest request, FakeGCodeBuffer? gb, ushort tag)
+    {
+        if (Model != FakeRrfModel.Epoch)
+        {
+            return false;
+        }
+
+        FakeGCodeBuffer? target = null;
+        if (FilteredRequests.Contains(request.Request))
+        {
+            target = gb;
+        }
+        else if (request.Request == SbcRequest.Message && FakeTag.IsTagged(tag) && TryGetSingleChannel(request.MessageFlags, out CodeChannel destination))
+        {
+            // The chunks of a DoCode result carry the tag of their DoCode, other messages are untagged and not bound to a channel
+            target = _gcodes[destination];
+        }
+        if (target is null)
+        {
+            return false;
+        }
+
+        // While the epoch of the channel is unknown, the first tagged packet of the channel sets it, whatever its type
+        if (FakeTag.IsTagged(tag) && !target.IsEpochKnown)
+        {
+            target.Epoch = FakeTag.EpochOf(tag);
+            target.IsEpochKnown = true;
+        }
+
+        if (target.IsGated)
+        {
+            EpochCounters.Count(EpochCounters.GateDrops, target.Channel, request.Request);
+            return true;
+        }
+        if (FakeTag.IsTagged(tag) && FakeTag.EpochOf(tag) != target.Epoch)
+        {
+            EpochCounters.Count(FakeTag.Follows(FakeTag.EpochOf(tag), target.Epoch) ? EpochCounters.AheadDrops : EpochCounters.StaleDrops, target.Channel, request.Request);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Tag of an answer (Locked, EvaluationResult, VariableResult): the tag of the request it answers, without the first marker (CE-6). It is passed
+    /// as a parameter, because each answer is written inside the handler of its request
+    /// </summary>
+    /// <param name="requestTag">Tag of the request as RRF read it</param>
+    /// <returns>Tag of the answer</returns>
+    private static ushort AnswerTag(ushort requestTag) => FakeTag.IsTagged(requestTag) ? FakeTag.Of(FakeTag.EpochOf(requestTag)) : (ushort)0;
+
+    /// <summary>
+    /// Tag source (2) of CE-9: the epoch of the channel when the SBC task writes the packet, none while the epoch is unknown
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <returns>Tag</returns>
+    private ushort ChannelTag(FakeGCodeBuffer gb) => (Model == FakeRrfModel.Epoch && gb.IsEpochKnown) ? FakeTag.Of(gb.Epoch) : (ushort)0;
+
+    /// <summary>
+    /// Tag source (1) of CE-9: the epoch of the code that the packet belongs to (codeEpoch), none if it is invalid or the channel epoch unknown
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <returns>Tag</returns>
+    private ushort CodeTag(FakeGCodeBuffer gb) => (Model == FakeRrfModel.Epoch && gb.IsEpochKnown && gb.CodeEpoch is byte epoch) ? FakeTag.Of(epoch) : (ushort)0;
+
+    /// <summary>
     /// Record an abort of a channel on the SBC task (design/sbc-link-v8-requirements.md CE-7, "Record"). It takes no buffer mutex, so it is never
     /// refused. The main task applies it at the top of its next spin with <see cref="FakeGCodes.EndChannelWork"/>
     /// </summary>
     /// <param name="gb">G-code buffer of the channel</param>
-    private void RecordAbort(FakeGCodeBuffer gb)
+    /// <param name="tag">Tag of the InvalidateChannel, the new epoch of the channel</param>
+    private void RecordAbort(FakeGCodeBuffer gb, ushort tag)
     {
+        // A tagged InvalidateChannel acts only if the epoch is unknown or the tag follows it (RFC 1982). An equal or preceding one is a repeat, e.g. of a
+        // transfer that RRF processes twice, and is counted and ignored (CE-5, CE-7, FD-28). Its tag becomes the epoch and opens the gate (CE-24)
+        if (FakeTag.IsTagged(tag))
+        {
+            byte epoch = FakeTag.EpochOf(tag);
+            if (gb.IsEpochKnown && !FakeTag.Follows(epoch, gb.Epoch))
+            {
+                EpochCounters.Count(EpochCounters.Repeats, gb.Channel, SbcRequest.InvalidateChannel);
+                return;
+            }
+            gb.Epoch = epoch;
+            gb.IsEpochKnown = true;
+        }
+        gb.IsGated = false;
+
         // Purge the codes of the channel in the ring and clear invalidated, the step the write phase does today (SbcInterface.cpp:1497-1504). A code of
         // the new work is then stored as usual and not dropped by the read-ahead rule (:376-380), whose cause the abort has voided
         InvalidateBufferedCodes(gb.Channel);
@@ -1256,6 +1414,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                 gb.IsAbortRecorded = false;
                 gb.IsCodeReplySurplus = false;
             }
+            gb.ForgetEpoch();
         }
     }
 
@@ -1297,7 +1456,8 @@ public sealed partial class FakeFirmware : ILinkAdapter
     /// <param name="gb">G-code buffer of the code's channel</param>
     /// <param name="codeBufferAvailable">Whether codes can still be stored in this transfer</param>
     /// <returns>Whether the packet has been acknowledged</returns>
-    private bool StoreCode(FakeCode code, FakeGCodeBuffer gb, ref bool codeBufferAvailable)
+    /// <param name="tag">Tag of the Code packet, which passed the filter</param>
+    private bool StoreCode(FakeCode code, FakeGCodeBuffer gb, ushort tag, ref bool codeBufferAvailable)
     {
         _receivedCodes.Add(code);
 
@@ -1330,6 +1490,8 @@ public sealed partial class FakeFirmware : ILinkAdapter
             return false;
         }
 
+        // Stamp the code with the epoch of its packet in the free padding of its header (CE-9)
+        code.Stamp = FakeTag.IsTagged(tag) ? FakeTag.EpochOf(tag) : null;
         _codeBuffer.Add(code);
         _codeBufferUsed += bufferedCodeSize;
         _sendBufferUpdate = true;
@@ -1387,9 +1549,10 @@ public sealed partial class FakeFirmware : ILinkAdapter
     /// <param name="createVariable">Whether the variable is created</param>
     /// <param name="varName">Name of the variable including global or var prefix</param>
     /// <param name="expression">Expression to assign</param>
-    private void SetVariable(FakeGCodeBuffer gb, bool createVariable, string varName, string expression)
+    /// <param name="tag">Tag of the answer</param>
+    private void SetVariable(FakeGCodeBuffer gb, bool createVariable, string varName, string expression, ushort tag)
     {
-        void writeResult(object? value) => WritePacket(new FakePacket { Request = FirmwareRequest.VariableResult, Channel = gb.Channel, Text = varName, Value = value });
+        void writeResult(object? value) => WritePacket(new FakePacket { Request = FirmwareRequest.VariableResult, Channel = gb.Channel, Text = varName, Value = value, Tag = tag });
 
         bool isGlobal = varName.StartsWith("global.");
         if (!isGlobal && !varName.StartsWith("var."))
@@ -1449,9 +1612,24 @@ public sealed partial class FakeFirmware : ILinkAdapter
     {
         foreach (var (type, text, code, _) in _gcodeReply)
         {
-            WritePacket(new FakePacket { Request = FirmwareRequest.Message, MessageType = type, Text = text.ToString(), RelatedCode = code, Channel = code?.Channel ?? CodeChannel.Unknown });
+            WriteCodeReply(type, text.ToString(), code, code?.Channel ?? CodeChannel.Unknown);
         }
         _gcodeReply.Clear();
+    }
+
+    /// <summary>
+    /// Write a message, see DataTransfer::WriteCodeReply: the epoch of a code reply moves from the free MessageType bits into the header, and the bits
+    /// are cleared in the type that goes out (CE-11)
+    /// </summary>
+    /// <param name="type">Message type, possibly with the epoch bits of GetResponseMessageType</param>
+    /// <param name="text">Message text</param>
+    /// <param name="code">Code the reply belongs to, if known</param>
+    /// <param name="channel">Channel of the packet log</param>
+    private void WriteCodeReply(MessageTypeFlags type, string text, FakeCode? code, CodeChannel channel)
+    {
+        uint bits = (uint)type & FakeTag.TypeEpochBits;
+        ushort tag = ((bits & FakeTag.TypeEpochValid) != 0) ? FakeTag.Of((int)(bits >> FakeTag.TypeEpochShift)) : (ushort)0;
+        WritePacket(new FakePacket { Request = FirmwareRequest.Message, MessageType = (MessageTypeFlags)((uint)type & ~FakeTag.TypeEpochBits), Text = text, RelatedCode = code, Channel = channel, Tag = tag });
     }
 
     /// <summary>
@@ -1569,7 +1747,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
             {
                 Request = (ushort)_currentPacket.Request,
                 Id = _currentPacket.Id,
-                ResendPacketId = _currentPacket.ResendRequest?.Id ?? 0
+                ResendPacketId = _currentPacket.ResendRequest?.Id ?? _currentPacket.Tag
             };
         }
     }
@@ -1733,7 +1911,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <inheritdoc />
-    public bool WriteCode(DuetControlServer.Commands.Code code)
+    public bool WriteCode(DuetControlServer.Commands.Code code, ushort tag)
     {
         lock (_lock)
         {
@@ -1741,7 +1919,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
             {
                 return false;
             }
-            return AddRequest(new FakeSbcRequest { Request = SbcRequest.Code, Channel = code.Channel, Code = new FakeCode(code, _maxCodeLength) });
+            return AddRequest(new FakeSbcRequest { Request = SbcRequest.Code, Channel = code.Channel, Code = new FakeCode(code, _maxCodeLength), Tag = tag });
         }
     }
 
@@ -1761,34 +1939,34 @@ public sealed partial class FakeFirmware : ILinkAdapter
     public bool WritePrintStopped(PrintStoppedReason reason) => AddRequest(new FakeSbcRequest { Request = SbcRequest.PrintStopped, PrintStoppedReason = reason });
 
     /// <inheritdoc />
-    public bool WriteMacroCompleted(CodeChannel channel, bool error) => AddRequest(new FakeSbcRequest { Request = SbcRequest.MacroCompleted, Channel = channel, Flag = error });
+    public bool WriteMacroCompleted(CodeChannel channel, bool error, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.MacroCompleted, Channel = channel, Flag = error, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel channel) => AddRequest(new FakeSbcRequest { Request = SbcRequest.LockAllMovementSystemsAndWaitForStandstill, Channel = channel });
+    public bool WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel channel, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.LockAllMovementSystemsAndWaitForStandstill, Channel = channel, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteUnlock(CodeChannel channel) => AddRequest(new FakeSbcRequest { Request = SbcRequest.Unlock, Channel = channel });
+    public bool WriteUnlock(CodeChannel channel, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.Unlock, Channel = channel, Tag = tag });
 
     /// <inheritdoc />
     public bool WriteFileChunk(Span<byte> data, long fileLength) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileChunk });
 
     /// <inheritdoc />
-    public bool WriteEvaluateExpression(CodeChannel channel, string expression) => AddRequest(new FakeSbcRequest { Request = SbcRequest.EvaluateExpression, Channel = channel, Text = expression });
+    public bool WriteEvaluateExpression(CodeChannel channel, string expression, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.EvaluateExpression, Channel = channel, Text = expression, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteMessage(MessageTypeFlags flags, string message) => AddRequest(new FakeSbcRequest { Request = SbcRequest.Message, MessageFlags = flags, Text = message });
+    public bool WriteMessage(MessageTypeFlags flags, string message, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.Message, Channel = CodeChannel.Unknown, MessageFlags = flags, Text = message, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteMacroStarted(CodeChannel channel) => AddRequest(new FakeSbcRequest { Request = SbcRequest.MacroStarted, Channel = channel });
+    public bool WriteMacroStarted(CodeChannel channel, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.MacroStarted, Channel = channel, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteInvalidateChannel(CodeChannel channel) => AddRequest(new FakeSbcRequest { Request = SbcRequest.InvalidateChannel, Channel = channel });
+    public bool WriteInvalidateChannel(CodeChannel channel, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.InvalidateChannel, Channel = channel, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteSetVariable(CodeChannel channel, bool createVariable, string varName, string expression) => AddRequest(new FakeSbcRequest { Request = SbcRequest.SetVariable, Channel = channel, Flag = createVariable, Text = varName, Argument = expression });
+    public bool WriteSetVariable(CodeChannel channel, bool createVariable, string varName, string expression, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.SetVariable, Channel = channel, Flag = createVariable, Text = varName, Argument = expression, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteDeleteLocalVariable(CodeChannel channel, string varName) => AddRequest(new FakeSbcRequest { Request = SbcRequest.DeleteLocalVariable, Channel = channel, Text = varName });
+    public bool WriteDeleteLocalVariable(CodeChannel channel, string varName, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.DeleteLocalVariable, Channel = channel, Text = varName, Tag = tag });
 
     /// <inheritdoc />
     public bool WriteCheckFileExistsResult(bool exists) => AddRequest(new FakeSbcRequest { Request = SbcRequest.CheckFileExistsResult, Flag = exists });
@@ -1815,7 +1993,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
     public bool WriteFileTruncateResult(bool success) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileTruncateResult, Flag = success });
 
     /// <inheritdoc />
-    public bool WriteSetLastCodeResult(CodeChannel channel, CodeResult result) => AddRequest(new FakeSbcRequest { Request = SbcRequest.SetLastCodeResult, Channel = channel, CodeResult = result });
+    public bool WriteSetLastCodeResult(CodeChannel channel, CodeResult result, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.SetLastCodeResult, Channel = channel, CodeResult = result, Tag = tag });
 
     /// <inheritdoc />
     public bool WriteObjectModelKeyChanged(string key) => AddRequest(new FakeSbcRequest { Request = SbcRequest.ObjectModelKeyChanged, Text = key });

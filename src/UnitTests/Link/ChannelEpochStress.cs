@@ -170,7 +170,8 @@ public class ChannelEpochStress
     /// <param name="Name">Name of the run in the report</param>
     /// <param name="ConfigureFirmware">Optional setup of the fake firmware, called again after every restart of the host</param>
     /// <param name="ConfigureHost">Optional setup of DCS after the host started</param>
-    public sealed record Options(string Name, Action<FakeFirmware.FakeFirmware>? ConfigureFirmware = null, Action<FakeFirmwareHost>? ConfigureHost = null);
+    /// <param name="Only">Optional situations to run instead of all, for a closer look at one of them</param>
+    public sealed record Options(string Name, Action<FakeFirmware.FakeFirmware>? ConfigureFirmware = null, Action<FakeFirmwareHost>? ConfigureHost = null, Situation[]? Only = null);
 
     /// <summary>
     /// Run the stress test
@@ -186,6 +187,10 @@ public class ChannelEpochStress
         while (run.Counters.Aborts < aborts)
         {
             Situation situation = (Situation)run.Rng.Next(Enum.GetValues<Situation>().Length);
+            if (options.Only is not null && !options.Only.Contains(situation))
+            {
+                continue;
+            }
             await run.CycleAsync(situation);
         }
         run.Finish();
@@ -201,8 +206,24 @@ public class ChannelEpochStress
     }
 
     /// <summary>
-    /// Measure the link with a model of RRF, with the seed and number of aborts of the measurement. This only reports the numbers.
-    /// <see cref="FakeRrfModel.V7"/> is the baseline (fork RRF 0dccb9efe), <see cref="FakeRrfModel.RecordApply"/> milestone E1
+    /// Options of the epoch without the catch code that milestone E3 deletes (AC-1, AC-2): DSF's positional windows and RRF's codeReplySurplus (RRF #46)
+    /// </summary>
+    public static readonly Options WithoutCatchCode = new("Epoch without catch code", firmware =>
+    {
+        firmware.Model = FakeRrfModel.Epoch;
+        firmware.CodeReplySurplus = false;
+    }, host =>
+    {
+        foreach (Processor processor in host.Services.GetRequiredService<Manager>())
+        {
+            processor.UseAbortWindows = false;
+        }
+    });
+
+    /// <summary>
+    /// Measure the link with a model of RRF and DSF from milestone E2 (which tags), with the seed and number of aborts of the measurement. This only
+    /// reports the numbers. <see cref="FakeRrfModel.V7"/> is a stock RRF of today (fork 0dccb9efe), <see cref="FakeRrfModel.RecordApply"/> milestone E1,
+    /// which ignores the tags of DSF, <see cref="FakeRrfModel.Epoch"/> the epoch pair
     /// </summary>
     /// <param name="model">RRF that the fake firmware models</param>
     [Test, Explicit("Measurement, takes minutes: run with DSF_EPOCH_STRESS_REPORT set to collect the numbers")]
@@ -211,6 +232,44 @@ public class ChannelEpochStress
         Counters counters = await RunAsync(new Options(model.ToString(), firmware => firmware.Model = model), Seed, MeasurementAborts);
         Assert.That(counters.Aborts, Is.GreaterThanOrEqualTo(MeasurementAborts));
     }
+
+    /// <summary>
+    /// Measure the epoch pair without the catch code that E3 deletes
+    /// </summary>
+    [Test, Explicit("Measurement, takes minutes: run with DSF_EPOCH_STRESS_REPORT set to collect the numbers")]
+    public async Task MeasureWithoutCatchCode()
+    {
+        Counters counters = await RunAsync(WithoutCatchCode, Seed, MeasurementAborts);
+        Assert.That(counters.Aborts, Is.GreaterThanOrEqualTo(MeasurementAborts));
+    }
+
+    /// <summary>
+    /// The epoch pair, with and without the catch code of E3, shows none of the symptoms: no out-of-order reply, no resend, no drop by a positional
+    /// window, no wrong completion, no stale event, no cancelled probe, no block and no stop of the link thread. Fewer aborts than the measurement
+    /// keep the suite short; the seed is the one of the measurement
+    /// </summary>
+    /// <param name="withoutCatchCode">Whether the catch code of E3 is switched off</param>
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task EpochPairHasNoSymptoms(bool withoutCatchCode)
+    {
+        Counters counters = await RunAsync(withoutCatchCode ? WithoutCatchCode : new Options("Epoch"), Seed, 300);
+        Assert.Multiple(() =>
+        {
+            foreach ((string name, int value) in counters.Symptoms)
+            {
+                Assert.That(value, Is.Zero, $"{name}: {counters}");
+            }
+            Assert.That(counters.Resends, Is.Zero, $"Resends: {counters}");
+        });
+    }
+
+    /// <summary>
+    /// Run one situation with the epoch pair, for a look at the log (DSF_FAKE_FIRMWARE_LOG, DSF_FAKE_FIRMWARE_LOG_FILE)
+    /// </summary>
+    /// <param name="situation">Situation</param>
+    [Test, Explicit("Tool for a closer look at one situation")]
+    public async Task RunOnly([Values] Situation situation) => await RunAsync(new Options($"only {situation}", Only: [situation]), Seed, 100);
 
     /// <summary>
     /// A short run that keeps the harness working: every situation is reached and the run ends
@@ -323,7 +382,6 @@ public class ChannelEpochStress
                 }
             }
             Counters.StaleEventEffects += _rrfStaleStarts;
-            Counters.DsfEpochDrops = DsfEpochDrops();
         }
 
         /// <summary>
@@ -350,18 +408,28 @@ public class ChannelEpochStress
                 _rrfStaleStarts += started;
                 Counters.Details["RRF: Macro file has been started but none was requested"] = _rrfStaleStarts;
             }
-            Counters.RrfEpochDrops += RrfEpochDrops(firmware);
+            Counters.RrfEpochDrops += firmware.EpochCounterTotal;
+            foreach (Processor processor in _host.Services.GetRequiredService<Manager>())
+            {
+                using (processor.Lock())
+                {
+                    foreach (KeyValuePair<FirmwareRequest, int> drop in processor.StaleDrops)
+                    {
+                        Counters.DsfEpochDrops += drop.Value;
+                        Counters.Details[$"DSF epoch drop: {drop.Key}"] = Counters.Details.GetValueOrDefault($"DSF epoch drop: {drop.Key}") + drop.Value;
+                    }
+                    Counters.DsfEpochDrops += processor.AheadDrops + processor.DroppedResults;
+                    if (processor.AheadDrops > 0)
+                    {
+                        Counters.Details["DSF epoch drop: ahead"] = Counters.Details.GetValueOrDefault("DSF epoch drop: ahead") + processor.AheadDrops;
+                    }
+                    if (processor.DroppedResults > 0)
+                    {
+                        Counters.Details["DSF result of an older DoCode not sent"] = Counters.Details.GetValueOrDefault("DSF result of an older DoCode not sent") + processor.DroppedResults;
+                    }
+                }
+            }
         }
-
-        /// <summary>
-        /// Tagged packets of another epoch that DSF dropped. The link of v7 has no epoch
-        /// </summary>
-        private int DsfEpochDrops() => 0;
-
-        /// <summary>
-        /// Tagged packets RRF dropped or ignored. The link of v7 has no epoch
-        /// </summary>
-        private static int RrfEpochDrops(FakeFirmware.FakeFirmware firmware) => 0;
 
         #region Steps
         /// <summary>

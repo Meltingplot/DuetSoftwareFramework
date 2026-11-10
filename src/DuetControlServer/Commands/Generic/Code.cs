@@ -310,6 +310,12 @@ public sealed class Code : DuetAPI.Commands.Code, IConnectionCommand
     internal int BinarySize { get; set; }
 
     /// <summary>
+    /// Tag of the channel epoch of the DoCode request this code comes from, or 0 if it does not come from the firmware or the firmware does not
+    /// tag. The chunks of its result carry it (design/sbc-link-v8-requirements.md CE-6), and a result of an older epoch is not sent (CE-25 (e))
+    /// </summary>
+    internal ushort FirmwareTag { get; set; }
+
+    /// <summary>
     /// Task to complete when this code is complete
     /// </summary>
     internal Task<Message?> Task => _tcs.Task;
@@ -347,5 +353,6 @@ public sealed class Code : DuetAPI.Commands.Code, IConnectionCommand
         File = null;
         _tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
         BinarySize = 0;
+        FirmwareTag = 0;
     }
 }

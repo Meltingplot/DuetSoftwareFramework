@@ -195,7 +195,7 @@ public interface ILinkAdapter
     void DumpMalformedPacket();
 
     /// <summary>
-    /// Resend a packet back to the firmware
+    /// Resend a packet back to the firmware. The copy keeps the tag of the original without the first marker (CE-8)
     /// </summary>
     /// <param name="packet">Packet holding the resend request</param>
     /// <param name="sbcRequest">Content of the packet to resend</param>
@@ -253,8 +253,9 @@ public interface ILinkAdapter
     /// Request a code to be executed
     /// </summary>
     /// <param name="code">Code to send</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    bool WriteCode(Commands.Code code);
+    bool WriteCode(Commands.Code code, ushort tag);
 
     /// <summary>
     /// Request the key of an object module of a specific module
@@ -296,22 +297,25 @@ public interface ILinkAdapter
     /// </summary>
     /// <param name="channel">Code channel of the finished macro</param>
     /// <param name="error">Whether an error occurred</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    bool WriteMacroCompleted(CodeChannel channel, bool error);
+    bool WriteMacroCompleted(CodeChannel channel, bool error, ushort tag);
 
     /// <summary>
     /// Request the movement systems to be locked and wait for standstill
     /// </summary>
     /// <param name="channel">Code channel that requires the lock</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    bool WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel channel);
+    bool WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel channel, ushort tag);
 
     /// <summary>
     /// Release all acquired locks again
     /// </summary>
     /// <param name="channel">Code channel that releases the locks</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    bool WriteUnlock(CodeChannel channel);
+    bool WriteUnlock(CodeChannel channel, ushort tag);
 
     /// <summary>
     /// Write another chunk of the file being requested
@@ -326,30 +330,34 @@ public interface ILinkAdapter
     /// </summary>
     /// <param name="channel">Where to evaluate the expression</param>
     /// <param name="expression">Expression to evaluate</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>Whether the evaluation request has been written successfully</returns>
-    bool WriteEvaluateExpression(CodeChannel channel, string expression);
+    bool WriteEvaluateExpression(CodeChannel channel, string expression, ushort tag);
 
     /// <summary>
     /// Write a message
     /// </summary>
     /// <param name="flags">Message flags</param>
     /// <param name="message">Message content</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>Whether the firmware has been written successfully</returns>
-    bool WriteMessage(MessageTypeFlags flags, string message);
+    bool WriteMessage(MessageTypeFlags flags, string message, ushort tag);
 
     /// <summary>
     /// Notify RepRapFirmware that a macro file could be started
     /// </summary>
     /// <param name="channel">Code channel that requires the lock</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    bool WriteMacroStarted(CodeChannel channel);
+    bool WriteMacroStarted(CodeChannel channel, ushort tag);
 
     /// <summary>
     /// Called when a code channel is supposed to be invalidated (e.g. via abort keyword)
     /// </summary>
     /// <param name="channel">Code channel that requires the lock</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    bool WriteInvalidateChannel(CodeChannel channel);
+    bool WriteInvalidateChannel(CodeChannel channel, ushort tag);
 
     /// <summary>
     /// Set a global or local variable
@@ -358,16 +366,18 @@ public interface ILinkAdapter
     /// <param name="createVariable">Whether the variable should be created or updated</param>
     /// <param name="varName">Name of the variable including global or var prefix</param>
     /// <param name="expression">New value of the variable</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    bool WriteSetVariable(CodeChannel channel, bool createVariable, string varName, string expression);
+    bool WriteSetVariable(CodeChannel channel, bool createVariable, string varName, string expression, ushort tag);
 
     /// <summary>
     /// Delete a local variable at the end of the current code block
     /// </summary>
     /// <param name="channel">G-code channel</param>
     /// <param name="varName">Name of the variable excluding var prefix</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    bool WriteDeleteLocalVariable(CodeChannel channel, string varName);
+    bool WriteDeleteLocalVariable(CodeChannel channel, string varName, ushort tag);
 
     /// <summary>
     /// Send back whether a file exists or not
@@ -433,8 +443,9 @@ public interface ILinkAdapter
     /// </summary>
     /// <param name="channel">Code channel</param>
     /// <param name="result">Last code result</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    bool WriteSetLastCodeResult(CodeChannel channel, CodeResult result);
+    bool WriteSetLastCodeResult(CodeChannel channel, CodeResult result, ushort tag);
 
     /// <summary>
     /// Notify RRF that an object model key has changed

@@ -50,6 +50,19 @@ public sealed class FakeReply
     /// </summary>
     public static readonly FakeReply NotFinished = new(CodeResult.NotFinished, string.Empty);
 
+    /// <summary>
+    /// Whether the code calls the macro named by <see cref="Text"/>, see <see cref="CallMacro"/>
+    /// </summary>
+    public bool IsMacroCall { get; private init; }
+
+    /// <summary>
+    /// The code calls a macro now, as G28 does for its homing files (GCodes4.cpp:358-413): RRF asks DSF for it with fromCode set, like M98, and the
+    /// code finishes with an error if DSF cannot start it. A code that ran into an abort can do this after the abort (OF-T10, CE-12 (b))
+    /// </summary>
+    /// <param name="fileName">Macro file</param>
+    /// <returns>Reply</returns>
+    public static FakeReply CallMacro(string fileName) => new(CodeResult.Ok, fileName) { IsMacroCall = true };
+
     /// <inheritdoc />
     public override string ToString() => $"{Result}: {Text}";
 }

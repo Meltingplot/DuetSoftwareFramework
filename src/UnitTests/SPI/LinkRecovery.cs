@@ -533,7 +533,7 @@ public partial class LinkRecovery
             {
                 // The fake RRF records only the "dsf:N" part of a message
                 string payload = $"dsf:{++dsfId}";
-                if (dsf.WriteMessage(MessageTypeFlags.UsbMessage, payload + new string('y', padding)))
+                if (dsf.WriteMessage(MessageTypeFlags.UsbMessage, payload + new string('y', padding), 0))
                 {
                     dsfSent.Add(payload);
                 }
@@ -1471,7 +1471,7 @@ public partial class LinkRecovery
             if (dsfData)
             {
                 string payload = $"dsf:{++dsfId}";
-                if (dsf.WriteMessage(MessageTypeFlags.UsbMessage, payload))
+                if (dsf.WriteMessage(MessageTypeFlags.UsbMessage, payload, 0))
                 {
                     dsfSent.Add(payload);
                 }

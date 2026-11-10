@@ -86,6 +86,12 @@ public sealed class FakeCode
     public int BinaryLength { get; }
 
     /// <summary>
+    /// Epoch that RRF stamped on the code when it stored it in its ring, from the tag of its Code packet that passed the filter (CE-9, the free
+    /// BufferedCodeHeader.padding). Null for an untagged code
+    /// </summary>
+    public byte? Stamp { get; internal set; }
+
+    /// <summary>
     /// Whether this code comes from a macro file
     /// </summary>
     public bool IsFromMacro => Flags.HasFlag(CodeFlags.IsFromMacro);

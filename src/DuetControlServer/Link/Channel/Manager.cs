@@ -69,7 +69,8 @@ public class Manager(IServiceProvider provider) : IAsyncDiagnostics, IEnumerable
     /// <summary>
     /// Process requests in the G-code channel processors
     /// </summary>
-    public void Spin()
+    /// <param name="connection">State of the channel epoch for the current connection</param>
+    internal void Spin(EpochConnection connection)
     {
         // Iterate over all the available channels
         bool overlapped = false;
@@ -79,7 +80,7 @@ public class Manager(IServiceProvider provider) : IAsyncDiagnostics, IEnumerable
             Processor channelProcessor = this[channel];
             using (channelProcessor.Lock())
             {
-                channelProcessor.Spin();
+                channelProcessor.Spin(connection);
             }
 
             channel++;
@@ -103,8 +104,9 @@ public class Manager(IServiceProvider provider) : IAsyncDiagnostics, IEnumerable
     /// </summary>
     /// <param name="flags">Message type flags</param>
     /// <param name="reply">Message content</param>
+    /// <param name="tag">Tag of the reply (CE-11)</param>
     /// <returns>Whether the reply could be handled</returns>
-    public bool HandleReply(MessageTypeFlags flags, string reply)
+    public bool HandleReply(MessageTypeFlags flags, string reply, ushort tag = 0)
     {
         foreach (Processor channel in _channels.Value)
         {
@@ -113,7 +115,7 @@ public class Manager(IServiceProvider provider) : IAsyncDiagnostics, IEnumerable
             {
                 using (channel.Lock())
                 {
-                    return channel.HandleReply(flags, reply);
+                    return channel.HandleReply(flags, reply, tag);
                 }
             }
         }

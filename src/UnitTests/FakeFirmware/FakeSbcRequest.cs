@@ -76,10 +76,20 @@ public sealed class FakeSbcRequest
     public LinkCapabilities LinkCapabilities { get; init; }
 
     /// <summary>
-    /// Copy this request because DSF sends it again
+    /// Tag of the channel epoch that DSF wrote into the header field ResendPacketId, 0 if untagged (CE-5)
+    /// </summary>
+    public ushort Tag { get; internal set; }
+
+    /// <summary>
+    /// Copy this request because DSF sends it again. Like the SPI adapter, the copy keeps the tag but not the first marker (CE-8)
     /// </summary>
     /// <returns>Copy of this request</returns>
-    internal FakeSbcRequest CloneForResend() => (FakeSbcRequest)MemberwiseClone();
+    internal FakeSbcRequest CloneForResend()
+    {
+        FakeSbcRequest copy = (FakeSbcRequest)MemberwiseClone();
+        copy.Tag = (ushort)(Tag & ~FakeTag.FirstMarker);
+        return copy;
+    }
 
     /// <inheritdoc />
     public override string ToString() => Request switch
@@ -91,5 +101,5 @@ public sealed class FakeSbcRequest
         Request.SetVariable => $"#{Transfer} SetVariable {Channel} {Text} = {Argument} create={Flag}",
         Request.DeleteLocalVariable => $"#{Transfer} DeleteLocalVariable {Channel} {Text}",
         _ => $"#{Transfer} {Request} {Channel}"
-    };
+    } + (FakeTag.IsTagged(Tag) ? $" e{FakeTag.EpochOf(Tag)}" + (((Tag & FakeTag.FirstMarker) != 0) ? " marker" : string.Empty) : string.Empty);
 }

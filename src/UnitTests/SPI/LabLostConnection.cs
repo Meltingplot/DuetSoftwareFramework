@@ -63,7 +63,7 @@ public partial class LinkRecovery
             }
             if (dsfData)
             {
-                dsf.WriteMessage(MessageTypeFlags.UsbMessage, $"dsf:{++dsfId}");
+                dsf.WriteMessage(MessageTypeFlags.UsbMessage, $"dsf:{++dsfId}", 0);
             }
             int lossesBefore = losses, disconnectsBefore = rrf.Disconnects;
             dsf.PerformFullTransfer(connecting, rrf.Budget.Token);

@@ -76,6 +76,21 @@ public sealed class FakePacket
     internal FakeSbcRequest? ResendRequest { get; init; }
 
     /// <summary>
+    /// Tag of the channel epoch in the header field resendPacketId, 0 if untagged (CE-5). ResendPacket uses that field for the packet ID
+    /// </summary>
+    public ushort Tag { get; init; }
+
+    /// <summary>
+    /// Whether the packet is tagged
+    /// </summary>
+    public bool IsTagged => FakeTag.IsTagged(Tag);
+
+    /// <summary>
+    /// Epoch of a tagged packet
+    /// </summary>
+    public int Epoch => FakeTag.EpochOf(Tag);
+
+    /// <summary>
     /// Whether this is a code reply
     /// </summary>
     public bool IsCodeReply => Request == Request.Message && MessageType.HasFlag(MessageTypeFlags.BinaryCodeReplyFlag);
@@ -90,5 +105,5 @@ public sealed class FakePacket
         Request.EvaluationResult or Request.VariableResult => $"#{Transfer} {Request} {Channel} {Text} = {Value}",
         Request.ObjectModel => $"#{Transfer} ObjectModel {Text}",
         _ => $"#{Transfer} {Request} {Channel}"
-    };
+    } + (IsTagged ? $" e{Epoch}" : string.Empty);
 }

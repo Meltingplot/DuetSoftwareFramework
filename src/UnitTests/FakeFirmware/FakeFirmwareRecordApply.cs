@@ -98,7 +98,7 @@ public class FakeFirmwareRecordApply
     /// </summary>
     private void StartMacroWait(CodeChannel channel, string macro)
     {
-        Assert.That(_firmware.WriteCode(MakeCode(channel, $"M98 P\"{macro}\"")), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(channel, $"M98 P\"{macro}\""), 0), Is.True);
         TransferUntil(() => _delivered.Any(packet => packet.Request == Request.ExecuteMacro && packet.Channel == channel && packet.Text == macro), "RRF did not request the macro");
         Assert.That(_firmware.IsIdle(channel), Is.False, string.Join("; ", _delivered) + " | executed " + string.Join(",", _firmware.GetExecutedCodes()));
     }
@@ -109,8 +109,8 @@ public class FakeFirmwareRecordApply
     private void StartMacro(CodeChannel channel, string macro, string firstCode)
     {
         StartMacroWait(channel, macro);
-        Assert.That(_firmware.WriteMacroStarted(channel), Is.True);
-        Assert.That(_firmware.WriteCode(MakeCode(channel, firstCode)), Is.True);
+        Assert.That(_firmware.WriteMacroStarted(channel, 0), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(channel, firstCode), 0), Is.True);
         TransferUntil(() => _firmware.GetExecutedCodes(channel).Any(code => code.Text == firstCode), "RRF did not run the first code of the macro");
     }
     #endregion
@@ -122,7 +122,7 @@ public class FakeFirmwareRecordApply
         // cannot get that mutex within SbcYieldTimeout (SbcInterface.cpp:897, :914-918, DF-T11). The record takes no mutex (CE-7)
         StartMacroWait(CodeChannel.HTTP, "wait.g");
         _firmware.FailBufferLocks(CodeChannel.HTTP, 5);
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
         Transfer();
         Transfer();
         Assert.That(ResendsOf(SbcRequest.InvalidateChannel), Is.Empty, "RRF refused InvalidateChannel");
@@ -137,7 +137,7 @@ public class FakeFirmwareRecordApply
         _firmware.Connect();
         StartMacroWait(CodeChannel.HTTP, "wait.g");
         _firmware.FailBufferLocks(CodeChannel.HTTP, 1);
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
         Transfer();
         Transfer();
         Assert.That(ResendsOf(SbcRequest.InvalidateChannel), Has.Length.EqualTo(1));
@@ -149,7 +149,7 @@ public class FakeFirmwareRecordApply
         // AC-16: the record ends the wait with an error (SbcInterface.cpp:893-894), so the main task returns from RequestMacroFile at once instead of
         // after SbcMaxRequestTime, finishes M98 (its reply is surplus, RRF #46 until E3) and applies the abort at the top of its next spin
         StartMacroWait(CodeChannel.HTTP, "wait.g");
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
         _firmware.PerformFullTransfer();
         Assert.That(_firmware.IsAbortRecorded(CodeChannel.HTTP), Is.False, "The main task did not apply the abort in the spin after the record");
         Assert.That(_firmware.IsIdle(CodeChannel.HTTP), Is.True);
@@ -166,12 +166,12 @@ public class FakeFirmwareRecordApply
         StartMacro(CodeChannel.HTTP, "http.g", "G4 P7");
         StartMacroWait(CodeChannel.Telnet, "telnet.g");
         int recordTransfer = _firmware.TransferCount + 1;
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
         Transfer();
         Transfer();
         Assert.That(_firmware.IsAbortRecorded(CodeChannel.HTTP), Is.True, "The abort was applied while the main task waited for the macro of Telnet");
 
-        Assert.That(_firmware.WriteMacroStarted(CodeChannel.Telnet), Is.True);
+        Assert.That(_firmware.WriteMacroStarted(CodeChannel.Telnet, 0), Is.True);
         Transfer();
         Assert.That(_firmware.IsAbortRecorded(CodeChannel.HTTP), Is.False, "The abort was not applied after the wait of Telnet ended");
         Transfer();
@@ -186,11 +186,11 @@ public class FakeFirmwareRecordApply
         // with the next transfer, before the SBC task has written the closal (DcsKeepsRunningWhenAnAbortArrivesBeforeAMacroFileClosalIsSent)
         StartMacro(CodeChannel.HTTP, "http.g", "G4 P1");
         _firmware.ApplyDelay = 3;
-        Assert.That(_firmware.WriteMacroCompleted(CodeChannel.HTTP, false), Is.True);
+        Assert.That(_firmware.WriteMacroCompleted(CodeChannel.HTTP, false, 0), Is.True);
         _firmware.PerformFullTransfer();
         Assert.That(_firmware.GetStackDepth(CodeChannel.HTTP), Is.Zero, "RRF did not close the macro");
         int recordTransfer = _firmware.TransferCount + 1;
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
         for (int i = 0; i < 6; i++)
         {
             Transfer();
@@ -206,13 +206,13 @@ public class FakeFirmwareRecordApply
         // AC-20: replies of a code that still runs are no channel events (CE-12), they go out with the reply FIFO
         bool release = false;
         _firmware.OnCode("G4", code => (code.Text == "G4 P5" && !release) ? FakeReply.NotFinished : FakeReply.Ok($"reply of {code.Text}"));
-        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P5")), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P5"), 0), Is.True);
         TransferUntil(() => _firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P5", "G4 P5 did not start");
 
         // The apply cannot end G4 P5, which survives at the base level (CE-25). Its reply is suppressed by RRF #46 until E3, so switch that off
         _firmware.CodeReplySurplus = false;
         _firmware.ApplyDelay = 4;
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
         Transfer();
         release = true;
         Transfer();
@@ -229,10 +229,10 @@ public class FakeFirmwareRecordApply
         // invalidated for a macro request (SbcInterface.cpp:376-380, :1497-1504), whose cause the abort has voided
         StartMacroWait(CodeChannel.HTTP, "wait.g");
         _firmware.ApplyDelay = 2;
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP), Is.True);
-        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P11")), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P11"), 0), Is.True);
         Transfer();
-        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P12")), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P12"), 0), Is.True);
         Transfer();
         Assert.That(_firmware.GetExecutedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.None.StartsWith("G4 P1"), "A code ran before the apply");
         TransferUntil(() => _firmware.GetExecutedCodes(CodeChannel.HTTP).Count(code => code.Text.StartsWith("G4 P1")) == 2, "The codes did not run after the apply");
@@ -245,9 +245,9 @@ public class FakeFirmwareRecordApply
     {
         // AC-20: the SBC task keeps off the buffer between record and apply, so a Lock is refused as for a busy mutex (CE-7 (d)) and DSF sends it again
         _firmware.ApplyDelay = 2;
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
         Transfer();
-        Assert.That(_firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.HTTP, 0), Is.True);
         TransferUntil(() => _delivered.Any(packet => packet.Request == Request.Locked && packet.Channel == CodeChannel.HTTP), "The lock was not granted after the apply");
         Assert.That(ResendsOf(SbcRequest.LockAllMovementSystemsAndWaitForStandstill), Is.Not.Empty, "The lock was not refused between record and apply");
         Assert.That(_firmware.MovementLockOwner, Is.EqualTo(CodeChannel.HTTP));
@@ -258,15 +258,15 @@ public class FakeFirmwareRecordApply
     {
         // AC-13 (CE-25 (a), FD-27): an Unlock that DSF dropped at the abort (K28) or whose copy RRF drops after the abort leaves no lock, because the
         // apply releases the locks of an idle buffer
-        Assert.That(_firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.HTTP, 0), Is.True);
         Transfer();
         Assert.That(_firmware.MovementLockOwner, Is.EqualTo(CodeChannel.HTTP));
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
         Transfer();
         Assert.That(_firmware.MovementLockOwner, Is.Null, "The apply kept the lock of an idle channel");
 
         // Another channel locks right after the apply
-        Assert.That(_firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.Telnet), Is.True);
+        Assert.That(_firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.Telnet, 0), Is.True);
         TransferUntil(() => _delivered.Any(packet => packet.Request == Request.Locked && packet.Channel == CodeChannel.Telnet), "Telnet did not get the lock");
     }
 
@@ -276,9 +276,9 @@ public class FakeFirmwareRecordApply
         // The same with the model of today's RRF: InvalidateChannel releases no lock (SbcInterface.cpp:897-918)
         _firmware = new FakeFirmware { Model = FakeRrfModel.V7 };
         _firmware.Connect();
-        Assert.That(_firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.HTTP, 0), Is.True);
         Transfer();
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
         Transfer();
         Assert.That(_firmware.MovementLockOwner, Is.EqualTo(CodeChannel.HTTP));
     }
@@ -290,12 +290,12 @@ public class FakeFirmwareRecordApply
         // UnlockAll would change a running G28 (GCodes.cpp:5658-5663). No other channel gets the lock meanwhile
         bool release = false;
         _firmware.OnCode("G4", code => (code.Text == "G4 P5" && !release) ? FakeReply.NotFinished : null);
-        Assert.That(_firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.HTTP, 0), Is.True);
         Transfer();
-        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P5")), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P5"), 0), Is.True);
         TransferUntil(() => _firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P5", "G4 P5 did not start");
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP), Is.True);
-        Assert.That(_firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.Telnet), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
+        Assert.That(_firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.Telnet, 0), Is.True);
         Transfer();
         Transfer();
         Assert.That(_firmware.MovementLockOwner, Is.EqualTo(CodeChannel.HTTP), "The apply released the lock of a running code");
@@ -310,7 +310,7 @@ public class FakeFirmwareRecordApply
         // AC-17 (b): a recorded abort of the trigger channel counts as busy (CE-7 (c)), so CheckTriggers keeps the trigger pending and requests its
         // macro after the apply, in the new epoch
         _firmware.ApplyDelay = 2;
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.Trigger), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.Trigger, 0), Is.True);
         Transfer();
         _firmware.FireTrigger(5);
         Transfer();
@@ -327,7 +327,7 @@ public class FakeFirmwareRecordApply
         // record ends the wait with an error and the request is never written (CE-7 (4), CE-12)
         _firmware.FireTrigger(5);
         _firmware.PerformFullTransfer();
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.Trigger), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.Trigger, 0), Is.True);
         int recordTransfer = _firmware.TransferCount + 1;
         for (int i = 0; i < 4; i++)
         {
@@ -343,12 +343,12 @@ public class FakeFirmwareRecordApply
         // AC-18, CE-25 (b): a DoCode whose result DSF never sends (K13) no longer keeps the channel busy. Today InvalidateChannel leaves it alone
         _firmware.PassCodeToSbc(CodeChannel.Aux, "M929");
         TransferUntil(() => _delivered.Any(packet => packet.Request == Request.DoCode), "The code was not passed on");
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.Aux), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.Aux, 0), Is.True);
         Transfer();
         Assert.That(_firmware.IsIdle(CodeChannel.Aux), Is.True, "The code passed on is still executing on the SBC");
 
         // A late result is printed to its target and finishes nothing (SbcInterface.cpp:774-803)
-        Assert.That(_firmware.WriteMessage((MessageTypeFlags)(1 << (int)CodeChannel.Aux), "Event logging is disabled\n"), Is.True);
+        Assert.That(_firmware.WriteMessage((MessageTypeFlags)(1 << (int)CodeChannel.Aux), "Event logging is disabled\n", 0), Is.True);
         Transfer();
         Assert.That(_firmware.GetFinishedSbcCodes(), Is.Empty);
         Assert.That(_firmware.GetReceivedMessages(), Has.Count.EqualTo(1));
@@ -360,7 +360,7 @@ public class FakeFirmwareRecordApply
         // CE-25 (b): an unsent DoCode is ended as well. Clearing sendToSbc alone would not do, the code would ask again on its next spin (GCodes2.cpp:603-606)
         _firmware.PassCodeToSbc(CodeChannel.Aux, "M929");
         _firmware.PerformFullTransfer();
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.Aux), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.Aux, 0), Is.True);
         for (int i = 0; i < 4; i++)
         {
             Transfer();
@@ -377,7 +377,7 @@ public class FakeFirmwareRecordApply
         _firmware.Connect();
         _firmware.PassCodeToSbc(CodeChannel.Aux, "M929");
         TransferUntil(() => _delivered.Any(packet => packet.Request == Request.DoCode), "The code was not passed on");
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.Aux), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.Aux, 0), Is.True);
         Transfer();
         Transfer();
         Assert.That(_firmware.IsIdle(CodeChannel.Aux), Is.False);
@@ -388,10 +388,10 @@ public class FakeFirmwareRecordApply
     {
         // AC-18, CE-25 (c): the routine ends the wait as cancelled without the abort flag, so the main task pops the box level and M291 ends with its
         // final reply instead of the box staying open (OF-T10). No MessageAcknowledged is written for it, and nothing stops a print (GCodes.cpp:593-616)
-        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M291 P\"box\" S2")), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M291 P\"box\" S2"), 0), Is.True);
         TransferUntil(() => _delivered.Any(packet => packet.Request == Request.WaitForAcknowledgement && packet.Channel == CodeChannel.HTTP), "The box was not opened");
         int recordTransfer = _firmware.TransferCount + 1;
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
         for (int i = 0; i < 3; i++)
         {
             Transfer();
@@ -409,9 +409,9 @@ public class FakeFirmwareRecordApply
         // OF-T10 with the model of today's RRF: InvalidateChannel leaves the box open, the next code is ignored
         _firmware = new FakeFirmware { Model = FakeRrfModel.V7 };
         _firmware.Connect();
-        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M291 P\"box\" S2")), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M291 P\"box\" S2"), 0), Is.True);
         TransferUntil(() => _delivered.Any(packet => packet.Request == Request.WaitForAcknowledgement && packet.Channel == CodeChannel.HTTP), "The box was not opened");
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
         Transfer();
         Transfer();
         Assert.That(_firmware.IsIdle(CodeChannel.HTTP), Is.False);
@@ -443,12 +443,12 @@ public class FakeFirmwareRecordApply
         {
             case PendingFlag.MacroFileClosed:
                 StartMacro(CodeChannel.HTTP, "http.g", "G4 P1");
-                Assert.That(_firmware.WriteMacroCompleted(CodeChannel.HTTP, false), Is.True);
+                Assert.That(_firmware.WriteMacroCompleted(CodeChannel.HTTP, false, 0), Is.True);
                 _firmware.PerformFullTransfer();
                 break;
             case PendingFlag.MessagePrompt:
             case PendingFlag.MessageAcknowledged:
-                Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M291 P\"box\" S2")), Is.True);
+                Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M291 P\"box\" S2"), 0), Is.True);
                 _firmware.PerformFullTransfer();
                 if (flag == PendingFlag.MessageAcknowledged)
                 {
@@ -473,7 +473,7 @@ public class FakeFirmwareRecordApply
         LoseLinkWith(flag);
         Assert.That(_firmware.HadReset(), Is.True, "DSF does not see the connection reset");
         int reconnectTransfer = _firmware.TransferCount;
-        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P99")), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P99"), 0), Is.True);
         for (int i = 0; i < 3; i++)
         {
             Transfer();
