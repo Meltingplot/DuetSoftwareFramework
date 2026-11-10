@@ -468,3 +468,37 @@ printer unless it says so.
   - Needs DSF codes on a channel whose input RRF reads as text (USB, Aux, PanelDue). How likely that is in the field is not known. Not addressed by the channel epoch.
 - **K13, correction.** A channel abort in DSF does not cancel a DoCode: it runs in DSF's own pipeline, outside the channel's stack. K13 therefore needs a cancellation that reaches the `SimpleCode`; which ones do is still not listed.
 - **T11 (a daemon request one transfer after InvalidateChannel) is reproduced** in the fake firmware: the request arrives after the window of #134 has closed, DSF waits for a closal that never comes and holds the Daemon channel (43 blocks per 2000 aborts). Test: `RecordApplyWithDsf.DaemonChannelWorksAfterAnAbortCrossingADaemonRequest`. Gone with E1 (CE-12: RRF writes nothing for the GB between record and apply).
+
+## Found by the reviews of the channel epoch (2026-11-10)
+
+Two independent reviews: the DSF production diff of `feature/sbc-channel-epoch`, and the second round of the RRF port.
+The decisions are in `sbc-link-v8-requirements.md`, section 10.9.
+
+- **K32. An emergency stop of DSF that crosses the end of a macro never reaches RRF, and DCS stops.** `LinkService.Execute`
+  invalidated the codes (every stack popped to the base level) and wrote the stop, then processed the data RRF had sent
+  before. A MacroFileClosed in it called `Processor.Pop` on the base level ("Stack underrun"); only
+  `ArgumentOutOfRangeException` is caught there, so the link thread ended before the transfer. Reproduced with the fake
+  firmware on v3.7-dev and on the epoch branch. Fixed in two parts: PR #170 (order of the halt cycle) and, with the
+  epoch, a stop that ends the work of every channel with an epoch change (D12). **Upstream has the same order**
+  (`upstream/v3.7-dev` f76ffc70, `LinkService.cs:266-276`, `:358-376`, `Processor.cs:176-181`, `:1228-1243`; read, not
+  run): there M112 completes when the stop is written, so it reports OK although the stop does not reach RRF, and
+  upstream RRF does not stop by itself when the SBC connection is lost. To report to Christian Hammacher.
+- **K33. DSF's own abort of a job channel marks the job aborted only after it has cancelled the codes.** Upstream fixed
+  this order in `Processor.FilesAborted` (77684383: a job that RRF aborted near its end was reported as finished).
+  `Processor.AbortAllAsync` still cancels first (`InvalidateRegular`), then awaits the job lock, then calls
+  `JobProcessor.Abort`. Not shown to be reachable: with `abort` in the job file itself the job task waits for the
+  abort; with `abort` in a macro of the job it is unclear. Needs a test before it is reported.
+- **K34. The feed hold cancel ends the work of the job channels in DSF without an InvalidateChannel.** Upstream
+  77684383 added `LinkInterface.InvalidateJobChannelsAsync`, which calls `Processor.PrintPaused()` on File and File2 when
+  M0/M1/M2 arrives for a held job. That cancels the codes and drops the macros in DSF ("RRF has done the same"), but
+  RRF has not at that point; the M0 goes out afterwards. Not analysed what RRF still sends for the dropped levels, and
+  what it means for the channel epoch. Pause and PrintPaused are not in the fake firmware.
+- **K35. DSF gives up a connection after 500 ms without a transfer, RRF after 4 s.** After a stall in between DSF
+  starts a new connection while RRF still holds the old one's codes, macros and globals (v7: the old work goes on).
+  With the epoch RRF handles DSF's marker on a running connection as a lost connection (D2).
+- **K36. `macroJustStarted` stays set when an abort pops a macro before its first code** (`AbortFile` in
+  `RRF/GCodes/GCodeBuffer/GCodeBuffer.cpp`; SBC mode only). The next reply of a code that survives at the base level
+  then goes out as an incomplete one (PushFlag). Fixed on the RRF epoch branch.
+- **K37. In SBC mode an abort from outside leaves the state variables of the removed levels set,** e.g. suspended
+  heaters after an abort inside a probing code of a macro; upstream fixed the standalone path with `AbortStateMachine`
+  (RRF 1e1eb34e0). The SBC path is the logic topic LA-25, open.
