@@ -272,12 +272,29 @@ public sealed class Processor
     }
 
     /// <summary>
+    /// Called where the work of the current epoch is aborted, i.e. where <see cref="_allFilesAborted"/> is set: from here on its replies are stale
+    /// (<see cref="IsStale"/>). The head of a reply that a code of that work has begun moves to the incomplete stale reply, so that its tail, which
+    /// comes stale before or after InvalidateChannel, completes it and the reply is shown as one message. An untagged head stays, as in v7
+    /// </summary>
+    private void MovePartialReplyToStale()
+    {
+        if (_lastPartialMessage is not null && ChannelEpoch.IsTagged(_lastPartialMessageTag))
+        {
+            _stalePartialReply = _lastPartialMessage;
+            _stalePartialReplyType = _lastPartialMessageType;
+            _stalePartialReplyTag = _lastPartialMessageTag;
+            DiscardPartialReply();
+        }
+    }
+
+    /// <summary>
     /// Discard the incomplete reply of the current code (K11 for an epoch change)
     /// </summary>
     private void DiscardPartialReply()
     {
         _lastPartialMessage = null;
         _lastPartialMessageType = MessageTypeFlags.NoDestinationMessage;
+        _lastPartialMessageTag = 0;
     }
 
     /// <summary>
@@ -887,6 +904,7 @@ public sealed class Processor
             if (tagged)
             {
                 _allFilesAborted = true;
+                MovePartialReplyToStale();
             }
         }
         else
@@ -979,6 +997,7 @@ public sealed class Processor
 
         // Cancel pending codes and requests
         _allFilesAborted = _linkAdapter.ProtocolVersion >= 3;
+        MovePartialReplyToStale();
         InvalidateRegular();
 
         // Abort the job files if necessary
@@ -1302,7 +1321,7 @@ public sealed class Processor
         if (BufferedCodes.Count > 0)
         {
             int codeSize = BufferedCodes[0].BinarySize;
-            if (HandleCodeReply(BufferedCodes[0], flags, reply))
+            if (HandleCodeReply(BufferedCodes[0], flags, reply, tag))
             {
                 BytesBuffered -= codeSize;
                 BufferedCodes.RemoveAt(0);
@@ -1454,6 +1473,10 @@ public sealed class Processor
     /// </summary>
     private string? _lastPartialMessage;
 
+    /// <summary>
+    /// Tag of the last incomplete code reply
+    /// </summary>
+    private ushort _lastPartialMessageTag;
 
     /// <summary>
     /// Process a firmware code reply
@@ -1461,8 +1484,9 @@ public sealed class Processor
     /// <param name="code">Destination code</param>
     /// <param name="flags">Reply flags</param>
     /// <param name="reply">Reply</param>
+    /// <param name="tag">Tag of the reply, kept with an incomplete one</param>
     /// <returns>Whether the code has finished</returns>
-    private bool HandleCodeReply(Code code, MessageTypeFlags flags, string reply)
+    private bool HandleCodeReply(Code code, MessageTypeFlags flags, string reply, ushort tag)
     {
         if (!string.IsNullOrEmpty(_lastPartialMessage))
         {
@@ -1478,6 +1502,7 @@ public sealed class Processor
             // Code reply is not complete yet
             _lastPartialMessageType |= flags;
             _lastPartialMessage = reply;
+            _lastPartialMessageTag = tag;
             return false;
         }
 

@@ -284,6 +284,51 @@ public class ChannelEpochWithDsf
         host.Firmware.ReleaseTransfers();
     }
 
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task StaleReplyIsShownWithTheHeadThatCameBeforeTheAbort(bool tailAfterInvalidateChannel)
+    {
+        // The head (PushFlag) of the reply of the current code waits in DSF when DSF aborts the channel; the tail of the same epoch comes stale, before
+        // InvalidateChannel because DSF has aborted all files, or after it because the epoch has changed. The head moves to the stale reply at the abort,
+        // so the reply is shown complete as one message
+        bool release = false;
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
+            firmware.OnCode("G4", code => (code.Text == "G4 P5" && !release) ? FakeReply.NotFinished : null));
+        await host.ExecuteAsync("G4 P1");
+        Task<string> running = host.StartCode("G4 P5");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P5", Timeout), Is.True);
+        host.Firmware.HoldTransfers();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, Timeout), Is.True);
+
+        Processor processor = Dsf(host, CodeChannel.HTTP);
+        MessageTypeFlags http = (MessageTypeFlags)(1 << (int)CodeChannel.HTTP) | MessageTypeFlags.BinaryCodeReplyFlag;
+        using (processor.Lock())
+        {
+            Assert.That(processor.BufferedCodes, Has.Count.EqualTo(1));
+            Assert.That(processor.HandleReply(http | MessageTypeFlags.PushFlag | MessageTypeFlags.WarningMessageFlag, "head of the reply ", FakeTag.Of(0)), Is.True);
+        }
+        await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
+        if (tailAfterInvalidateChannel)
+        {
+            for (int i = 0; i < 20 && Epoch(host, CodeChannel.HTTP) == 0; i++)
+            {
+                Step(host);
+            }
+            Assert.That(Epoch(host, CodeChannel.HTTP), Is.EqualTo(1), "InvalidateChannel was not written");
+        }
+        using (processor.Lock())
+        {
+            Assert.That(processor.HandleReply(http, "tail of the reply", FakeTag.Of(0)), Is.True);
+        }
+        host.Firmware.ReleaseTransfers();
+        release = true;
+        await IgnoreCancellation(running);
+
+        Assert.That(Messages(host), Has.One.EqualTo("Warning: head of the reply tail of the reply"));
+        Assert.That(Messages(host), Has.None.EqualTo("tail of the reply"));
+        Assert.That(await host.ExecuteAsync("G4 P6"), Is.EqualTo("\n"), "The head went to the next code");
+    }
+
     [Test]
     public async Task PartsOfAStaleReplyAreJoinedApartFromTheReplyOfTheCurrentCode()
     {
