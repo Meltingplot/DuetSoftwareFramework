@@ -458,6 +458,46 @@ public class ObjectModelJsonFuzz
         }
     }
 
+    private static IEnumerable<TestCaseData> ObjectsWithTwoTypeKeys()
+    {
+        static object? Kinematics(ObjectModel model) => model.Move.Kinematics;
+        static object? FilamentMonitor(ObjectModel model) => model.Sensors.FilamentMonitors[0];
+        static object? Screen(ObjectModel model) => ((MainBoard)model.Boards[0]).DirectDisplay?.Screen;
+        yield return new TestCaseData("{\"move\":{\"kinematics\":{\"name\":\"delta\",\"name\":\"cartesian\"}}}", (Func<ObjectModel, object?>)Kinematics, typeof(CoreKinematics)).SetName("{m}(kinematics)");
+        yield return new TestCaseData("{\"move\":{\"kinematics\":{\"name\":\"cartesian\",\"name\":\"delta\",\"name\":\"polar\"}}}", (Func<ObjectModel, object?>)Kinematics, typeof(PolarKinematics)).SetName("{m}(kinematics, three)");
+        yield return new TestCaseData("{\"move\":{\"kinematics\":{\"name\":\"delta\",\"name\":\"unknown\"}}}", (Func<ObjectModel, object?>)Kinematics, typeof(Kinematics)).SetName("{m}(kinematics, unknown last)");
+        yield return new TestCaseData("{\"sensors\":{\"filamentMonitors\":[{\"type\":\"laser\",\"type\":\"pulsed\"}]}}", (Func<ObjectModel, object?>)FilamentMonitor, typeof(PulsedFilamentMonitor)).SetName("{m}(filament monitor)");
+        yield return new TestCaseData("{\"sensors\":{\"filamentMonitors\":[{\"type\":\"rotatingMagnet\",\"type\":\"simple\"}]}}", (Func<ObjectModel, object?>)FilamentMonitor, typeof(FilamentMonitor)).SetName("{m}(filament monitor, unknown last)");
+        yield return new TestCaseData("{\"boards\":[{\"directDisplay\":{\"screen\":{\"controller\":\"ST7567\",\"controller\":\"ST7920\"}}}]}", (Func<ObjectModel, object?>)Screen, typeof(DirectDisplayScreen)).SetName("{m}(screen)");
+        yield return new TestCaseData("{\"boards\":[{\"directDisplay\":{\"screen\":{\"controller\":\"ST7920\",\"controller\":\"ST7567\"}}}]}", (Func<ObjectModel, object?>)Screen, typeof(DirectDisplayScreenST7567)).SetName("{m}(screen, ST7567 last)");
+    }
+
+    /// <summary>
+    /// The class of the kinematics, of a filament monitor and of a screen depends on a key of the object (name, type, controller). If the object
+    /// has that key more than once, UpdateFromJson takes the last one (JsonElement.TryGetProperty). UpdateFromJsonReader acted on the first one it
+    /// found that asked for another class and handed the same reader to a new instance of that class, which found the other key and handed it back,
+    /// until the stack overflowed and the process ended. Finding O6 of design/open-findings.md; found by MutatedJson with seed 3 and 50000 inputs
+    /// </summary>
+    /// <param name="json">Update with an object that has its type key more than once</param>
+    /// <param name="select">Get that object from the model</param>
+    /// <param name="type">Class the last key asks for</param>
+    [TestCaseSource(nameof(ObjectsWithTwoTypeKeys))]
+    public void ObjectWithTwoTypeKeysIsReadLikeUpdateFromJson(string json, Func<ObjectModel, object?> select, Type type)
+    {
+        ObjectModel elementModel = new(), readerModel = new();
+        using (JsonDocument document = JsonDocument.Parse(json))
+        {
+            elementModel.UpdateFromJson(document.RootElement, false);
+        }
+        Utf8JsonReader reader = new(Encoding.UTF8.GetBytes(json));
+        reader.Read();
+        readerModel.UpdateFromJsonReader(ref reader, false);
+
+        Assert.That(select(elementModel), Is.TypeOf(type), "UpdateFromJson");
+        Assert.That(select(readerModel), Is.TypeOf(type), "UpdateFromJsonReader");
+        Assert.That(JsonSerializer.Serialize(readerModel, ObjectModelContext.Default.ObjectModel), Is.EqualTo(JsonSerializer.Serialize(elementModel, ObjectModelContext.Default.ObjectModel)));
+    }
+
     /// <summary>
     /// RRF reports NaN and infinity as null (ObjectModel::ReportFloat), so DCS never sends them either. A JSON number beyond the float range is
     /// read as infinity by JsonElement.GetSingle and Utf8JsonReader.GetSingle, the update accepts it and the model cannot be serialized any more:

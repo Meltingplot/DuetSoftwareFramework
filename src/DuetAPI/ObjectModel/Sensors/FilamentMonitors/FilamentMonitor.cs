@@ -139,48 +139,54 @@ public partial class FilamentMonitor : ModelObject, IDynamicModelObject
             throw new JsonException("expected start of object");
         }
 
-        Utf8JsonReader readerCopy = reader;
+        // The type decides the class. If the object has more than one, the last one counts, as in UpdateFromJson. Acting on the first one that
+        // asks for another class let two different ones hand the reader back and forth between two instances until the stack overflowed
+        Utf8JsonReader readerCopy = reader, keyReader = default;
+        bool hasKey = false;
         while (readerCopy.Read() && readerCopy.TokenType != JsonTokenType.EndObject)
         {
             if (readerCopy.TokenType == JsonTokenType.PropertyName)
             {
                 if (readerCopy.ValueTextEquals("type"u8) && readerCopy.Read())
                 {
-                    string? type = readerCopy.GetString();
-                    if (type is "laser")
-                    {
-                        if (this is not LaserFilamentMonitor)
-                        {
-                            FilamentMonitor newInstance = new LaserFilamentMonitor();
-                            return newInstance.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
-                        }
-                    }
-                    else if (type is "pulsed")
-                    {
-                        if (this is not PulsedFilamentMonitor)
-                        {
-                            FilamentMonitor newInstance = new PulsedFilamentMonitor();
-                            return newInstance.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
-                        }
-                    }
-                    else if (type is "rotatingMagnet")
-                    {
-                        if (this is not RotatingMagnetFilamentMonitor)
-                        {
-                            FilamentMonitor newInstance = new RotatingMagnetFilamentMonitor();
-                            return newInstance.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
-                        }
-                    }
-                    else if (this is LaserFilamentMonitor or PulsedFilamentMonitor or RotatingMagnetFilamentMonitor)
-                    {
-                        FilamentMonitor newInstance = new();
-                        return newInstance.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
-                    }
+                    keyReader = readerCopy;
+                    hasKey = true;
+                }
+                readerCopy.Skip();
+            }
+        }
+
+        if (hasKey)
+        {
+            string? type = keyReader.GetString();
+            if (type is "laser")
+            {
+                if (this is not LaserFilamentMonitor)
+                {
+                    FilamentMonitor newInstance = new LaserFilamentMonitor();
+                    return newInstance.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
                 }
             }
-            else if (readerCopy.TokenType == JsonTokenType.StartObject)
+            else if (type is "pulsed")
             {
-                readerCopy.Skip();
+                if (this is not PulsedFilamentMonitor)
+                {
+                    FilamentMonitor newInstance = new PulsedFilamentMonitor();
+                    return newInstance.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
+                }
+            }
+            else if (type is "rotatingMagnet")
+            {
+                if (this is not RotatingMagnetFilamentMonitor)
+                {
+                    FilamentMonitor newInstance = new RotatingMagnetFilamentMonitor();
+                    return newInstance.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
+                }
+            }
+            else if (this is LaserFilamentMonitor or PulsedFilamentMonitor or RotatingMagnetFilamentMonitor)
+            {
+                FilamentMonitor newInstance = new();
+                return newInstance.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
             }
         }
         return GeneratedUpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
