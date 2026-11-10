@@ -555,7 +555,7 @@ public sealed class LinkService(
                             {
                                 _connection.Written(tag);
                                 request.Written = true;
-                                request.Tag = (ushort)(tag & ~ChannelEpoch.FirstMarker);
+                                request.Tag = tag;
 
                                 numEvaluationsSent++;
                                 if (numEvaluationsSent >= Consts.MaxEvaluationRequestsPerTransfer)
@@ -584,7 +584,7 @@ public sealed class LinkService(
                                 (request.Expression is null && linkAdapter.WriteDeleteLocalVariable(request.Channel, request.VariableName, tag)))
                             {
                                 _connection.Written(tag);
-                                request.Tag = (ushort)(tag & ~ChannelEpoch.FirstMarker);
+                                request.Tag = tag;
                                 if (request.Expression is null)
                                 {
                                     request.SetResult(null);
@@ -1078,7 +1078,7 @@ public sealed class LinkService(
         {
             foreach (EvaluateExpressionRequest request in linkInterface.EvaluateExpressionRequests)
             {
-                if (request.Written && (channel == null || request.Channel == channel) && request.Expression == expression && (!ChannelEpoch.IsTagged(tag) || request.Tag == tag))
+                if (request.Written && (channel == null || request.Channel == channel) && request.Expression == expression && (!ChannelEpoch.IsTagged(tag) || ChannelEpoch.IsSameTag(request.Tag, tag)))
                 {
                     if (result is Exception exception)
                     {
@@ -1213,7 +1213,7 @@ public sealed class LinkService(
         {
             foreach (VariableRequest request in linkInterface.VariableRequests)
             {
-                if (request.VariableName == varName && (channel == null || request.Channel == channel) && (!ChannelEpoch.IsTagged(tag) || request.Tag == tag))
+                if (request.VariableName == varName && (channel == null || request.Channel == channel) && (!ChannelEpoch.IsTagged(tag) || ChannelEpoch.IsSameTag(request.Tag, tag)))
                 {
                     if (result is Exception exception)
                     {

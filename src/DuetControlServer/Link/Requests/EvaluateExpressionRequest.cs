@@ -27,8 +27,9 @@ public class EvaluateExpressionRequest(CodeChannel channel, string expression)
     public bool Written { get; set; }
 
     /// <summary>
-    /// Tag of the channel epoch this request was written with, 0 if it has not been written. A tagged answer only answers a request with its
-    /// own tag (design/sbc-link-v8-requirements.md CE-6, CE-14)
+    /// Header field this request was written with, 0 if it has not been written; on DSF's first packet of a connection it holds the first marker too.
+    /// A tagged answer only answers a request with its own tag, compared by <see cref="ChannelEpoch.IsSameTag"/> (design/sbc-link-v8-requirements.md
+    /// CE-6, CE-14)
     /// </summary>
     public ushort Tag { get; set; }
 

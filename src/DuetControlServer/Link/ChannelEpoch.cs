@@ -37,6 +37,15 @@ internal static class ChannelEpoch
     public static bool IsTagged(ushort tag) => (tag & Tagged) != 0;
 
     /// <summary>
+    /// Whether two header fields carry the same tag: both are tagged or both are not, with the same epoch. The first marker and bits 6-13 do not count,
+    /// as in the filter of stale packets
+    /// </summary>
+    /// <param name="a">Header field</param>
+    /// <param name="b">Other header field</param>
+    /// <returns>Whether the tags are the same</returns>
+    public static bool IsSameTag(ushort a, ushort b) => (a & (Tagged | EpochMask)) == (b & (Tagged | EpochMask));
+
+    /// <summary>
     /// Epoch of a tag
     /// </summary>
     /// <param name="tag">Tag</param>

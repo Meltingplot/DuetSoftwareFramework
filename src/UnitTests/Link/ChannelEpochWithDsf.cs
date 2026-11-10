@@ -330,6 +330,42 @@ public class ChannelEpochWithDsf
     }
 
     [Test]
+    public void SameTagIgnoresTheMarkerAndTheFreeBits()
+    {
+        // CE-5: an answer is matched to its request by tagged and epoch only, as the filter of stale packets compares them
+        Assert.That(ChannelEpoch.IsSameTag(ChannelEpoch.Tag(3), ChannelEpoch.Tag(3)), Is.True);
+        Assert.That(ChannelEpoch.IsSameTag((ushort)(ChannelEpoch.Tag(3) | ChannelEpoch.FirstMarker), ChannelEpoch.Tag(3)), Is.True);
+        Assert.That(ChannelEpoch.IsSameTag((ushort)(ChannelEpoch.Tag(3) | 0x0FC0), ChannelEpoch.Tag(3)), Is.True);
+        Assert.That(ChannelEpoch.IsSameTag(ChannelEpoch.Tag(3), ChannelEpoch.Tag(4)), Is.False);
+        Assert.That(ChannelEpoch.IsSameTag(ChannelEpoch.Tag(0), 0), Is.False, "An untagged field is not epoch 0");
+        Assert.That(ChannelEpoch.IsSameTag(ChannelEpoch.FirstMarker, 0), Is.True);
+    }
+
+    [Test]
+    public async Task EvaluationThatIsTheFirstPacketOfAConnectionIsAnswered()
+    {
+        // CE-4, CE-6: when an EvaluateExpression is DSF's first packet of a connection it carries the first marker, and the request keeps the header field
+        // it was written with. RRF answers with the tag without the marker (SbcInterface.cpp:768 in the RRF branch), and the answer completes the request.
+        // Without the query of the link capabilities and with a long poll interval nothing else is written after the reset
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(
+            firmware => firmware.SupportedLinkCapabilities = LinkCapabilities.None, settings => settings.ModelUpdateInterval = 60000);
+        await host.ExecuteAsync("G4 P1");
+        host.Firmware.SimulateReset();
+        Assert.That(host.Firmware.WaitUntil(firmware => !firmware.IsResetPending, Timeout), Is.True, "DSF did not see the reset");
+        int transfer = host.Firmware.TransferCount;
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.TransferCount > transfer + 1, Timeout), Is.True);
+        int before = host.Firmware.GetReceivedRequests().Count;
+        Assert.That(host.Firmware.GetReceivedRequests().Count(request => (request.Tag & FakeTag.FirstMarker) != 0), Is.EqualTo(1), "Something else was written after the reset");
+
+        object? result = await host.Services.GetRequiredService<LinkInterface>().EvaluateExpressionAsync(CodeChannel.HTTP, "1+1").WaitAsync(Timeout);
+        Assert.That(result, Is.EqualTo(2));
+        FakeSbcRequest first = host.Firmware.GetReceivedRequests()[before];
+        Assert.That(first.Request, Is.EqualTo(SbcRequest.EvaluateExpression));
+        Assert.That(first.Tag, Is.EqualTo((ushort)(FakeTag.Of(0) | FakeTag.FirstMarker)));
+        Assert.That(host.Firmware.GetSentPackets().Last(packet => packet.Request == FirmwareRequest.EvaluationResult).Tag, Is.EqualTo(FakeTag.Of(0)));
+    }
+
+    [Test]
     public async Task PartsOfAStaleReplyAreJoinedApartFromTheReplyOfTheCurrentCode()
     {
         // Decision of 2026-11-10: the parts (PushFlag) of a stale reply are joined apart from the incomplete reply of the current code, and only with parts
