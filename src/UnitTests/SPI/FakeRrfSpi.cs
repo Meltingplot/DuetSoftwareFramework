@@ -256,10 +256,19 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// <param name="firstSequenceNumber">Sequence number of the first transfer</param>
     /// <param name="capabilities">Proposed change: capabilities RRF offers, which DSF activates with a request</param>
     /// <param name="disabledRules">Rules of the proposed changes that are switched off</param>
+    /// <param name="firstPackets">Packets that are in the first transfer, as RRF has written them after the last transfer of a connection that the SBC
+    /// then ended, e.g. by a restart of DCS that RRF has not noticed yet. Packets passed to <see cref="SendPacket"/> go out with the second transfer
+    /// at the earliest, because the data of the first one is set up here</param>
     public FakeRrfSpi(Func<int, bool> sendData, SequenceMismatchHandling sequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset,
         bool pollWhileDisconnected = false, bool rrfFirstOnTie = true, byte underrunByte = 0, bool phaseGuard = false, bool sequenceGuard = false, ushort firstSequenceNumber = 1,
-        LinkCapabilities capabilities = LinkCapabilities.None, RrfRule disabledRules = RrfRule.None)
+        LinkCapabilities capabilities = LinkCapabilities.None, RrfRule disabledRules = RrfRule.None,
+        IEnumerable<(FirmwareRequest Request, byte[] Payload, ushort Tag)>? firstPackets = null)
     {
+        foreach ((FirmwareRequest request, byte[] payload, ushort tag) in firstPackets ?? [])
+        {
+            _packetsToSend.Enqueue((request, payload, tag, null));
+        }
+
         _offeredCapabilities = capabilities;
         _disabledRules = disabledRules;
         _phaseGuard = phaseGuard;

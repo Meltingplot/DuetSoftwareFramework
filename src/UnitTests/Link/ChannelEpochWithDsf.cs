@@ -165,6 +165,39 @@ public class ChannelEpochWithDsf
     }
 
     [Test]
+    public void TaggedPacketBelongsToTheConnectionOnceRrfHasReadTheFirstMarker()
+    {
+        // Owner decision of 2026-11-10: RRF knows the epochs of a connection from DSF's first marker on, and it writes the data of a transfer before it
+        // reads what DSF sends with it (SbcInterface.cpp:257-259 at 78a997f74: ExchangeData, then StartNextTransfer). So a tagged packet that DSF reads
+        // before its first packet has gone out, or with the transfer that carries it, has the tag of an older connection and is dropped. An untagged
+        // one is processed as on v7. Nothing but a new connection starts this again
+        EpochConnection connection = new();
+        ushort tagged = ChannelEpoch.Tag(0);
+        connection.Transferred();
+        Assert.That(connection.Received(tagged), Is.False, "Tagged packet that came with the connect");
+        Assert.That(connection.Received(0), Is.True, "Untagged packet that came with the connect");
+        connection.Transferred();
+        Assert.That(connection.Received(tagged), Is.False, "Tagged packet before DSF has written anything");
+        Assert.That(connection.PeerTags, Is.False, "A packet of an older connection says nothing about this one");
+
+        connection.Written(connection.Tag());
+        Assert.That(connection.Received(tagged), Is.False, "Tagged packet while the first marker waits for its transfer");
+        connection.Transferred();
+        Assert.That(connection.Received(tagged), Is.False, "Tagged packet that came with the transfer of the first marker");
+        connection.Transferred();
+        Assert.That(connection.Received(tagged), Is.True, "Tagged packet that RRF wrote after it had read the first marker");
+        Assert.That(connection.PeerTags, Is.True);
+
+        // The rest of the connection: further packets and transfers change nothing
+        for (int i = 0; i < 3; i++)
+        {
+            connection.Written(connection.Tag((byte)i));
+            connection.Transferred();
+            Assert.That(connection.Received(ChannelEpoch.Tag((byte)i)), Is.True);
+        }
+    }
+
+    [Test]
     public async Task ResentCopyKeepsTheTagWithoutTheMarker()
     {
         // CE-8: RRF refuses the evaluation for a busy buffer, and the copy that DSF writes carries the tag of the original
@@ -772,6 +805,63 @@ public class ChannelEpochWithDsf
         Assert.That(Status(host), Is.EqualTo(MachineStatus.Halted));
         Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.Zero);
         Assert.That(Epoch(host, CodeChannel.HTTP), Is.Zero);
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
+    public async Task ReplyThatRrfWroteBeforeItReadTheMarkerIsDropped(bool withTheMarker)
+    {
+        // Owner decision of 2026-11-10: a tagged packet that RRF wrote before it read the first marker of a connection is of an older connection,
+        // and DSF drops it. Here M114 of the old connection ends in RRF just before DSF ends that connection, so RRF writes its reply with epoch 0 of
+        // the old connection while it still runs it. The reply reaches DSF with the transfer that shows DSF the end of the connection, or one later
+        // with the transfer that carries DSF's first marker, which RRF reads only after it has sent the reply. In the new connection the epochs
+        // start at 0 again, so without the rule the reply looked current: it was counted as out of order and shown as a message, and with a code
+        // of the new connection out it would have completed that code. Lab finding of 2026-11-10 ("Daemon: Out-of-order reply ''" after 13 of 102
+        // restarts of DCS while RRF ran)
+        bool release = false;
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
+        {
+            firmware.OnCode("M114", _ => release ? FakeReply.Ok("position of the old connection") : FakeReply.NotFinished);
+            firmware.OnCode("M115", _ => FakeReply.Ok("FIRMWARE_NAME: fake"));
+        });
+        Task<string> m114 = host.StartCode("M114");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "M114", Timeout), Is.True, "M114 did not start");
+        host.Firmware.HoldTransfers();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, Timeout), Is.True);
+
+        // The main task ends M114 and queues its reply, which the SBC task writes after the next transfer and sends with the one after it
+        static bool IsReplyOfM114(FakePacket packet) => packet.IsCodeReply && packet.RelatedCode?.Text == "M114";
+        release = true;
+        Step(host);
+        Assert.That(host.Firmware.GetCurrentCode(CodeChannel.HTTP), Is.Null, "M114 did not end");
+        Assert.That(host.Firmware.GetPendingPackets().Any(IsReplyOfM114), Is.False);
+        if (!withTheMarker)
+        {
+            Step(host);
+            Assert.That(host.Firmware.GetPendingPackets().Any(IsReplyOfM114), Is.True, "RRF did not write the reply");
+        }
+        Assert.That(host.Firmware.GetSentPackets().Any(IsReplyOfM114), Is.False, "The reply reached DSF in the old connection");
+
+        // DSF ends the connection. It notices after the next transfer and then writes the first marker of the new connection
+        host.Firmware.SimulateDsfConnectionEnd();
+        Step(host);
+        Assert.That(host.Firmware.GetPendingRequests().Any(request => (request.Tag & FakeTag.FirstMarker) != 0), Is.True, "DSF did not write the marker");
+        Assert.That(host.Firmware.GetSentPackets().Any(IsReplyOfM114), Is.EqualTo(!withTheMarker));
+        if (withTheMarker)
+        {
+            Assert.That(host.Firmware.GetPendingPackets().Any(IsReplyOfM114), Is.True, "RRF did not write the reply");
+            Step(host);
+        }
+        FakePacket reply = host.Firmware.GetSentPackets().Single(IsReplyOfM114);
+        Assert.That(reply.Tag, Is.EqualTo(FakeTag.Of(0)), "The reply does not carry the epoch of the old connection");
+        host.Firmware.ReleaseTransfers();
+        await IgnoreCancellation(m114);
+
+        // The new connection works, and its own tagged reply completes its code
+        Assert.That(await host.ExecuteAsync("M115"), Is.EqualTo("FIRMWARE_NAME: fake\n"));
+        Assert.That(host.Firmware.GetSentPackets().Last(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "M115").IsTagged, Is.True);
+        Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.Zero, "The reply of the old connection was taken for one of the new connection");
+        Assert.That(Messages(host), Has.None.Contains("old connection"));
     }
 
     private static async Task WaitForPendingCode(FakeFirmwareHost host, CodeChannel channel)

@@ -317,6 +317,9 @@ public sealed class LinkService(
         TaskCompletionSource? transferredHaltRequest = null;
         do
         {
+            // A full transfer has completed, the one of Connect at first, and its data of RRF is processed below
+            _connection.Transferred();
+
             bool skipChannels = false;
             TaskCompletionSource? writtenHaltRequest = null;
             using (linkInterface.FirmwareActionLock.Lock(stoppingToken))
@@ -674,7 +677,14 @@ public sealed class LinkService(
         // Outside ResendPacket the header field carries the tag of the channel epoch (CE-5). A packet of another epoch is dropped by its handler,
         // with the channel locked, because DSF aborts a channel under that lock (Processor.IsStale)
         ushort tag = ((Request)packet.Request != Request.ResendPacket) ? packet.ResendPacketId : (ushort)0;
-        _connection.Received(tag);
+        if (!_connection.Received(tag))
+        {
+            // RRF tagged this packet before it read DSF's first packet of this connection, so it belongs to an older connection, whose work both
+            // sides have ended: DSF has no code or request left that it could belong to, and RRF ends that connection as a lost one at the latest
+            // when it reads the first marker
+            logger.LogDebug("Dropped {Request} of an older connection", (Request)packet.Request);
+            return;
+        }
 
         switch ((Request)packet.Request)
         {

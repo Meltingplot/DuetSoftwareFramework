@@ -13,6 +13,13 @@ internal sealed class EpochConnection
     private bool _firstMarkerPending = true;
 
     /// <summary>
+    /// Whether DSF's first packet of this connection has gone out with a transfer, and whether RRF has read it. RRF writes the data of a transfer
+    /// before it reads what the SBC sends with it (SbcInterface::ExchangeData, on SPI and on USB), so the data that comes with the transfer of the
+    /// first marker is still older than the marker
+    /// </summary>
+    private bool _firstMarkerTransferred, _firstMarkerRead;
+
+    /// <summary>
     /// Whether RRF has written a tagged packet in this connection. Such an RRF records InvalidateChannel and never refuses it (CE-7), so DSF does not
     /// hold a channel until RRF has taken its InvalidateChannel (#161, CE-13)
     /// </summary>
@@ -53,14 +60,34 @@ internal sealed class EpochConnection
     }
 
     /// <summary>
-    /// Called for every packet from RRF except ResendPacket, whose header field is a packet ID
+    /// Called once after every full transfer, before the data of RRF that came with it is processed. What the adapter repeats to complete a transfer
+    /// (a header or data that is exchanged again, a transfer that is sent or requested again, a packet that RRF asks for again) is part of that
+    /// transfer or of a later one of this connection, so none of it starts the wait for the first marker again; only a new connection does
+    /// </summary>
+    public void Transferred()
+    {
+        _firstMarkerRead = _firstMarkerTransferred;
+        _firstMarkerTransferred = !_firstMarkerPending;
+    }
+
+    /// <summary>
+    /// Called for every packet from RRF except ResendPacket, whose header field is a packet ID. RRF tags only with an epoch that it knows, and it
+    /// knows the epochs of this connection from the first marker on (CE-4). So a tagged packet that RRF wrote before it read the first marker carries
+    /// the epoch of an older connection, which says nothing in this one, where the epochs start at 0 again: e.g. the reply of a code that DCS sent
+    /// before it was restarted, which RRF wrote before it noticed the new connection. An untagged packet is processed as on v7
     /// </summary>
     /// <param name="tag">Header field of the packet</param>
-    public void Received(ushort tag)
+    /// <returns>Whether the packet belongs to this connection, else it is dropped</returns>
+    public bool Received(ushort tag)
     {
         if (ChannelEpoch.IsTagged(tag))
         {
+            if (!_firstMarkerRead)
+            {
+                return false;
+            }
             PeerTags = true;
         }
+        return true;
     }
 }
