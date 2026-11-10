@@ -123,69 +123,71 @@ public partial class Kinematics : ModelObject, IDynamicModelObject
             throw new JsonException("expected start of object");
         }
 
-        Utf8JsonReader readerCopy = reader;
+        // The name decides the class. If the object has more than one, the last one counts, as in UpdateFromJson. Acting on the first one that
+        // asks for another class let two different ones hand the reader back and forth between two instances until the stack overflowed
+        Utf8JsonReader readerCopy = reader, keyReader = default;
+        bool hasKey = false;
         while (readerCopy.Read() && readerCopy.TokenType != JsonTokenType.EndObject)
         {
             if (readerCopy.TokenType == JsonTokenType.PropertyName)
             {
                 if (readerCopy.ValueTextEquals("name"u8) && readerCopy.Read())
                 {
-                    // Compare case-insensitively, the firmware reports some kinematics with capitalized names
-                    string? name = readerCopy.GetString()?.ToLowerInvariant();
-                    if (name is "cartesian" or "corexy" or "corexyu" or "corexyuv" or "corexz" or "markforged")
-                    {
-                        if (this is not CoreKinematics)
-                        {
-                            Kinematics newKinematics = new CoreKinematics();
-                            return newKinematics.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
-                        }
-                    }
-                    else if (name is "delta" or "lineardelta")
-                    {
-                        if (this is not DeltaKinematics)
-                        {
-                            Kinematics newKinematics = new DeltaKinematics();
-                            return newKinematics.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
-                        }
-                    }
-                    else if (name is "hangprinter")
-                    {
-                        if (this is not HangprinterKinematics)
-                        {
-                            Kinematics newKinematics = new HangprinterKinematics();
-                            return newKinematics.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
-                        }
-                    }
-                    else if (name is "fivebarscara" or "scara")
-                    {
-                        if (this is not ScaraKinematics)
-                        {
-                            Kinematics newKinematics = new ScaraKinematics();
-                            return newKinematics.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
-                        }
-                    }
-                    else if (name is "polar")
-                    {
-                        if (this is not PolarKinematics)
-                        {
-                            Kinematics newKinematics = new PolarKinematics();
-                            return newKinematics.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
-                        }
-                    }
-                    else if (this is CoreKinematics or DeltaKinematics or HangprinterKinematics or ScaraKinematics or PolarKinematics)
-                    {
-                        Kinematics newKinematics = new();
-                        return newKinematics.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
-                    }
+                    keyReader = readerCopy;
+                    hasKey = true;
                 }
-                else
+                readerCopy.Skip();
+            }
+        }
+
+        if (hasKey)
+        {
+            // Compare case-insensitively, the firmware reports some kinematics with capitalized names
+            string? name = keyReader.GetString()?.ToLowerInvariant();
+            if (name is "cartesian" or "corexy" or "corexyu" or "corexyuv" or "corexz" or "markforged")
+            {
+                if (this is not CoreKinematics)
                 {
-                    readerCopy.Skip();
+                    Kinematics newKinematics = new CoreKinematics();
+                    return newKinematics.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
                 }
             }
-            else if (readerCopy.TokenType == JsonTokenType.StartObject)
+            else if (name is "delta" or "lineardelta")
             {
-                readerCopy.Skip();
+                if (this is not DeltaKinematics)
+                {
+                    Kinematics newKinematics = new DeltaKinematics();
+                    return newKinematics.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
+                }
+            }
+            else if (name is "hangprinter")
+            {
+                if (this is not HangprinterKinematics)
+                {
+                    Kinematics newKinematics = new HangprinterKinematics();
+                    return newKinematics.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
+                }
+            }
+            else if (name is "fivebarscara" or "scara")
+            {
+                if (this is not ScaraKinematics)
+                {
+                    Kinematics newKinematics = new ScaraKinematics();
+                    return newKinematics.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
+                }
+            }
+            else if (name is "polar")
+            {
+                if (this is not PolarKinematics)
+                {
+                    Kinematics newKinematics = new PolarKinematics();
+                    return newKinematics.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
+                }
+            }
+            else if (this is CoreKinematics or DeltaKinematics or HangprinterKinematics or ScaraKinematics or PolarKinematics)
+            {
+                Kinematics newKinematics = new();
+                return newKinematics.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
             }
         }
         return GeneratedUpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);

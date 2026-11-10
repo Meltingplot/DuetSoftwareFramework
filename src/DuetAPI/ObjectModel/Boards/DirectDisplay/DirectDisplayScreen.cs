@@ -116,31 +116,37 @@ public partial class DirectDisplayScreen : ModelObject, IDynamicModelObject
             throw new JsonException("expected start of object");
         }
 
-        Utf8JsonReader readerCopy = reader;
+        // The controller decides the class. If the object has more than one, the last one counts, as in UpdateFromJson. Acting on the first one that
+        // asks for another class let two different ones hand the reader back and forth between two instances until the stack overflowed
+        Utf8JsonReader readerCopy = reader, keyReader = default;
+        bool hasKey = false;
         while (readerCopy.Read() && readerCopy.TokenType != JsonTokenType.EndObject)
         {
             if (readerCopy.TokenType == JsonTokenType.PropertyName)
             {
                 if (readerCopy.ValueTextEquals("controller"u8) && readerCopy.Read())
                 {
-                    if (readerCopy.GetString() == "ST7567")
-                    {
-                        if (this is not DirectDisplayScreenST7567)
-                        {
-                            DirectDisplayScreenST7567 newInstance = new();
-                            return newInstance.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
-                        }
-                    }
-                    else if (this is DirectDisplayScreenST7567)
-                    {
-                        DirectDisplayScreen newInstance = new();
-                        return newInstance.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
-                    }
+                    keyReader = readerCopy;
+                    hasKey = true;
                 }
-                else
+                readerCopy.Skip();
+            }
+        }
+
+        if (hasKey)
+        {
+            if (keyReader.GetString() == "ST7567")
+            {
+                if (this is not DirectDisplayScreenST7567)
                 {
-                    readerCopy.Skip();
+                    DirectDisplayScreenST7567 newInstance = new();
+                    return newInstance.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
                 }
+            }
+            else if (this is DirectDisplayScreenST7567)
+            {
+                DirectDisplayScreen newInstance = new();
+                return newInstance.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
             }
         }
         return GeneratedUpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);

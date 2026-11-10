@@ -1197,6 +1197,16 @@
             Check if the parameter does not have any data
             </summary>
         </member>
+        <member name="M:DuetAPI.Commands.CodeParameter.Fits(System.Single,System.Double,System.Double)">
+            <summary>
+            Check if a float rounds to a whole number in the given range, as Convert.ToInt32, ToUInt32 and ToInt64 require.
+            A value that does not fit is refused like a long or uint that won't fit, NaN and infinite values never fit
+            </summary>
+            <param name="value">Value to check</param>
+            <param name="min">Smallest whole number of the target type</param>
+            <param name="max">Largest whole number of the target type</param>
+            <returns>Whether the value can be converted</returns>
+        </member>
         <member name="M:DuetAPI.Commands.CodeParameter.op_Explicit(DuetAPI.Commands.CodeParameter)~System.Single">
             <summary>
             Explicit conversion operator to float
