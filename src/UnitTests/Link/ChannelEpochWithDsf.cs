@@ -200,6 +200,34 @@ public class ChannelEpochWithDsf
     }
 
     [Test]
+    public async Task LockQueuedAfterAnAbortGoesOutAfterInvalidateChannel()
+    {
+        // CE-13, CE-14: a lock that is requested between DSF's abort and its write of InvalidateChannel (M505 does that when its flush ends with the
+        // abort) must not go out first. RRF would answer it with the old epoch, DSF drops that answer as stale, and the channel would wait for it
+        // without ever writing InvalidateChannel, while RRF holds the movement lock. After RRF's own abort of all files the same order would leave
+        // the lock behind RRF's gate (CE-24), which only that InvalidateChannel opens
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        LinkInterface link = host.Services.GetRequiredService<LinkInterface>();
+        await host.ExecuteAsync("G4 P1");
+        host.Firmware.HoldTransfers();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, Timeout), Is.True);
+        await link.AbortAllAsync(CodeChannel.HTTP);
+        Task<IAsyncDisposable> lockTask = link.LockAllMovementSystemsAndWaitForStandstill(CodeChannel.HTTP);
+        host.Firmware.ReleaseTransfers();
+
+        await using (await lockTask.WaitAsync(Timeout))
+        {
+            Assert.That(host.Firmware.MovementLockOwner, Is.EqualTo(CodeChannel.HTTP));
+        }
+        FakeSbcRequest[] requests = [.. host.Firmware.GetReceivedRequests().Where(request => request.Channel == CodeChannel.HTTP &&
+            request.Request is SbcRequest.InvalidateChannel or SbcRequest.LockAllMovementSystemsAndWaitForStandstill)];
+        Assert.That(requests.Select(request => request.Request), Is.EqualTo(new[] { SbcRequest.InvalidateChannel, SbcRequest.LockAllMovementSystemsAndWaitForStandstill }));
+        Assert.That(requests.Select(request => FakeTag.EpochOf(request.Tag)), Is.All.EqualTo(1));
+        Assert.That(await host.ExecuteAsync("echo 2+2"), Is.EqualTo("4\n"));
+        Assert.That(host.Firmware.MovementLockOwner, Is.Null);
+    }
+
+    [Test]
     public async Task CodesAfterAnAbortGoOutWithoutWaitingForRrf()
     {
         // CE-13: an RRF that tags never refuses InvalidateChannel, so DSF does not hold the channel until RRF has taken it (#161): the next code goes out

@@ -1042,7 +1042,24 @@ public sealed class Processor
             return;
         }
 
-        // 2. Lock/Unlock requests
+        // 2. Abort requests. InvalidateChannel carries the new epoch, which is the current one once it is written (CE-13). Nothing of the channel goes
+        // out before it: the abort has failed the lock requests of the old epoch, so one that is queued here came after the abort. Written first, RRF
+        // would drop it behind its gate (CE-24) or answer it with a tag that is stale already, and this channel would wait for the answer forever
+        if (_allFilesAborted)
+        {
+            byte epoch = ChannelEpoch.Next(Epoch);
+            ushort tag = connection.Tag(epoch);
+            if (_linkAdapter.WriteInvalidateChannel(Channel, tag))
+            {
+                connection.Written(tag);
+                ChangeEpoch(epoch);
+                _allFilesAbortedSent = _allFilesAbortUnconfirmed = true;
+                _allFilesAborted = false;
+            }
+            return;
+        }
+
+        // 3. Lock/Unlock requests
         if (CurrentState.LockRequests.TryPeek(out LockMovementRequest? lockRequest))
         {
             ushort tag = connection.Tag(Epoch);
@@ -1067,21 +1084,6 @@ public sealed class Processor
             {
                 return;
             }
-        }
-
-        // 3. Abort requests. InvalidateChannel carries the new epoch, which is the current one once it is written (CE-13)
-        if (_allFilesAborted)
-        {
-            byte epoch = ChannelEpoch.Next(Epoch);
-            ushort tag = connection.Tag(epoch);
-            if (_linkAdapter.WriteInvalidateChannel(Channel, tag))
-            {
-                connection.Written(tag);
-                ChangeEpoch(epoch);
-                _allFilesAbortedSent = _allFilesAbortUnconfirmed = true;
-                _allFilesAborted = false;
-            }
-            return;
         }
 
         // 4. Macro files (must come before any other code unless the stack state is being cloned)
