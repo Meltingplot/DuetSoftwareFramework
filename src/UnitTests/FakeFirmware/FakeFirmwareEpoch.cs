@@ -140,12 +140,15 @@ public class FakeFirmwareEpoch
     [Test]
     public void HoldsChannelPacketsAgainAfterALostConnection()
     {
-        // The flag ends with the connection (InvalidateResources). A system macro that RRF asks for after the loss is requested once DSF's first packet
-        // of the next connection has been read, with the epoch of its marker. Packets without a channel, such as the buffer update, are not held
+        // The flag ends with the connection (InvalidateResources). A system macro that RRF asks for once the next transfer has connected it again is
+        // requested once DSF's first packet of the next connection has been read, with the epoch of its marker. Packets without a channel, such as the
+        // buffer update, are not held. A request before that transfer fails at once, see MacroRequestedWhileNotConnectedFailsAtOnce
         Assert.That(_firmware.WriteGetObjectModel("state", "v", FakeTag.FirstMarker), Is.True);
         Transfer();
         _firmware.SimulateConnectionLoss();
         int lossTransfer = _firmware.TransferCount;
+        Transfer();
+        Assert.That(_firmware.IsConnected, Is.True);
         _firmware.RequestMacro(CodeChannel.Trigger, "trigger3.g", true);
         Transfers(3);
         Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.Trigger), Is.Empty, "trigger3.g was requested before DSF's first packet");
@@ -337,8 +340,8 @@ public class FakeFirmwareEpoch
     [Test]
     public void ToolChangeGoesOnAfterAnAbortWithSystemMacros()
     {
-        // Decision of 2026-11-10 on LA-25 (C1-C3): the routine of the abort cleans up the state machine as AbortPrint does (doingToolChange false) but
-        // leaves the state of the base level, so a T-code whose tfree the abort popped goes on as in standalone RRF and asks for tpre and tpost. Both
+        // Decision of 2026-11-10 on LA-25 (C2, C3) and D-A: the routine of the abort leaves the state machine alone (doingToolChange stays set until
+        // toolChangeComplete), so a T-code whose tfree the abort popped goes on as in standalone RRF and asks for tpre and tpost. Both
         // go out as system macro requests with the new epoch. The codes of tpre carry the new epoch and do not overwrite the stamp of the T-code on
         // the level below, so the tpost request after tpre is still a system macro request and the final reply of the T-code carries its old epoch
         _firmware.CodeReplySurplus = false;
@@ -357,7 +360,7 @@ public class FakeFirmwareEpoch
         // Abort inside tfree0.g
         Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, T(2)), Is.True);
         TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 2, "T1 did not go on with tpre1.g");
-        Assert.That(_firmware.IsDoingToolChange, Is.False, "The routine did not clean up the state machine (AbortStateMachine)");
+        Assert.That(_firmware.IsDoingToolChange, Is.True, "The routine cleaned up the state machine, which it must not (owner decision D-A)");
         FakePacket tpre = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[1];
         Assert.That((tpre.Text, tpre.IsFromCode, tpre.Tag), Is.EqualTo(("tpre1.g", false, T(2))));
 
@@ -385,8 +388,8 @@ public class FakeFirmwareEpoch
     [TestCase(false)]
     public void HomingCodeEndsWithAnErrorAfterAnAbort(bool codeBeforeAbort)
     {
-        // Decision of 2026-11-10 on LA-25 (C1): AbortStateMachine clears toBeHomed, the G28 at the base level goes on in homing2 and ends with "Failed
-        // to home axes", as G28 does after AbortPrint in standalone RRF. The reply carries the old epoch, DSF shows it as a message. Also when the abort
+        // Owner decision D-A of 2026-11-10: the routine of the abort leaves toBeHomed alone, the G28 at the base level goes on in homing2 (GCodes4.cpp:
+        // 394-413) and, as homex.g homed nothing, ends with "Failed to home axes". The reply carries the old epoch, DSF shows it as a message. Also when the abort
         // comes between MacroStarted and the first code of the homing file the error is a final reply, because AbortFile clears macroJustStarted
         // (RRF 67e3c69f0)
         _firmware.CodeReplySurplus = false;
@@ -457,9 +460,38 @@ public class FakeFirmwareEpoch
     [TestCase(false)]
     public void SurvivingCodeAfterALostConnection(bool marker)
     {
-        // Decision of 2026-11-10 (C2): a T-code that survives a lost connection (InvalidateResources, and the emergency stop of RRF) has an invalid stamp.
-        // Its next request waits for DSF's first packet of the next connection. With the marker the epoch is 0 and known, and the request goes out as a
-        // system macro request with epoch 0. Without it (a stock DSF) the epoch stays unknown and the request goes out as in v7
+        // Decision of 2026-11-10 (C2): a code that survives a lost connection (the emergency stop of the fork RRF and InvalidateResources, whose apply
+        // voids the stamps) and asks for a macro once RRF is connected again waits for DSF's first packet of the next connection. With the marker the
+        // epoch is 0 and known, and the request goes out as a system macro request with epoch 0. Without it (a stock DSF) the epoch stays unknown and
+        // the request goes out as in v7. A G-code or T-code cannot show this any more: the stop fails a new G-code, and a state machine runs through its
+        // macro requests in the main task's spin while RRF is not connected, where they fail at once (see SurvivingToolChangeEndsWithoutItsMacros...).
+        // So the code here is a status request, which runs on after a stop, held by its handler until the test lets it ask for a macro
+        bool release = false;
+        _firmware.OnCode("M122", _ => release ? FakeReply.CallMacro("diag.g") : FakeReply.NotFinished);
+        KnowEpoch(CodeChannel.HTTP, 1);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M122"), T(1)), Is.True);
+        TransferUntil(() => _firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "M122", "M122 did not start");
+
+        _firmware.SimulateConnectionLoss();
+        Transfer();
+        Assert.That(_firmware.IsEmergencyStopped && _firmware.IsConnected && !_firmware.IsAbortRecorded(CodeChannel.HTTP), Is.True);
+        release = true;
+        Transfers(3);
+        Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.HTTP), Is.Empty, "diag.g was requested before DSF's first packet");
+
+        Assert.That(_firmware.WriteGetObjectModel("state", "v", marker ? FakeTag.FirstMarker : (ushort)0), Is.True);
+        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 1, "M122 did not ask for diag.g");
+        FakePacket request = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[0];
+        Assert.That((request.Text, request.IsFromCode, request.Tag), Is.EqualTo(marker ? ("diag.g", false, T(0)) : ("diag.g", true, (ushort)0)));
+        Assert.That(_firmware.IsEmergencyStopped, Is.True, "The marker on the first packet after the loss made another stop (it only starts the connection)");
+    }
+
+    [Test]
+    public void SurvivingToolChangeEndsWithoutItsMacrosWhileNotConnected()
+    {
+        // A T-code that survives a lost connection goes on in the main task's spin while RRF is not connected (the emergency stop's AbortPrint cleans up
+        // its state machine but leaves its state). Its requests for tpre and tpost fail at once (RequestMacroFile, GCodeBuffer.cpp:1298-1302), so it ends
+        // without them, and its final reply, made while RRF is not connected, is dropped (SbcInterface::HandleGCodeReply, SbcInterface.cpp:2673-2676)
         _firmware.OnCode("T1", _ => FakeReply.ToolChange("tfree0.g", "tpre1.g", "tpost1.g"));
         KnowEpoch(CodeChannel.HTTP, 1);
         Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "T1"), T(1)), Is.True);
@@ -467,15 +499,100 @@ public class FakeFirmwareEpoch
         Assert.That(_firmware.WriteMacroStarted(CodeChannel.HTTP, T(1)), Is.True);
         Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G91"), T(1)), Is.True);
         Transfers(2);
+        int replies = _delivered.Count(packet => packet.IsCodeReply);
 
         _firmware.SimulateConnectionLoss();
+        Assert.That(_firmware.IsIdle(CodeChannel.HTTP), Is.True, "T1 did not end while RRF was not connected");
+        Assert.That(_firmware.IsDoingToolChange, Is.False);
         Transfers(3);
-        Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.HTTP), Has.Length.EqualTo(1), "tpre1.g was requested before DSF's first packet");
+        Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.HTTP), Has.Length.EqualTo(1), "T1 asked for tpre1.g or tpost1.g");
+        Assert.That(_delivered.Skip(replies).Where(packet => packet.IsCodeReply), Is.Empty, "A reply made while RRF was not connected went out");
+    }
 
-        Assert.That(_firmware.WriteGetObjectModel("state", "v", marker ? FakeTag.FirstMarker : (ushort)0), Is.True);
-        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 2, "T1 did not go on with tpre1.g");
-        FakePacket tpre = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[1];
-        Assert.That((tpre.Text, tpre.IsFromCode, tpre.Tag), Is.EqualTo(marker ? ("tpre1.g", false, T(0)) : ("tpre1.g", true, (ushort)0)));
+    [Test]
+    public void MacroRequestedWhileNotConnectedFailsAtOnce()
+    {
+        // Item 6 of the RRF author: RequestMacroFile returns false at once while RRF is not connected (GCodeBuffer.cpp:1298-1302). A system macro that the
+        // main task asks for between a loss and the next transfer, here in its spin of the loss, fails instead of being held until DSF's first packet.
+        // Its warning "Macro file trigger3.g not found" is made while RRF is not connected, so it is dropped (SbcInterface.cpp:2673-2676)
+        Assert.That(_firmware.WriteGetObjectModel("state", "v", FakeTag.FirstMarker), Is.True);
+        Transfer();
+        _firmware.RequestMacro(CodeChannel.Trigger, "trigger3.g", true);
+        _firmware.SimulateConnectionLoss();
+        Assert.That(_firmware.IsIdle(CodeChannel.Trigger), Is.True, "The request waits");
+        Transfers(2);
+        Assert.That(_delivered.Any(packet => packet.Request == Request.Message && packet.Text.Contains("trigger3.g")), Is.False);
+
+        Assert.That(_firmware.WriteGetObjectModel("state", "v", FakeTag.FirstMarker), Is.True);
+        Transfers(3);
+        Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.Trigger), Is.Empty);
+    }
+
+    [Test]
+    public void MarkerOnARunningConnectionEndsItAsALostOne()
+    {
+        // Owner decision D-B: a first marker read while a packet of the connection has been read already means that DSF has ended the connection that RRF
+        // still runs (SbcInterface.cpp:336-347). RRF stops the machine and ends the connection as a lost one (EndConnection, InvalidateResources) before
+        // it handles the packet as the first one of the new connection: every channel at epoch 0 and known. A code of the old connection in the ring is
+        // gone, the code that still runs has a void stamp and its reply goes out untagged
+        bool release = false;
+        _firmware.OnCode("G4", code => (code.Text == "G4 P5" && !release) ? FakeReply.NotFinished : FakeReply.Ok($"reply of {code.Text}"));
+        KnowEpoch(CodeChannel.HTTP, 3);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P5"), T(3)), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P6"), T(3)), Is.True);
+        TransferUntil(() => _firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P5", "G4 P5 did not start");
+        Assert.That(_firmware.IsEmergencyStopped, Is.False);
+
+        Assert.That(_firmware.WriteGetObjectModel("state", "v", FakeTag.FirstMarker), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.Telnet, "G4 P7"), T(0)), Is.True);
+        Transfer();
+        Assert.That(_firmware.IsEmergencyStopped, Is.True, "The marker on a running connection did not end it");
+        Assert.That(_firmware.GetDiscardedCodes(CodeChannel.HTTP).Select(code => code.Text), Is.EquivalentTo(new[] { "G4 P6" }));
+        release = true;
+        TransferUntil(() => _delivered.Any(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P5"), "G4 P5 did not end");
+        FakePacket oldReply = _delivered.Single(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P5");
+        Assert.That((oldReply.Text, oldReply.IsTagged), Is.EqualTo(("G4: Machine is halted", false)), "The reply of the old connection is tagged");
+        Assert.That(_firmware.GetExecutedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.None.EqualTo("G4 P6"));
+
+        // The new connection runs at epoch 0: a code of it is kept in the cleared ring and runs after the apply, here into the stop of the machine, and
+        // its reply carries epoch 0
+        Assert.That(_delivered.Any(packet => packet.Request == Request.ObjectModel), Is.True, "The GetObjectModel of the new connection was not answered");
+        Assert.That(_firmware.GetDiscardedCodes(CodeChannel.Telnet), Is.Empty);
+        TransferUntil(() => _delivered.Any(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P7"), "G4 P7 did not run");
+        Assert.That(_delivered.Single(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P7").Tag, Is.EqualTo(T(0)));
+    }
+
+    [TestCase(true)]
+    [TestCase(false)]
+    public void LostConnectionWinsOverAnInvalidateChannelAtTheApply(bool invalidateFirst)
+    {
+        // Item 4 of the RRF author: the apply takes the record of an abort and the end of the connection together (SbcInterface.cpp:2044-2060). If both
+        // are pending, the loss wins whatever their order: the code that still runs is not flagged as surplus (RRF #46) and its reply goes out, as after
+        // any lost connection. Without the loss, the untagged reply of a code of a DSF that does not tag is suppressed (RecordApplyWithDsf). The apply is
+        // delayed, so that both records meet
+        bool release = false;
+        _firmware.OnCode("G4", code => (code.Text == "G4 P5" && !release) ? FakeReply.NotFinished : FakeReply.Ok($"reply of {code.Text}"));
+        Assert.That(_firmware.WriteGetObjectModel("state", "v", 0), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P5"), 0), Is.True);
+        TransferUntil(() => _firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P5", "G4 P5 did not start");
+        _firmware.ApplyDelay = 3;
+        if (invalidateFirst)
+        {
+            Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
+            Transfer();
+            _firmware.SimulateConnectionLoss();
+        }
+        else
+        {
+            _firmware.SimulateConnectionLoss();
+            Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
+            Transfer();
+        }
+        Assert.That(_firmware.IsAbortRecorded(CodeChannel.HTTP), Is.True, "The records did not meet");
+        release = true;
+        TransferUntil(() => !_firmware.IsAbortRecorded(CodeChannel.HTTP), "The abort was not applied");
+        Transfers(3);
+        Assert.That(_delivered.Where(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P5"), Has.Exactly(1).Items, "The reply of G4 P5 was suppressed");
     }
 
     [Test]

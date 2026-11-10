@@ -122,7 +122,7 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     /// </summary>
     public void MarkCodeReplySurplus()
     {
-        if (!IsEpochKnown || MachineState.CodeEpoch is null)
+        if (!IsEpochKnown || CodeEpoch is null)
         {
             IsCodeReplySurplus = true;
         }
@@ -130,10 +130,23 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
 
     /// <summary>
     /// Whether the SBC task has recorded an abort of this channel that the main task has yet to apply (abortRecorded, the byte of invalidationPending
-    /// renamed, design/sbc-link-v8-requirements.md CE-7). The SBC task sets it, the main task clears it after the routine. Not used by
+    /// renamed, design/sbc-link-v8-requirements.md CE-7). The SBC task sets it, the main task takes it before the routine. Not used by
     /// <see cref="FakeRrfModel.V7"/>
     /// </summary>
     public bool IsAbortRecorded { get; set; }
+
+    /// <summary>
+    /// Whether the connection that the stamps of the frames belong to has been lost (connectionEndRecorded, GCodeBuffer.h:420-421). The Epoch model's
+    /// InvalidateResources sets it together with <see cref="IsAbortRecorded"/>, the main task takes both at the apply and then voids the stamps
+    /// (<see cref="VoidCodeEpochs"/>). Until then the stamps count as invalid (<see cref="CodeEpoch"/>)
+    /// </summary>
+    public bool IsConnectionEndRecorded { get; set; }
+
+    /// <summary>
+    /// Epoch of the code on the latest frame (GCodeBuffer::GetCodeEpoch, GCodeBuffer.cpp:349-352), null if it is invalid or the connection it belongs to
+    /// has been lost and the apply has not voided it yet. Replies and the requests of the code are tagged with it
+    /// </summary>
+    public byte? CodeEpoch => IsConnectionEndRecorded ? null : MachineState.CodeEpoch;
 
     /// <summary>
     /// Epoch of the channel (6 bits), valid if <see cref="IsEpochKnown"/>. RRF keeps it in one byte per channel with the two flags below (CE-4, CE-24)
@@ -152,13 +165,24 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     public bool IsGated { get; set; }
 
     /// <summary>
-    /// Forget the epoch of the channel, as after boot, InvalidateResources and the first marker (CE-4). The stamp of every frame becomes invalid
-    /// (<see cref="FakeMachineState.CodeEpoch"/>), so that a code that survived the end of the connection is of no epoch of the next one
+    /// Start the channel at epoch 0 when the SBC starts a connection (first marker), or forget the epoch when the connection is lost, see
+    /// GCodeBuffer::ResetChannelEpoch (GCodeBuffer.cpp:330-336). Either way there is no gate. The stamps of the frames are left alone: none is valid at
+    /// boot, and after a lost connection InvalidateResources has recorded the end of the connection, whose apply voids them
     /// </summary>
-    public void ForgetEpoch()
+    /// <param name="known">Whether the epoch is known (0) from here on</param>
+    public void ResetChannelEpoch(bool known)
     {
-        IsEpochKnown = IsGated = false;
         Epoch = 0;
+        IsEpochKnown = known;
+        IsGated = false;
+    }
+
+    /// <summary>
+    /// Void the stamps of the codes on every frame after the connection they belong to has been lost, see GCodeBuffer::VoidCodeEpochs
+    /// (GCodeBuffer.cpp:339-346). Only the main task changes the frames
+    /// </summary>
+    public void VoidCodeEpochs()
+    {
         for (FakeMachineState? ms = MachineState; ms is not null; ms = ms.Previous)
         {
             ms.CodeEpoch = null;
@@ -297,7 +321,7 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
             {
                 // The epoch of the code goes into the free bits 18-23 and 26, which WriteCodeReply moves into the header (CE-11). It is the stamp of the
                 // latest frame
-                uint epochBits = (MachineState.CodeEpoch is byte epoch) ? ((uint)epoch << FakeTag.TypeEpochShift) | FakeTag.TypeEpochValid : 0;
+                uint epochBits = (CodeEpoch is byte epoch) ? ((uint)epoch << FakeTag.TypeEpochShift) | FakeTag.TypeEpochValid : 0;
                 return (MessageTypeFlags)((1u << (int)Channel) | epochBits) | MessageTypeFlags.BinaryCodeReplyFlag;
             }
             return Channel switch
@@ -587,8 +611,8 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
         LastResult = CodeResult.Ok;
         IsWaitingForMacro = HasJustStartedMacro = MacroFileError = IsMacroEmpty = IsMacroFileClosed = false;
         IsAbortRequested = IsAbortAllRequested = IsMessagePromptPending = IsMessageAcknowledged = IsInvalidated = IsInvalidationPending = IsCodeReplySurplus = false;
-        IsAbortRecorded = false;
-        ForgetEpoch();
+        IsAbortRecorded = IsConnectionEndRecorded = false;
+        ResetChannelEpoch(false);
         RequestedMacroFile = null;
         SbcCode = null;
         IsSendRequested = IsExecutingOnSbc = false;

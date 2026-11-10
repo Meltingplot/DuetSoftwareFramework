@@ -139,7 +139,7 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
     /// probing, flashing and event states are not emulated
     /// </summary>
     /// <param name="gb">G-code buffer</param>
-    public void AbortStateMachine(FakeGCodeBuffer gb)
+    private void AbortStateMachine(FakeGCodeBuffer gb)
     {
         for (FakeMachineState? ms = gb.MachineState; ms is not null; ms = ms.Previous)
         {
@@ -304,10 +304,12 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
     }
 
     /// <summary>
-    /// End the work of a channel: the routine that the apply of a channel abort and InvalidateResources share (design/sbc-link-v8-requirements.md
-    /// CE-25 and the table "What the routine does"). The caller has ended a macro wait before. No "tell DSF" flag of the buffer is left set, so nothing
-    /// of the old work is announced afterwards. A code that still runs at the base level survives: the routine cleans up the side effects of the state
-    /// machine as RRF's own abort does, but it does not set the state of a frame back and does not reset the buffer
+    /// End the work of a channel: the routine of the apply of a channel abort, see SbcInterface::InvalidateChannel(GCodeBuffer&amp;) (SbcInterface.cpp:
+    /// 1960-1984 at 4d687cec0), which the RRF of E1 also runs in InvalidateResources (design/sbc-link-v8-requirements.md CE-25). The caller has ended a
+    /// macro wait before and has voided a closal that has not gone out and the invalidation (the take of the apply, :2051-2058). No "tell DSF" flag of
+    /// the buffer is left set, so nothing of the old work is announced afterwards. A code that still runs at the base level survives and its state
+    /// machine goes on with its next step: the routine does not clean up the state machine (owner decision D-A of 2026-11-10, RRF b1d3929a6; RRF's own
+    /// abort does, <see cref="AbortPrint"/>), does not set the state of a frame back and does not reset the buffer
     /// </summary>
     /// <param name="gb">G-code buffer</param>
     public void EndChannelWork(FakeGCodeBuffer gb)
@@ -323,25 +325,15 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
 
         // PauseSequenceAborted comes before the files are aborted in RRF, but pausing is not emulated
 
-        // The side effects of the state machine on every level, as RRF's own abort does (AbortPrint, GCodes.cpp:3646). A code at the base level goes
-        // on with the next step of its state, as in standalone RRF (decision of 2026-11-10 on LA-25)
-        AbortStateMachine(gb);
-
         // File levels, without telling DSF, which has aborted them itself (:902-903, :1770-1771)
         gb.AbortFile(true, AbortFileClearsJustStartedMacro);
         gb.FileAbortSent();
-
-        // A closal that has not gone out (as RRF #45, :904)
-        gb.MacroFileClosedSent();
 
         // A box left at the base level, closed as cancelled without the abort flag: with it, the main task would stop the print of the whole machine
         // (GCodes.cpp:593-616). Neither the prompt nor the acknowledgement is announced
         gb.MessageAcknowledged(true, false, 0);
         gb.MessagePromptSent();
         gb.MessageAcknowledgementSent();
-
-        // The event that invalidated the buffer is void. The pause report is not emulated
-        gb.IsInvalidated = false;
 
         // Locks only of an idle buffer: UnlockAll under a running code would change it, e.g. clear toBeHomed of a G28 (FD-27, GCodes.cpp:5658-5663)
         if (gb.IsCompletelyIdle)
@@ -414,17 +406,31 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
             MaxRecordToApply = Math.Max(MaxRecordToApply, firmware.TransferCount - _recordTransfer);
             foreach (FakeGCodeBuffer gb in Buffers)
             {
-                if (gb.IsAbortRecorded)
+                // Take both records before the work, see SbcInterface::ApplyRecordedAborts (SbcInterface.cpp:2030-2089 at 4d687cec0): the abort and the
+                // end of the connection that InvalidateResources records together are applied together. A closal that has not gone out and the
+                // invalidation are voided in the take (the pause report is not emulated)
+                bool aborted = gb.IsAbortRecorded, connectionLost = gb.IsConnectionEndRecorded;
+                gb.IsAbortRecorded = gb.IsConnectionEndRecorded = false;
+                if (aborted)
                 {
+                    gb.MacroFileClosedSent();
+                    gb.IsInvalidated = false;
                     EndChannelWork(gb);
 
-                    // Until E3 the fork catch code of RRF #46 stays: a code that still runs has replies that DSF does not expect (SbcInterface.cpp:2005-2009).
-                    // It is flagged here, on the level that AbortFile has left, unless its replies are tagged
-                    if (firmware.CodeReplySurplus && gb.MachineState.LastCodeFromSbc && !gb.IsCompletelyIdle)
+                    // Until E3 the fork catch code of RRF #46 stays: a code that still runs has replies that DSF does not expect. It is flagged here, on
+                    // the level that AbortFile has left, unless its replies are tagged or the connection has been lost
+                    if (!connectionLost && firmware.CodeReplySurplus && gb.MachineState.LastCodeFromSbc && !gb.IsCompletelyIdle)
                     {
                         gb.MarkCodeReplySurplus();
                     }
-                    gb.IsAbortRecorded = false;
+                }
+
+                // After a lost connection the stamps of the codes on the stack are voided, and the SBC of the next connection has not dropped a code that
+                // survived it, so its replies are not surplus. This wins over an InvalidateChannel recorded before or after the loss
+                if (connectionLost)
+                {
+                    gb.VoidCodeEpochs();
+                    gb.IsCodeReplySurplus = false;
                 }
             }
         }
@@ -728,7 +734,8 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
                 return true;
 
             case FakeMachineState.MachineStateKind.Homing2:
-                // GCodes4.cpp:394-413. An empty toBeHomed is disjoint from the homed axes too, so after AbortStateMachine the code fails here
+                // GCodes4.cpp:394-413. If the homing file that the abort popped homed an axis, G28 goes on with the next one; else, and with an empty
+                // toBeHomed after the emergency stop's AbortStateMachine, it fails here
                 if (!LockAllMovementSystemsAndWaitForStandstill(gb))
                 {
                     return false;
@@ -1225,6 +1232,11 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
             Continuation = continuation
         };
 
+        // RequestMacroFile fails at once while no SBC is connected (GCodeBuffer.cpp:1298-1302)
+        if (!firmware.IsConnectedForMainTask)
+        {
+            return FinishDoFileMacro(gb, call, false);
+        }
         if (gb.RequestMacroFile(fileName, gb.MachineState.LastCodeFromSbc && codeRunning != AsyncSystemMacroCode))
         {
             // The main task waits in RequestMacroFile until DSF has answered

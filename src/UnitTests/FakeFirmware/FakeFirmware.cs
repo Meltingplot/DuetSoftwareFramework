@@ -181,17 +181,64 @@ public sealed partial class FakeFirmware : ILinkAdapter
 
     /// <summary>
     /// Emulate a lost connection to the SBC that RRF notices while it keeps running, see the connection loss in SbcInterface::TaskLoop
-    /// (SbcInterface.cpp:194-233): RRF stops the machine and runs InvalidateResources (:1717-1780). DSF sees the connection reset
+    /// (SbcInterface.cpp:194-229 at 4d687cec0): RRF is no longer connected (isConnected), ends the connection (EndConnection, :282-298: emergency stop
+    /// and InvalidateResources) and lets the main task run before it processes new data. The main task spins once here, without a connection, so a
+    /// macro that it requests now fails at once (RequestMacroFile, GCodeBuffer.cpp:1298-1302). The next transfer connects again. DSF sees the
+    /// connection reset
     /// </summary>
     public void SimulateConnectionLoss()
     {
         lock (_lock)
         {
-            _repRapStopped = true;
-            _gcodes.RequestEmergencyStop();
-            InvalidateResources();
+            _connected = false;
+            EndConnection();
+            _gcodes.Spin();
             _hadReset = true;
         }
+    }
+
+    /// <summary>
+    /// Emulate that DSF ends the connection while RRF keeps running and notices nothing, e.g. when the link stalls for longer than DSF waits but not as
+    /// long as RRF waits (SbcConnectionTimeout). DSF sees the connection reset and starts a new connection, whose first packet carries the first marker
+    /// </summary>
+    public void SimulateDsfConnectionEnd()
+    {
+        lock (_lock)
+        {
+            _hadReset = true;
+        }
+    }
+
+    /// <summary>
+    /// Whether RRF counts the SBC as connected (SbcInterface::isConnected): false after it noticed a lost connection, true again when the next transfer
+    /// completes (SbcInterface.cpp:194-196, :248-253). The first marker of a new connection that RRF still runs does not change it
+    /// </summary>
+    internal bool IsConnected
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _connected;
+            }
+        }
+    }
+    private bool _connected = true;
+
+    /// <summary>
+    /// <see cref="IsConnected"/> for the emulated main task, which runs with the firmware locked
+    /// </summary>
+    internal bool IsConnectedForMainTask => _connected;
+
+    /// <summary>
+    /// End the connection as lost, see SbcInterface::EndConnection (SbcInterface.cpp:282-298): emergency stop and InvalidateResources. The disconnect
+    /// counter and the wait for the main task are not modelled
+    /// </summary>
+    private void EndConnection()
+    {
+        _repRapStopped = true;
+        _gcodes.RequestEmergencyStop();
+        InvalidateResources();
     }
 
     /// <summary>
@@ -811,6 +858,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
             _transferNumber++;
             long timestamp = Stopwatch.GetTimestamp();
             _requestsBeingResent.Clear();
+            _connected = true;
 
             // Deliver what the SBC task wrote after the previous transfer
             _rxPackets = _txPackets;
@@ -893,23 +941,31 @@ public sealed partial class FakeFirmware : ILinkAdapter
         {
             bool acknowledged = true;
             FakeGCodeBuffer? gb = (request.Channel < CodeChannel.Unknown) ? _gcodes[request.Channel] : null;
-            _sbcPacketRead = true;
 
             // Only the RRF of milestone E2 reads the tags of DSF (CE-5), the others see 0 there
             ushort tag = (Model == FakeRrfModel.Epoch) ? request.Tag : (ushort)0;
             if ((tag & FakeTag.FirstMarker) != 0)
             {
-                // DSF's first packet after it started or ended a connection, whatever its type, usually a GetObjectModel (CE-4). DSF writes it where all
-                // its epochs are 0, so every channel epoch is 0 from here on, not unknown as CE-4 says: then RRF tags the packets of a channel before DSF
-                // has sent anything on it, and a request that crosses DSF's first abort of that channel is dropped by its tag instead of passing untagged
-                // (Q34). It acts before the packet can be refused, because a copy does not carry it (CE-8). An InvalidateChannel with the marker then
-                // moves its channel on as usual
+                // DSF's first packet after it started or ended a connection, whatever its type, usually a GetObjectModel (CE-4). It acts before the packet
+                // can be refused, because a copy does not carry it (CE-8; SbcInterface.cpp:333-357 at 4d687cec0). Read while a packet of this connection
+                // has been read already, it means that DSF has ended the connection that RRF still runs (owner decision D-B of 2026-11-10): RRF ends it
+                // as a lost one first, with the emergency stop and InvalidateResources, and then handles this packet as the first one of the new
+                // connection. The message "Lost connection to SBC (the SBC has started a new connection)" is not modelled; InvalidateResources would
+                // discard it before it reaches DSF (:1906-1909)
+                if (_sbcPacketRead)
+                {
+                    EndConnection();
+                }
+
+                // Every channel starts at epoch 0, which DSF's epochs are at that event, not unknown as CE-4 said: then RRF tags the packets of a channel
+                // before DSF has sent anything on it (Q34). An InvalidateChannel with the marker then moves its channel on as usual. The stamps are left
+                // alone: none is valid at boot, and after a loss InvalidateResources has recorded the end of the connection
                 foreach (FakeGCodeBuffer buffer in _gcodes.Buffers)
                 {
-                    buffer.ForgetEpoch();
-                    buffer.IsEpochKnown = true;
+                    buffer.ResetChannelEpoch(true);
                 }
             }
+            _sbcPacketRead = true;
             if (DropByEpoch(request, gb, tag))
             {
                 if (request.Request == SbcRequest.Code)
@@ -1170,6 +1226,18 @@ public sealed partial class FakeFirmware : ILinkAdapter
             _sendBufferUpdate = false;
         }
 
+        // Nothing of a buffer whose abort is recorded is written before the main task has applied it (CE-12). A macro wait that began after the record
+        // ends here with an error instead of a request, as the record ends one. This comes before the hold below, so that such a wait ends in this
+        // exchange also before DSF's first packet of a new connection (SbcInterface.cpp:1611-1630 at 4d687cec0)
+        foreach (FakeGCodeBuffer gb in _gcodes.Buffers)
+        {
+            if (gb.IsAbortRecorded && gb.IsWaitingForMacro)
+            {
+                gb.MacroRequestSent();
+                gb.ResolveMacroRequest(true, false);
+            }
+        }
+
         // Nothing of a channel is written before the SBC task has read DSF's first packet of the connection (milestone E2). It is held, not dropped
         if (Model == FakeRrfModel.Epoch && !_sbcPacketRead)
         {
@@ -1179,15 +1247,9 @@ public sealed partial class FakeFirmware : ILinkAdapter
         // Deal with code channel requests
         foreach (FakeGCodeBuffer gb in _gcodes.Buffers)
         {
-            // Nothing of a buffer whose abort is recorded is written before the main task has applied it (CE-12). A macro wait that began after the
-            // record ends here with an error instead of a request, as the record ends one (SbcInterface.cpp:893-894)
+            // See above
             if (gb.IsAbortRecorded)
             {
-                if (gb.IsWaitingForMacro)
-                {
-                    gb.MacroRequestSent();
-                    gb.ResolveMacroRequest(true, false);
-                }
                 continue;
             }
 
@@ -1375,7 +1437,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
     /// </summary>
     /// <param name="gb">G-code buffer</param>
     /// <returns>Tag</returns>
-    private ushort CodeTag(FakeGCodeBuffer gb) => (Model == FakeRrfModel.Epoch && gb.IsEpochKnown && gb.MachineState.CodeEpoch is byte epoch) ? FakeTag.Of(epoch) : (ushort)0;
+    private ushort CodeTag(FakeGCodeBuffer gb) => (Model == FakeRrfModel.Epoch && gb.IsEpochKnown && gb.CodeEpoch is byte epoch) ? FakeTag.Of(epoch) : (ushort)0;
 
     /// <summary>
     /// Write the pending macro request of a buffer (ExecuteMacro). The request of a code carries the stamp of that code (CE-9 source (1)). While the
@@ -1393,7 +1455,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
         {
             tag = ChannelTag(gb);
         }
-        else if (Model == FakeRrfModel.Epoch && gb.IsEpochKnown && gb.MachineState.CodeEpoch != gb.Epoch)
+        else if (Model == FakeRrfModel.Epoch && gb.IsEpochKnown && gb.CodeEpoch != gb.Epoch)
         {
             fromCode = false;
             tag = ChannelTag(gb);
@@ -1428,19 +1490,35 @@ public sealed partial class FakeFirmware : ILinkAdapter
         }
         gb.IsGated = false;
 
-        // Purge the codes of the channel in the ring and clear invalidated, the step the write phase does today (SbcInterface.cpp:1497-1504). A code of
-        // the new work is then stored as usual and not dropped by the read-ahead rule (:376-380), whose cause the abort has voided
+        // Purge the codes of the channel in the ring, the step the write phase does today (SbcInterface.cpp:1497-1504). A code of the new work is then
+        // stored as usual and not dropped by the read-ahead rule (:376-380), whose cause the abort has voided
         InvalidateBufferedCodes(gb.Channel);
-        gb.IsInvalidated = false;
 
         // Until E3 the fork catch code of RRF #46 flags a code that waits for its macro (:886-889, :991 in the branch), unless its replies are tagged
         if (CodeReplySurplus && gb.IsWaitingForMacro && gb.IsMacroStartedByCode)
         {
             gb.MarkCodeReplySurplus();
         }
+        RecordChannelAbort(gb, false);
+    }
+
+    /// <summary>
+    /// Record the abort of a channel for the main task, see SbcInterface::RecordChannelAbort (SbcInterface.cpp:1936-1954 at 4d687cec0): when DSF aborts
+    /// the channel and, in the Epoch model, for every channel when the connection is lost
+    /// </summary>
+    /// <param name="gb">G-code buffer of the channel</param>
+    /// <param name="connectionLost">Whether the connection has been lost, so that the stamps of the frames are voided at the apply</param>
+    private void RecordChannelAbort(FakeGCodeBuffer gb, bool connectionLost)
+    {
+        // The event that invalidated the buffer is void, the codes that DSF sends from now on are kept
+        gb.IsInvalidated = false;
 
         // Flag the abort for the main task before the next packet is read
         gb.IsAbortRecorded = true;
+        if (connectionLost)
+        {
+            gb.IsConnectionEndRecorded = true;
+        }
         _gcodes.RequestApply(_applyDelay, _transferNumber);
 
         // End a macro wait with an error, so that a main task blocked in it returns (:893-894)
@@ -1452,12 +1530,15 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <summary>
-    /// Invalidate the resources of the SBC interface after a lost connection, see SbcInterface::InvalidateResources (SbcInterface.cpp:1717-1780).
-    /// From milestone E1 it runs the routine of a channel abort on every buffer (CE-25), which also fixes K5
+    /// Invalidate the resources of the SBC interface after a lost connection, see SbcInterface::InvalidateResources (SbcInterface.cpp:1881-1930 at
+    /// 4d687cec0). The RRF of E1 runs the routine of a channel abort on every buffer at once (CE-25), which also fixes K5. The RRF of E2 records the
+    /// abort and the end of the connection on every buffer, because only the main task changes the stack of a buffer; the main task applies both at its
+    /// next spin, after the emergency stop that the caller has requested. The epoch of every channel is unknown from here on
     /// </summary>
     private void InvalidateResources()
     {
         _sbcPacketRead = false;
+        _discardedCodes.AddRange(_codeBuffer);
         _codeBuffer.Clear();
         _codeBufferUsed = 0;
         _sendBufferUpdate = true;
@@ -1465,6 +1546,13 @@ public sealed partial class FakeFirmware : ILinkAdapter
         _txPackets.Clear();
         foreach (FakeGCodeBuffer gb in _gcodes.Buffers)
         {
+            if (Model == FakeRrfModel.Epoch)
+            {
+                gb.ResetChannelEpoch(false);
+                RecordChannelAbort(gb, true);
+                continue;
+            }
+
             if (gb.IsWaitingForMacro)
             {
                 gb.ResolveMacroRequest(true, false);
@@ -1489,11 +1577,14 @@ public sealed partial class FakeFirmware : ILinkAdapter
             }
             else
             {
+                // E1 voided a closal that has not gone out and the invalidation in the routine itself
+                gb.MacroFileClosedSent();
+                gb.IsInvalidated = false;
                 _gcodes.EndChannelWork(gb);
                 gb.IsAbortRecorded = false;
                 gb.IsCodeReplySurplus = false;
             }
-            gb.ForgetEpoch();
+            gb.ResetChannelEpoch(false);
         }
     }
 
@@ -1743,7 +1834,8 @@ public sealed partial class FakeFirmware : ILinkAdapter
 
     #region Interface for the emulated main task
     /// <summary>
-    /// Output a message, see Platform::Message and SbcInterface::HandleGCodeReply. Only messages that go to the SBC are emulated
+    /// Output a message, see Platform::Message and SbcInterface::HandleGCodeReply. Only messages that go to the SBC are emulated. While no SBC is
+    /// connected, it is dropped (SbcInterface.cpp:2673-2676, :2708-2712 at 4d687cec0)
     /// </summary>
     /// <param name="type">Message type</param>
     /// <param name="message">Message content</param>
@@ -1755,6 +1847,10 @@ public sealed partial class FakeFirmware : ILinkAdapter
             (type & MessageTypeFlags.LogOff) == MessageTypeFlags.LogOff)
         {
             // Not for the SBC
+            return;
+        }
+        if (!_connected)
+        {
             return;
         }
 

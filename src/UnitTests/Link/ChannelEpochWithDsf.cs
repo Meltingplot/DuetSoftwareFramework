@@ -498,11 +498,11 @@ public class ChannelEpochWithDsf
 
     [TestCase(true)]
     [TestCase(false)]
-    public async Task HomingCodeThatSurvivesAnAbortEndsWithAnError(bool codeReplySurplus)
+    public async Task HomingCodeThatSurvivesAnAbortWithoutHomingAnAxisEndsWithAnError(bool codeReplySurplus)
     {
-        // Decision of 2026-11-10 on LA-25 (C1): the routine of the abort clears toBeHomed as AbortPrint does, so a G28 whose homing file the abort popped
-        // ends with "Failed to home axes", a reply of the old epoch. DSF shows it as an error message that belongs to no code (decision of 2026-11-10),
-        // and the next code gets its own reply. RRF #46 does not suppress it, because it carries a tag
+        // Owner decision D-A: the routine of the abort leaves the state machine alone, so a G28 whose homing file the abort popped goes on in homing2
+        // (GCodes4.cpp:394-413). homex.g did not home X before the abort, so G28 ends with "Failed to home axes XY", a reply of the old epoch. DSF shows
+        // it as an error message that belongs to no code, and the next code gets its own reply. RRF #46 does not suppress it, because it carries a tag
         bool release = false;
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
         {
@@ -510,7 +510,7 @@ public class ChannelEpochWithDsf
             firmware.OnCode("G28", _ => FakeReply.Home('X', 'Y'));
             firmware.OnCode("G4", code => (code.Text == "G4 P1" && !release) ? FakeReply.NotFinished : FakeReply.Ok());
         });
-        host.WriteMacro("homex.g", "G1 H1 X-300\nG4 P1\n");
+        host.WriteMacro("homex.g", "G4 P1\nG1 H1 X-300\n");
         host.WriteMacro("homey.g", "G1 H1 Y-300\n");
         Task<string> g28 = host.StartCode("G28");
         Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P1", Timeout), Is.True, "homex.g did not run");
@@ -523,15 +523,47 @@ public class ChannelEpochWithDsf
         Assert.That(await next.WaitAsync(Timeout), Does.Not.Contain("home"));
         FakePacket error = host.Firmware.GetSentPackets().Single(packet => packet.IsCodeReply && packet.Text.StartsWith("Failed to home axes"));
         Assert.That(error.Epoch, Is.Zero);
-        Assert.That(Messages(host), Has.One.EqualTo("Error: Failed to home axes"), "The error of the old G28 did not reach the user");
+        Assert.That(Messages(host), Has.One.EqualTo("Error: Failed to home axes XY"), "The error of the old G28 did not reach the user");
         Assert.That(host.Firmware.GetSentPackets().Count(packet => packet.Request == FirmwareRequest.ExecuteMacro), Is.EqualTo(1), "G28 asked for homey.g");
+        Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.Zero);
+    }
+
+    [Test]
+    public async Task HomingCodeThatSurvivesAnAbortAfterHomingAnAxisGoesOn()
+    {
+        // Owner decision D-A: homex.g homed X before the abort, so G28 goes on in homing2 and asks for homey.g, as a system macro request of the new
+        // epoch (C2). DSF runs homey.g, G28 ends with an empty reply of the old epoch, which DSF drops, and the code sent after the abort gets its own
+        // reply. No error is shown
+        bool release = false;
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
+        {
+            firmware.OnCode("G28", _ => FakeReply.Home('X', 'Y'));
+            firmware.OnCode("G4", code => (code.Text == "G4 P1" && !release) ? FakeReply.NotFinished : FakeReply.Ok());
+        });
+        host.WriteMacro("homex.g", "G1 H1 X-300\nG4 P1\n");
+        host.WriteMacro("homey.g", "G1 H1 Y-300\n");
+        Task<string> g28 = host.StartCode("G28");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P1", Timeout), Is.True, "homex.g did not run");
+        await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
+        await IgnoreCancellation(g28);
+        Task<string> next = host.StartCode("M115");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetSentPackets().Count(packet => packet.Request == FirmwareRequest.ExecuteMacro) == 2, Timeout), Is.True,
+            "G28 did not go on with homey.g");
+        release = true;
+
+        Assert.That(await next.WaitAsync(Timeout), Is.EqualTo("\n"));
+        FakePacket[] requests = [.. host.Firmware.GetSentPackets().Where(packet => packet.Request == FirmwareRequest.ExecuteMacro)];
+        Assert.That(requests.Select(packet => (packet.Text, packet.IsFromCode, packet.Epoch)), Is.EqualTo(new[] { ("homex.g", true, 0), ("homey.g", false, 1) }));
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.AxesHomed.Count == 2, Timeout), Is.True, "homey.g did not home Y");
+        Assert.That(host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.Member("G1 H1 Y-300"));
+        Assert.That(Messages(host), Has.None.Contains("home"));
         Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.Zero);
     }
 
     [Test]
     public async Task HomingCodeAbortedBeforeTheFirstCodeOfItsFileEndsWithOneErrorMessage()
     {
-        // As HomingCodeThatSurvivesAnAbortEndsWithAnError, but DSF aborts the channel after it has written MacroStarted for homex.g and before the first
+        // As HomingCodeThatSurvivesAnAbortWithoutHomingAnAxisEndsWithAnError, but DSF aborts the channel after it has written MacroStarted for homex.g and before the first
         // code of homex.g. RRF clears macroJustStarted when the abort pops the macro (RRF 67e3c69f0), so the error is a final reply and reaches the user
         // complete as one message, not as the head of a push message that never ends
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware => firmware.OnCode("G28", _ => FakeReply.Home('X', 'Y')));
@@ -557,7 +589,7 @@ public class ChannelEpochWithDsf
         Assert.That(host.Firmware.GetReceivedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.None.EqualTo("G1 H1 X-300"), "A code of homex.g reached RRF");
         FakePacket error = host.Firmware.GetSentPackets().Single(packet => packet.IsCodeReply && packet.Text.StartsWith("Failed to home axes"));
         Assert.That(error.MessageType.HasFlag(MessageTypeFlags.PushFlag), Is.False);
-        Assert.That(Messages(host), Has.One.EqualTo("Error: Failed to home axes"));
+        Assert.That(Messages(host), Has.One.EqualTo("Error: Failed to home axes XY"));
     }
 
     [Test]
@@ -685,6 +717,91 @@ public class ChannelEpochWithDsf
         {
             Assert.That(Dsf(host, CodeChannel.Aux).DroppedResults, Is.EqualTo(1));
         }
+    }
+
+    private static int Markers(FakeFirmwareHost host) => host.Firmware.GetReceivedRequests().Count(request => (request.Tag & FakeTag.FirstMarker) != 0);
+
+    private static MachineStatus Status(FakeFirmwareHost host)
+    {
+        using (host.Model.AccessReadOnly())
+        {
+            return host.Model.State.Status;
+        }
+    }
+
+    [Test]
+    public async Task ConnectionThatDsfEndsWhileRrfRunsItEndsAsALostOne()
+    {
+        // Owner decision D-B: DSF ends the connection while RRF still runs it and notices nothing, e.g. after a stall that is longer than DSF waits but
+        // shorter than SbcConnectionTimeout. DSF's first packet of the new connection carries the first marker, which RRF reads on a connection whose
+        // packets it has read, so it ends that connection as a lost one before it handles the packet as the first one of the new connection
+        // (SbcInterface.cpp:333-357 at 4d687cec0): it stops the machine (EndConnection, :282-298) and drops what DSF sent before (InvalidateResources),
+        // so no code of old.g that waited in RRF's buffer runs. The code that still ran ends with an untagged reply, because its stamp is void
+        // (GCodeBuffer::GetCodeEpoch). DSF shows it as a message while no code of the new connection waits for a reply. Open finding: if a code of the
+        // new connection on the same channel is out when that reply comes in, the untagged reply completes it (reported, not asserted here)
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
+        {
+            firmware.OnCode("G4", code => (code.Text == "G4 P5") ? FakeReply.NotFinished : FakeReply.Ok());
+            firmware.OnCode("M115", _ => FakeReply.Ok("FIRMWARE_NAME: fake"));
+        });
+        host.WriteMacro("old.g", "G4 P5\nG4 P6\nG4 P7\n");
+        Task<string> macro = host.StartCode("M98 P\"old.g\"");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P5" &&
+            firmware.GetReceivedCodes(CodeChannel.HTTP).Any(code => code.Text == "G4 P7"), Timeout), Is.True, "old.g did not run");
+        Assert.That(Markers(host), Is.EqualTo(1));
+
+        host.Firmware.SimulateDsfConnectionEnd();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.IsEmergencyStopped, Timeout), Is.True, "The marker on a running connection did not end it");
+        Assert.That(Markers(host), Is.EqualTo(2));
+        await IgnoreCancellation(macro);
+
+        // Nothing of the old connection that waited in RRF's buffer runs, the code that still ran ends with an untagged reply
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetSentPackets().Any(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P5"), Timeout),
+            Is.True, "G4 P5 did not end");
+        FakePacket oldReply = host.Firmware.GetSentPackets().Single(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P5");
+        Assert.That((oldReply.Text, oldReply.IsTagged), Is.EqualTo(("G4: Machine is halted", false)));
+        Assert.That(host.Firmware.GetDiscardedCodes(CodeChannel.HTTP).Select(code => code.Text), Is.EquivalentTo(new[] { "G4 P6", "G4 P7" }));
+        Assert.That(ExecutedTexts(host, CodeChannel.HTTP), Has.None.EqualTo("G4 P6").And.None.EqualTo("G4 P7"));
+
+        // DSF shows the old reply as a message, sees the machine halted and goes on with the new connection: a status request gets its own reply
+        for (int i = 0; i < 100 && !Messages(host).Contains("Error: G4: Machine is halted"); i++)
+        {
+            await Task.Delay(50);
+        }
+        Assert.That(Messages(host), Has.One.EqualTo("Error: G4: Machine is halted"), "DSF did not show the reply of the old connection");
+        Assert.That(await host.ExecuteAsync("M115"), Is.EqualTo("FIRMWARE_NAME: fake\n"));
+        for (int i = 0; i < 100 && Status(host) != MachineStatus.Halted; i++)
+        {
+            await Task.Delay(50);
+        }
+        Assert.That(Status(host), Is.EqualTo(MachineStatus.Halted));
+        Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.EqualTo(1), "The untagged reply of G4 P5 met no code, so it is an out-of-order reply");
+        Assert.That(Epoch(host, CodeChannel.HTTP), Is.Zero);
+    }
+
+    [Test]
+    public async Task MarkerOfAConnectionToARestartedRrfStopsNothing()
+    {
+        // Owner decision D-B: a first marker on the first packet that RRF reads in a connection only starts it. Here RRF restarts while DSF runs, as
+        // at boot: DSF's first packet after the restart carries the marker, RRF does not stop the machine, asks for config.g once it has read that
+        // packet (with epoch 0, SbcInterface.cpp:1635) and DSF serves it
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware => firmware.OnCode("M115", _ => FakeReply.Ok("FIRMWARE_NAME: fake")));
+        Assert.That(Markers(host), Is.EqualTo(1));
+        Assert.That(host.Firmware.IsEmergencyStopped, Is.False, "The marker of the first connection stopped the machine");
+        host.WriteMacro("config.g", "G4 P9\n");
+
+        host.Firmware.SimulateReset();
+        host.Firmware.RequestMacro(CodeChannel.Trigger, "config.g");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.Trigger).Any(code => code.Text == "G4 P9"), Timeout), Is.True,
+            "config.g did not run");
+        Assert.That(host.Firmware.IsEmergencyStopped, Is.False, "The marker after the restart stopped the machine");
+        Assert.That(Markers(host), Is.EqualTo(2));
+        FakeSbcRequest marker = host.Firmware.GetReceivedRequests().Last(request => (request.Tag & FakeTag.FirstMarker) != 0);
+        FakePacket request = host.Firmware.GetSentPackets().Single(packet => packet.Request == FirmwareRequest.ExecuteMacro && packet.Text == "config.g");
+        Assert.That((request.Channel, request.IsFromCode, request.Tag), Is.EqualTo((CodeChannel.Trigger, false, FakeTag.Of(0))));
+        Assert.That(request.Transfer, Is.GreaterThan(marker.Transfer), "RRF asked for config.g before it had read DSF's first packet");
+        Assert.That(await host.ExecuteAsync("M115"), Is.EqualTo("FIRMWARE_NAME: fake\n"));
+        Assert.That(Status(host), Is.Not.EqualTo(MachineStatus.Halted));
     }
 
     [TestCase(FakeRrfModel.V7)]
