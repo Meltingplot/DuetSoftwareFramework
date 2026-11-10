@@ -9,6 +9,7 @@ using DuetAPI.ObjectModel;
 using DuetControlServer.Codes.Handlers;
 using DuetControlServer.Link;
 using DuetControlServer.Link.Channel;
+using DuetControlServer.Link.Protocol.Shared;
 using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
 using UnitTests.FakeFirmware;
@@ -180,10 +181,11 @@ public class ChannelEpochWithDsf
     }
 
     [Test]
-    public async Task ReplyOfACodeThatRanIntoTheAbortIsDroppedByItsEpoch()
+    public async Task ReplyOfACodeThatRanIntoTheAbortIsShownAsAMessage()
     {
-        // DF-T10 (CE-11, CE-14): the code RRF still runs at the abort replies with its own epoch, which DSF drops, so the next code gets its own reply.
-        // RRF #46 is switched off as in E3, so the reply does go out; with it, the reply is suppressed in RRF
+        // DF-T10 (CE-11, CE-14): the code RRF still runs at the abort replies with its own epoch, which completes no code in DSF, so the next code gets
+        // its own reply. The reply is shown as a message that belongs to no code (decision of 2026-11-10). RRF #46 is switched off as in E3, so the
+        // reply does go out; with it, the reply is suppressed in RRF
         bool release = false;
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
         {
@@ -201,9 +203,77 @@ public class ChannelEpochWithDsf
         Assert.That(await next.WaitAsync(Timeout), Is.EqualTo("reply of G4 P6\n"));
         Assert.That(host.Firmware.GetSentPackets().Any(packet => packet.IsCodeReply && packet.Text == "reply of G4 P5" && packet.Epoch == 0), Is.True);
         Assert.That(StaleDrops(host, CodeChannel.HTTP, FirmwareRequest.Message), Is.EqualTo(1));
+        Assert.That(Messages(host), Has.One.EqualTo("reply of G4 P5"));
         using (Dsf(host, CodeChannel.HTTP).Lock())
         {
             Assert.That(Dsf(host, CodeChannel.HTTP).OutOfOrderReplies, Is.Zero);
+            Assert.That(Dsf(host, CodeChannel.HTTP).ShownStaleReplies, Is.EqualTo(1));
+        }
+    }
+
+    [Test]
+    public async Task PartsOfAStaleReplyAreJoinedApartFromTheReplyOfTheCurrentCode()
+    {
+        // Decision of 2026-11-10: the parts (PushFlag) of a stale reply are joined apart from the incomplete reply of the current code, and only with parts
+        // of the same epoch: a part that never completes is discarded by the stale reply of another epoch and does not leak into it. The joined reply is
+        // shown with the type of its flags
+        bool release = false;
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
+            firmware.OnCode("G4", code => (code.Text == "G4 P7" && !release) ? FakeReply.NotFinished : FakeReply.Ok("end")));
+        await host.ExecuteAsync("G4 P1");
+        await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
+        Task<string> held = host.StartCode("G4 P7");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P7", Timeout), Is.True);
+        Assert.That(Epoch(host, CodeChannel.HTTP), Is.EqualTo(1));
+
+        // Epoch 1 is current, 0 and 63 are older (63 is 2 behind 1 as a 6-bit serial number)
+        MessageTypeFlags http = (MessageTypeFlags)(1 << (int)CodeChannel.HTTP) | MessageTypeFlags.BinaryCodeReplyFlag;
+        Processor processor = Dsf(host, CodeChannel.HTTP);
+        using (processor.Lock())
+        {
+            Assert.That(processor.HandleReply(http | MessageTypeFlags.PushFlag, "current ", FakeTag.Of(1)), Is.True);
+            Assert.That(processor.HandleReply(http | MessageTypeFlags.PushFlag, "dangling ", FakeTag.Of(63)), Is.True);
+            Assert.That(processor.HandleReply(http | MessageTypeFlags.WarningMessageFlag | MessageTypeFlags.PushFlag, "stale ", FakeTag.Of(0)), Is.True);
+            Assert.That(processor.HandleReply(http, "reply", FakeTag.Of(0)), Is.True);
+            Assert.That(processor.HandleReply(http, string.Empty, FakeTag.Of(0)), Is.True);
+        }
+        release = true;
+
+        Assert.That(await held.WaitAsync(Timeout), Is.EqualTo("current end\n"));
+        Assert.That(Messages(host), Has.One.EqualTo("Warning: stale reply"));
+        Assert.That(Messages(host), Has.None.Contains("dangling"));
+        using (processor.Lock())
+        {
+            Assert.That(processor.ShownStaleReplies, Is.EqualTo(1));
+            Assert.That(processor.OutOfOrderReplies, Is.Zero);
+        }
+    }
+
+    [Test]
+    public async Task IncompleteStaleReplyEndsWithTheConnection()
+    {
+        // Decision of 2026-11-10: the part of a stale reply does not survive the end of the connection, after which the epochs start at 0 again
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        await host.ExecuteAsync("G4 P1");
+        await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
+        await host.ExecuteAsync("G4 P2");
+        MessageTypeFlags http = (MessageTypeFlags)(1 << (int)CodeChannel.HTTP) | MessageTypeFlags.BinaryCodeReplyFlag;
+        Processor processor = Dsf(host, CodeChannel.HTTP);
+        using (processor.Lock())
+        {
+            Assert.That(processor.HandleReply(http | MessageTypeFlags.PushFlag, "before the reset ", FakeTag.Of(0)), Is.True);
+            processor.ResetEpoch();
+            Assert.That(processor.Epoch, Is.Zero);
+            Assert.That(processor.HandleReply(http, "after the abort", FakeTag.Of(63)), Is.True);
+        }
+        Assert.That(Messages(host), Has.One.EqualTo("after the abort"));
+    }
+
+    private static string[] Messages(FakeFirmwareHost host)
+    {
+        using (host.Model.AccessReadOnly())
+        {
+            return [.. host.Model.Messages.Select(message => message.ToString())];
         }
     }
 
@@ -264,6 +334,11 @@ public class ChannelEpochWithDsf
         }
         Assert.That(t1Reply ?? string.Empty, Does.Not.Contain("reply of"));
         Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.Zero);
+
+        // The late reply of G4 P1 is of the old epoch and is shown as a message, the empty final reply of T1 is not shown. The replies of the codes of
+        // tpre and tpost are shown as well, as DSF shows the output of every system macro
+        Assert.That(Messages(host).Count(message => message == "reply of G4 P1"), Is.EqualTo(codeReplySurplus ? 0 : 1));
+        Assert.That(Messages(host).Where(message => message != "reply of G4 P1"), Is.EquivalentTo(new[] { "reply of G4 P3", "reply of G4 P4" }));
         Assert.That(host.Firmware.MovementLockOwner, Is.Null);
     }
 
@@ -271,7 +346,8 @@ public class ChannelEpochWithDsf
     public async Task HomingCodeThatSurvivesAnAbortEndsWithAnError()
     {
         // Decision of 2026-11-10 on LA-25 (C1): the routine of the abort clears toBeHomed as AbortPrint does, so a G28 whose homing file the abort popped
-        // ends with "Failed to home axes", a reply of the old epoch. The next code gets its own reply
+        // ends with "Failed to home axes", a reply of the old epoch. DSF shows it as an error message that belongs to no code (decision of 2026-11-10),
+        // and the next code gets its own reply
         bool release = false;
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
         {
@@ -292,6 +368,7 @@ public class ChannelEpochWithDsf
         Assert.That(await next.WaitAsync(Timeout), Does.Not.Contain("home"));
         FakePacket error = host.Firmware.GetSentPackets().Single(packet => packet.IsCodeReply && packet.Text.StartsWith("Failed to home axes"));
         Assert.That(error.Epoch, Is.Zero);
+        Assert.That(Messages(host), Has.One.EqualTo("Error: Failed to home axes"), "The error of the old G28 did not reach the user");
         Assert.That(host.Firmware.GetSentPackets().Count(packet => packet.Request == FirmwareRequest.ExecuteMacro), Is.EqualTo(1), "G28 asked for homey.g");
         Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.Zero);
     }

@@ -166,6 +166,12 @@ public sealed class Processor
     internal int OutOfOrderReplies { get; private set; }
 
     /// <summary>
+    /// Complete replies of work that DSF has ended that this channel showed as messages (decision of 2026-11-10). Their packets are counted in
+    /// <see cref="StaleDrops"/> as well, because they complete no code
+    /// </summary>
+    internal int ShownStaleReplies { get; private set; }
+
+    /// <summary>
     /// Check if a packet of RRF belongs to work of this channel that DSF has ended, and count it then (CE-14). A tagged packet is current only if its
     /// epoch is the current one and DSF has not aborted all files since: from that abort until the write of InvalidateChannel(e+1) RRF still writes
     /// epoch e, but DSF has removed e's work from its stack. An untagged packet is decided by the v7 windows (CE-13).
@@ -187,7 +193,7 @@ public sealed class Processor
             return false;
         }
 
-        if (epoch != Epoch && ChannelEpoch.Follows(epoch, Epoch))
+        if (IsAhead(epoch))
         {
             AheadDrops++;
             _logger.LogWarning("Dropped {Request} of epoch {Epoch}, which is ahead of epoch {Current}", request, epoch, Epoch);
@@ -199,6 +205,13 @@ public sealed class Processor
         }
         return true;
     }
+
+    /// <summary>
+    /// Whether an epoch follows the current one, which cannot happen on an intact link (CE-5)
+    /// </summary>
+    /// <param name="epoch">Epoch of a packet</param>
+    /// <returns>Whether it is ahead</returns>
+    private bool IsAhead(byte epoch) => epoch != Epoch && ChannelEpoch.Follows(epoch, Epoch);
 
     /// <summary>
     /// Whether all files of this channel are aborted and InvalidateChannel is not written yet. Nothing of the channel goes out until then: the codes
@@ -248,6 +261,7 @@ public sealed class Processor
     {
         Epoch = 0;
         DiscardPartialReply();
+        _stalePartialReply = null;
     }
 
     /// <summary>
@@ -606,7 +620,7 @@ public sealed class Processor
         int staleDrops = StaleDrops.Values.Sum();
         if (Epoch != 0 || staleDrops != 0 || AheadDrops != 0 || OutOfOrderReplies != 0)
         {
-            channelDiagostics.AppendLine($"Epoch {Epoch}, stale drops {staleDrops}, ahead drops {AheadDrops}, out-of-order replies {OutOfOrderReplies}");
+            channelDiagostics.AppendLine($"Epoch {Epoch}, stale drops {staleDrops}, ahead drops {AheadDrops}, out-of-order replies {OutOfOrderReplies}, stale replies shown {ShownStaleReplies}");
         }
 
         string prefix = ">";
@@ -1260,13 +1274,17 @@ public sealed class Processor
     /// </summary>
     /// <param name="flags">Message flags</param>
     /// <param name="reply">Code reply</param>
-    /// <param name="tag">Tag of the reply, the epoch of the code that produced it (CE-11). A reply of another epoch is dropped and not routed to the
-    /// console (CE-14)</param>
+    /// <param name="tag">Tag of the reply, the epoch of the code that produced it (CE-11). A reply of work that DSF has ended completes no code; it is
+    /// shown as a message instead (decision of 2026-11-10, <see cref="ShowStaleReply"/>), one whose epoch is ahead is dropped (CE-14)</param>
     /// <returns>Whether the reply could be processed</returns>
     public bool HandleReply(MessageTypeFlags flags, string reply, ushort tag = 0)
     {
         if (IsStale(tag, Protocol.FirmwareRequests.Request.Message))
         {
+            if (!IsAhead(ChannelEpoch.EpochOf(tag)))
+            {
+                ShowStaleReply(flags, reply, tag);
+            }
             return true;
         }
 
@@ -1335,6 +1353,57 @@ public sealed class Processor
             _logger.LogWarning("Out-of-order reply (flags {Flags}): '{Reply}'", flags, reply);
         }
         return false;
+    }
+
+    /// <summary>
+    /// Incomplete reply of work that DSF has ended (PushFlag), with its flags and its tag. It is kept apart from the incomplete reply of the current code
+    /// (<see cref="_lastPartialMessage"/>)
+    /// </summary>
+    private string? _stalePartialReply;
+    private MessageTypeFlags _stalePartialReplyType;
+    private ushort _stalePartialReplyTag;
+
+    /// <summary>
+    /// Show a reply of work that DSF has ended, e.g. of a code that survived the abort at the base level in RRF, as a message that belongs to no code,
+    /// with the type of its flags, as a generic message is shown (LinkService.OutputGenericMessage). An empty one is dropped. Its parts are assembled
+    /// apart from the reply of the current code, and only parts with the same tag are joined: the part of a reply that never completes is discarded
+    /// by the next stale reply of another epoch or by the end of the connection
+    /// </summary>
+    /// <param name="flags">Message flags</param>
+    /// <param name="reply">Reply</param>
+    /// <param name="tag">Tag of the reply</param>
+    private void ShowStaleReply(MessageTypeFlags flags, string reply, ushort tag)
+    {
+        if (_stalePartialReply is not null)
+        {
+            if (_stalePartialReplyTag == tag)
+            {
+                reply = _stalePartialReply + reply;
+                flags |= _stalePartialReplyType & ~MessageTypeFlags.PushFlag;
+            }
+            else
+            {
+                _logger.LogDebug("Discarding incomplete reply of epoch {Epoch}: '{Reply}'", ChannelEpoch.EpochOf(_stalePartialReplyTag), _stalePartialReply);
+            }
+            _stalePartialReply = null;
+        }
+
+        if (flags.HasFlag(MessageTypeFlags.PushFlag))
+        {
+            _stalePartialReply = reply;
+            _stalePartialReplyType = flags;
+            _stalePartialReplyTag = tag;
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(reply))
+        {
+            ShownStaleReplies++;
+            MessageType type = flags.HasFlag(MessageTypeFlags.ErrorMessageFlag) ? MessageType.Error
+                : flags.HasFlag(MessageTypeFlags.WarningMessageFlag) ? MessageType.Warning
+                : MessageType.Success;
+            _model.Output(type, reply.TrimEnd());
+        }
     }
 
     /// <summary>

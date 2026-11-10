@@ -143,6 +143,9 @@ public class ChannelEpochStress
         public int DcsStops;
         /// <summary>Tagged packets of another epoch that DSF dropped (CE-14)</summary>
         public int DsfEpochDrops;
+        /// <summary>Complete, non-empty replies of work that DSF had ended, which DSF showed as messages instead of completing a code with them
+        /// (decision of 2026-11-10). No symptom: their packets are among <see cref="DsfEpochDrops"/></summary>
+        public int StaleRepliesShown;
         /// <summary>Tagged packets of another epoch, drops by the gate and ignored repeats in RRF (CE-10, CE-24, CE-7)</summary>
         public int RrfEpochDrops;
         /// <summary>Macro requests that RRF wrote without a tag. With the epoch pair there are none: RRF writes nothing of a channel before it has read
@@ -170,7 +173,7 @@ public class ChannelEpochStress
             StringBuilder builder = new();
             builder.Append($"aborts={Aborts} outOfOrder={OutOfOrderReplies} resends={Resends} invalidateResends={InvalidateChannelResends} windowDrops={WindowDrops} ");
             builder.Append($"wrongCompletions={WrongCompletions} staleEffects={StaleEventEffects} probesCancelled={ProbesCancelled} blocks={Blocks} dcsStops={DcsStops} ");
-            builder.Append($"dsfEpochDrops={DsfEpochDrops} rrfEpochDrops={RrfEpochDrops} untaggedMacroRequests={UntaggedMacroRequests} restarts={Restarts}");
+            builder.Append($"dsfEpochDrops={DsfEpochDrops} staleRepliesShown={StaleRepliesShown} rrfEpochDrops={RrfEpochDrops} untaggedMacroRequests={UntaggedMacroRequests} restarts={Restarts}");
             foreach (KeyValuePair<string, int> detail in Details)
             {
                 builder.Append($"\n  {detail.Key}: {detail.Value}");
@@ -459,6 +462,7 @@ public class ChannelEpochStress
                         Counters.Details[$"DSF epoch drop: {drop.Key}"] = Counters.Details.GetValueOrDefault($"DSF epoch drop: {drop.Key}") + drop.Value;
                     }
                     Counters.DsfEpochDrops += processor.AheadDrops + processor.DroppedResults;
+                    Counters.StaleRepliesShown += processor.ShownStaleReplies;
                     if (processor.AheadDrops > 0)
                     {
                         Counters.Details["DSF epoch drop: ahead"] = Counters.Details.GetValueOrDefault("DSF epoch drop: ahead") + processor.AheadDrops;
