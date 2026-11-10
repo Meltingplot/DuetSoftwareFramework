@@ -322,6 +322,18 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <summary>
+    /// Get the packets the emulated RRF wrote for the next transfer
+    /// </summary>
+    /// <returns>Packets in order</returns>
+    public IReadOnlyList<FakePacket> GetPendingPackets()
+    {
+        lock (_lock)
+        {
+            return [.. _txPackets];
+        }
+    }
+
+    /// <summary>
     /// Whether a reset has happened that LinkService has not seen yet via <see cref="HadReset"/>
     /// </summary>
     public bool IsResetPending
