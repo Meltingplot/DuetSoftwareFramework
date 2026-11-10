@@ -623,9 +623,10 @@ public sealed partial class LinkInterface(
     }
 
     /// <summary>
-    /// Invalidate pending codes and code-relevant requests due to an emergency stop
+    /// Invalidate pending codes and code-relevant requests due to an emergency stop, a lost connection or a reset
     /// </summary>
-    internal void InvalidateCodes()
+    /// <param name="emergencyStop">Whether this is for an emergency stop, see <see cref="Channel.Processor.Invalidate"/></param>
+    internal void InvalidateCodes(bool emergencyStop)
     {
         // No longer starting or stopping a print. Must do this before aborting the print
         using (PrintStateLock.Lock())
@@ -647,7 +648,7 @@ public sealed partial class LinkInterface(
         {
             using (channel.Lock())
             {
-                channel.Invalidate();
+                channel.Invalidate(emergencyStop);
             }
         }
         BytesReserved = BufferSpace = MaxReportedBufferSpace = 0;
@@ -687,7 +688,7 @@ public sealed partial class LinkInterface(
     internal void Invalidate()
     {
         // Invalidate codes and code-relevant requests
-        InvalidateCodes();
+        InvalidateCodes(false);
 
         // Resolve pending object model requests
         lock (ModelQueryRequests)
@@ -712,7 +713,8 @@ public sealed partial class LinkInterface(
     }
 
     /// <summary>
-    /// Invalidate pending codes and code-relevant requests due to an emergency stop asynchronously
+    /// Invalidate pending codes and code-relevant requests asynchronously where DCS stops (<see cref="InvalidateAsync"/>), so no channel stays armed for
+    /// an InvalidateChannel
     /// </summary>
     /// <returns>Asynchronous task</returns>
     internal async Task InvalidateCodesAsync(CancellationToken cancellationToken)
@@ -737,7 +739,7 @@ public sealed partial class LinkInterface(
         {
             using (await channel.LockAsync(cancellationToken))
             {
-                channel.Invalidate();
+                channel.Invalidate(false);
             }
         }
         BytesReserved = BufferSpace = MaxReportedBufferSpace = 0;

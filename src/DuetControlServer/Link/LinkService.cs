@@ -324,7 +324,9 @@ public sealed class LinkService(
                 // Check if an emergency stop has been requested
                 if (linkInterface.FirmwareHaltRequest is not null)
                 {
-                    InvalidateCodes();
+                    // The stop ends the work of every channel as an abort of all files does: RRF's packets of the current epoch are stale from here on,
+                    // and each channel writes InvalidateChannel(e+1) in a later Spin, never before the stop
+                    InvalidateCodes(true);
                     ushort tag = _connection.Tag();
                     if (linkAdapter.WriteEmergencyStop(tag))
                     {
@@ -1648,12 +1650,13 @@ public sealed class LinkService(
     }
 
     /// <summary>
-    /// Invalidate pending codes and code-relevant requests due to an emergency stop
+    /// Invalidate pending codes and code-relevant requests due to an emergency stop, a lost connection or a reset
     /// </summary>
-    private void InvalidateCodes()
+    /// <param name="emergencyStop">Whether this is for an emergency stop, see <see cref="Channel.Processor.Invalidate"/></param>
+    private void InvalidateCodes(bool emergencyStop)
     {
         // Invalidate pending codes and code-relevant requests
-        linkInterface.InvalidateCodes();
+        linkInterface.InvalidateCodes(emergencyStop);
 
         // Cancel the file being printed (if any)
         using (jobProcessor.Lock())
@@ -1666,7 +1669,7 @@ public sealed class LinkService(
         {
             using (channel.Lock())
             {
-                channel.Invalidate();
+                channel.Invalidate(emergencyStop);
             }
         }
     }
@@ -1761,7 +1764,7 @@ public sealed class LinkService(
     private void Invalidate()
     {
         // Invalidate codes and code-relevant requests
-        InvalidateCodes();
+        InvalidateCodes(false);
 
         // Invalidate remaining link interface requests
         linkInterface.Invalidate();

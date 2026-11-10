@@ -239,7 +239,7 @@ public class ChannelProcessor
     public void InvalidateStopsWaitingForPrintCompletion()
     {
         _processor.WaitForPrintCompletion();
-        _processor.Invalidate();
+        _processor.Invalidate(false);
         Assert.That(_processor.HandleReply(ReplyFlags, string.Empty), Is.False);
     }
 
@@ -315,7 +315,7 @@ public class ChannelProcessor
         StartMacro(startCode, macroCode);
 
         // e.g. after RRF has been reset
-        _processor.Invalidate();
+        _processor.Invalidate(false);
         Assert.That(IsCompleted(macroCode), Is.False);
         Assert.That(_processor.BufferedCodes, Is.Empty);
         Assert.That(_processor.Stack, Has.Count.EqualTo(1));

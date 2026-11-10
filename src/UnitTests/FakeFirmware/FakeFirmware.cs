@@ -642,6 +642,20 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <summary>
+    /// Whether RRF has closed a macro of a channel and the SBC task has yet to tell DSF (GCodeBuffer::IsMacroFileClosed). The MacroFileClosed goes out
+    /// with the write phase of the next transfer and reaches DSF with the transfer after it
+    /// </summary>
+    /// <param name="channel">Code channel</param>
+    /// <returns>Whether the closal is pending</returns>
+    public bool IsMacroFileClosedPending(CodeChannel channel)
+    {
+        lock (_lock)
+        {
+            return _gcodes[channel].IsMacroFileClosed;
+        }
+    }
+
+    /// <summary>
     /// Whether a tool change is in progress (GCodes::doingToolChange), see <see cref="FakeReply.ToolChange"/>
     /// </summary>
     public bool IsDoingToolChange

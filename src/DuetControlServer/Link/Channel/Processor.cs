@@ -112,7 +112,8 @@ public sealed class Processor
     public async ValueTask<IDisposable> LockAsync(CancellationToken cancellationToken = default) => await _lock.LockAsync(cancellationToken);
 
     /// <summary>
-    /// This is set to true if all the files have been aborted and RRF has to be notified
+    /// This is set to true if all the files have been aborted, by DSF, by RRF (a tagged AbortFile) or by an emergency stop of DSF, and RRF has to be
+    /// notified with InvalidateChannel(e+1)
     /// </summary>
     private bool _allFilesAborted;
 
@@ -1795,8 +1796,12 @@ public sealed class Processor
     /// <summary>
     /// Invalidate every request and buffered code on this channel
     /// </summary>
-    /// <returns>If any resource has been invalidated</returns>
-    public void Invalidate()
+    /// <param name="emergencyStop">Whether DSF invalidates the channel for an emergency stop. Then the work of the channel has ended as at an abort of all
+    /// files (decision of 2026-11-10): from here on a tagged packet of the current epoch is stale (<see cref="IsStale"/>), and <see cref="Spin"/> writes
+    /// InvalidateChannel(e+1) and changes the epoch, to every peer. LinkService skips Spin in the iteration that writes the stop, so the InvalidateChannel
+    /// goes out with a later transfer. False where a connection ends, a reset is requested or DCS stops: the epochs are reset to 0 there (CE-4) or the
+    /// link ends, so nothing stays armed</param>
+    public void Invalidate(bool emergencyStop)
     {
         // Invalidate the stack
         do
@@ -1842,6 +1847,11 @@ public sealed class Processor
 
         // Clear codes that are still pending but have not been fed into the SPI interface yet
         _codeProcessor.CancelPending(Channel);
-        _allFilesAborted = _allFilesAbortedSent = _allFilesAbortUnconfirmed = _allFilesAbortResent = false;
+        _allFilesAbortedSent = _allFilesAbortUnconfirmed = _allFilesAbortResent = false;
+        _allFilesAborted = emergencyStop;
+        if (emergencyStop)
+        {
+            MovePartialReplyToStale();
+        }
     }
 }
