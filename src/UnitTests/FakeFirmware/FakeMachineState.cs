@@ -72,6 +72,7 @@ internal sealed class FakeMachineState
         DoingFileMacro = previous.DoingFileMacro;
         LastCodeFromSbc = previous.LastCodeFromSbc;
         CodeEpoch = previous.CodeEpoch;
+        IsCodeOfEndedConnection = previous.IsCodeOfEndedConnection;
         MacroStartedByCode = previous.MacroStartedByCode;
         FileFinished = previous.FileFinished;
         LockedMovement = previous.LockedMovement;
@@ -115,6 +116,13 @@ internal sealed class FakeMachineState
     /// macro has ended, its next request and its final reply carry its own epoch again
     /// </summary>
     public byte? CodeEpoch { get; set; }
+
+    /// <summary>
+    /// Whether the code from DSF that this frame runs or ran last belongs to a connection that has ended, so that none of its replies goes to DSF
+    /// (GCodeMachineState::codeOfEndedConnection, GCodeMachineState.h:283 at RRF 78a997f74). The apply of a lost connection sets it on every frame,
+    /// PutBinary clears it on the frame that takes the next code, a new frame takes it from the frame below, and a pop brings back that of the caller
+    /// </summary>
+    public bool IsCodeOfEndedConnection { get; set; }
 
     /// <summary>
     /// Whether the last macro requested on this frame was started by a code

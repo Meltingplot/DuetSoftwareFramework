@@ -736,9 +736,9 @@ public class ChannelEpochWithDsf
         // shorter than SbcConnectionTimeout. DSF's first packet of the new connection carries the first marker, which RRF reads on a connection whose
         // packets it has read, so it ends that connection as a lost one before it handles the packet as the first one of the new connection
         // (SbcInterface.cpp:333-357 at 4d687cec0): it stops the machine (EndConnection, :282-298) and drops what DSF sent before (InvalidateResources),
-        // so no code of old.g that waited in RRF's buffer runs. The code that still ran ends with an untagged reply, because its stamp is void
-        // (GCodeBuffer::GetCodeEpoch). DSF shows it as a message while no code of the new connection waits for a reply. Open finding: if a code of the
-        // new connection on the same channel is out when that reply comes in, the untagged reply completes it (reported, not asserted here)
+        // so no code of old.g that waited in RRF's buffer runs. The code that still ran belongs to the ended connection, so none of its replies goes to
+        // DSF (owner decision of 2026-11-10, option 1); CodeThatOutlivesAConnectionDsfEndedCompletesNoCodeOfTheNextOne checks this while a code of the
+        // new connection is out
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
         {
             firmware.OnCode("G4", code => (code.Text == "G4 P5") ? FakeReply.NotFinished : FakeReply.Ok());
@@ -755,28 +755,109 @@ public class ChannelEpochWithDsf
         Assert.That(Markers(host), Is.EqualTo(2));
         await IgnoreCancellation(macro);
 
-        // Nothing of the old connection that waited in RRF's buffer runs, the code that still ran ends with an untagged reply
-        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetSentPackets().Any(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P5"), Timeout),
-            Is.True, "G4 P5 did not end");
-        FakePacket oldReply = host.Firmware.GetSentPackets().Single(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P5");
-        Assert.That((oldReply.Text, oldReply.IsTagged), Is.EqualTo(("G4: Machine is halted", false)));
+        // Nothing of the old connection that waited in RRF's buffer runs, the code that still ran ends without a reply to DSF
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.HTTP) is null, Timeout), Is.True, "G4 P5 did not end");
         Assert.That(host.Firmware.GetDiscardedCodes(CodeChannel.HTTP).Select(code => code.Text), Is.EquivalentTo(new[] { "G4 P6", "G4 P7" }));
         Assert.That(ExecutedTexts(host, CodeChannel.HTTP), Has.None.EqualTo("G4 P6").And.None.EqualTo("G4 P7"));
 
-        // DSF shows the old reply as a message, sees the machine halted and goes on with the new connection: a status request gets its own reply
-        for (int i = 0; i < 100 && !Messages(host).Contains("Error: G4: Machine is halted"); i++)
-        {
-            await Task.Delay(50);
-        }
-        Assert.That(Messages(host), Has.One.EqualTo("Error: G4: Machine is halted"), "DSF did not show the reply of the old connection");
+        // DSF sees the machine halted and goes on with the new connection: a status request gets its own reply
         Assert.That(await host.ExecuteAsync("M115"), Is.EqualTo("FIRMWARE_NAME: fake\n"));
+        Assert.That(host.Firmware.GetSentPackets().Where(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P5"), Is.Empty,
+            "A reply of the ended connection reached DSF");
+        Assert.That(Messages(host), Has.None.Contains("Machine is halted"));
         for (int i = 0; i < 100 && Status(host) != MachineStatus.Halted; i++)
         {
             await Task.Delay(50);
         }
         Assert.That(Status(host), Is.EqualTo(MachineStatus.Halted));
-        Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.EqualTo(1), "The untagged reply of G4 P5 met no code, so it is an out-of-order reply");
+        Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.Zero);
         Assert.That(Epoch(host, CodeChannel.HTTP), Is.Zero);
+    }
+
+    private static async Task WaitForPendingCode(FakeFirmwareHost host, CodeChannel channel)
+    {
+        for (int i = 0; i < 100; i++)
+        {
+            using (Dsf(host, channel).Lock())
+            {
+                if (Dsf(host, channel).CurrentState.PendingCodes.Reader.Count > 0)
+                {
+                    return;
+                }
+            }
+            await Task.Delay(50);
+        }
+        Assert.Fail("The code did not reach the channel");
+    }
+
+    [Test]
+    public async Task CodeThatOutlivesAConnectionDsfEndedCompletesNoCodeOfTheNextOne()
+    {
+        // Owner decision of 2026-11-10 on the open finding of D-B (option 1): a code from the SBC that was taken in a connection and is still being
+        // executed when the connection ends belongs to that connection, and none of its replies goes to the SBC, whatever connection is up by then.
+        // Here DSF ends the connection while RRF still runs it, and M115 of the new connection is out when G4 P5 of the old one ends ("Machine is
+        // halted" after the stop of EndConnection). Without the rule that untagged reply completed M115, and M115's own reply was shown as a message
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
+        {
+            firmware.OnCode("G4", code => (code.Text == "G4 P5") ? FakeReply.NotFinished : FakeReply.Ok());
+            firmware.OnCode("M115", _ => FakeReply.Ok("FIRMWARE_NAME: fake"));
+        });
+        host.WriteMacro("old.g", "G4 P5\nG4 P6\nG4 P7\n");
+        Task<string> macro = host.StartCode("M98 P\"old.g\"");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P5" &&
+            firmware.GetReceivedCodes(CodeChannel.HTTP).Any(code => code.Text == "G4 P7"), Timeout), Is.True, "old.g did not run");
+
+        // DSF ends the connection and writes the marker of the next one, then M115 is queued before that marker reaches RRF
+        host.Firmware.HoldTransfers();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, Timeout), Is.True);
+        host.Firmware.SimulateDsfConnectionEnd();
+        Step(host);
+        Assert.That(host.Firmware.GetPendingRequests().Any(request => (request.Tag & FakeTag.FirstMarker) != 0), Is.True, "DSF did not write the marker");
+        Task<string> m115 = host.StartCode("M115");
+        await WaitForPendingCode(host, CodeChannel.HTTP);
+        host.Firmware.ReleaseTransfers();
+        await IgnoreCancellation(macro);
+
+        Assert.That(await m115.WaitAsync(Timeout), Is.EqualTo("FIRMWARE_NAME: fake\n"), "M115 got a reply of the ended connection");
+        Assert.That(host.Firmware.IsEmergencyStopped, Is.True);
+        Assert.That(host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.Member("G4 P5").And.None.EqualTo("G4 P6"));
+        Assert.That(host.Firmware.GetSentPackets().Where(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P5"), Is.Empty,
+            "A reply of the ended connection reached DSF");
+        Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.Zero);
+        Assert.That(Messages(host), Has.None.Contains("Machine is halted").And.None.Contains("FIRMWARE_NAME"));
+    }
+
+    [Test]
+    public async Task CodeThatOutlivesALossRrfNoticedCompletesNoCodeOfTheNextOne()
+    {
+        // As CodeThatOutlivesAConnectionDsfEndedCompletesNoCodeOfTheNextOne, for a loss that RRF notices. A reply made while RRF is not connected is
+        // dropped anyway (SbcInterface.cpp:2673-2676), so the old code is a status request, which runs on after the stop (GCodes2.cpp:617-627) and
+        // ends only after the reconnect, while M115 of the new connection waits behind it in RRF's buffer. Its final reply does not go to the SBC
+        bool release = false;
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
+        {
+            firmware.OnCode("M114", _ => release ? FakeReply.Ok("position of the old connection") : FakeReply.NotFinished);
+            firmware.OnCode("M115", _ => FakeReply.Ok("FIRMWARE_NAME: fake"));
+        });
+        Task<string> m114 = host.StartCode("M114");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "M114", Timeout), Is.True, "M114 did not start");
+
+        host.Firmware.SimulateConnectionLoss();
+        await IgnoreCancellation(m114);
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetReceivedRequests().Count(request => (request.Tag & FakeTag.FirstMarker) != 0) == 2, Timeout), Is.True,
+            "DSF did not start a new connection");
+        Task<string> m115 = host.StartCode("M115");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetReceivedCodes(CodeChannel.HTTP).Any(code => code.Text == "M115"), Timeout), Is.True,
+            "M115 did not reach RRF");
+        Assert.That(host.Firmware.GetCurrentCode(CodeChannel.HTTP)?.Text, Is.EqualTo("M114"), "M114 did not outlive the connection");
+        Assert.That(host.Firmware.IsConnected, Is.True);
+        release = true;
+
+        Assert.That(await m115.WaitAsync(Timeout), Is.EqualTo("FIRMWARE_NAME: fake\n"), "M115 got a reply of the ended connection");
+        Assert.That(host.Firmware.GetSentPackets().Where(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "M114"), Is.Empty,
+            "A reply of the ended connection reached DSF");
+        Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.Zero);
+        Assert.That(Messages(host), Has.None.Contains("old connection").And.None.Contains("FIRMWARE_NAME"));
     }
 
     [Test]

@@ -231,6 +231,39 @@ public sealed partial class FakeFirmware : ILinkAdapter
     internal bool IsConnectedForMainTask => _connected;
 
     /// <summary>
+    /// Emulate that the SBC task reads DSF's first marker on the connection that it still runs while the main task is in the middle of a code, e.g. from
+    /// the handler of that code: the SBC task records the end of the connection at once, before the code replies and before the main task applies it
+    /// at its next spin. Then the SBC task handles the packet as the first one of the new connection
+    /// </summary>
+    internal void SimulateFirstMarkerWhileTheMainTaskRuns()
+    {
+        lock (_lock)
+        {
+            ReadFirstMarker();
+            _sbcPacketRead = true;
+        }
+    }
+
+    /// <summary>
+    /// Act on DSF's first marker (SbcInterface.cpp:333-357 at 4d687cec0): end the connection as a lost one if a packet of it has been read already (owner
+    /// decision D-B of 2026-11-10), then start every channel at epoch 0. Every channel starts at epoch 0, which DSF's epochs are at that event, not
+    /// unknown as CE-4 said: then RRF tags the packets of a channel before DSF has sent anything on it (Q34). An InvalidateChannel with the marker then
+    /// moves its channel on as usual. The stamps are left alone: none is valid at boot, and after a loss InvalidateResources has recorded the end of
+    /// the connection
+    /// </summary>
+    private void ReadFirstMarker()
+    {
+        if (_sbcPacketRead)
+        {
+            EndConnection();
+        }
+        foreach (FakeGCodeBuffer buffer in _gcodes.Buffers)
+        {
+            buffer.ResetChannelEpoch(true);
+        }
+    }
+
+    /// <summary>
     /// End the connection as lost, see SbcInterface::EndConnection (SbcInterface.cpp:282-298): emergency stop and InvalidateResources. The disconnect
     /// counter and the wait for the main task are not modelled
     /// </summary>
@@ -950,18 +983,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                 // as a lost one first, with the emergency stop and InvalidateResources, and then handles this packet as the first one of the new
                 // connection. The message "Lost connection to SBC (the SBC has started a new connection)" is not modelled: it is a NetworkInfoMessage
                 // (USB, aux, log), which does not go to the SBC (MessageType.h:62, :72, Platform.cpp:3254-3258)
-                if (_sbcPacketRead)
-                {
-                    EndConnection();
-                }
-
-                // Every channel starts at epoch 0, which DSF's epochs are at that event, not unknown as CE-4 said: then RRF tags the packets of a channel
-                // before DSF has sent anything on it (Q34). An InvalidateChannel with the marker then moves its channel on as usual. The stamps are left
-                // alone: none is valid at boot, and after a loss InvalidateResources has recorded the end of the connection
-                foreach (FakeGCodeBuffer buffer in _gcodes.Buffers)
-                {
-                    buffer.ResetChannelEpoch(true);
-                }
+                ReadFirstMarker();
             }
             _sbcPacketRead = true;
             if (DropByEpoch(request, gb, tag))
@@ -1293,9 +1315,10 @@ public sealed partial class FakeFirmware : ILinkAdapter
                         gb.IsGated = true;
                     }
 
-                    // Send back a final code reply for codes that started the last macros, else the corresponding code will never finish
+                    // Send back a final code reply for codes that started the last macros, else the corresponding code will never finish. Not for a code of
+                    // a connection that has ended, which DSF does not know (SbcInterface.cpp:1726-1729 at RRF 78a997f74)
                     if (!abortAll && gb.MachineState.State == FakeMachineState.MachineStateKind.Normal &&
-                        (!gb.MachineState.LastCodeFromSbc || gb.MachineState.MacroStartedByCode))
+                        (!gb.MachineState.LastCodeFromSbc || gb.MachineState.MacroStartedByCode) && !IsReplyToCodeOfEndedConnection(gb.ResponseMessageType))
                     {
                         WriteCodeReply(gb.ResponseMessageType, string.Empty, null, gb.Channel);
                     }
@@ -1540,7 +1563,6 @@ public sealed partial class FakeFirmware : ILinkAdapter
         _codeBuffer.Clear();
         _codeBufferUsed = 0;
         _sendBufferUpdate = true;
-        _gcodeReply.Clear();
         _txPackets.Clear();
         foreach (FakeGCodeBuffer gb in _gcodes.Buffers)
         {
@@ -1584,6 +1606,10 @@ public sealed partial class FakeFirmware : ILinkAdapter
             }
             gb.ResetChannelEpoch(false);
         }
+
+        // Queued replies are released after the record of the end of the connection, so that a reply of a code of the ended connection that the main
+        // task queues meanwhile is either released here or dropped by PlatformMessage (SbcInterface.cpp:1921-1926 at RRF 78a997f74)
+        _gcodeReply.Clear();
     }
 
     /// <summary>
@@ -1830,10 +1856,21 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
     #endregion
 
+    /// <summary>
+    /// Whether a message is a reply to a code from DSF that belongs to a connection that has ended (FakeGCodeBuffer.IsCodeOfEndedConnection), see
+    /// SbcInterface::IsReplyToCodeOfEndedConnection (SbcInterface.cpp:2744 at RRF 78a997f74). None of its replies goes to DSF, whatever
+    /// connection is up when it replies. Messages without the code reply flag are not affected
+    /// </summary>
+    /// <param name="type">Message type</param>
+    /// <returns>Whether the message is dropped</returns>
+    private bool IsReplyToCodeOfEndedConnection(MessageTypeFlags type) =>
+        type.HasFlag(MessageTypeFlags.BinaryCodeReplyFlag) && TryGetSingleChannel(type, out CodeChannel channel) && _gcodes[channel].IsCodeOfEndedConnection;
+
     #region Interface for the emulated main task
     /// <summary>
     /// Output a message, see Platform::Message and SbcInterface::HandleGCodeReply. Only messages that go to the SBC are emulated. While no SBC is
-    /// connected, it is dropped (SbcInterface.cpp:2673-2676, :2708-2712 at 4d687cec0)
+    /// connected, it is dropped (SbcInterface.cpp:2676, :2716 at RRF 78a997f74), and so is a reply to a code of a connection that has ended
+    /// (:2689, :2730)
     /// </summary>
     /// <param name="type">Message type</param>
     /// <param name="message">Message content</param>
@@ -1847,7 +1884,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
             // Not for the SBC
             return;
         }
-        if (!_connected)
+        if (!_connected || IsReplyToCodeOfEndedConnection(type))
         {
             return;
         }

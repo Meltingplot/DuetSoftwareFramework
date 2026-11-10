@@ -499,14 +499,14 @@ public class FakeFirmwareEpoch
         Assert.That(_firmware.WriteMacroStarted(CodeChannel.HTTP, T(1)), Is.True);
         Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G91"), T(1)), Is.True);
         Transfers(2);
-        int replies = _delivered.Count(packet => packet.IsCodeReply);
+        int delivered = _delivered.Count;
 
         _firmware.SimulateConnectionLoss();
         Assert.That(_firmware.IsIdle(CodeChannel.HTTP), Is.True, "T1 did not end while RRF was not connected");
         Assert.That(_firmware.IsDoingToolChange, Is.False);
         Transfers(3);
         Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.HTTP), Has.Length.EqualTo(1), "T1 asked for tpre1.g or tpost1.g");
-        Assert.That(_delivered.Skip(replies).Where(packet => packet.IsCodeReply), Is.Empty, "A reply made while RRF was not connected went out");
+        Assert.That(_delivered.Skip(delivered).Where(packet => packet.IsCodeReply), Is.Empty, "A reply made while RRF was not connected went out");
     }
 
     [Test]
@@ -534,7 +534,8 @@ public class FakeFirmwareEpoch
         // Owner decision D-B: a first marker read while a packet of the connection has been read already means that DSF has ended the connection that RRF
         // still runs (SbcInterface.cpp:336-347). RRF stops the machine and ends the connection as a lost one (EndConnection, InvalidateResources) before
         // it handles the packet as the first one of the new connection: every channel at epoch 0 and known. A code of the old connection in the ring is
-        // gone, the code that still runs has a void stamp and its reply goes out untagged
+        // gone. The code that still runs belongs to the ended connection, so none of its replies goes to DSF (owner decision of 2026-11-10, option 1),
+        // although an InvalidateChannel alone would not flag this tagged code (CatchCodeSuppressesOnlyUntaggedReplies)
         bool release = false;
         _firmware.OnCode("G4", code => (code.Text == "G4 P5" && !release) ? FakeReply.NotFinished : FakeReply.Ok($"reply of {code.Text}"));
         KnowEpoch(CodeChannel.HTTP, 3);
@@ -549,9 +550,9 @@ public class FakeFirmwareEpoch
         Assert.That(_firmware.IsEmergencyStopped, Is.True, "The marker on a running connection did not end it");
         Assert.That(_firmware.GetDiscardedCodes(CodeChannel.HTTP).Select(code => code.Text), Is.EquivalentTo(new[] { "G4 P6" }));
         release = true;
-        TransferUntil(() => _delivered.Any(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P5"), "G4 P5 did not end");
-        FakePacket oldReply = _delivered.Single(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P5");
-        Assert.That((oldReply.Text, oldReply.IsTagged), Is.EqualTo(("G4: Machine is halted", false)), "The reply of the old connection is tagged");
+        TransferUntil(() => _firmware.GetCurrentCode(CodeChannel.HTTP) is null, "G4 P5 did not end");
+        Transfers(2);
+        Assert.That(_delivered.Where(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P5"), Is.Empty, "A reply of the ended connection went out");
         Assert.That(_firmware.GetExecutedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.None.EqualTo("G4 P6"));
 
         // The new connection runs at epoch 0: a code of it is kept in the cleared ring and runs after the apply, here into the stop of the machine, and
@@ -564,14 +565,18 @@ public class FakeFirmwareEpoch
 
     [TestCase(true)]
     [TestCase(false)]
-    public void LostConnectionWinsOverAnInvalidateChannelAtTheApply(bool invalidateFirst)
+    public void LostConnectionDecidesWhenItIsAppliedWithAnInvalidateChannel(bool invalidateFirst)
     {
         // Item 4 of the RRF author: the apply takes the record of an abort and the end of the connection together (SbcInterface.cpp:2044-2060). If both
-        // are pending, the loss wins whatever their order: the code that still runs is not flagged as surplus (RRF #46) and its reply goes out, as after
-        // any lost connection. Without the loss, the untagged reply of a code of a DSF that does not tag is suppressed (RecordApplyWithDsf). The apply is
-        // delayed, so that both records meet
+        // are pending, the loss decides whatever their order: the code that still runs belongs to the ended connection, so none of its replies goes to
+        // the SBC, until the next code is put on its level (owner decision of 2026-11-10, option 1; RRF 78a997f74). Before that decision the loss
+        // cleared the flag of RRF #46 that the InvalidateChannel set for this untagged code of a DSF that does not tag, so its reply went out once. Now
+        // the outcome is the one of the InvalidateChannel alone, but it comes from the mark of the ended connection, which drops also the replies of a
+        // tagged code (MarkerOnARunningConnectionEndsItAsALostOne). What this asserts: in either order no reply of G4 P5 goes out, and the code after
+        // it gets its own reply. The apply is delayed, so that both records meet
         bool release = false;
         _firmware.OnCode("G4", code => (code.Text == "G4 P5" && !release) ? FakeReply.NotFinished : FakeReply.Ok($"reply of {code.Text}"));
+        _firmware.OnCode("M115", _ => FakeReply.Ok("reply of M115"));
         Assert.That(_firmware.WriteGetObjectModel("state", "v", 0), Is.True);
         Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P5"), 0), Is.True);
         TransferUntil(() => _firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P5", "G4 P5 did not start");
@@ -591,8 +596,93 @@ public class FakeFirmwareEpoch
         Assert.That(_firmware.IsAbortRecorded(CodeChannel.HTTP), Is.True, "The records did not meet");
         release = true;
         TransferUntil(() => !_firmware.IsAbortRecorded(CodeChannel.HTTP), "The abort was not applied");
+        TransferUntil(() => _firmware.GetCurrentCode(CodeChannel.HTTP) is null, "G4 P5 did not end");
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M115"), 0), Is.True);
+        TransferUntil(() => _delivered.Any(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "M115"), "M115 did not reply");
+        Assert.That(_delivered.Where(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P5"), Is.Empty, "A reply of the ended connection went out");
+        Assert.That(_delivered.Single(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "M115").Text, Is.EqualTo("reply of M115"));
+    }
+
+    [Test]
+    public void ReplyMadeBetweenTheEndOfAConnectionAndItsApplyIsNotWritten()
+    {
+        // Owner decision of 2026-11-10 (option 1), RRF 78a997f74: from the record of the end of a connection to its apply every level of the buffer counts
+        // as ended (connectionEndRecorded, GCodeBuffer::IsCodeOfEndedConnection), so a reply that the main task queues in between is dropped as well.
+        // Here the SBC task reads DSF's first marker on the running connection while the handler of G4 P5 runs, which then ends the code with its final
+        // reply. That reply is queued before the apply marks the levels, so only the record can drop it
+        bool preempt = false;
+        _firmware.OnCode("G4", code =>
+        {
+            if (code.Text != "G4 P5")
+            {
+                return FakeReply.Ok($"reply of {code.Text}");
+            }
+            if (!preempt)
+            {
+                return FakeReply.NotFinished;
+            }
+            _firmware.SimulateFirstMarkerWhileTheMainTaskRuns();
+            return FakeReply.Ok("reply of the ended connection");
+        });
+        KnowEpoch(CodeChannel.HTTP, 3);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P5"), T(3)), Is.True);
+        TransferUntil(() => _firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P5", "G4 P5 did not start");
+
+        preempt = true;
+        Transfer();
+        Assert.That(_firmware.IsEmergencyStopped, Is.True, "The marker on the running connection did not end it");
+        Assert.That(_firmware.GetCurrentCode(CodeChannel.HTTP), Is.Null, "G4 P5 did not end");
         Transfers(3);
-        Assert.That(_delivered.Where(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P5"), Has.Exactly(1).Items, "The reply of G4 P5 was suppressed");
+        Assert.That(_delivered.Where(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P5"), Is.Empty, "A reply of the ended connection went out");
+
+        // The new connection runs at epoch 0, a code of it replies as usual
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P7"), T(0)), Is.True);
+        TransferUntil(() => _delivered.Any(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P7"), "G4 P7 did not reply");
+        Assert.That(_delivered.Single(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "G4 P7").Tag, Is.EqualTo(T(0)));
+    }
+
+    [Test]
+    public void ToolChangeOfAnEndedConnectionRunsItsMacrosWithoutAReplyOfItsOwn()
+    {
+        // RRF 78a997f74: the mark of the ended connection lives on the level of the code. DSF ends the connection while RRF runs it, inside tfree0.g of
+        // T1 (D-B, so RRF stays connected). The emergency stop of EndConnection pops tfree0.g and leaves the state of T1, which goes on with tpre1.g and
+        // tpost1.g as system macros of the new connection. Their levels start with the mark of T1, PutBinary clears it on the level that takes a code
+        // of the new connection, so the code of tpre1.g replies as usual (a status request, which runs after the stop). The pop brings back the mark
+        // of T1, whose own final reply does not go to DSF
+        _firmware.OnCode("T1", _ => FakeReply.ToolChange("tfree0.g", "tpre1.g", "tpost1.g"));
+        _firmware.OnCode("G4", code => FakeReply.Ok($"reply of {code.Text}"));
+        _firmware.OnCode("M115", _ => FakeReply.Ok("reply of M115"));
+        KnowEpoch(CodeChannel.HTTP, 1);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "T1"), T(1)), Is.True);
+        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 1, "T1 did not request tfree0.g");
+        Assert.That(_firmware.WriteMacroStarted(CodeChannel.HTTP, T(1)), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P1"), T(1)), Is.True);
+        TransferUntil(() => Replies("reply of G4 P1").Length == 1, "tfree0.g did not run");
+
+        // DSF's first marker on the running connection
+        Assert.That(_firmware.WriteGetObjectModel("state", "v", FakeTag.FirstMarker), Is.True);
+        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 2, "T1 did not go on with tpre1.g");
+        Assert.That(_firmware.IsEmergencyStopped, Is.True, "The marker on the running connection did not end it");
+        FakePacket tpre = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[1];
+        Assert.That((tpre.Text, tpre.IsFromCode, tpre.Tag), Is.EqualTo(("tpre1.g", false, T(0))));
+
+        // tpre1.g runs a code of the new connection, which replies
+        Assert.That(_firmware.WriteMacroStarted(CodeChannel.HTTP, T(0)), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M115"), T(0)), Is.True);
+        TransferUntil(() => Replies("reply of M115").Length == 1, "The code of tpre1.g did not reply");
+        Assert.That(Replies("reply of M115")[0].Tag, Is.EqualTo(T(0)));
+        Assert.That(_firmware.WriteMacroCompleted(CodeChannel.HTTP, false, T(0)), Is.True);
+        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 3, "T1 did not go on with tpost1.g");
+        FakePacket tpost = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[2];
+        Assert.That((tpost.Text, tpost.IsFromCode, tpost.Tag), Is.EqualTo(("tpost1.g", false, T(0))));
+
+        // tpost1.g is empty, then T1 ends without a reply to DSF
+        int delivered = _delivered.Count;
+        Assert.That(_firmware.WriteMacroCompleted(CodeChannel.HTTP, false, T(0)), Is.True);
+        TransferUntil(() => _firmware.IsIdle(CodeChannel.HTTP), "T1 did not end");
+        Transfers(2);
+        Assert.That(_delivered.Skip(delivered).Where(packet => packet.IsCodeReply), Is.Empty, "The final reply of T1 went out");
+        Assert.That(_delivered.Where(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "T1"), Is.Empty);
     }
 
     [Test]

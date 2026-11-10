@@ -418,19 +418,20 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
                     EndChannelWork(gb);
 
                     // Until E3 the fork catch code of RRF #46 stays: a code that still runs has replies that DSF does not expect. It is flagged here, on
-                    // the level that AbortFile has left, unless its replies are tagged or the connection has been lost
+                    // the level that AbortFile has left, unless its replies are tagged or the connection has been lost, whose codes reply to nothing anyway
                     if (!connectionLost && firmware.CodeReplySurplus && gb.MachineState.LastCodeFromSbc && !gb.IsCompletelyIdle)
                     {
                         gb.MarkCodeReplySurplus();
                     }
                 }
 
-                // After a lost connection the stamps of the codes on the stack are voided, and the SBC of the next connection has not dropped a code that
-                // survived it, so its replies are not surplus. This wins over an InvalidateChannel recorded before or after the loss
+                // After a lost connection the codes on the stack belong to the connection that has ended: their stamps are void, and none of their replies
+                // goes to DSF, whatever connection is up when they reply (owner decision of 2026-11-10, RRF 78a997f74, SbcInterface.cpp:2085-2089). That
+                // is checked where a reply is queued (FakeFirmware.PlatformMessage), not with the flag of RRF #46, which the loss leaves alone. It also
+                // decides where an InvalidateChannel is applied with the loss, in either order
                 if (connectionLost)
                 {
-                    gb.VoidCodeEpochs();
-                    gb.IsCodeReplySurplus = false;
+                    gb.EndConnectionOfCodes();
                 }
             }
         }

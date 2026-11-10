@@ -138,7 +138,7 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     /// <summary>
     /// Whether the connection that the stamps of the frames belong to has been lost (connectionEndRecorded, GCodeBuffer.h:420-421). The Epoch model's
     /// InvalidateResources sets it together with <see cref="IsAbortRecorded"/>, the main task takes both at the apply and then voids the stamps
-    /// (<see cref="VoidCodeEpochs"/>). Until then the stamps count as invalid (<see cref="CodeEpoch"/>)
+    /// (<see cref="EndConnectionOfCodes"/>). Until then the stamps count as invalid (<see cref="CodeEpoch"/>)
     /// </summary>
     public bool IsConnectionEndRecorded { get; set; }
 
@@ -178,16 +178,24 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     }
 
     /// <summary>
-    /// Void the stamps of the codes on every frame after the connection they belong to has been lost, see GCodeBuffer::VoidCodeEpochs
-    /// (GCodeBuffer.cpp:339-346). Only the main task changes the frames
+    /// Apply the end of the connection that the codes on every frame belong to: their stamps are void, and none of their replies goes to DSF, see
+    /// GCodeBuffer::EndConnectionOfCodes (GCodeBuffer.cpp:343 at RRF 78a997f74). Only the main task changes the frames
     /// </summary>
-    public void VoidCodeEpochs()
+    public void EndConnectionOfCodes()
     {
         for (FakeMachineState? ms = MachineState; ms is not null; ms = ms.Previous)
         {
             ms.CodeEpoch = null;
+            ms.IsCodeOfEndedConnection = true;
         }
     }
+
+    /// <summary>
+    /// Whether the code being executed belongs to a connection that has ended, so that none of its replies goes to DSF, see
+    /// GCodeBuffer::IsCodeOfEndedConnection (GCodeBuffer.cpp:354 at RRF 78a997f74). Between the record of the end and its apply this holds for every
+    /// frame
+    /// </summary>
+    public bool IsCodeOfEndedConnection => IsConnectionEndRecorded || MachineState.IsCodeOfEndedConnection;
 
     /// <summary>
     /// Whether the buffer is completely idle, see GCodeBuffer::IsCompletelyIdle (GCodeBuffer.cpp:951-954): the state of the latest frame is normal and
@@ -365,6 +373,7 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
         HasJustStartedMacro = false;
         IsCodeReplySurplus = false;     // the dropped code has finished, or this code belongs to a macro that the dropped code has started since
         MachineState.CodeEpoch = code.Stamp;    // FillBuffer carries the stamp of the ring over to the latest frame (CE-9)
+        MachineState.IsCodeOfEndedConnection = false;
         CurrentCode = code;
         IsExecuting = false;
     }
