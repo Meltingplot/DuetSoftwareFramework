@@ -405,7 +405,6 @@ Rückbau geprüft:
 - **Anforderungen:** R3, R4, R5 sowie R7 bis R14 sind nicht umgesetzt oder nicht gemessen (`design/sbc-link-requirements.md:116-122`). Der Plan prüft sie nicht.
 - **Kompatibilität:** Fork-DSF mit RRF ohne Capabilities oder mit Archiv-RRF wird am DUT nicht geprüft, weil die Suite nur gegen die aktuelle Firmware läuft. Das deckt nur der Census ab. Mit Archiv-RRF lief diese Kombination nie auf Hardware (#104). Mini 5+ und MB6XD sind nicht am DUT.
 - **Bekannte offene Punkte ohne Test:**
-  - `TriggerMacros.StringLiteralInExpression` hängt RRF auf und wird erst mit einem RRF-Fix ausgeführt.
   - USB-Kanäle und G/M als Makroparameter stehen in `design/open-findings.md`.
   - Stall vom 2026-11-02 um 22:13 UTC, TfrRdy-Flanken-Census, 2 von 42 DCS-Neustarts mit Stock-RRF und Hänger nach Firmware-Update sind ungeklärt.
   - Zwei parallele `M122`-Schleifen lösten am 2026-11-04 eine `DivideByZeroException` aus. Die Division ist unverändert (`SPI.cs:218`) und steht noch nicht in `design/open-findings.md`.

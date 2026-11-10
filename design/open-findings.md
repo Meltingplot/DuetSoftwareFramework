@@ -84,6 +84,7 @@ A partial line can only be a text line, because `GCodeBuffer::Put` clears `isBin
 
 The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the trigger tests of #129 found 9 more, and the stop path tests of #130 another 4.
 - **Fixed and removed from this list (2026-11-08):** H1 (#136), G2 (#132), I1 (#135), T2 (#134), T3 (#133), P1 and P2 (#137), the extended-link part of P4 (#138), H13 (upstream 5130ca43 through #143) and T1 (Meltingplot/RepRapFirmware#43 with #144). The lab printer showed each fix, and the stock build showed the bug (`design/lab-test-plan.md`, section 14, 2026-11-08).
+- **Fixed and removed from this list (2026-11-10):** O2 (#176; a value that does not fit the property type threw FormatException or IndexOutOfRangeException instead of `JsonException`). What stays: DCS skips such a property and logs it once per type (`DuetControlServer/Model/ObjectModel.cs:173-185`), but an item of a value list is not skipped in `UpdateFromJsonReader` (O1), and `UpdateService.ExecuteAsync` logs a JsonException and throws it again (`UpdateService.cs:373-376`), which ends its update loop. O6 (#177; an object with two different type keys, e.g. two `name` in `move.kinematics`, ended the process with a stack overflow in `UpdateFromJsonReader`. The last key decides now, as in `UpdateFromJson`; Kinematics, FilamentMonitor and DirectDisplayScreen).
 - **The others:** each has an `[Explicit]` test in `src/UnitTests` that reproduces it and fails today. Run one by its exact name, e.g. `dotnet test src/UnitTests/bin/Debug/net10.0/UnitTests.dll --filter "FullyQualifiedName=UnitTests.Codes.TriggerMacros.TriggerChannelWorksAfterInvalidationDuringTriggerRequest"`. Once a finding is fixed, remove the `[Explicit]` of its test and this entry.
 
 - **Line numbers:** DSF `v3.7-dev` at c6d225f2. The production code there is the same as at d576ee9e, where the tests started. Entries added on 2026-11-08 cite DSF at 9e6449d1. RRF `3.7-dev` at cde4e4fa1 (3.7.0+1.mp.8).
@@ -93,9 +94,8 @@ The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the tr
 ### Highest priority
 
 1. **I3** An Executed interceptor with filters blocks its channel for good. Printer.
-2. **O2** A value of the wrong type in a firmware response ends the object model update loop.
-3. **O3** and **O4** An out-of-range float or a global string with invalid UTF-8 makes the object model unserializable, so model queries, subscriptions and DWS fail.
-4. **P4** (plain link) A trigger macro can get lost after a reconnect while RRF keeps running. The fix is case 2 of #57, which is on hold.
+2. **O3** and **O4** An out-of-range float or a global string with invalid UTF-8 makes the object model unserializable, so model queries, subscriptions and DWS fail.
+3. **P4** (plain link) A trigger macro can get lost after a reconnect while RRF keeps running. The fix is case 2 of #57, which is on hold.
 
 ### SBC link (#122)
 
@@ -229,10 +229,10 @@ Open questions:
 ### Object model (#125)
 
 - **O1. With a deserialization handler, the two JSON update paths treat a scalar list item differently.** `UpdateFromJson` keeps it, `UpdateFromJsonReader` drops it and shifts the rest (`StaticModelCollection.cs:150-181` vs `220-267`). Test: `Fuzz.ObjectModelJsonFuzz.ScalarListItemIsSkippedTheSameWayByBothUpdateMethods`.
-- **O2. A value that does not fit the property type throws FormatException or IndexOutOfRangeException instead of `JsonException`.** `UpdateService.ExecuteAsync` catches only ArgumentException, InvalidOperationException and JsonException (`UpdateService.cs:365-373`), so such a firmware response ends its update loop. Test: `OutOfRangeNumberFailsWithJsonException`.
 - **O3. A number beyond the float range is stored as infinity, after which the model cannot be serialized.** GetObjectModel, the subscriptions and DWS then fail. RRF itself reports NaN and infinity as null (`ObjectModel::ReportFloat`). Test: `InfiniteNumberKeepsTheModelSerializable`.
 - **O4. A global string with invalid UTF-8 is stored, after which the model cannot be serialized.** RRF copies string bytes as they are (`OutputBuffer::EncodeChar`). Test: `InvalidUtf8KeepsTheModelSerializable`.
 - **O5. `UpdateFromJsonReader` stores "[" for an array in a property of type object** and reads the array items as members of the parent (`DuetAPI.SourceGenerators/ObjectModel/ModelObject/UpdateFromJsonReader.cs`). Test: `ObjectPropertyWithArrayIsReadLikeUpdateFromJson`.
+- **O7. A model with `sensors.filamentMonitors[2].configured` set to null does not survive serialize, update and serialize again:** the copy has the default object instead of null. Found by `ObjectModelJsonFuzz.MutatedJson` with seed 2 and 50000 inputs (iteration 43779) on 2026-11-10, also before the fixes of O2 and O6. Not analysed.
 
 ### Triggers (#129)
 
