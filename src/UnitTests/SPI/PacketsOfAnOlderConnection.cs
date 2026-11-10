@@ -61,7 +61,8 @@ public class PacketsOfAnOlderConnection
 
     /// <summary>
     /// RRF asks for a macro on the Trigger channel with the given tag, DSF runs its one code and reports the end of the file, and RRF closes it
-    /// (SbcInterface.cpp:1663-1667 at 78a997f74, DataTransfer::WriteMacroFileClosed)
+    /// (SbcInterface.cpp:1663-1667 at 78a997f74, DataTransfer::WriteMacroFileClosed). Returns once DSF has taken the closal, so that no transfer
+    /// with data of this macro is still on its way
     /// </summary>
     private static void RunMacro(Host host, string fileName, (char Letter, int Major) code, ushort tag)
     {
@@ -71,6 +72,14 @@ public class PacketsOfAnOlderConnection
         host.Rrf.SendPacket(FirmwareRequest.Message, EmptyTriggerReply, tag);
         Assert.That(SbcPackets.MacroCompleted(host.WaitFor(SbcRequest.MacroCompleted)), Is.EqualTo((CodeChannel.Trigger, false)));
         host.Rrf.SendPacket(FirmwareRequest.MacroFileClosed, RrfPackets.Channel(CodeChannel.Trigger), tag);
+        Processor processor = host.Get<Manager>()[CodeChannel.Trigger];
+        host.WaitUntil(() =>
+        {
+            using (processor.Lock())
+            {
+                return processor.Stack.Count == 1;
+            }
+        }, "DSF to take the closal of the macro file");
     }
 
     /// <summary>

@@ -200,14 +200,24 @@ public class ChannelEpochWithDsf
     [Test]
     public async Task ResentCopyKeepsTheTagWithoutTheMarker()
     {
-        // CE-8: RRF refuses the evaluation for a busy buffer, and the copy that DSF writes carries the tag of the original
+        // CE-8: RRF refuses the evaluation for a busy buffer, and the copy that DSF writes carries the tag of the original. The lock is made to fail
+        // once the evaluation waits for its transfer, so that it is the next request that asks for the buffer
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
         await host.ExecuteAsync("G4 P1");
         await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
         await host.ExecuteAsync("global resent = 2");
         int before = host.Firmware.GetReceivedRequests().Count(request => request.Request == SbcRequest.EvaluateExpression);
+        host.Firmware.HoldTransfers();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, Timeout), Is.True);
+        Task<string> echo = host.StartCode("echo global.resent + 3");
+        for (int i = 0; i < 100 && !host.Firmware.GetPendingRequests().Any(request => request.Request == SbcRequest.EvaluateExpression); i++)
+        {
+            Step(host);
+        }
+        Assert.That(host.Firmware.GetPendingRequests().Any(request => request.Request == SbcRequest.EvaluateExpression), Is.True, "DSF did not write the evaluation");
         host.Firmware.FailBufferLocks(CodeChannel.HTTP, 1);
-        Assert.That(await host.ExecuteAsync("echo global.resent + 3"), Is.EqualTo("5\n"));
+        host.Firmware.ReleaseTransfers();
+        Assert.That(await echo.WaitAsync(Timeout), Is.EqualTo("5\n"));
         FakeSbcRequest[] evaluations = [.. host.Firmware.GetReceivedRequests().Where(request => request.Request == SbcRequest.EvaluateExpression).Skip(before)];
         Assert.That(evaluations, Has.Length.EqualTo(2), "RRF did not refuse the evaluation");
         Assert.That(evaluations.Select(request => request.Tag), Is.All.EqualTo(FakeTag.Of(1)));
@@ -699,10 +709,16 @@ public class ChannelEpochWithDsf
     {
         // CE-13: an RRF that tags never refuses InvalidateChannel, so DSF does not hold the channel until RRF has taken it (#161): the next code goes out
         // in the transfer after the one with InvalidateChannel, and RRF keeps it in its ring until the apply (CE-7)
+        // The transfers are held until the code waits in the channel, else the code could reach the channel any number of transfers after the abort
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
         await host.ExecuteAsync("G4 P1");
+        host.Firmware.HoldTransfers();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, Timeout), Is.True);
         await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
-        await host.ExecuteAsync("G4 P2");
+        Task<string> next = host.StartCode("G4 P2");
+        await WaitForPendingCode(host, CodeChannel.HTTP);
+        host.Firmware.ReleaseTransfers();
+        await next.WaitAsync(Timeout);
         int invalidate = host.Firmware.GetReceivedRequests().Single(request => request.Request == SbcRequest.InvalidateChannel).Transfer;
         int code = host.Firmware.GetReceivedRequests().Single(request => request.Request == SbcRequest.Code && request.Code!.Text == "G4 P2").Transfer;
         Assert.That(code, Is.LessThanOrEqualTo(invalidate + 1));
