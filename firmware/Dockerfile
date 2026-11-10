@@ -1,6 +1,7 @@
 # Build environment for the firmware in this folder. It follows the release workflows of the Meltingplot forks
 # (RepRapFirmware and Duet3Expansion, .github/workflows/mp-release.yml): Arm GNU Toolchain 15.2.Rel1 and Duet3D's CrcAppender,
 # then the top-level Makefile of each project. g++ builds the host harness of the SBC link (RepRapFirmware/Tools/sbc-harness).
+# CrcAppender needs ICU as soon as it embeds files (Duet3_MB6HC_no_SD), without it .NET ends the process.
 # Used by build.sh, see README.md
 FROM ubuntu:24.04
 
@@ -11,7 +12,7 @@ ARG CRC_APPENDER_VERSION=1.4.0
 ARG CRC_APPENDER_SHA256=b86e7b96d3373d3012029c70c1c3af1cb4be7f806b281bce335310b415148fb9
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils make g++ python3 \
+    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils make g++ python3 libicu74 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL -o /tmp/toolchain.tar.xz "https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/${ARM_TOOLCHAIN}.tar.xz" \

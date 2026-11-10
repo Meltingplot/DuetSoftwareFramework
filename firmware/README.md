@@ -29,7 +29,7 @@ git submodule update --init --recursive firmware
 
 ## Building
 
-`build.sh` runs the build in Docker. The image (`Dockerfile`) is what the `mp-release.yml` workflows of RepRapFirmware and Duet3Expansion set up: Arm GNU Toolchain 15.2.Rel1 and Duet3D's CrcAppender 1.4.0, both pinned by their SHA-256, plus g++ and python3 for the harness. The first run builds the image.
+`build.sh` runs the build in Docker. The image (`Dockerfile`) is what the `mp-release.yml` workflows of RepRapFirmware and Duet3Expansion set up: Arm GNU Toolchain 15.2.Rel1 and Duet3D's CrcAppender 1.4.0, both pinned by their SHA-256, plus g++ and python3 for the harness and libicu, which CrcAppender needs to embed files (`Duet3_MB6HC_no_SD`). The first run builds the image.
 
 ```
 firmware/build.sh main                 # Duet3_MB6HC, the lab printer's main board
