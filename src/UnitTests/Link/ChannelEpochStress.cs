@@ -40,7 +40,19 @@ namespace UnitTests.Link;
 /// out-of-order replies DSF logs, InvalidateChannel resends, events dropped by DSF's positional windows, codes completed with a reply that is not
 /// their own, stale events that act on another level, probe codes cancelled by an event of the aborted work, probes that do not complete within
 /// a bounded number of transfers, and exceptions that stop the link thread of DCS. The numbers are written to the test output and, if the
-/// environment variable DSF_EPOCH_STRESS_REPORT names a file, appended there
+/// environment variable DSF_EPOCH_STRESS_REPORT names a file, appended there.
+/// <para>
+/// Measured on 2026-11-10 with seed 20261109 and 2000 aborts (out-of-order, InvalidateChannel resends, window drops, wrong completions, stale events,
+/// cancelled probes, blocks, stops of the link thread; then the drops of tagged packets by DSF):
+/// <list type="bullet">
+/// <item>DSF ab322905 (no epoch) and RRF 0dccb9efe (V7), the baseline: 534, 305, 502, 257, 120, 31, 43, 0</item>
+/// <item>DSF ab322905 and the RRF of E1 (RecordApply): 424, 0, 474, 343, 0, 38, 0, 0</item>
+/// <item>DSF with the epoch and RRF 0dccb9efe: 522, 305, 502, 256, 120, 35, 43, 0</item>
+/// <item>DSF with the epoch and the RRF of E1, which ignores the tags: 413, 0, 474, 342, 0, 39, 0, 0</item>
+/// <item>Epoch pair: 0, 0, 0, 0, 0, 0, 0, 0; 1252 dropped by their tag</item>
+/// <item>Epoch pair without the catch code of E3 (DSF's windows, RRF #46): 0, 0, 0, 0, 0, 0, 0, 0; 1867 dropped by their tag</item>
+/// </list>
+/// </para>
 /// </summary>
 [TestFixture]
 public class ChannelEpochStress
