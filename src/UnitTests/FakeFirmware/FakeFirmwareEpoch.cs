@@ -381,12 +381,14 @@ public class FakeFirmwareEpoch
         Assert.That(_firmware.MovementLockOwner, Is.Null);
     }
 
-    [Test]
-    public void HomingCodeEndsWithAnErrorAfterAnAbort()
+    [TestCase(true)]
+    [TestCase(false)]
+    public void HomingCodeEndsWithAnErrorAfterAnAbort(bool codeBeforeAbort)
     {
         // Decision of 2026-11-10 on LA-25 (C1): AbortStateMachine clears toBeHomed, the G28 at the base level goes on in homing2 and ends with "Failed
-        // to home axes", as G28 does after AbortPrint in standalone RRF. The reply carries the old epoch, DSF shows it as a message. The homing file
-        // ran a code before the abort; without one the reply would be a push message, because AbortFile leaves macroJustStarted set
+        // to home axes", as G28 does after AbortPrint in standalone RRF. The reply carries the old epoch, DSF shows it as a message. Also when the abort
+        // comes between MacroStarted and the first code of the homing file the error is a final reply, because AbortFile clears macroJustStarted
+        // (RRF 67e3c69f0)
         _firmware.CodeReplySurplus = false;
         _firmware.OnCode("G28", _ => FakeReply.Home('X', 'Y'));
         KnowEpoch(CodeChannel.HTTP, 1);
@@ -395,7 +397,10 @@ public class FakeFirmwareEpoch
         FakePacket homex = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[0];
         Assert.That((homex.Text, homex.IsFromCode, homex.Tag), Is.EqualTo(("homex.g", true, T(1))));
         Assert.That(_firmware.WriteMacroStarted(CodeChannel.HTTP, T(1)), Is.True);
-        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G91"), T(1)), Is.True);
+        if (codeBeforeAbort)
+        {
+            Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G91"), T(1)), Is.True);
+        }
         Transfers(2);
 
         Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, T(2)), Is.True);
@@ -406,6 +411,23 @@ public class FakeFirmwareEpoch
         Assert.That(reply.MessageType.HasFlag(MessageTypeFlags.ErrorMessageFlag) && !reply.MessageType.HasFlag(MessageTypeFlags.PushFlag), Is.True);
         Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.HTTP), Has.Length.EqualTo(1), "G28 asked for another homing file");
         Assert.That(_firmware.MovementLockOwner, Is.Null);
+    }
+
+    [Test]
+    public void FirmwareWithoutTheFixRepliesWithPushFlagAfterAnAbortBeforeTheFirstCode()
+    {
+        // V7 and RecordApply model firmware without RRF 67e3c69f0: an abort between MacroStarted and the first code of the homing file leaves
+        // macroJustStarted set, so the error of the G28 goes out as a push message (GCodes.cpp:4468-4469)
+        _firmware.Model = FakeRrfModel.RecordApply;
+        _firmware.CodeReplySurplus = false;
+        _firmware.OnCode("G28", _ => FakeReply.Home('X', 'Y'));
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G28"), 0), Is.True);
+        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 1, "G28 did not request homex.g");
+        Assert.That(_firmware.WriteMacroStarted(CodeChannel.HTTP, 0), Is.True);
+        Transfers(2);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, 0), Is.True);
+        TransferUntil(() => _delivered.Any(packet => packet.IsCodeReply && packet.Text.StartsWith("Failed to home axes")), "G28 did not end with an error");
+        Assert.That(_delivered.Single(packet => packet.IsCodeReply && packet.Text.StartsWith("Failed to home axes")).MessageType.HasFlag(MessageTypeFlags.PushFlag), Is.True);
     }
 
     [Test]

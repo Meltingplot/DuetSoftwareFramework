@@ -529,6 +529,38 @@ public class ChannelEpochWithDsf
     }
 
     [Test]
+    public async Task HomingCodeAbortedBeforeTheFirstCodeOfItsFileEndsWithOneErrorMessage()
+    {
+        // As HomingCodeThatSurvivesAnAbortEndsWithAnError, but DSF aborts the channel after it has written MacroStarted for homex.g and before the first
+        // code of homex.g. RRF clears macroJustStarted when the abort pops the macro (RRF 67e3c69f0), so the error is a final reply and reaches the user
+        // complete as one message, not as the head of a push message that never ends
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware => firmware.OnCode("G28", _ => FakeReply.Home('X', 'Y')));
+        host.WriteMacro("homex.g", "G1 H1 X-300\n");
+        host.WriteMacro("homey.g", "G1 H1 Y-300\n");
+        host.Firmware.HoldTransfers();
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, Timeout), Is.True);
+        Task<string> g28 = host.StartCode("G28");
+        for (int i = 0; i < 200 && !host.Firmware.GetPendingRequests().Any(request => request.Request == SbcRequest.MacroStarted && request.Channel == CodeChannel.HTTP); i++)
+        {
+            Step(host);
+        }
+        Assert.That(host.Firmware.GetPendingRequests().Any(request => request.Request == SbcRequest.MacroStarted && request.Channel == CodeChannel.HTTP), Is.True,
+            "DSF did not start homex.g");
+        Assert.That(host.Firmware.GetPendingRequests().Any(request => request.Request == SbcRequest.Code), Is.False);
+        await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
+        host.Firmware.ReleaseTransfers();
+        await IgnoreCancellation(g28);
+
+        Assert.That(await host.ExecuteAsync("M115"), Does.Not.Contain("home"));
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetSentPackets().Any(packet => packet.IsCodeReply && packet.Text.StartsWith("Failed to home axes")), Timeout),
+            Is.True, "G28 did not end with an error");
+        Assert.That(host.Firmware.GetReceivedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.None.EqualTo("G1 H1 X-300"), "A code of homex.g reached RRF");
+        FakePacket error = host.Firmware.GetSentPackets().Single(packet => packet.IsCodeReply && packet.Text.StartsWith("Failed to home axes"));
+        Assert.That(error.MessageType.HasFlag(MessageTypeFlags.PushFlag), Is.False);
+        Assert.That(Messages(host), Has.One.EqualTo("Error: Failed to home axes"));
+    }
+
+    [Test]
     public async Task TaggedAbortOfAllFilesIsAnsweredWithInvalidateChannel()
     {
         // CE-15, CE-24: RRF's own abort of all files of the current epoch closes its gate; DSF answers it with InvalidateChannel(e+1), which opens it

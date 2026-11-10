@@ -419,7 +419,10 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     /// Abort the files being executed and flag the abort for DSF, see GCodeBuffer::AbortFile
     /// </summary>
     /// <param name="abortAll">Whether all files are aborted or only the last one</param>
-    public void AbortFile(bool abortAll)
+    /// <param name="clearsJustStartedMacro">Whether the RRF of the model clears macroJustStarted here: a macro that has just been started and has had
+    /// no code yet is closed as well, so the next reply of the code below it is no push message (RRF 67e3c69f0, GCodeBuffer.cpp:1198). Firmware without
+    /// that fix leaves the flag set</param>
+    public void AbortFile(bool abortAll, bool clearsJustStartedMacro)
     {
         if (MachineState.DoingFile)
         {
@@ -434,6 +437,10 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
 
             IsAbortRequested = true;
             IsAbortAllRequested = abortAll;
+            if (clearsJustStartedMacro)
+            {
+                HasJustStartedMacro = false;
+            }
         }
     }
 

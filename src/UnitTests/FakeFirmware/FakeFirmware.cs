@@ -1060,7 +1060,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     }
                     if (TryLockBuffer(gb))
                     {
-                        gb.AbortFile(true);
+                        gb.AbortFile(true, false);    // the V7 model is firmware without the clear of macroJustStarted (RRF 67e3c69f0)
                         gb.FileAbortSent();
                         // DSF has removed all its macro files, so a closal that has not gone out yet is void (RRF Meltingplot/RepRapFirmware#45, as GCodeBuffer::Reset)
                         gb.MacroFileClosedSent();
@@ -1469,7 +1469,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     gb.SetFinished(true);
                 }
                 gb.MacroRequestSent();
-                gb.AbortFile(true);
+                gb.AbortFile(true, false);    // the V7 model is firmware without the clear of macroJustStarted (RRF 67e3c69f0)
                 gb.FileAbortSent();
                 gb.MessageAcknowledged(true, true, 0);
             }

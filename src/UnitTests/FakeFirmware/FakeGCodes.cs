@@ -128,6 +128,12 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
     public bool DoingToolChange { get; private set; }
 
     /// <summary>
+    /// Whether GCodeBuffer::AbortFile clears macroJustStarted, as RRF does since 67e3c69f0. Only the Epoch model has that fix, V7 and RecordApply model
+    /// firmware without it
+    /// </summary>
+    private bool AbortFileClearsJustStartedMacro => firmware.Model == FakeRrfModel.Epoch;
+
+    /// <summary>
     /// Clean up the side effects of the state machine on every frame of a buffer before its files are aborted, see GCodes::AbortStateMachine
     /// (GCodes4.cpp:2028-2080). Like in RRF it does not change the state of a frame, so a code at the base level goes on with its next step. The
     /// probing, flashing and event states are not emulated
@@ -162,7 +168,7 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
     private void AbortPrint(FakeGCodeBuffer gb)
     {
         AbortStateMachine(gb);
-        gb.AbortFile(true);
+        gb.AbortFile(true, AbortFileClearsJustStartedMacro);
     }
 
     /// <summary>
@@ -322,7 +328,7 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
         AbortStateMachine(gb);
 
         // File levels, without telling DSF, which has aborted them itself (:902-903, :1770-1771)
-        gb.AbortFile(true);
+        gb.AbortFile(true, AbortFileClearsJustStartedMacro);
         gb.FileAbortSent();
 
         // A closal that has not gone out (as RRF #45, :904)
@@ -548,7 +554,7 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
                     if (gb.MachineState.Previous is null)
                     {
                         // StopPrint is not emulated
-                        gb.AbortFile(false);
+                        gb.AbortFile(false, AbortFileClearsJustStartedMacro);
                     }
                     else
                     {
@@ -1277,7 +1283,7 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
 
         if (!Push(gb, false))
         {
-            gb.AbortFile(false);
+            gb.AbortFile(false, AbortFileClearsJustStartedMacro);
             return true;
         }
 
@@ -1300,11 +1306,11 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
     /// Return from a macro file (M99), see GCodes::FileMacroCyclesReturn
     /// </summary>
     /// <param name="gb">G-code buffer</param>
-    private static void FileMacroCyclesReturn(FakeGCodeBuffer gb)
+    private void FileMacroCyclesReturn(FakeGCodeBuffer gb)
     {
         if (gb.IsDoingFileMacro())
         {
-            gb.AbortFile(false);
+            gb.AbortFile(false, AbortFileClearsJustStartedMacro);
         }
     }
 
@@ -1319,7 +1325,7 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
         if (!gb.PushState(withinSameFile))
         {
             firmware.PlatformMessage(MessageTypeFlags.GenericMessage | MessageTypeFlags.LogWarn | MessageTypeFlags.ErrorMessageFlag, $"Push(): stack overflow on {gb.Channel}\n", null);
-            gb.AbortFile(true);
+            gb.AbortFile(true, AbortFileClearsJustStartedMacro);
             return false;
         }
         return true;
