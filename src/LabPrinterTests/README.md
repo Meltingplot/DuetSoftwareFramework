@@ -53,6 +53,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 | `FirmwareRestart.LinkRecoversAfterWatchdogReset` | The link never recovered after RRF restarted (DSF mp.8 and upstream, 4 of 5 restarts). Also checks object model answers after the reconnect | DSF #59 |
 | `ControlServerRestart.PluginServicesStartWithControlServer` | The plugin services stayed down after DCS was stopped and started | DSF #37 (mp.2) |
 | `ControlServerRestart.ResetDoesNotHangShutdown` | DCS hung in its shutdown for 15 s after M999. Intermittent, see the test | Open |
+| `ControlServerRestart.NoReplyOfTheOldConnectionAfterRestart` (explicit) | After a DCS start the journal showed "Daemon: Out-of-order reply ''": RRF wrote the reply of a code of the old connection to the new one (about 18 of 430 starts) | RRF with the channel epoch (RRF #47) |
 | `TriggerMacros.TriggerMacroCallingMacro` | Garbled trigger macro names ("Macro file trigger8.g not found") | RRF fork PR #12 and #13 (3.7.0-rc.2+1-mp.3) |
 | `TriggerMacros.DeleteFirmwareTriggerWithM581Point1` | `M581.1 T# P-1` does not delete a trigger that RRF evaluates | DSF #61 (upstream still has it) |
 | `TriggerMacros.ReportFirmwareTriggerWithM581Point1` | `M581.1 T#` and `M581.1 T# R<n>` were refused without P | DSF #63 (upstream still has it) |
