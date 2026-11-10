@@ -256,10 +256,10 @@ public class TriggerMacros : LabTest
     }
 
     /// <summary>
-    /// RRF 3.7 parses a trigger expression under the heap read lock, and a string literal in it takes the write lock, so M581.1 hangs RRF
-    /// until its watchdog resets it with StuckInSpinLoop (not fixed)
+    /// RRF 3.7 parsed a trigger expression under the heap read lock, and a string literal in it took the write lock, so M581.1 hung RRF
+    /// until its watchdog reset it with StuckInSpinLoop. Fixed in RRF 59a04159b (2026-09-24), which is in 3.7.0+1.mp.1 and later
     /// </summary>
-    [Test, Explicit("Hangs RRF 3.7 until its watchdog resets it")]
+    [Test]
     public async Task StringLiteralInExpression()
     {
         await RequireFreeTriggerAsync();
