@@ -60,6 +60,41 @@ public partial class DirectDisplayScreen : ModelObject, IDynamicModelObject
     private int _width = 128;
 
     /// <summary>
+    /// Read the controller of a screen as the <see cref="Controller"/> property reads it, which also takes another case and the number of the value.
+    /// The class is chosen by this value, so that the class and the property never disagree
+    /// </summary>
+    /// <param name="value">Value of the controller</param>
+    /// <returns>Controller or null if it is none</returns>
+    private static DirectDisplayController? ReadController(JsonElement value)
+    {
+        try
+        {
+            return value.Deserialize(ObjectModelContext.Default.DirectDisplayController);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Read the controller of a screen as the <see cref="Controller"/> property reads it
+    /// </summary>
+    /// <param name="reader">Reader at the value of the controller</param>
+    /// <returns>Controller or null if it is none</returns>
+    private static DirectDisplayController? ReadController(ref Utf8JsonReader reader)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize(ref reader, ObjectModelContext.Default.DirectDisplayController);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Update this instance from a given JSON element
     /// </summary>
     /// <param name="jsonElement">Element to update this intance from</param>
@@ -75,7 +110,7 @@ public partial class DirectDisplayScreen : ModelObject, IDynamicModelObject
 
         if (jsonElement.TryGetProperty("controller", out JsonElement typeProperty))
         {
-            if (typeProperty.GetString() == "ST7567")
+            if (ReadController(typeProperty) is DirectDisplayController.ST7567)
             {
                 if (this is not DirectDisplayScreenST7567)
                 {
@@ -135,7 +170,7 @@ public partial class DirectDisplayScreen : ModelObject, IDynamicModelObject
 
         if (hasKey)
         {
-            if (keyReader.GetString() == "ST7567")
+            if (ReadController(ref keyReader) is DirectDisplayController.ST7567)
             {
                 if (this is not DirectDisplayScreenST7567)
                 {
