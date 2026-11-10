@@ -13,7 +13,7 @@ public class JsonOptionalShortDateTimeConverter : JsonConverter<DateTime?>
     public override DateTime? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         string? value = reader.GetString();
-        return string.IsNullOrEmpty(value) ? null : DateTime.Parse(value);
+        return string.IsNullOrEmpty(value) ? null : DateTime.TryParse(value, out DateTime result) ? result : throw new JsonException("invalid date and time");
     }
 
     /// <inheritdoc />

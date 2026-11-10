@@ -27,16 +27,7 @@ public class ObjectModelJsonFuzz
     /// UpdateService, which applies the firmware responses, also handles ArgumentException (setters that validate the value, e.g.
     /// PluginManifest.Id) and InvalidOperationException (System.Text.Json getters called on another token type), see UpdateService.ExecuteAsync
     /// </summary>
-    private static bool IsExpected(Exception e) => e is JsonException or ArgumentException or InvalidOperationException || IsKnownBug(e);
-
-    /// <summary>
-    /// The generated update methods read numbers with the getters of JsonElement and Utf8JsonReader, which throw a FormatException for a number
-    /// that does not fit the property type, and JsonShortDateTimeConverter uses DateTime.Parse, which throws a FormatException for an invalid date,
-    /// instead of the documented JsonException. A char property reads the first character of the string, which throws an IndexOutOfRangeException
-    /// for an empty string. UpdateService does not catch either.
-    /// Reproduced by <see cref="OutOfRangeNumberFailsWithJsonException"/>; let through here so that the fuzzer can find other problems
-    /// </summary>
-    private static bool IsKnownBug(Exception e) => e is FormatException || (e is IndexOutOfRangeException && e.TargetSite?.Name == "get_Chars");
+    private static bool IsExpected(Exception e) => e is JsonException or ArgumentException or InvalidOperationException;
 
     /// <summary>
     /// Backing field of the static event ObjectModel.OnDeserializationFailed
@@ -385,38 +376,86 @@ public class ObjectModelJsonFuzz
     }
 
     /// <summary>
-    /// A number that does not fit the type of a property is invalid data, which the update methods document as JsonException
-    /// ("Failed to deserialize data") and which UpdateService handles. The generated code calls JsonElement.GetInt32 and Utf8JsonReader.GetInt32,
-    /// which throw FormatException; UpdateService.ExecuteAsync catches only ArgumentException, InvalidOperationException and JsonException, so a
-    /// firmware response like this ends its update loop
+    /// A value that does not fit the type of a property is invalid data, which the update methods document as JsonException ("Failed to deserialize
+    /// data") and which UpdateService handles. The getters of JsonElement and Utf8JsonReader throw a FormatException for a number or date that does
+    /// not fit, DateTime.Parse in the date converters did the same, and the first character of an empty string gave an IndexOutOfRangeException;
+    /// UpdateService.ExecuteAsync catches only ArgumentException, InvalidOperationException and JsonException. Finding O2 of design/open-findings.md
     /// </summary>
-    [Test]
-    [Explicit("Bug: values that do not fit the property type make the object model update throw FormatException or IndexOutOfRangeException")]
-    public void OutOfRangeNumberFailsWithJsonException()
+    /// <param name="json">Update of the object model</param>
+    [TestCase("{\"spindles\":[{\"current\":9223372036854775807}]}", TestName = "{m}(int)")]
+    [TestCase("{\"inputs\":[{\"lineNumber\":9223372036854775808}]}", TestName = "{m}(long)")]
+    [TestCase("{\"inputs\":[{\"stackDepth\":256}]}", TestName = "{m}(byte)")]
+    [TestCase("{\"ledStrips\":[{\"maxLeds\":-1}]}", TestName = "{m}(uint)")]
+    [TestCase("{\"state\":{\"atxPower\":9223372036854775807}}", TestName = "{m}(bool as number)")]
+    [TestCase("{\"state\":{\"time\":\"2026-11-07T012:00:00\"}}", TestName = "{m}(DateTime)")]
+    [TestCase("{\"heat\":{\"bedHeaters\":[9223372036854775807]}}", TestName = "{m}(int in a list)")]
+    [TestCase("{\"heat\":{\"bedHeaterMapping\":[[9223372036854775807]]}}", TestName = "{m}(int in an array in a list)")]
+    [TestCase("{\"move\":{\"axes\":[{\"letter\":\"\"}]}}", TestName = "{m}(char)")]
+    [TestCase("{\"move\":{\"compensation\":{\"probeGrid\":{\"axes\":[\"\",\"Y\"]}}}}", TestName = "{m}(char in a list)")]
+    [TestCase("{\"messages\":[{\"time\":\"2026-11-07T012:00:00\",\"type\":0,\"content\":\"x\"}]}", TestName = "{m}(date of a message)")]
+    public void ValueThatDoesNotFitFailsWithJsonException(string json)
     {
-        byte[] json = "{\"spindles\":[{\"current\":9223372036854775807}]}"u8.ToArray();
         using JsonDocument document = JsonDocument.Parse(json);
         Assert.Throws(Is.InstanceOf<JsonException>(), () => new ObjectModel().UpdateFromJson(document.RootElement, false));
         Assert.Throws(Is.InstanceOf<JsonException>(), () =>
         {
-            Utf8JsonReader reader = new(json);
+            Utf8JsonReader reader = new(Encoding.UTF8.GetBytes(json));
             reader.Read();
             new ObjectModel().UpdateFromJsonReader(ref reader, false);
         });
+    }
+
+    /// <summary>
+    /// The update of a single key, as UpdateService applies the responses of the firmware, fails the same way
+    /// </summary>
+    [Test]
+    public void ValueThatDoesNotFitFailsWithJsonExceptionInAFirmwareResponse()
+    {
         Assert.Throws(Is.InstanceOf<JsonException>(), () =>
         {
             Utf8JsonReader reader = new("[{\"current\":9223372036854775807}]"u8);
             reader.Read();
             new ObjectModel().UpdateFromFirmwareJsonReader("spindles", ref reader);
         });
+    }
 
-        // Same for an empty string in a char property (generated code: GetString()![0])
-        using JsonDocument letter = JsonDocument.Parse("{\"move\":{\"axes\":[{\"letter\":\"\"}]}}");
-        Assert.Throws(Is.InstanceOf<JsonException>(), () => new ObjectModel().UpdateFromJson(letter.RootElement, false));
+    /// <summary>
+    /// With a handler for ObjectModel.OnDeserializationFailed, as DCS registers one (DuetControlServer/Model/ObjectModel.cs:83), a property whose
+    /// value does not fit is reported to the handler and skipped, and the rest of the update is applied. The handler gets the JsonException
+    /// </summary>
+    /// <param name="json">Update of the first axis with a value that does not fit and a maximum of 123</param>
+    /// <param name="type">Type of the property that does not fit</param>
+    [TestCase("{\"move\":{\"axes\":[{\"letter\":\"\",\"max\":123}]}}", typeof(char))]
+    [TestCase("{\"move\":{\"axes\":[{\"microstepping\":{\"value\":9223372036854775807},\"max\":123}]}}", typeof(int))]
+    public void ValueThatDoesNotFitIsReportedToTheHandler(string json, Type type)
+    {
+        List<DeserializationFailedEventArgs> failures = [];
+        DeserializationFailedEventHandler handler = (_, e) => failures.Add(e);
+        ObjectModel.OnDeserializationFailed += handler;
+        try
+        {
+            ObjectModel elementModel = new(), readerModel = new();
+            using (JsonDocument document = JsonDocument.Parse(json))
+            {
+                elementModel.UpdateFromJson(document.RootElement, false);
+            }
+            Utf8JsonReader reader = new(Encoding.UTF8.GetBytes(json));
+            reader.Read();
+            readerModel.UpdateFromJsonReader(ref reader, false);
 
-        // Same for an invalid date, which JsonShortDateTimeConverter parses with DateTime.Parse
-        using JsonDocument message = JsonDocument.Parse("{\"messages\":[{\"time\":\"2026-11-07T012:00:00\",\"type\":0,\"content\":\"x\"}]}");
-        Assert.Throws(Is.InstanceOf<JsonException>(), () => new ObjectModel().UpdateFromJson(message.RootElement, false));
+            Assert.That(failures.Select(failure => failure.TargetType), Is.EqualTo(new[] { type, type }));
+            Assert.That(failures.Select(failure => failure.Exception), Is.All.InstanceOf<JsonException>());
+            foreach (ObjectModel model in (ObjectModel[])[elementModel, readerModel])
+            {
+                Assert.That(model.Move.Axes[0].Max, Is.EqualTo(123F));
+                Assert.That(model.Move.Axes[0].Letter, Is.EqualTo(new Axis().Letter));
+                Assert.That(model.Move.Axes[0].Microstepping.Value, Is.EqualTo(new Axis().Microstepping.Value));
+            }
+        }
+        finally
+        {
+            ObjectModel.OnDeserializationFailed -= handler;
+        }
     }
 
     /// <summary>
