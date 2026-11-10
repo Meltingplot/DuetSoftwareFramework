@@ -29,6 +29,13 @@ internal static class UpdateFromJson
         bool isDynamic = receiver.DynamicModelObjectClasses.Contains(cls);
         bool isInherited = receiver.InheritedClasses.Any(ic => ic.Key.Identifier.ValueText == cls), isInheritedFrom = receiver.InheritedClasses.Any(ic => ic.Value == cls);
 
+        // A number or date that does not fit the property type is invalid data, which the update methods document as JsonException.
+        // The Get methods of System.Text.Json throw a FormatException for it
+        static string Checked(string type) => $"TryGet{type}(out var checkedValue) ? checkedValue : throw new JsonException(\"value does not fit {type}\")";
+
+        // An empty string holds no character
+        const string CharGetter = "GetString() is { Length: > 0 } charValue ? charValue[0] : throw new JsonException(\"expected a character\")";
+
         string GeneratePropertyUpdateCalls()
         {
             using StringWriter stringWriter = new();
@@ -136,12 +143,12 @@ internal static class UpdateFromJson
                     bool isEnum = false;
                     Tuple<string, string>? varNameAndItemGetter = genericPropType switch
                     {
-                        "int" => new("newIntValue", "GetInt32()"),
+                        "int" => new("newIntValue", Checked("Int32")),
                         "string" => new("newStringValue", "GetString()!"),
-                        "char" => new("newCharValue", "GetString()![0]"),
+                        "char" => new("newCharValue", CharGetter),
                         "float" => new("newFloatValue", "GetSingle()"),
                         "float[]" => new("newFloatArrayValue", "EnumerateArray().Select(e => e.GetSingle()).ToArray()"),
-                        "int[]" => new("newIntArrayValue", "EnumerateArray().Select(e => e.GetInt32()).ToArray()"),
+                        "int[]" => new("newIntArrayValue", $"EnumerateArray().Select(e => e.{Checked("Int32")}).ToArray()"),
                         "DriverId" => new("newDriverIdValue", "GetString()!"),
                         _ => null
                     };
@@ -323,21 +330,21 @@ internal static class UpdateFromJson
                         string? getter = propType switch
                         {
                             "string" => "GetString()!",
-                            "char" => "GetString()![0]",
-                            "int" => "GetInt32()",
-                            "bool" => "ValueKind == JsonValueKind.Number ? jsonProperty.Value.GetInt32() != 0 : jsonProperty.Value.GetBoolean()",
+                            "char" => CharGetter,
+                            "int" => Checked("Int32"),
+                            "bool" => $"ValueKind == JsonValueKind.Number ? (jsonProperty.Value.{Checked("Int32")}) != 0 : jsonProperty.Value.GetBoolean()",
                             "double" => "GetDouble()",
                             "float" => "GetSingle()",
-                            "long" => "GetInt64()",
-                            "ulong" => "GetUInt64()",
-                            "uint" => "GetUInt32()",
-                            "short" => "GetInt16()",
-                            "ushort" => "GetUInt16()",
-                            "byte" => "GetByte()",
-                            "sbyte" => "GetSByte()",
-                            "decimal" => "GetDecimal()",
-                            "DateTime" => "GetDateTime()",
-                            "DateTimeOffset" => "GetDateTimeOffset()",
+                            "long" => Checked("Int64"),
+                            "ulong" => Checked("UInt64"),
+                            "uint" => Checked("UInt32"),
+                            "short" => Checked("Int16"),
+                            "ushort" => Checked("UInt16"),
+                            "byte" => Checked("Byte"),
+                            "sbyte" => Checked("SByte"),
+                            "decimal" => Checked("Decimal"),
+                            "DateTime" => Checked("DateTime"),
+                            "DateTimeOffset" => Checked("DateTimeOffset"),
                             "TimeSpan" => "GetTimeSpan()",
                             _ => null
                         };
