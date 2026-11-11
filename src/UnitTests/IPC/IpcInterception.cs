@@ -174,8 +174,8 @@ public class IpcInterception
     [Test]
     public async Task ExecutedCodesAreReportedWithTheirResult()
     {
-        // The Executed stage passes the code after it has been executed (Pipelines/Executed.cs). AutoFlush is off here, see ExecutedCodesWithAutoFlush
-        using InterceptConnection interceptor = await ConnectAsync(InterceptionMode.Executed, ["M7101"], autoFlush: false);
+        // The Executed stage passes the code after it has been executed (Pipelines/Executed.cs)
+        using InterceptConnection interceptor = await ConnectAsync(InterceptionMode.Executed, ["M7101"]);
         Task<string> reply = StartCode("M7101");
         Code code = await ReceiveAsync(interceptor);
         Assert.That(code.Result?.Content, Does.StartWith("from firmware"));
@@ -185,13 +185,13 @@ public class IpcInterception
 
     /// <summary>
     /// DuetAPIClient enables AutoFlush by default (InterceptConnection.AutoFlush), and CodeInterception.InterceptAsync then flushes the channel
-    /// before it passes the code. For a code in the Executed stage, ChannelProcessor.FlushAsync also waits for the Executed stage itself to become
-    /// idle (PipelineStackItem.FlushAsync waits for its idle event), but that stage is busy with this very code, so it never finishes.
-    /// CodeLogger connects Executed interceptors with filters and the default AutoFlush, so "CodeLogger -t Executed -f M7101" would block the channel.
-    /// Confirmed on the printer (DSF 3.7.0+mp.13, 2026-11-07), see IpcInterceptionStages.ExecutedInterceptorWithAutoFlushBlocksTheChannelAfterTheClientHasGone
+    /// before it passes the code. For a code in the Executed stage, ChannelProcessor.FlushAsync used to wait for every stage, the Executed stage
+    /// included (PipelineStackItem.FlushAsync waits for its idle event), but that stage is busy with this very code, so the flush never finished.
+    /// CodeLogger connects Executed interceptors with filters and the default AutoFlush, so "CodeLogger -t Executed -f M7101" blocked the channel.
+    /// Seen on the printer (DSF 3.7.0+mp.13, 2026-11-07), see IpcInterceptionStages.ChannelWorksAfterAnExecutedInterceptorWithAutoFlushHasGone.
+    /// A code in the Executed stage has nothing ahead of it, so the flush no longer waits for anything
     /// </summary>
     [Test]
-    [Explicit("Bug: an Executed interceptor with filters and AutoFlush (the DuetAPIClient default) deadlocks the code channel")]
     public async Task ExecutedCodesWithAutoFlush()
     {
         // Own host, the deadlock blocks the SBC channel for good
@@ -201,6 +201,24 @@ public class IpcInterception
         Task<string> reply = host.StartCode("M7101", CodeChannel.SBC);
         Code code = await interceptor.ReceiveCodeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3));
         Assert.That(code.MajorNumber, Is.EqualTo(7101));
+        await interceptor.IgnoreCodeAsync();
+        Assert.That(await reply.WaitAsync(TimeSpan.FromSeconds(3)), Is.EqualTo("from firmware\n"));
+    }
+
+    /// <summary>
+    /// The Flush command of an interceptor flushes for the code that it is intercepting (Commands/Generic/Flush.cs), which is the same
+    /// flush as the one of AutoFlush. In the Executed stage it waited for that stage as well, see <see cref="ExecutedCodesWithAutoFlush"/>
+    /// </summary>
+    [Test]
+    public async Task ExecutedInterceptorCanFlush()
+    {
+        // Own host, a flush that does not return blocks the SBC channel for good
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware => firmware.OnCode("M7101", _ => FakeReply.Ok("from firmware")), ipc: true);
+        using InterceptConnection interceptor = new() { AutoFlush = false };
+        await interceptor.ConnectAsync(InterceptionMode.Executed, [CodeChannel.SBC], ["M7101"], false, host.SocketPath);
+        Task<string> reply = host.StartCode("M7101", CodeChannel.SBC);
+        await interceptor.ReceiveCodeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.That(await interceptor.FlushAsync().WaitAsync(TimeSpan.FromSeconds(3)), Is.True);
         await interceptor.IgnoreCodeAsync();
         Assert.That(await reply.WaitAsync(TimeSpan.FromSeconds(3)), Is.EqualTo("from firmware\n"));
     }

@@ -110,9 +110,8 @@ public class IpcDisconnects
     public async Task InterceptorGoneWhileIntercepting(InterceptionMode mode)
     {
         // The receive of the next command fails with a SocketException, which ends CodeInterception.ProcessAsync. Its finally block wakes the
-        // waiting code, which carries on as if it had been ignored, and removes the interceptor (CodeInterception.cs:203-215).
-        // AutoFlush is off in the Executed stage, see IpcInterception.ExecutedCodesWithAutoFlush
-        InterceptConnection interceptor = new() { AutoFlush = mode != InterceptionMode.Executed };
+        // waiting code, which carries on as if it had been ignored, and removes the interceptor (CodeInterception.cs:203-215)
+        InterceptConnection interceptor = new();
         await interceptor.ConnectAsync(mode, [CodeChannel.Telnet], ["M7402"], false, _host.SocketPath);
         int id = interceptor.Id;
         Task<string> reply = StartCode("M7402", CodeChannel.Telnet);
