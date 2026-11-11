@@ -470,11 +470,19 @@ The decisions are in `sbc-link-v8-requirements.md`, section 10.9.
   `Processor.AbortAllAsync` still cancels first (`InvalidateRegular`), then awaits the job lock, then calls
   `JobProcessor.Abort`. Not shown to be reachable: with `abort` in the job file itself the job task waits for the
   abort; with `abort` in a macro of the job it is unclear. Needs a test before it is reported.
-- **K34. The feed hold cancel ends the work of the job channels in DSF without an InvalidateChannel.** Upstream
-  77684383 added `LinkInterface.InvalidateJobChannelsAsync`, which calls `Processor.PrintPaused()` on File and File2 when
-  M0/M1/M2 arrives for a held job. That cancels the codes and drops the macros in DSF ("RRF has done the same"), but
-  RRF has not at that point; the M0 goes out afterwards. Not analysed what RRF still sends for the dropped levels, and
-  what it means for the channel epoch. Pause and PrintPaused are not in the fake firmware.
+- **K34. The cancel of a held job (feed hold) ends the work of the job channels in DSF without a boundary on the link.** Analysed on 2026-11-11 at DSF 412e5ff6; read, nothing run.
+  - Not reachable on the fork today: the fork's RRF (`3.7-dev` 5c0cf3b8f) has no feed hold, so the status "held" never appears. It becomes reachable when the fork takes upstream RRF e7e30e13f3 ("Implemented feed hold", `3.7-ch`, the pair of DSF 77684383) or later.
+  - DSF (upstream 77684383): M0, M1 or M2 from a channel other than the job's, with a job selected and the status `Held`, calls `LinkInterface.InvalidateJobChannelsAsync` (`MCodeHandler.cs:104-120`, `LinkInterface.cs:573-582`). That runs `Processor.PrintPaused()` on File and File2, which cancels the buffered codes and pops the macro levels (`Processor.cs:1750-1763`). Then DSF cancels the job (`MCodeHandler.cs:123-126`), and only then the M0 goes to RRF.
+  - `PrintPaused` was written for RRF's own pause, where RRF pops its levels before it reports the pause ("When we get here, RRF has done the same", `Processor.cs:1755`). Here RRF has done nothing yet. It drops its side when it executes the M0: `DiscardJobReadAhead` pops the macro levels of the file channels without a packet and purges the code ring (upstream RRF `GCodes3.cpp:1414-1432` at 7e95567976; read from GitHub, not built).
+  - No InvalidateChannel is written, and the epoch of File and File2 does not change; DSF raises it only after an abort of all files (`Processor.cs:1100-1112`) and at a reset. So whatever RRF still sends for the dropped levels carries the current epoch, and DSF takes it as current (`Processor.cs:184-208`). The abort windows do not apply either, they act only after an abort of all files (`Processor.cs:1590`, `:1664`).
+  - What follows from the code, none of it run, window sizes not measured:
+    - A MacroFileClosed of a macro that ends in RRF after DSF has popped it pops DSF's base level: "Stack underrun", the link thread ends (`Processor.cs:358-364`, `:1587-1609`).
+    - An ExecuteMacro that DSF reads after the pop starts a macro at the base level, which RRF then drops without a packet.
+    - A late reply completes a newer code of the channel or is logged as out of order.
+    - Between the pop and the cancel of the job (`MCodeHandler.cs:118`, then `:123`) the job loop can still send a code, which RRF purges without a reply.
+    - With upstream RRF 7e95567976 the file channels do not run codes while held (upstream `GCodes.cpp:612-623`), which leaves only packets that are already on their way for the first three.
+  - The path that draws the boundary today is an abort: InvalidateChannel from DSF, or RRF's AbortFile(all), which DSF answers with InvalidateChannel(e+1) (K18).
+  - No test: the fake firmware has no pause, no feed hold and no M0. The wiki does not document M25.1 or the status "held" yet.
 - **K35. DSF and RRF give up a connection at different times.** DSF gives up when RRF does not answer within a transfer for 500 ms (`SbcTransferTimeout`, `Settings.cs:178`, `SPI.cs:1779`); between transfers it waits 4 s as RRF does (`SbcConnectionTimeout`, `Settings.cs:183`; RRF `SbcMessageFormats.h:45`). So DSF can start a new connection while RRF still holds the old one's codes, macros and globals. Checked on 2026-11-11 against DSF `v3.7-dev` 412e5ff6 and RRF `3.7-dev` 5c0cf3b8f.
   - With the epoch on both sides (D2): DSF marks the first packet of each connection, and RRF ends a connection that it still runs as a lost one when it reads such a marker, "Lost connection to SBC (the SBC has started a new connection)" (`RRF/SBC/SbcInterface.cpp:336-345`). Behaviour change: a DCS that restarts faster than RRF's 4 s stops the machine as a lost connection does. Tests: `ChannelEpochWithDsf.ConnectionThatDsfEndsWhileRrfRunsItEndsAsALostOne`, `FakeFirmwareEpoch.MarkerOnARunningConnectionEndsItAsALostOne`.
   - Open with a DSF without the epoch: as in v7, the old work goes on.
