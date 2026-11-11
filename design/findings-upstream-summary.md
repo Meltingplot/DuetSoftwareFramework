@@ -88,9 +88,9 @@ Samples:
   ```
   M122 P{0}
   ```
-- **G7** · derived from test `Codes.JobFiles.SimulationOfShortFile` (M117 instead of its G1), not run · expected: `0:/gcodes/short.g` still starts with its line · actual: its start is overwritten
+- **G7** · derived from test `Codes.JobFiles.SimulationOfShortFile` (G4 instead of its G1), not run · expected: `0:/gcodes/short.g` still starts with its line and the comment is appended · actual (read): the comment "; Simulated print time: 2" is written over the start of the file. The file must simulate for at least 1 s: DSF writes the time only if `job.lastDuration` is above 0 (`JobProcessor.cs:812`), and a dwell counts as simulated time (RRF `GCodes.cpp:4058-4063`). With a file of only `M117 "a"` the simulation takes 0 s and nothing is written (seen on the lab printer, 2026-11-11: "Failed to update simulation time because it was not set in the object model").
   ```
-  ; 0:/gcodes/short.g holds one line: M117 "a"
+  ; 0:/gcodes/short.g holds one line: G4 S2
   M37 P"0:/gcodes/short.g"
   ```
 - **G9** · derived from test `Codes.JobFiles.SelectFileFromJobStopsFirstJob` (M117 instead of its G1), not run · expected: `M117 "2"` does not run (RRF chains) · actual: it runs
