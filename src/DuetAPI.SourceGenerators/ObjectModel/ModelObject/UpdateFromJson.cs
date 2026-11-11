@@ -33,6 +33,10 @@ internal static class UpdateFromJson
         // The Get methods of System.Text.Json throw a FormatException for it
         static string Checked(string type) => $"TryGet{type}(out var checkedValue) ? checkedValue : throw new JsonException(\"value does not fit {type}\")";
 
+        // A number beyond the range of the property type is read as infinity, which is invalid data as well: no JSON number stands for it,
+        // so a model that holds one cannot be serialized any more
+        static string Finite(string type) => $"TryGet{type}(out var checkedValue) && {(type == "Single" ? "float" : "double")}.IsFinite(checkedValue) ? checkedValue : throw new JsonException(\"value does not fit {type}\")";
+
         // An empty string holds no character
         const string CharGetter = "GetString() is { Length: > 0 } charValue ? charValue[0] : throw new JsonException(\"expected a character\")";
 
@@ -146,8 +150,8 @@ internal static class UpdateFromJson
                         "int" => new("newIntValue", Checked("Int32")),
                         "string" => new("newStringValue", "GetString()!"),
                         "char" => new("newCharValue", CharGetter),
-                        "float" => new("newFloatValue", "GetSingle()"),
-                        "float[]" => new("newFloatArrayValue", "EnumerateArray().Select(e => e.GetSingle()).ToArray()"),
+                        "float" => new("newFloatValue", Finite("Single")),
+                        "float[]" => new("newFloatArrayValue", $"EnumerateArray().Select(e => e.{Finite("Single")}).ToArray()"),
                         "int[]" => new("newIntArrayValue", $"EnumerateArray().Select(e => e.{Checked("Int32")}).ToArray()"),
                         "DriverId" => new("newDriverIdValue", "GetString()!"),
                         _ => null
@@ -333,8 +337,8 @@ internal static class UpdateFromJson
                             "char" => CharGetter,
                             "int" => Checked("Int32"),
                             "bool" => $"ValueKind == JsonValueKind.Number ? (jsonProperty.Value.{Checked("Int32")}) != 0 : jsonProperty.Value.GetBoolean()",
-                            "double" => "GetDouble()",
-                            "float" => "GetSingle()",
+                            "double" => Finite("Double"),
+                            "float" => Finite("Single"),
                             "long" => Checked("Int64"),
                             "ulong" => Checked("UInt64"),
                             "uint" => Checked("UInt32"),
@@ -397,7 +401,7 @@ internal static class UpdateFromJson
                             writer.WriteLine("else");
                             writer.WriteLine("{");
                             writer.Indent++;
-                            writer.WriteLine($"{prop.Identifier.ValueText} = jsonProperty.Value.GetSingle();");
+                            writer.WriteLine($"{prop.Identifier.ValueText} = jsonProperty.Value.{Finite("Single")};");
                             writer.Indent--;
                             writer.WriteLine("}");
                             writer.Indent--;
