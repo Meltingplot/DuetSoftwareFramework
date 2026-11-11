@@ -74,11 +74,20 @@ jobs:
         with:
           dotnet-version: 10
 
-      # Install required tools
+      # Install required tools. The mirror list of the runner only names hosts of ubuntu.com. On 2026-11-11 the runners could not
+      # resolve them for more than half an hour, so the packages come from two other mirrors when these hosts do not answer.
+      # apt checks the signature of the archive whichever host serves it
       - name: Install dependencies
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y libxml2-utils
+          other_mirrors() {
+            echo "::warning::The Ubuntu archive hosts of the runner do not answer, taking the packages from other mirrors"
+            printf '%s\n' https://mirrors.edge.kernel.org/ubuntu/ https://ftp.halifax.rwth-aachen.de/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt
+          }
+          install() {
+            sudo apt-get update -y && sudo apt-get install -y libxml2-utils
+          }
+          getent hosts azure.archive.ubuntu.com > /dev/null || other_mirrors
+          install || { other_mirrors; install; }
 
       # Build DSF. Without --signing-key the build script leaves the packages unsigned
       - name: Build DSF packages
