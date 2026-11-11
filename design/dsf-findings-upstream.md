@@ -1,6 +1,6 @@
 # DSF findings for upstream
 
-Status: 2026-11-08, written for Christian Hammacher (Duet3D). The SPI link findings are in `design/sbc-link-findings-upstream.md`; this document covers everything else that the fork found and fixed on 2026-11-07 and 2026-11-08.
+Status: 2026-11-08, K32 added on 2026-11-11, written for Christian Hammacher (Duet3D). The SPI link findings are in `design/sbc-link-findings-upstream.md`; this document covers everything else that the fork found and fixed on 2026-11-07 and 2026-11-08.
 
 What was checked:
 - DSF `v3.7-dev` at 973838bf, the head of upstream on 2026-11-08. The fork's `v3.7-dev` contains it (merge base 973838bf).
@@ -41,6 +41,7 @@ Line numbers refer to these commits. PR numbers are those of Meltingplot/DuetSof
 | T12 | An abort that crosses the closal of a macro underruns DSF's stack, and the exception stops DCS. Printer. | 4a576390, RRF 8207b22cc | #158, RRF #45 |
 | T11 | When RRF asks for an InvalidateChannel again, the copy drops the codes DSF sent after the first one, or ends macro waits that started in between. The channel stays blocked. Printer. | 4a576390, RRF 8207b22cc, c5af8416b | #161 |
 | T10 | **RRF:** after an InvalidateChannel, RRF replies to the code it was running, and DSF gives that reply to the next code. Printer. | RRF 8207b22cc | RRF #46, #163 |
+| K32 | An emergency stop of DSF that crosses the end of a macro never reaches RRF. M112 reports success, and DCS stops. Checked at f76ffc70. | 4a576390, d027f15b | #170 |
 | I1 | `RequiredPermissionsAttribute.Check` is true for every command, so plugins get every IPC command and connection mode. | c42f948b | #135 |
 | I8 | The IPC command `InvalidateChannel` is refused as unsupported, so the DuetAPIClient calls for it always fail. | 6dd3b8a3 | #158 |
 | H1 | A delete that names the SD root deletes the whole virtual SD card. | 75eb6536, RRF 600857f87 | #136, RRF #44 |
@@ -181,6 +182,30 @@ H13 (`rr_delete` ignored `recursive=yes`) was fixed upstream in 5130ca43 and is 
   - Behaviour change: after an abort, the channel's next request goes out one transfer later.
 - **Not changed:** the T1 part of InvalidateChannel still ends the macro wait on the first copy, and RRF still answers the M98 with "Macro file … not found" (T10).
 - **Test:** `TriggerFuzz.CodesAfterAnAbortWaitUntilRrfHasProcessedIt`, `MacroRequestBetweenTwoCopiesOfAnAbortIsDiscarded`. `TriggerMacroAfterAnAcceptedAbortIsStarted` guards that a trigger macro after an accepted abort still starts. The fake firmware lets the buffer lock fail (`FakeFirmware.FailBufferLocks`).
+
+### K32. An emergency stop that crosses the end of a macro never reaches RRF
+
+Checked on 2026-11-11 at DSF `upstream/v3.7-dev` f76ffc70; the line numbers of this entry refer to that commit.
+
+- **What happens:** M112 is sent while RRF's `MacroFileClosed` of a macro that has just ended is in the data that DSF processes in the same cycle.
+  - DCS logs `InvalidOperationException: Stack underrun on channel HTTP` in `Processor.Pop()` ← `MacroFileClosed()` ← `LinkService.HandleMacroFileClosed()`.
+  - The link thread ends before the transfer that would carry the `EmergencyStop` packet, so RRF never gets the stop.
+  - M112 has replied with success by then, and DCS has set `state.status` to `halted`.
+  - The exception stops the host (`BackgroundServiceExceptionBehavior` is the default, StopHost), and systemd restarts DCS.
+- **Cause:**
+  - In the cycle of the stop, `LinkService.Execute` first invalidates the codes, which pops every stack to its base level (`LinkService.cs:268`, `Processor.cs:1404-1451`). It then writes the stop into the transmit buffer and completes the request (`LinkService.cs:269-272`). Only after that it processes the packets that RRF sent with the last transfer (`:358-376`).
+  - A `MacroFileClosed` among those packets pops once more (`Processor.cs:1228-1243`), now on the base level, and `Pop` throws (`:176-181`). The packet loop catches only `ArgumentOutOfRangeException` (`LinkService.cs:371-375`), so the exception ends the thread (`:218`) before the next transfer.
+  - M112 reports success because the request is completed when the stop is written, not when it has been transferred (`LinkService.cs:272`, `MCodeHandler.cs:689-711`).
+  - RRF writes the closal of a macro in the exchange after the macro has ended (RRF `SbcInterface.cpp:1450`), so DSF reads it one transfer later. The window is that one transfer.
+  - Origin: 4a576390, narrowed to `InvalidateCodes` by d027f15b. v3.6 has the same order from reading (`SPI/Interface.cs:693-701`, `:795-812`), not run.
+- **Effect on the machine:** RRF keeps running until it notices the lost connection. Upstream RRF then reports "Lost connection to SBC" and invalidates its SBC resources (RRF `SbcInterface.cpp:187-224` at `3.7-dev` of 2026-11-10); it does not call `EmergencyStop` there. What that does to a move or a heater that is on was not checked.
+- **Reachable upstream:** an M112 from any channel while a macro ends on any channel. Shown with the test below; not seen on a printer.
+- **Fork fix (#170):** the cycle of the stop writes the stop first, processes the data RRF sent before against the stack as it was, and only then invalidates the codes and transfers. If processing that data throws, the stop is transferred before the exception goes on. M112 completes once the data of the transfer that carried the stop has been processed.
+- **Test:** `SPI.EmergencyStopCrossingMacroEnd.EmergencyStopWhileTheClosalOfAMacroIsPending`.
+  - It runs the real DCS services against the fake firmware and fails without the fix: "RRF did not get the emergency stop, transfer thread Faulted Stack underrun on channel HTTP".
+  - Run against upstream on 2026-11-11: the product code under `src` was byte-identical to f76ffc70 (`git diff upstream/v3.7-dev -- src ':!src/UnitTests'` empty), with the fork's fake firmware and this test added. The fake firmware needed its fork-only parts removed (the link capabilities and one parameter of `ResendPacket`); the test itself is unchanged. It failed with the same message in every run.
+  - A second test, written for this check and not in the repository, ran the same case in the generic host as `Program.cs` builds it. It showed the outcome: M112 replied with success, `state.status` was `halted`, RRF had received no `EmergencyStop`, the packet was left in DSF's transmit buffer, and the host stopped.
+- **Not checked:** real RRF and a printer; the fake firmware models RRF writing the closal into the transfer before it reads the stop. Upstream commits after f76ffc70.
 
 ## Permissions and files
 
