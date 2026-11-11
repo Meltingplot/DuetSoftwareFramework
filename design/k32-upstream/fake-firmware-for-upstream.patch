@@ -1,0 +1,167 @@
+--- a/src/UnitTests/FakeFirmware/FakeFirmware.cs
++++ b/src/UnitTests/FakeFirmware/FakeFirmware.cs
+@@ -100,42 +100,8 @@
+     /// </summary>
+     public FakeObjectModel ObjectModel { get; } = new();
+ 
+-    /// <summary>
+-    /// Capabilities of the link the firmware offers in limits.sbcLinkCapabilities, or null for RRF without them
+-    /// </summary>
+-    public LinkCapabilities? OfferedLinkCapabilities
+-    {
+-        get => _offeredLinkCapabilities;
+-        set
+-        {
+-            _offeredLinkCapabilities = value;
+-            if (value is not null)
+-            {
+-                ObjectModel.Set("limits.sbcLinkCapabilities", JsonValue.Create((uint)value.Value));
+-                SetActiveLinkCapabilities(LinkCapabilities.None);
+-            }
+-        }
+-    }
+-    private LinkCapabilities? _offeredLinkCapabilities;
+-
+-    /// <summary>
+-    /// Capabilities of the link that are active for the current connection
+-    /// </summary>
+-    public LinkCapabilities ActiveLinkCapabilities { get; private set; }
+-
+-    /// <summary>
+-    /// Activation requests the firmware received
+-    /// </summary>
+-    public List<LinkCapabilities> LinkCapabilityRequests { get; } = [];
+-
+-    private void SetActiveLinkCapabilities(LinkCapabilities capabilities)
+-    {
+-        ActiveLinkCapabilities = capabilities;
+-        if (_offeredLinkCapabilities is not null)
+-        {
+-            ObjectModel.Set("state.sbcLinkCapabilities", JsonValue.Create((uint)capabilities));
+-        }
+-    }
++    // K32-UPSTREAM: removed OfferedLinkCapabilities, ActiveLinkCapabilities, LinkCapabilityRequests and SetActiveLinkCapabilities,
++    // upstream has no link capabilities (LinkCapabilities, SbcRequest.ActivateLinkCapabilities are fork-only)
+ 
+     /// <summary>
+     /// Handlers for specific commands
+@@ -582,7 +548,7 @@
+         _sendBufferUpdate = true;
+         _repRapStopped = false;
+         ObjectModel.ClearGlobals();
+-        SetActiveLinkCapabilities(LinkCapabilities.None);
++        // K32-UPSTREAM: removed SetActiveLinkCapabilities(LinkCapabilities.None)
+         _hadReset = true;
+     }
+     #endregion
+@@ -897,14 +863,7 @@
+                     }
+                     break;
+ 
+-                case SbcRequest.ActivateLinkCapabilities:
+-                    // RRF without link capabilities reports an internal error for an unknown request (SbcInterface.cpp), which the tests check for
+-                    LinkCapabilityRequests.Add(request.LinkCapabilities);
+-                    if (_offeredLinkCapabilities is not null)
+-                    {
+-                        SetActiveLinkCapabilities(request.LinkCapabilities & _offeredLinkCapabilities.Value);
+-                    }
+-                    break;
++                // K32-UPSTREAM: removed case SbcRequest.ActivateLinkCapabilities (fork-only request)
+ 
+                 default:
+                     // Results of file operations: the fake never requests file operations
+@@ -1396,7 +1355,8 @@
+     public void DumpMalformedPacket() { }
+ 
+     /// <inheritdoc />
+-    public void ResendPacket(PacketHeader packet, out DuetControlServer.Link.Protocol.SbcRequests.Request sbcRequest, out CodeChannel? invalidatedChannel)
++    // K32-UPSTREAM: upstream's ILinkAdapter.ResendPacket has no out invalidatedChannel (ILinkAdapter.cs:202), the fork added it
++    public void ResendPacket(PacketHeader packet, out DuetControlServer.Link.Protocol.SbcRequests.Request sbcRequest)
+     {
+         lock (_lock)
+         {
+@@ -1407,7 +1367,6 @@
+                 _requestsBeingResent.Add(original.Request);
+             }
+             sbcRequest = original.Request;
+-            invalidatedChannel = (original.Request == SbcRequest.InvalidateChannel) ? original.Channel : null;
+         }
+     }
+     #endregion
+@@ -1464,11 +1423,7 @@
+     /// <inheritdoc />
+     public bool WriteGetObjectModel(string key, string flags) => AddRequest(new FakeSbcRequest { Request = SbcRequest.GetObjectModel, Text = key, Argument = flags });
+ 
+-    /// <inheritdoc />
+-    public LinkCapabilities SupportedLinkCapabilities { get; set; } = LinkCapabilities.All;
+-
+-    /// <inheritdoc />
+-    public bool WriteActivateLinkCapabilities(LinkCapabilities capabilities) => AddRequest(new FakeSbcRequest { Request = SbcRequest.ActivateLinkCapabilities, LinkCapabilities = capabilities });
++    // K32-UPSTREAM: removed SupportedLinkCapabilities and WriteActivateLinkCapabilities, not in upstream's ILinkAdapter
+ 
+     /// <inheritdoc />
+     public bool WritePrintFileInfo(GCodeFileInfo info) => AddRequest(new FakeSbcRequest { Request = SbcRequest.SetPrintFileInfo, Text = info.FileName });
+--- a/src/UnitTests/FakeFirmware/FakeSbcRequest.cs
++++ b/src/UnitTests/FakeFirmware/FakeSbcRequest.cs
+@@ -70,10 +70,7 @@
+     /// </summary>
+     public PrintStoppedReason PrintStoppedReason { get; init; }
+ 
+-    /// <summary>
+-    /// Capabilities of the link to activate (ActivateLinkCapabilities)
+-    /// </summary>
+-    public LinkCapabilities LinkCapabilities { get; init; }
++    // K32-UPSTREAM: removed LinkCapabilities (fork-only ActivateLinkCapabilities request)
+ 
+     /// <summary>
+     /// Copy this request because DSF sends it again
+--- a/src/UnitTests/SPI/EmergencyStopCrossingMacroEnd.cs
++++ b/src/UnitTests/SPI/EmergencyStopCrossingMacroEnd.cs
+@@ -10,8 +10,7 @@
+ using NUnit.Framework;
+ using UnitTests.FakeFirmware;
+ using FirmwareRequest = DuetControlServer.Link.Protocol.FirmwareRequests.Request;
+-using Host = UnitTests.SPI.LinkServiceOverSpi.Host;
+-using RrfPackets = UnitTests.SPI.LinkServiceOverSpi.RrfPackets;
++// K32-UPSTREAM: removed the aliases Host and RrfPackets (LinkServiceOverSpi.cs, needs the fork-only ISpiDevice/IInputGpioPin hooks of SPI.cs)
+ using SbcRequest = DuetControlServer.Link.Protocol.SbcRequests.Request;
+ 
+ namespace UnitTests.SPI;
+@@ -138,34 +137,7 @@
+         cts.Cancel();
+     }
+ 
+-    /// <summary>
+-    /// An emergency stop is written into a cycle whose data from RRF cannot be processed, here a packet that runs past the data of its transfer
+-    /// (ArgumentOutOfRangeException, see LinkServiceOverSpi.MalformedPacketStopsTheTransferThread). The stop still goes out as the first packet of the
+-    /// next transfer before the error ends the transfer thread. Real SPI adapter against the SPI port of RRF (<see cref="FakeRrfSpi"/>)
+-    /// </summary>
+-    [Test]
+-    public async Task EmergencyStopWhenTheDataBeforeItCannotBeProcessed()
+-    {
+-        await using Host host = await Host.StartAsync();
+-        FakeRrfSpi rrf = host.Rrf;
+-
+-        // RRF has set up the transfer DSF is held at, so the malformed packet goes out with the transfer after it (FakeRrfSpi.SendPacket)
+-        rrf.HoldBeforeHeader(rrf.Exchanges);
+-        Assert.That(rrf.WaitUntilHeld(Timeout), Is.True, "DSF was not held");
+-        rrf.SendPacket(FirmwareRequest.CodeBufferUpdate, RrfPackets.CodeBufferUpdate(100), declaredLength: 1000);
+-        rrf.HoldBeforeHeader(rrf.Exchanges + 1);
+-        Assert.That(rrf.WaitUntilHeld(Timeout), Is.True, "DSF did not reach the transfer of the malformed packet");
+-
+-        // DSF writes the stop in the cycle that processes the malformed packet
+-        Task stop = host.Link.EmergencyStopAsync();
+-        Assert.That(SpinWait.SpinUntil(() => host.Link.FirmwareHaltRequest is not null, Timeout), Is.True, "The emergency stop was not requested");
+-        rrf.Release();
+-
+-        await host.Service.ExecuteTask!.ContinueWith(_ => { }).WaitAsync(Timeout);
+-        Assert.That(host.Fault?.InnerException, Is.InstanceOf<ArgumentOutOfRangeException>());
+-        FakeRrfSpi.ProcessedPacket? stopPacket = rrf.GetProcessedPackets().SingleOrDefault(packet => packet.Request == SbcRequest.EmergencyStop);
+-        Assert.That(stopPacket, Is.Not.Null, "RRF did not get the emergency stop");
+-        Assert.That(stopPacket!.Id, Is.Zero, "The stop was not the first packet of its transfer");
+-        Assert.That(stop.IsCompleted, Is.False, "The stop completed although the data RRF sent with it was not processed");
+-    }
++    // K32-UPSTREAM: removed EmergencyStopWhenTheDataBeforeItCannotBeProcessed. It runs the real SPI adapter against FakeRrfSpi through
++    // LinkServiceOverSpi.Host, which needs the fork-only internal SPI constructor taking IInputGpioPin/ISpiDevice. Upstream's SPI constructor
++    // opens the GPIO chip and the SPI device itself (SPI.cs:80-105 at f76ffc70)
+ }
