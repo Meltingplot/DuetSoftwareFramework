@@ -5349,6 +5349,21 @@
             Width of the display screen in pixels
             </summary>
         </member>
+        <member name="M:DuetAPI.ObjectModel.DirectDisplayScreen.ReadController(System.Text.Json.JsonElement)">
+            <summary>
+            Read the controller of a screen as the <see cref="P:DuetAPI.ObjectModel.DirectDisplayScreen.Controller"/> property reads it, which also takes another case and the number of the value.
+            The class is chosen by this value, so that the class and the property never disagree
+            </summary>
+            <param name="value">Value of the controller</param>
+            <returns>Controller or null if it is none</returns>
+        </member>
+        <member name="M:DuetAPI.ObjectModel.DirectDisplayScreen.ReadController(System.Text.Json.Utf8JsonReader@)">
+            <summary>
+            Read the controller of a screen as the <see cref="P:DuetAPI.ObjectModel.DirectDisplayScreen.Controller"/> property reads it
+            </summary>
+            <param name="reader">Reader at the value of the controller</param>
+            <returns>Controller or null if it is none</returns>
+        </member>
         <member name="M:DuetAPI.ObjectModel.DirectDisplayScreen.UpdateFromJson(System.Text.Json.JsonElement,System.Boolean)">
             <summary>
             Update this instance from a given JSON element
@@ -14807,6 +14822,21 @@
             <summary>
             Type of this filament monitor
             </summary>
+        </member>
+        <member name="M:DuetAPI.ObjectModel.FilamentMonitor.ReadType(System.Text.Json.JsonElement)">
+            <summary>
+            Read the type of a filament monitor as the <see cref="P:DuetAPI.ObjectModel.FilamentMonitor.Type"/> property reads it, which also takes another case and the number of the value.
+            The class is chosen by this value, so that the class and the property never disagree
+            </summary>
+            <param name="value">Value of the type</param>
+            <returns>Type or null if it is none</returns>
+        </member>
+        <member name="M:DuetAPI.ObjectModel.FilamentMonitor.ReadType(System.Text.Json.Utf8JsonReader@)">
+            <summary>
+            Read the type of a filament monitor as the <see cref="P:DuetAPI.ObjectModel.FilamentMonitor.Type"/> property reads it
+            </summary>
+            <param name="reader">Reader at the value of the type</param>
+            <returns>Type or null if it is none</returns>
         </member>
         <member name="M:DuetAPI.ObjectModel.FilamentMonitor.UpdateFromJson(System.Text.Json.JsonElement,System.Boolean)">
             <summary>
