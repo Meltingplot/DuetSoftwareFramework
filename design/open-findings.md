@@ -502,3 +502,9 @@ The decisions are in `sbc-link-v8-requirements.md`, section 10.9.
 - **K37. In SBC mode an abort from outside leaves the state variables of the removed levels set,** e.g. suspended
   heaters after an abort inside a probing code of a macro; upstream fixed the standalone path with `AbortStateMachine`
   (RRF 1e1eb34e0). The SBC path is the logic topic LA-25, open.
+- **K38. A reply that RRF wrote for the connection before reaches the next connection.** After 13 of 102 restarts of
+  DCS while RRF ran (lab, 2026-11-10) the transfer of the connect brought an empty code reply on the Daemon channel from the time of the
+  DCS before, which the new DCS logged as "Daemon: Out-of-order reply ''". DCS came back 0.4 s after it stopped, so RRF
+  had not noticed the end of the connection (4 s) and its transfer still held the data it had written for it.
+  Fixed for tagged packets on the DSF epoch branch (requirements, section 10.9, D16); untagged
+  packets are processed as before.

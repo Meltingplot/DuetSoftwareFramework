@@ -311,6 +311,7 @@ E1 wird mit dem heutigen DSF geprüft (RRF neu), E2 mit beiden Seiten neu.
 | EP-20 | E2 | 2 | Boot von RRF bei laufendem DSF, zehnmal | Kein `Timeout while waiting for macro file`. Zeit vom Verbindungsaufbau bis zur Anforderung von `config.g` notieren (D1) |
 | EP-21 | E2 | 3 | `M112`, während ein kurzes Makro endet, in einer Schleife mit Reset dazwischen | Jeder Stop kommt bei RRF an, DCS läuft weiter, kein `Stack underrun` im Journal. Nach dem Stop schreibt jeder Kanal InvalidateChannel (D12, K32) |
 | EP-22 | E2 | 3 | Abbruch, während ein Code mit Textausgabe läuft | Der Text erscheint als Meldung ohne Code. `Out-of-order replies` bleibt 0, DSFs Diagnose zählt "stale replies shown" (D4) |
+| EP-23 | E2 | 2 | DCS hundertmal neu starten, während RRF läuft, je mit und ohne `M999` danach (`ControlServerRestart.NoReplyOfTheOldConnectionAfterRestart`, `LAB_DCS_RESTARTS=100`) | Kein `Out-of-order reply` im Journal nach einem DCS-Start. Mit Debug-Journal: `Dropped Message of an older connection` in den Fällen, in denen RRF noch eine Antwort der alten Verbindung im Transfer hatte (D15, D16) |
 
 Bestehensregel für E2 aus den Anforderungen (Abschnitt 7.2): 2000 Abbrüche mit 0 Out-of-order replies, 0 Neusendungen und 0 Blockaden. Vergleichswert vom 2026-11-09 mit dem erweiterten v7-Link (Abschnitt 14): 2 Neusendungen und 249 leere Out-of-order replies.
 
@@ -657,3 +658,38 @@ Bewertung:
 - EP-8: mit der Epoche auf beiden Seiten kein Out-of-order reply und keine Neusendung im (gedrosselten) Journal bei 2000 Abbrüchen, und kein blockierter Kanal. Vergleichswert vom 2026-11-09 auf dem erweiterten v7-Link: 249 leere Out-of-order replies und 2 Neusendungen. Die verworfenen Pakete im Debug-Journal zeigen, dass RRF taggt und DSF über das Tag filtert.
 - Die Zeile "Daemon: Out-of-order reply ''" nach dem DCS-Start ist das bekannte Muster. Sie passt zu dem offenen Punkt, dass eine Antwort der alten Verbindung in der neuen ankommt (Anforderungen, Abschnitt 10.9; Entscheidung offen). Bewiesen ist die Ursache nicht.
 - Nicht geprüft: die Zeile "Channel epochs" im `M122` der RRF (die Zähler sind nach dem Reset am Ende eines Laufs weg), EP-9, EP-18 bis EP-20 und EP-22 als eigene Prüfungen, alles mit Bewegung (EP-15 bis EP-17), kein Druck. `AbortsCrossingMacroRequests` sollte die über das Tag verworfenen Requests zählen, damit der Test mit der Epoche ein Ergebnis hat.
+
+### 2026-11-10 nachmittags und abends: Kanal-Epoche, gesamter Stack und Befund D16, bestanden
+
+```
+Datum, Zeit (UTC): 2026-11-10, 15:48 Flash, 15:50 bis 20:09 Lauf A (11 Blöcke), 20:23 bis 22:16 Lauf B (5 Blöcke), 22:17 Rückbau
+Anlass, PR, Commit: Kanal-Epoche vor dem Merge, DSF #167 und RRF #47 (78a997f74). Lauf A mit DSF e9bbff84, Lauf B mit DSF ae501ea1 (D16). Prüfungen EP-1, EP-8, EP-12, EP-21, EP-23 und der Regressionsblock
+DSF: 3.7.0+mp.13 im Image; in jedem Block Side-Load des genannten Commits, mit Fehlerinjektion wo genannt
+RRF: 3.7.0+1.mp.9-dev.5 (RRF #47 78a997f74, sha256 bdc659c73e17dd9d...), Firmware-Side-Load, Erweiterungen unverändert mp.4
+Stufen und Freigabe durch: 2 und 3, Tim ("teste offline und auf dem labor drucker mit dem neusten stand von dsf und rrf den gesamten teststack inkl dem fuzz tests"); die Approval-Tests liefen in Lauf A mit
+Lauf A, Block 1, Standard-Suite: 36 bestanden, 0 fehlgeschlagen, 2 übersprungen. Journal: 2 x "Daemon: Out-of-order reply ''"
+Lauf A, Block 2, AbortsCrossingMacroRequests mit 2000 Abbrüchen: bestanden, alle 2000 "done", kein Block, 18 Makro-Requests über die Epoche verworfen; journald unterdrückte 263875 Zeilen
+Lauf A, Block 3, IntrusiveCodes (Approval): 5 von 5
+Lauf A, Block 4 und 5, SpiFaultLostConnection und SpiFaultRestarts: je 2 von 2
+Lauf A, Block 6, Fehlerinjektion mit den 15 ESD-Fällen: 15 x Retry, 0 Abweichungen vom Census
+Lauf A, Block 7, Fehlerinjektion auf dem erweiterten Link: 672 von 3234 Fällen, 672 x Retry, 0 Abweichungen, 38 min 54 s
+Lauf A, Block 8, 100 DCS-Neustarts (EP-23): nicht bestanden. 204 DCS-Starts, 13 x "Daemon: Out-of-order reply ''", jede 0 bis 14 ms nach "Connected to controller over SPI", alle nach einem DCS-Neustart bei laufender RRF (13 von 102), keine nach M999 (0 von 102)
+Lauf A, Block 9, LinkSoak: bestanden, 30 min 7 s im Leerlauf, 0 Lost connection, alle Link-Zähler 0
+Lauf A, Block 10, Fehlerinjektion auf dem einfachen Link: 679 von 3234 Fällen, 659 x Retry, 20 x Reconnect, 0 Abweichungen, 1 h 15 min. Journal: 4 x Out-of-order reply
+Lauf A, Block 11, TriggerMacros.StringLiteralInExpression: bestanden in 4 s
+Lauf B, Block 1, 100 DCS-Neustarts mit D16 (EP-23): bestanden. 0 Out-of-order reply in den 200 DCS-Starts des Tests
+Lauf B, Block 2, Standard-Suite: 36 bestanden, 0 fehlgeschlagen. Journal: 0 Out-of-order reply
+Lauf B, Block 3 und 4, SpiFaultLostConnection und SpiFaultRestarts: je 2 von 2
+Lauf B, Block 5, Fehlerinjektion auf dem einfachen Link, nur die Fälle, die laut Census die Verbindung brechen: 35 Fälle, 19 x Reconnect, 16 x Retry, 0 Abweichungen. Journal: 0 Out-of-order reply bei 46 DCS-Starts
+Rückbau geprüft: ja, nach jedem Block (Side-Load weg, /var/tmp/lab-tests weg, OTA-Timer aktiv, Testmakros und sys/trigger30.g weg, idle, Erweiterungen laufen) und am Ende 22:17:53 (fw-sideload.sh remove, RRF 3.7.0+1.mp.8, DSF 3.7.0+mp.13, idle, kein Job, Heizungen aus)
+```
+
+Bewertung:
+- Mit beiden Seiten aus den PRs besteht der gesamte Stack: Standard-Suite, 2000 Abbrüche, Approval-Tests, Fehlerinjektion auf beiden Links ohne Abweichung vom Census, 30 Minuten Leerlauf ohne Verbindungsverlust.
+- Block 8 von Lauf A hat den offenen Punkt aus dem Lauf vom Mittag belegt: Kommt DCS nach 0,4 s wieder, hat RRF das Ende der Verbindung noch nicht bemerkt (`SbcConnectionTimeout` 4 s), und der Transfer des Verbindungsaufbaus bringt, was RRF für die alte Verbindung geschrieben hat. D15 (RRF schreibt keine Antwort eines Codes einer beendeten Verbindung) ändert daran nichts, weil die Antwort vor dem Ende geschrieben wurde. Tim hat D16 entschieden: DSF verwirft ein getaggtes Paket, das RRF vor dem Lesen des ersten Markers geschrieben hat, nie aber bei einer Neusendung oder einem wiederholten Transfer (Anforderungen, Abschnitt 10.9).
+- Lauf B zeigt D16 auf der Hardware: 0 von 200 statt 13 von 102, und kein Out-of-order reply mehr in der Standard-Suite und bei den Verbindungsabbrüchen auf dem einfachen Link.
+- In Lauf B steht je eine Zeile "Daemon: Out-of-order reply ''" am Ende von Block 1 und Block 3, beim ersten DCS-Start nach dem Entfernen des Side-Loads. Das passt zum DCS des Images, das D16 nicht hat. Aus dem Journal ist das nicht zu belegen, weil Image und Side-Load dieselbe Version melden. Der Runner sollte das Entfernen im Journal markieren.
+- Ungetaggte Pakete der alten Verbindung kommen weiter an: "Failed to find query for object model response" 8 x in Block 1 von Lauf B. DSF wendet sie nicht an, weil keine Abfrage offen ist.
+- `StringLiteralInExpression` besteht (RRF 59a04159b) und ist seit #175 ein regulärer Test.
+- Der Debug-Text "Dropped ... of an older connection" wurde nicht gesehen, weil das Journal auf info steht. Der Beleg für D16 ist die Zählung.
+- Nicht geprüft: die Zeile "Channel epochs" im `M122` der RRF, EP-9, EP-18 bis EP-20 und EP-22 als eigene Prüfungen, alles mit Bewegung (EP-15 bis EP-17), kein Druck, das neue DSF gegen die RRF des Images (mp.8) allein.
