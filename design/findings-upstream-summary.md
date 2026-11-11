@@ -14,12 +14,12 @@
 | 1 | [T7](#t7) | DSF | An SBC-evaluated trigger T0 runs trigger0.g instead of an emergency stop | E1 | R2 | fork test |
 | 2 | [K32](#k32) | DSF | An M112 that crosses the end of a macro never reaches RRF; M112 reports success, DCS exits | E1 | R3 | upstream test |
 | 3 | [K6](#k6) | DSF | Over USB, M112 can report success although RRF never got the stop | E1 | R3 | read |
-| 4 | [I3](#i3) | DSF | An Executed interceptor with filters and AutoFlush blocks its channel for good | E2 | R2 | printer |
-| 5 | [G1](#g1) | DSF | `M122 P{0}` never replies and blocks its channel until DCS restart and M999 | E2 | R2 | printer |
+| 4 | [G1](#g1) | DSF | `M122 P{0}` never replies and blocks its channel until DCS restart and M999 | E2 | R2 | printer |
+| 5 | [I3](#i3) | DSF | An Executed interceptor with filters and AutoFlush blocks its channel for good | E2 | R2 | printer |
 | 6 | [O4](#o4) | DSF | A global string with invalid UTF-8 makes the object model unserializable; DWC cannot connect | E2 | R2 | fork test |
 | 7 | [O3](#o3) | DSF | A tool offset just below the float maximum is read as infinity; DCS stays up, but GetObjectModel, DWC and every model subscriber fail until the value changes | E2 | R2 (narrow) | printer |
-| 8 | [F3](#f3) | both | One bit error desynchronises the link phases: livelock until DCS restarts | E2 | R3 | printer |
-| 9 | [F8](#f8) | DSF | After a lost connection DSF keeps sending its header with a stale checksum, and the link does not recover | E2 | R3 | printer |
+| 8 | [F8](#f8) | DSF | After a lost connection DSF keeps sending its header with a stale checksum, and the link does not recover | E2 | R3 | printer |
+| 9 | [F3](#f3) | both | One bit error desynchronises the link phases: livelock until DCS restarts | E2 | R3 | printer |
 | 10 | [F9](#f9) | both | A recovered link fault can leave TfrRdy low, so a new DCS fails its first start | E2 | R3 | printer |
 
 ## Stops and deadlocks at a glance
