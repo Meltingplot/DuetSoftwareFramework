@@ -121,6 +121,17 @@ How the stock link behaves under faults, measured before the fork changed anythi
 - With the link extension active (phase guards and sequence guard in RRF, the extended header on both sides, switched on per connection by a capability handshake), no single fault after the activation breaks the link in the census, and every RRF and DCS restart is noticed. On the MB6HC, 672 of 672 injected faults and 15 of 15 replayed ESD events were repaired by retries (2026-11-06). A stock RRF or a stock DSF on the other side behaves as today.
 - The stop path under faults (`Fuzz.StopPathFuzz`, virtual time): on the extended link an emergency stop of DSF reaches RRF with a median of 0.05 ms and at most 0.25 ms; on the plain link with noise the median is the same, but the worst case was 502 ms, and 5 of 1000 stops took over 100 ms (measured before #137).
 
+**Under random bit errors.** A sweep of the bit error rate on the simulated link, run on 2026-11-11 with the fork's DSF (`v3.7-dev`, with its DSF-only fixes; stock DSF was not swept): 20000 transfers per point with one message in each direction, every bit of every exchange flipped with the given probability, one random seed. "Survives" means no connection reset and no message lost or duplicated.
+
+| Link | Transfer size | Survives up to | First failure at |
+|---|---|---|---|
+| Extension active | about 850 bits | 1e-3 | 2e-3 (transfer 366) |
+| Extension active | about 17,000 bits | 3e-5 | 1e-4 (transfer 17) |
+| Plain link, DSF fixes only | about 850 bits | 3e-5 | 1e-4 (transfer 6409) |
+| Plain link, DSF fixes only | about 17,000 bits | 1e-6 | 1e-5 (transfer 1689, stuck) |
+
+With the extension the limit is about one flipped bit per transfer on average, which is where the retries no longer get a transfer through within the retry limit of 10. The plain link fails one to two orders of magnitude earlier, at 0.03 to 0.2 flipped bits per transfer, through the response words without a checksum.
+
 The census and the fuzz tests can be run as described under "Running the tests"; `LinkRecovery.TraceCase` prints the exchanges of a single case.
 
 ## DSF and RRF (both sides of the SBC link)
@@ -197,7 +208,7 @@ Neither: K5, K34, K24, K18, K17, K22, K23, K4, K13.
 | <a id="f11"></a>F11 | `SPI.cs:1830-1833`, `:1838-1850` | After its own bad data CRC32 DSF takes RRF's Success as unexpected and restarts the whole transfer. | full transfer restart instead of a data retry; no other outcome | bit error only in RRF's data to DSF | E6 | R3 | printer | #105 | LU F11 |
 
 Samples:
-- **G2** · seen on printer · expected: error "Macro file … not found" · actual: DCS stops, RRF halted until M999
+- **G2** · seen on printer (2026-11-11) · expected: error "Macro file … not found" · actual: DCS stops, RRF halted until M999
   ```
   M98 P"99:/macros/x.g"
   ```
@@ -214,21 +225,21 @@ Neither: K6, F8, S6 (OF), K15, K19, K1, K2, K3, K8, K9, K10, K11, K14, K28, F7, 
 | <a id="g7"></a>G7 | `FileInfoParser.cs:931-944` | The seek to the end is skipped for files shorter than 64 bytes. | the M37 simulation overwrites the start of the file | M37 P on a file under 64 bytes | E3 | R2 | fork test | open | OF G-code |
 | <a id="g9"></a>G9 | `JobProcessor.Cancel` `JobProcessor.cs:315-326` | M32 inside a job closes the first job but still runs the codes read ahead; RRF chains to the new file (`GCodes2.cpp:1106`). | lines after M32 of the first file run | M32 in a job file | E3 | R2 | fork test | open | OF G-code |
 | <a id="k25"></a>K25 | `MCodeHandler.cs:798-805`; `CodeFile.cs:651-671`; RRF `SbcInterface.cpp:1131-1140`, `Platform.cpp:2503-2524` | M260/M261 with V delete a stale variable without a flush, so the deletion can reach RRF while an earlier code of the level (e.g. an M98) still runs. | a variable of the macro is deleted; M261 then fails with "variable '…' already exists" | M260/M261 V after an M98 in the same file | E3 | R2 | read | open | OF v7 contract |
-| <a id="g10"></a>G10 | DSF `fileread` vs RRF `ExpressionParser.cpp:1192-1358` | `fileread` allows 50 elements instead of 40, refuses length 0, reads no hex, accepts `'ab`, does not check skipped elements and joins `1 2` into 12. | other results than RRF | `fileread` | E4 | R2 | fork test | open | OF G-code |
+| <a id="g10"></a>G10 | DSF `fileread` vs RRF `ExpressionParser.cpp:1192-1358` | `fileread` allows 50 elements instead of 40, refuses length 0, reads no hex, accepts `'ab`, does not check skipped elements and joins `1 2` into 12. | other results than RRF | `fileread` | E4 | R2 | printer | open | OF G-code |
 | <a id="g3"></a>G3 | `PeriodicUpdateService.cs:526-583`; `FilePathResolver.cs:80-119` | Every mount is listed as a volume and `n:/` resolves to `volumes[n].path` (open question, upstream design). | file codes reach any mount the dsf user may write (25 volumes on the lab printer) | file codes with a drive number | E4 | R2 | read | open | OF G-code |
 | <a id="k26"></a>K26 | `Code.cs:266-272`, `:276-281`, `:286-293`; `Pre.cs:30-35`; RRF `GCodes.cpp:4432-4438` | SetLastCodeResult of a code that DSF resolves itself is sent without a flush, so an earlier code still running in RRF overwrites `lastResult`. | `result` shows the earlier code's result | e.g. M122 "DSF" while a move or an M98 still runs | E4 | R2 | read | open | OF v7 contract |
-| <a id="new-s5"></a>S5 (new) | `KeywordHandler.cs:227` | DSF accepts variable names with Unicode letters (`char.IsLetterOrDigit`). | RRF expressions cannot reference them | `var` or `global` with a non-ASCII letter | E4 | R2 | read | open | new |
-| <a id="new-s6"></a>S6 (new) | `MetaExpressionParser.cs:261-267`, `:829-836`, `:1093-1097` | DSF's evaluator counts UTF-16 units, RRF counts bytes, so one expression gives different results depending on who evaluates it. | `echo #"é"` prints 1, `var n = #"é"` stores 2 | string length or index on non-ASCII text | E4 | R2 | read | open (planned) | new |
+| <a id="new-s5"></a>S5 (new) | `KeywordHandler.cs:227` | DSF accepts variable names with Unicode letters (`char.IsLetterOrDigit`). | RRF expressions cannot reference them | `var` or `global` with a non-ASCII letter | E4 | R2 | printer | open | new |
+| <a id="new-s6"></a>S6 (new) | `MetaExpressionParser.cs:261-267`, `:829-836`, `:1093-1097` | DSF's evaluator counts UTF-16 units, RRF counts bytes, so one expression gives different results depending on who evaluates it. | `echo #"é"` prints 1, `var n = #"é"` stores 2 | string length or index on non-ASCII text | E4 | R2 | printer | open (planned) | new |
 | <a id="k27"></a>K27 | `KeywordHandler.cs:244-248`, `:272-276`, `:279`; `LinkService.cs:551-558` | `var` completes the deletion of a stale variable when it is written and queues the creation, which RRF can accept before the copy of a refused deletion. | "variable '…' already exists" | redeclared name while RRF's GB mutex is busy | E4 | R3 | read | open | OF v7 contract |
-| <a id="g11"></a>G11 | `MCodeHandler.cs:419`, `:850`, `:907` (@9e6449d1) | M30, M470 and M472 resolve their path before their try. | an exception instead of an error reply ("Failed to execute code … on internal processing stage") | a path that DSF refuses | E4 | R4 | fork test | open | OF G-code |
+| <a id="g11"></a>G11 | `MCodeHandler.cs:419`, `:850`, `:907` (@9e6449d1) | M30, M470 and M472 resolve their path before their try. | an exception instead of an error reply ("Failed to execute code … on internal processing stage") | a path that DSF refuses | E4 | R4 | printer | open | OF G-code |
 | <a id="g4"></a>G4 | `FilePathResolver.cs:46` | The drive regex has no Singleline option. | a line feed after the drive prefix truncates the path | path with a line feed | E4 | R4 | fork test | open | OF G-code |
-| <a id="g5"></a>G5 | `MetaExpressionParser.cs:1345`, `:1379` | Number parsing throws FormatException or OverflowException instead of CodeParserException. | raw exception to the client | `1e`, `2E-`, `0x` with more than 16 digits | E4 | R4 | fork test | open | OF G-code |
-| <a id="g6"></a>G6 | `FileInfoParser.cs:149`, `:205`, `:221`; `JobProcessor.cs:311` | FileInfoParser throws on one malformed line; RRF scans for keys and catches errors. | the file cannot be printed with M32; M36 returns `err:1` (unterminated string, `0.5 E2`) or an error reply (`G1 Z`) | unterminated string, `0.5 E2` or `G1 Z` in a file | E4 | R4 | fork test | open | OF G-code |
+| <a id="g5"></a>G5 | `MetaExpressionParser.cs:1345`, `:1379` | Number parsing throws FormatException or OverflowException instead of CodeParserException. | raw exception to the client | `1e`, `2E-`, `0x` with more than 16 digits | E4 | R4 | printer | open | OF G-code |
+| <a id="g6"></a>G6 | `FileInfoParser.cs:149`, `:205`, `:221`; `JobProcessor.cs:311` | FileInfoParser throws on one malformed line; RRF scans for keys and catches errors. | the file cannot be printed with M32; M36 returns `err:1` (unterminated string, `0.5 E2`) or an error reply (`G1 Z`) | unterminated string, `0.5 E2` or `G1 Z` in a file | E4 | R4 | printer | open | OF G-code |
 | <a id="g8"></a>G8 | `JobProcessor.cs:507` | `readCode` is null, so `file.LineNumber` is used. | a read error names the next line | read error in a job file | E4 | R4 | fork test | open | OF G-code |
 | <a id="g13"></a>G13 | `Parameter.cs`; RRF `NumericConverter.cpp:244`, `SafeStrtod.cpp:96-117` | RRF reads `S31e9` as 31 and clamps `S99999999999`; DSF refuses both for an int parameter. | an error where RRF accepts the code | integer parameter with exponent or out of range | E4 | R4 | read | open | OF G-code |
 
 Samples:
-- **G1** · seen on printer (DSF 3.7.0+mp.13); run against the fake firmware at fea02d3a, the parent of fork commit 472daabd (#149) · expected: the M122 report (as `M122 P0`) · actual: no reply, and the next code on the channel hangs until DCS restart and M999; other channels go on. Since #149 the fork completes the code with the exception instead: `Error: Cannot convert P parameter to Int32 (value {0})`, and RRF's report is lost. Upstream still hangs (`PipelineStackItem.cs:85-88`).
+- **G1** · seen on printer (2026-11-11); run against the fake firmware at fea02d3a, the parent of fork commit 472daabd (#149) · expected: the M122 report (as `M122 P0`) · actual: no reply, and the next code on the channel hangs until DCS restart and M999; other channels go on. Since #149 the fork completes the code with the exception instead: `Error: Cannot convert P parameter to Int32 (value {0})`, and RRF's report is lost. Upstream still hangs (`PipelineStackItem.cs:85-88`).
   ```
   M122 P{0}
   ```
@@ -251,31 +262,31 @@ Samples:
   ; 0:/gcodes/b.g:  M117 "3"
   M32 "0:/gcodes/a.g"
   ```
-- **G10** · DSF side from test `Codes.MetaExpressions.FileReadSpaceInsideNumber`; run at a99c81f1: DSF sends RRF the expression `{12,}`; RRF side read · expected: the command is aborted (wiki `Gcode_meta_commands.md:499`: an element that does not conform) · actual (read): `{12}`. RRF evaluates the one-element array `{12,}` (wiki `:397-401`) and returns it as JSON `[12]` (`SbcInterface.cpp:792-805`); DSF prints the array with braces (`Expressions.cs:609`).
+- **G10** · seen on printer (2026-11-11); DSF side from test `Codes.MetaExpressions.FileReadSpaceInsideNumber`; run at a99c81f1: DSF sends RRF the expression `{12,}`; RRF side read · expected: the command is aborted (wiki `Gcode_meta_commands.md:499`: an element that does not conform) · actual (read): `{12}`. RRF evaluates the one-element array `{12,}` (wiki `:397-401`) and returns it as JSON `[12]` (`SbcInterface.cpp:792-805`); DSF prints the array with braces (`Expressions.cs:609`).
   ```
   ; 0:/sys/data.csv holds: 1 2
   echo fileread("0:/sys/data.csv", 0, 1, ',')
   ```
-- **S5 (new)** · DSF side run at a99c81f1; RRF side read · expected: one rule for variable names on both sides. Standalone RRF refuses `var ä = 0` with "expected a new variable name" (`StringParser.cpp:717-721`). · actual: DSF accepts `var ä` and RRF stores it, but `G4 P{var.ä}` fails with "Error: G4: unknown variable ''". RRF's identifier ends at the first byte of "ä" (`ExpressionParser.cpp:1763`, `:2501`).
+- **S5 (new)** · seen on printer (2026-11-11); DSF side run at a99c81f1; RRF side read · expected: one rule for variable names on both sides. Standalone RRF refuses `var ä = 0` with "expected a new variable name" (`StringParser.cpp:717-721`). · actual: DSF accepts `var ä` and RRF stores it, but `G4 P{var.ä}` fails with "Error: G4: unknown variable ''". RRF's identifier ends at the first byte of "ä" (`ExpressionParser.cpp:1763`, `:2501`).
   ```
   var ä = 0
   G4 P{var.ä}
   ```
-- **S6 (new)** · derived, not run · expected: 1 in both cases (wiki `Gcode_meta_commands.md:419`: number of characters) · actual (read): 1 from DSF, 2 from RRF
+- **S6 (new)** · seen on printer (2026-11-11); derived, not run · expected: 1 in both cases (wiki `Gcode_meta_commands.md:419`: number of characters) · actual (read): 1 from DSF, 2 from RRF
   ```
   echo #"é"        ; DSF evaluates
   var n = #"é"     ; RRF evaluates
   echo var.n
   ```
-- **G11** · run at a99c81f1 · expected: an error reply like DSF's other M472 errors, e.g. `Error: M472: Failed to delete file or directory …` (`MCodeHandler.cs:939`, `:957`; prefix added in `Executed.cs:103-106`), and no error in the journal · actual: the bare exception message `Error: Invalid drive index` without `M472:`, and the journal shows "Failed to execute code M472 P"99:/x" on internal processing stage" with the ArgumentException (`ProcessInternally.cs:36`). Needs a drive number that is not configured.
+- **G11** · seen on printer (2026-11-11); run at a99c81f1 · expected: an error reply like DSF's other M472 errors, e.g. `Error: M472: Failed to delete file or directory …` (`MCodeHandler.cs:939`, `:957`; prefix added in `Executed.cs:103-106`), and no error in the journal · actual: the bare exception message `Error: Invalid drive index` without `M472:`, and the journal shows "Failed to execute code M472 P"99:/x" on internal processing stage" with the ArgumentException (`ProcessInternally.cs:36`). Needs a drive number that is not configured.
   ```
   M472 P"99:/x"
   ```
-- **G5** · from test `Machine.MetaExpressionParserErrors.ExponentWithoutDigits`; run at a99c81f1 · expected: a parse error reply · actual: FormatException. POST /machine/code (DWC) answers 500 "The input string '1e' was not in a correct format.", and DCS logs "Failed to execute code echo 1e on internal processing stage System.FormatException".
+- **G5** · seen on printer (2026-11-11); from test `Machine.MetaExpressionParserErrors.ExponentWithoutDigits`; run at a99c81f1 · expected: a parse error reply · actual: FormatException. POST /machine/code (DWC) answers 500 "The input string '1e' was not in a correct format.", and DCS logs "Failed to execute code echo 1e on internal processing stage System.FormatException".
   ```
   echo 1e
   ```
-- **G6** · run at a99c81f1; content from test `File.InfoParserErrors.MalformedLine` · expected: file info with `err:0`, because RRF scans for keys and catches such lines · actual: `{"err":1,"fileName":"0:/gcodes/m.g"}`. With `G1 Z` as the line, M36 returns `Error: M36: Cannot convert n/a parameter to Single (value )` instead, because the catch of M36 leaves that exception out.
+- **G6** · seen on printer (2026-11-11); run at a99c81f1; content from test `File.InfoParserErrors.MalformedLine` · expected: file info with `err:0`, because RRF scans for keys and catches such lines · actual: `{"err":1,"fileName":"0:/gcodes/m.g"}`. With `G1 Z` as the line, M36 returns `Error: M36: Cannot convert n/a parameter to Single (value )` instead, because the catch of M36 leaves that exception out.
   ```
   ; 0:/gcodes/m.g holds one line whose quote is not closed: M117 "unterminated
   M36 "0:/gcodes/m.g"
@@ -289,10 +300,10 @@ Neither: K25 (needs an I2C device), G3, K26, K27, G13.
 | ID | Function / file:line | What goes wrong | Seen as | Reached by | Eff | Reach | Evidence | Fork fix | Detail |
 |---|---|---|---|---|---|---|---|---|---|
 | <a id="t7"></a>T7 | `SbcTriggerService.cs:298-308` | Trigger T0 runs trigger0.g instead of an emergency stop (wiki M581; RRF `GCodes.cpp:994-998`); by the code T1 runs trigger1.g instead of pausing (not tested). | no emergency stop | M581.1 T0 with SBC fields | E1 | R2 | fork test | open | OF Triggers |
-| <a id="t5"></a>T5 | M581.1 with SBC fields (upstream 4229f552); RRF `TriggerItem.cpp:328-339` | M581.1 succeeds and creates the trigger although its expression fails. | no error; trigger created | M581.1 with a failing expression | E4 | R2 | fork test | open | OF Triggers |
-| <a id="t6"></a>T6 | SBC trigger evaluation; RRF `TriggerItem.cpp:133-149` | A later evaluation error is only logged and the trigger stays enabled; RRF disables and reports it. | error only in the log | expression that fails later | E4 | R2 | fork test | open | OF Triggers |
-| <a id="t8"></a>T8 | M582 (no case in `MCodeHandler.cs`) | M582 goes to RRF, which does not know a trigger that DSF evaluates; the wiki says M582 works for M581.1 triggers. | M582 does nothing | M582 for such a trigger | E4 | R2 | fork test | open | OF Triggers |
-| <a id="t9"></a>T9 | `SbcTriggerService.cs:341-344`; RRF `GCodes.cpp:3993`, `RepRap.cpp:1961-1968` | R1 and R2 count simulating and cancelling as not printing; RRF's IsPrinting counts both as printing. | wrong enable condition | R1/R2 trigger while simulating or cancelling | E4 | R2 | fork test | open | OF Triggers |
+| <a id="t5"></a>T5 | M581.1 with SBC fields (upstream 4229f552); RRF `TriggerItem.cpp:328-339` | M581.1 succeeds and creates the trigger although its expression fails. | no error; trigger created | M581.1 with a failing expression | E4 | R2 | printer | open | OF Triggers |
+| <a id="t6"></a>T6 | SBC trigger evaluation; RRF `TriggerItem.cpp:133-149` | A later evaluation error is only logged and the trigger stays enabled; RRF disables and reports it. | error only in the log | expression that fails later | E4 | R2 | printer | open | OF Triggers |
+| <a id="t8"></a>T8 | M582 (no case in `MCodeHandler.cs`) | M582 goes to RRF, which does not know a trigger that DSF evaluates; the wiki says M582 works for M581.1 triggers. | M582 does nothing | M582 for such a trigger | E4 | R2 | printer | open | OF Triggers |
+| <a id="t9"></a>T9 | `SbcTriggerService.cs:341-344`; RRF `GCodes.cpp:3993`, `RepRap.cpp:1961-1968` | R1 and R2 count simulating and cancelling as not printing; RRF's IsPrinting counts both as printing. | wrong enable condition | R1/R2 trigger while simulating or cancelling | E4 | R2 | printer | open | OF Triggers |
 
 Samples:
 - **T7** · from test `Codes.SbcTriggerEvaluation.TriggerZeroIsAnEmergencyStop`; this variant run at a99c81f1 · expected: emergency stop · actual: trigger0.g runs, and `echo global.t0ran` gives 1. Before registering, DSF sends `M581 T0 P-1` to RRF (`SbcTriggerService.cs:147-153` at f76ffc70), which deletes a trigger 0 that RRF evaluates, such as an emergency stop input (upstream RRF `TriggerItem.cpp:136-146`). Do not try this on a machine whose trigger 0 is in use.
@@ -304,18 +315,18 @@ Samples:
   set global.t7 = 1
   echo global.t0ran
   ```
-- **T5** · from test `ErrorInExpressionIsReported` · expected: error, no trigger (wiki M581.1) · actual: success, trigger 20 created
+- **T5** · seen on printer (2026-11-11); from test `ErrorInExpressionIsReported` · expected: error, no trigger (wiki M581.1) · actual: success, trigger 20 created
   ```
   M581.1 T20 P"sbc.cpu.noSuchField == 1"
   ```
-- **T6** · from test `ErrorInLaterEvaluationDisablesTheTrigger`; this variant run at a99c81f1 · expected: error to all channels, trigger disabled · actual: only a journal warning "Failed to evaluate SBC trigger expression …". `M581.1 T20` still answers "Trigger 20 fires when expression {global.t6 == 0 || sbc.cpu.noSuchField == 1} becomes true".
+- **T6** · seen on printer (2026-11-11); from test `ErrorInLaterEvaluationDisablesTheTrigger`; this variant run at a99c81f1 · expected: error to all channels, trigger disabled · actual: only a journal warning "Failed to evaluate SBC trigger expression …". `M581.1 T20` still answers "Trigger 20 fires when expression {global.t6 == 0 || sbc.cpu.noSuchField == 1} becomes true".
   ```
   global t6 = 0
   M581.1 T20 P"global.t6 == 0 || sbc.cpu.noSuchField == 1"
   set global.t6 = 1
   M581.1 T20
   ```
-- **T8** · from test `M582ChecksTriggerOfDsf`; this variant run at a99c81f1 · expected: trigger20.g runs, because the expression is true · actual: nothing runs; `echo global.t20ran` gives 0. M582 goes to RRF, whose slot 20 DSF has cleared.
+- **T8** · seen on printer (2026-11-11); from test `M582ChecksTriggerOfDsf`; this variant run at a99c81f1 · expected: trigger20.g runs, because the expression is true · actual: nothing runs; `echo global.t20ran` gives 0. M582 goes to RRF, whose slot 20 DSF has cleared.
   ```
   ; 0:/sys/trigger20.g holds: set global.t20ran = 1
   global t20ran = 0
@@ -324,7 +335,7 @@ Samples:
   M582 T20
   echo global.t20ran
   ```
-- **T9** · run at a99c81f1 with RRF's `state.status` "simulating" (`RepRap.cpp:1966-1967`) · expected: fires during the simulation, because RRF's R1 counts a simulation as printing (`GCodes.cpp:3993`) · actual: does not fire (`SbcTriggerService.cs:341-344`); `echo global.t9` gives 0. With `M581.1 T20 R0`, and also with R2, the same run fires and gives 1. Not run: whether a simulation of this length lasts long enough on a printer for DSF to see the status; the R0 run is the control.
+- **T9** · seen on printer (2026-11-11); run at a99c81f1 with RRF's `state.status` "simulating" (`RepRap.cpp:1966-1967`) · expected: fires during the simulation, because RRF's R1 counts a simulation as printing (`GCodes.cpp:3993`) · actual: does not fire (`SbcTriggerService.cs:341-344`); `echo global.t9` gives 0. With `M581.1 T20 R0`, and also with R2, the same run fires and gives 1. Not run: whether a simulation of this length lasts long enough on a printer for DSF to see the status; the R0 run is the control.
   ```
   ; 0:/sys/trigger20.g holds: set global.t9 = global.t9 + 1
   ; 0:/gcodes/t9.g holds two lines: while iterations < 1000  /    G4 P1
@@ -341,7 +352,7 @@ Samples:
 | <a id="i3"></a>I3 | `CodeInterception.cs:263`; `ChannelProcessor.FlushAsync` `ChannelProcessor.cs:288` | The interceptor's flush waits for the Executed stage, which is busy with this very code. | M115 on Telnet never answered, also after the client exited; nothing logged; only a DCS restart helps | Executed interceptor with filters and AutoFlush (DuetAPIClient default) | E2 | R2 | printer | #181 | OF IPC (fixed list of #181) |
 | <a id="i5"></a>I5 | `CodeStream.cs:169`, `:212-219`; `CodeProcessor.cs:277-285` | The code object is reused, so a failing code in a code stream cancels the next code. | next code cancelled, its reply lost | failing code in a code stream | E3 | R2 | fork test | open | OF IPC |
 | <a id="i2"></a>I2 | `CodeInterception.cs:242-243` | A wildcard filter longer than the code throws; the interceptor stays registered after its client exited until a matching code comes. | comments and codes like `G4 P0` fail with ArgumentOutOfRangeException | filter `M10*` | E4 | R2 | printer | open | OF IPC |
-| <a id="i8"></a>I8 | `Command.SupportedCommands` `IPC/Processors/Command.cs:23-56`; `IPC/Connection.cs:655` | InvalidateChannel is missing from the supported commands, which the Intercept mode uses as well. | "unsupported command InvalidateChannel"; `InvalidateChannel(Async)` of DuetAPIClient always fail | any client calling it | E4 | R2 | fork test | #158 | DU I8 |
+| <a id="i8"></a>I8 | `Command.SupportedCommands` `IPC/Processors/Command.cs:23-56`; `IPC/Connection.cs:655` | InvalidateChannel is missing from the supported commands, which the Intercept mode uses as well. | "unsupported command InvalidateChannel"; `InvalidateChannel(Async)` of DuetAPIClient always fail | any client calling it | E4 | R2 | printer | #158 | DU I8 |
 | <a id="i4"></a>I4 | `CodeStream.cs:179-220` | Replies are not kept in the order of the codes. | replies out of order | code stream with BufferSize above 1 | E4 | R2 | fork test | open | OF IPC |
 | <a id="i6"></a>I6 | `ModelSubscription.cs:495` | `nameof(Layers)` is compared with the JSON name "layers". | `job.layers` reaches clients of API version 10 or older | old subscriber | E4 | R2 | fork test | open | OF IPC |
 | <a id="i10"></a>I10 | Intercept mode | A failing command while intercepting ends the connection instead of returning an error response. | connection closed | failing command in Intercept mode | E4 | R2 | fork test | open | OF IPC |
@@ -355,19 +366,19 @@ Samples:
 | <a id="i11"></a>I11 | Intercept mode | An undefined interception mode is acknowledged and then ends with KeyNotFoundException. | connection error | undefined mode | E4 | R4 | fork test | open | OF IPC |
 
 Samples (DuetAPIClient, C#):
-- **I3** · seen on printer; run at 01ea6897, the parent of #181 · expected: M115 answered · actual: no reply, also after the client exited. Without a channel list the interceptor covers every channel, so every M115 blocks its channel.
+- **I3** · seen on printer (2026-11-11); run at 01ea6897, the parent of #181 · expected: M115 answered · actual: no reply, also after the client exited. Without a channel list the interceptor covers every channel, so every M115 blocks its channel.
   ```
   var c = new InterceptConnection();
   await c.ConnectAsync(InterceptionMode.Executed, filters: ["M115"]);   // AutoFlush stays true
   // then send M115 on Telnet
   ```
-- **I2** · seen on printer; run at a99c81f1 · expected: `G4 P0` runs · actual: `Error: Index and length must refer to a location within the string. (Parameter 'length')` (ArgumentOutOfRangeException in `CodeInterception.cs:242-243`). Every code whose short string is shorter than 3 characters fails on every channel: G0-G4, M0-M9, T0-T9 and comments. This continues after the client exits, until a code that matches the filter is sent. Send the code only after the interceptor is registered, which takes a moment after ConnectAsync.
+- **I2** · seen on printer (2026-11-11); run at a99c81f1 · expected: `G4 P0` runs · actual: `Error: Index and length must refer to a location within the string. (Parameter 'length')` (ArgumentOutOfRangeException in `CodeInterception.cs:242-243`). Every code whose short string is shorter than 3 characters fails on every channel: G0-G4, M0-M9, T0-T9 and comments. This continues after the client exits, until a code that matches the filter is sent. Send the code only after the interceptor is registered, which takes a moment after ConnectAsync.
   ```
   var c = new InterceptConnection();
   await c.ConnectAsync(InterceptionMode.Pre, filters: ["M10*"]);
   // then send G4 P0 on HTTP
   ```
-- **I8** · from test `IpcClientApi.InvalidateChannel` · expected: success · actual: "unsupported command InvalidateChannel"
+- **I8** · seen on printer (2026-11-11); from test `IpcClientApi.InvalidateChannel` · expected: success · actual: "unsupported command InvalidateChannel"
   ```
   var c = new CommandConnection();
   await c.ConnectAsync();
@@ -380,7 +391,7 @@ Reproducers: I5 `FailedCodeKeepsTheReplyOfTheNextCode`; I4 `IpcCodeStreamReplies
 
 | ID | Function / file:line | What goes wrong | Seen as | Reached by | Eff | Reach | Evidence | Fork fix | Detail |
 |---|---|---|---|---|---|---|---|---|---|
-| <a id="o4"></a>O4 | `JsonModelDictionaryConverter.Write` `DuetAPI/ObjectModel/Base/JsonModelDictionary.cs:384` | A `global` (or plugin data) string that is not valid UTF-8 is stored unchecked; `GetRawText()` then throws, so the whole model cannot be serialized. | GetObjectModel and new subscriptions fail; DWS closes every new WebSocket with 1001 "DCS has been stopped" (DWC unusable after a reload) until the global changes | valid codes, because RRF cuts strings by bytes: `"é"[0]`, `take("é",1)`, `^` beyond 255 bytes | E2 | R2 | fork test (RRF side read) | open (in work) | OF Object model; new |
+| <a id="o4"></a>O4 | `JsonModelDictionaryConverter.Write` `DuetAPI/ObjectModel/Base/JsonModelDictionary.cs:384` | A `global` (or plugin data) string that is not valid UTF-8 is stored unchecked; `GetRawText()` then throws, so the whole model cannot be serialized. | GetObjectModel and new subscriptions fail; DWS closes every new WebSocket with 1001 "DCS has been stopped" (DWC unusable after a reload) until the global changes | valid codes, because RRF cuts strings by bytes: `"é"[0]`, `take("é",1)`, `^` beyond 255 bytes | E2 | R2 | printer | open (in work) | OF Object model; new |
 | <a id="o3"></a>O3 | generated float and double updates (DuetAPI.SourceGenerators) | A number beyond the float range is read as infinity and stored, after which the model cannot be serialized. | DCS alive but unusable: every GetObjectModel fails ("… infinity cannot be written as valid JSON", 424 times in under 3 min), `GET /machine/model` 500, DWC's WebSocket closed again and again, model subscribers end (a plugin restarted 91 times in 5 min); status idle, link up; until the value changes | normal codes, narrow value range: a result in the top 0.01 % below the float maximum that RRF reports with 3 decimals, e.g. a computed tool offset; an overflow to infinity is reported as `null` and does not trigger it; otherwise PatchObjectModel | E2 | R2 (narrow) | printer | #184 | OF Object model (fixed list of #184); lab run 2026-11-11 (new) |
 | <a id="o6"></a>O6 | `UpdateFromJsonReader` (Kinematics, FilamentMonitor, DirectDisplayScreen) | An object with two different type keys recurses without end. | the process ends with a stack overflow | e.g. two `name` keys in `move.kinematics` | E2 | R4 | fork test | #177 | OF fuzz fixed list |
 | <a id="o2-rest"></a>O2 (rest) | `UpdateService.ExecuteAsync` `UpdateService.cs:373-376` | UpdateService logs a JsonException and throws it again. | its update loop ends | a value that fails and is not skipped, e.g. a list item (O1 (OF)) | E2 | R4 | read | open | OF fuzz fixed list (O2) |
@@ -392,7 +403,7 @@ Reproducers: I5 `FailedCodeKeepsTheReplyOfTheNextCode`; I4 `IpcCodeStreamReplies
 | <a id="o4-side"></a>[O4 side bug] | `ObjectModel` DeserializationFailedHandler `DuetControlServer/Model/ObjectModel.cs:184` | The handler logs `e.JsonValue.GetRawText()`, which throws for invalid UTF-8, inside an exception filter. | the first such value per type escapes ("Failed to merge JSON due to internal error"), later ones are skipped silently | value with invalid UTF-8 that fails to deserialize | E4 | R4 | fork test | open (with O4) | new |
 
 Samples:
-- **O4** · DSF side run at 14cd4690, the parent of #185; RRF side read · needs a DSF without #185, e.g. 3.7.0+mp.13. If `global.c` exists, use `set global.c = "é"[0]`. · expected: DWC loads after a reload · actual: every new WebSocket is closed with 1001 "DCS has been stopped", and GET /machine/model gives 500 "The object or value could not be serialized. Path: $.Global.", until the global changes (`set global.c = ""`).
+- **O4** · seen on printer (2026-11-11); DSF side run at 14cd4690, the parent of #185; RRF side read · needs a DSF without #185, e.g. 3.7.0+mp.13. If `global.c` exists, use `set global.c = "é"[0]`. · expected: DWC loads after a reload · actual: every new WebSocket is closed with 1001 "DCS has been stopped", and GET /machine/model gives 500 "The object or value could not be serialized. Path: $.Global.", until the global changes (`set global.c = ""`).
   ```
   global c = "é"[0]     ; or: global t = take("é", 1)
   ; then reload DWC
@@ -419,38 +430,38 @@ Neither: O6, O2 (rest), O2, O7, [O4 side bug].
 | <a id="h11"></a>H11 | rr_disconnect | Returns 204 instead of `{"err":0}`. | clients expecting RRF's reply | rr_disconnect | E4 | R2 | printer | open | OF HTTP |
 | <a id="h7"></a>H7 | `WebSocketEndpoint.cs:223-227`, `:240-243` | A cancelled task is not faulted. | no close message on the WebSocket when DWS stops | DWS stop | E4 | R2 | fork test | open | OF HTTP |
 | <a id="h8"></a>H8 | `ModelObserver.cs:120` vs `:178` | rr_ endpoints registered while DWS runs end up at `/machine/rr_/{path}`. | endpoint at the wrong URL | plugin registers an rr_ endpoint at run time | E4 | R2 | fork test | open | OF HTTP |
-| <a id="h9"></a>H9 | `RepRapFirmwareEndpoints.cs:112` | rr_connect always reports `sessionTimeout` 8000 instead of the setting. | clients that rely on it lose their session | rr_connect | E4 | R2 | fork test | open | OF HTTP |
+| <a id="h9"></a>H9 | `RepRapFirmwareEndpoints.cs:112` | rr_connect always reports `sessionTimeout` 8000 instead of the setting. | clients that rely on it lose their session | rr_connect | E4 | R2 | printer | open | OF HTTP |
 | <a id="h4"></a>H4 | `MachineEndpoints.cs:397` | `ReadFormAsync` is outside the try. | unhandled 500 | POST /machine/file/move with an invalid form | E4 | R4 | printer | open | OF HTTP |
 | <a id="h12"></a>H12 | rr_connect (`RepRapFirmwareEndpoints.cs:88-89`) | Every rr_connect adds another IP-based session; RRF does not register a second IP-based session for a client (`HttpResponder.cpp:803-808`). This may be intended. | one more session per call in the session list (5 → 8 on the printer) | repeated rr_connect from one client | E5 | R2 | printer | open | OF HTTP |
 
 Samples (with a session; `{key}` = the session key):
-- **H3** · seen on printer; run at a99c81f1 · expected: `0:/gcodes/keep.g` unchanged, `{"err":1}` · actual: `{"err":1}`, the file is gone, and `GET /rr_upload` gives `{"err":1}`
+- **H3** · seen on printer (2026-11-11); run at a99c81f1 · expected: `0:/gcodes/keep.g` unchanged, `{"err":1}` · actual: `{"err":1}`, the file is gone, and `GET /rr_upload` gives `{"err":1}`
   ```
   ; 0:/gcodes/keep.g exists, e.g. holding: original
   POST /rr_upload?name=0:/gcodes/keep.g&crc32=00000000    body: replacement   (its CRC32 is 54d5f44a)
   ```
-- **H5** · seen on printer · expected: 201 · actual: 500, directory created
+- **H5** · seen on printer (2026-11-11) · expected: 201 · actual: 500, directory created
   ```
   PUT /machine/directory/0%3A%2Fgcodes%2Fwhat%3F%C3%A4     (X-Session-Key: {key})
   ```
-- **H10** · seen on printer · expected: `{"buff":N}` · actual: `{"bufferSpace":255,"err":0}`
+- **H10** · seen on printer (2026-11-11) · expected: `{"buff":N}` · actual: `{"bufferSpace":255,"err":0}`
   ```
   GET /rr_gcode?gcode=M115
   ```
-- **H11** · seen on printer · expected: 200 `{"err":0}` · actual: 204
+- **H11** · seen on printer (2026-11-11) · expected: 200 `{"err":0}` · actual: 204
   ```
   GET /rr_disconnect
   ```
-- **H12** · seen on printer; run at a99c81f1 · RRF: a client keeps one IP-based session (`HttpResponder.cpp:803-808`) · DSF: one more session per call. With a password set, three calls give 3 more entries in `sbc.dsf.userSessions` with the client's IP; with no password 4, because the authentication handler adds a session for the IP before rr_connect adds its own (`SessionKeyAuthenticationHandler.cs`, `RepRapFirmwareEndpoints.cs:88-89`). Later requests from that IP without a key refresh only its oldest session (`SessionStorage.GetTicketFromIpAddress`). The others expire 8 to 9 s after they were created (SessionTimeout 8000 ms, checked once per second). `rr_disconnect` removes only the session the request was authenticated with. Possibly intended.
+- **H12** · seen on printer (2026-11-11); run at a99c81f1 · RRF: a client keeps one IP-based session (`HttpResponder.cpp:803-808`) · DSF: one more session per call. With a password set, three calls give 3 more entries in `sbc.dsf.userSessions` with the client's IP; with no password 4, because the authentication handler adds a session for the IP before rr_connect adds its own (`SessionKeyAuthenticationHandler.cs`, `RepRapFirmwareEndpoints.cs:88-89`). Later requests from that IP without a key refresh only its oldest session (`SessionStorage.GetTicketFromIpAddress`). The others expire 8 to 9 s after they were created (SessionTimeout 8000 ms, checked once per second). `rr_disconnect` removes only the session the request was authenticated with. Possibly intended.
   ```
   GET /rr_connect?password=secret    (three times from the same client within 8 s)
   GET /rr_model?key=sbc.dsf.userSessions
   ```
-- **H9** · from test `WebServer.WebServerFindings.RrConnectReportsConfiguredSessionTimeout` · needs `SessionTimeout` in `/opt/dsf/conf/http.json` set to anything but 8000, e.g. 3000, and a DWS restart; 8000 is the default of DWS (`DuetWebServer/Settings.cs:46`), and with it the reply is right. `password=secret` works only with no password set or the password "secret". · expected: the configured SessionTimeout · actual: 8000
+- **H9** · seen on printer (2026-11-11); from test `WebServer.WebServerFindings.RrConnectReportsConfiguredSessionTimeout` · needs `SessionTimeout` in `/opt/dsf/conf/http.json` set to anything but 8000, e.g. 3000, and a DWS restart; 8000 is the default of DWS (`DuetWebServer/Settings.cs:46`), and with it the reply is right. `password=secret` works only with no password set or the password "secret". · expected: the configured SessionTimeout · actual: 8000
   ```
   GET /rr_connect?password=secret
   ```
-- **H4** · run at a99c81f1 · expected: an error status · actual: unhandled 500 with an empty body; Kestrel logs "InvalidOperationException: Incorrect Content-Type: text/plain…". The same happens with no Content-Type. curl's `--data` sends a form type by itself, so the header must be set.
+- **H4** · seen on printer (2026-11-11); run at a99c81f1 · expected: an error status · actual: unhandled 500 with an empty body; Kestrel logs "InvalidOperationException: Incorrect Content-Type: text/plain…". The same happens with no Content-Type. curl's `--data` sends a form type by itself, so the header must be set.
   ```
   POST /machine/file/move    Content-Type: text/plain    body "from=a&to=b"    (X-Session-Key: {key})
   ```
@@ -482,15 +493,15 @@ Neither: D3, PS8.
 |---|---|---|---|---|---|---|---|---|---|
 | <a id="lu-p1"></a>P1 (LU) | `Code.Parse` (`DuetAPI/Commands/Code/Parser.cs`) | It reads the first character of a following code instead of peeking, which a TextReader cannot undo (regression since 721e5df0). | file info fails for a footer with several codes on a line | several codes on one line | E4 | R2 | fork test | #84 | LU parsers table |
 | <a id="lu-p3"></a>P3 (LU) | `Parser.cs`, `ParserAsync.cs` | `Code.Length` is one byte too long for a code followed by another on its line and for the last code of a file without a final newline. | JobProcessor's fallback pause position is off | pause when RRF reports no position | E4 | R2 | fork test | #86 | LU parsers table |
-| <a id="g12"></a>G12 | `DuetAPI/Commands/Code/Parameter.cs:309-311` | The int, uint and long conversions call `Convert` for every float, which throws OverflowException. | OverflowException instead of an error reply | out-of-range number for an integer parameter | E4 | R4 | fork test | #162 | DU G12 |
-| <a id="macro-line"></a>[macro line] | `StartsNextCode` `DuetAPI/Commands/Code/Parser.cs:727-730`; RRF `StringParser.cpp:1118-1166` | A G or M code after a macro call on the same line runs after the macro, and DSF splits after `'G` where RRF does not. | the following code runs (wiki `Gcodes.md:235`: it is not executed) | M98 with a code after it on the line | E5 | R2 | fork test | open | OF "Codes after a macro call on the same line still run" |
+| <a id="g12"></a>G12 | `DuetAPI/Commands/Code/Parameter.cs:309-311` | The int, uint and long conversions call `Convert` for every float, which throws OverflowException. | OverflowException instead of an error reply | out-of-range number for an integer parameter | E4 | R4 | printer | #162 | DU G12 |
+| <a id="macro-line"></a>[macro line] | `StartsNextCode` `DuetAPI/Commands/Code/Parser.cs:727-730`; RRF `StringParser.cpp:1118-1166` | A G or M code after a macro call on the same line runs after the macro, and DSF splits after `'G` where RRF does not. | the following code runs (wiki `Gcodes.md:235`: it is not executed) | M98 with a code after it on the line | E5 | R2 | printer | open | OF "Codes after a macro call on the same line still run" |
 
 Samples:
-- **G12** · from test `Codes.FileCodes.ListFilesWithTypeOutOfRangeIsAnError` · expected: "Error: M20: …" · actual: `System.OverflowException`
+- **G12** · seen on printer (2026-11-11); from test `Codes.FileCodes.ListFilesWithTypeOutOfRangeIsAnError` · expected: "Error: M20: …" · actual: `System.OverflowException`
   ```
   M20 S31e9 P"0:/macros"
   ```
-- **[macro line]** · run against the fake firmware at a99c81f1 (RRF executes what DSF sends: `M98 P"0:/macros/empty.g"`, then `M117 "after"`) · expected: `M117 "after"` not executed · actual: it runs after the macro
+- **[macro line]** · seen on printer (2026-11-11); run against the fake firmware at a99c81f1 (RRF executes what DSF sends: `M98 P"0:/macros/empty.g"`, then `M117 "after"`) · expected: `M117 "after"` not executed · actual: it runs after the macro
   ```
   ; 0:/macros/empty.g is empty
   M98 P"0:/macros/empty.g" M117 "after"
@@ -502,7 +513,7 @@ Neither: P1 (LU), P3 (LU).
 
 | ID | Function / file:line | What goes wrong | Seen as | Reached by | Eff | Reach | Evidence | Fork fix | Detail |
 |---|---|---|---|---|---|---|---|---|---|
-| <a id="su1"></a>SU1 | `Settings.cs:483-484`, `:492` | The log level key is read case-insensitively but removed from the binding case-sensitively. | DCS does not start ("Failed to initialize environment") | `"logLevel"` in config.json | E2 | R4 | fork test | #150 | DU SU1 |
+| <a id="su1"></a>SU1 | `Settings.cs:483-484`, `:492` | The log level key is read case-insensitively but removed from the binding case-sensitively. | DCS does not start ("Failed to initialize environment") | `"logLevel"` in config.json | E2 | R4 | printer | #150 | DU SU1 |
 | <a id="su6"></a>SU6 | `Model/PeriodicUpdateService.cs:86-88` | `Directory.GetFiles` of a missing plugin directory throws. | DCS does not start | install without the plugin directory (the packages create it) | E2 | R4 | fork test | #150 | DU SU5 and SU6 |
 | <a id="st3"></a>ST3 | `DuetSharedLibrary/AsyncLock.cs:48`, `:60`; `Logger.cs:59`; `Executed.cs:115-128`; `PipelineStackItem.cs:85-88` | AsyncLock refuses a free lock for a cancelled token, so the event log throws in the Executed stage outside the try that completes the code. | "Failed to process code in stage Executed"; the code is never completed | DCS stop with a code in the Executed stage | E4 | R1 | printer | #149 | DU ST3 |
 | <a id="lu-l1"></a>L1 (LU) | `CommonLogFormatter.cs:26-46` | The level is written only as colored text, without a syslog prefix. | every journal line has priority 6; a flood of warnings also drops errors | every log line | E4 | R1 | printer | #118 | LU L1 |
@@ -516,7 +527,7 @@ Neither: P1 (LU), P3 (LU).
 | <a id="l6"></a>L6 | `Executed.cs:235` | The catch logs only when `(e is OperationCanceledException) != ApplicationStopping.IsCancellationRequested` (since v3.6). | interceptor errors in the Executed stage are not logged; cancellations are logged as errors | interceptor error | E4 | R4 | read | open | OF FW/plugin/startup |
 
 Samples:
-- **SU1** · run as a DCS process at 0c06ff81, the parent of #150 · expected: DCS starts with level info · actual: exit code 71, "[fatal] Failed to initialize environment: Failed to convert configuration value 'info' at 'LogLevel' to type 'Microsoft.Extensions.Logging.LogLevel'."
+- **SU1** · seen on printer (2026-11-11); run as a DCS process at 0c06ff81, the parent of #150 · expected: DCS starts with level info · actual: exit code 71, "[fatal] Failed to initialize environment: Failed to convert configuration value 'info' at 'LogLevel' to type 'Microsoft.Extensions.Logging.LogLevel'."
   ```
   /opt/dsf/conf/config.json: rename the key "LogLevel" to "logLevel", keep the value "info"
   systemctl restart duetcontrolserver
@@ -569,9 +580,9 @@ Neither: S7 (OF), K20, S2 (new), S3 (new), K21.
 |---|---|---|---|---|---|---|---|---|---|
 | <a id="k37"></a>K37 | SBC path of an abort (standalone fixed with `AbortStateMachine`, RRF 1e1eb34e0) | An abort from outside leaves the state variables of the removed levels set. | e.g. suspended heaters after an abort inside a probing code of a macro | abort from outside while a state machine runs | E3 | R3 | read | open (LA-25) | OF epoch reviews |
 | <a id="usb-no-host"></a>[USB no host] | `GCodes.cpp:509-514`; `GCodeInput.cpp:249-266`; `StringParser.cpp:53-59` | Without a USB host `BufferedStreamGCodeInput::Spin` calls DiscardPartialLine, which also resets a code that came from DSF. | a macro on USB or USB2 never starts, the channel stays busy, DSF reported success | seen with the fork's M98.1/M98.7; upstream path (a priority code moved to an idle USB channel, `CodeProcessor.cs:223-236`) not shown | E2 | R5 | printer | open | OF "Macros do not start on the USB channels without a USB host" |
-| <a id="byte-count"></a>[byte count] | `ExpressionParser.cpp` `#` 1602-1608, index 348-367, `take` 1082-1098, `drop` 1159-1177, `find` 1670-1684, `^` 804-808 | String operations count bytes where the wiki says characters (`Gcode_meta_commands.md:407`, `:419`); results can be invalid UTF-8, which the JSON writer emits unchanged (`SafeVsnprintf.cpp` PutJson, `OutputMemory.cpp:268`). | `#"é"` is 2; invalid UTF-8 in the object model (leads to O4) | string operations on non-ASCII text | E4 | R2 | read | open (planned) | new |
-| <a id="new-s4"></a>S4 (new) | `ExpressionParser.cpp:2463-2469` | Indexing a string variable directly is refused. | "Cannot index into variable … of non-array type"; only `(var.s)[0]` works | `var.s[0]` | E4 | R2 | read | open | new |
-| <a id="new-s1"></a>S1 (new) | `Configuration.h:140` (`MaxTitleLength`), `MessageBox.h:71` | The M291 title is stored in 61 bytes; the wiki says 100 characters (`Gcodes.md:3875`). | the title is cut | M291 with a long title | E5 | R2 | read | open | new |
+| <a id="byte-count"></a>[byte count] | `ExpressionParser.cpp` `#` 1602-1608, index 348-367, `take` 1082-1098, `drop` 1159-1177, `find` 1670-1684, `^` 804-808 | String operations count bytes where the wiki says characters (`Gcode_meta_commands.md:407`, `:419`); results can be invalid UTF-8, which the JSON writer emits unchanged (`SafeVsnprintf.cpp` PutJson, `OutputMemory.cpp:268`). | `#"é"` is 2; invalid UTF-8 in the object model (leads to O4) | string operations on non-ASCII text | E4 | R2 | printer | open (planned) | new |
+| <a id="new-s4"></a>S4 (new) | `ExpressionParser.cpp:2463-2469` | Indexing a string variable directly is refused. | "Cannot index into variable … of non-array type"; only `(var.s)[0]` works | `var.s[0]` | E4 | R2 | printer | open | new |
+| <a id="new-s1"></a>S1 (new) | `Configuration.h:140` (`MaxTitleLength`), `MessageBox.h:71` | The M291 title is stored in 61 bytes; the wiki says 100 characters (`Gcodes.md:3875`). | the title is cut | M291 with a long title | E5 | R2 | printer | open | new |
 
 Samples:
 - **K37** · derived, not run (cf. LA-25); RRF read · expected: the abort also ends the tool change of the macro level it removes and clears its state, as standalone `AbortPrint` does with `AbortStateMachine` (RRF 1e1eb34e0, `GCodes.cpp:3646`, `GCodes4.cpp:2028-2054`); `state.status` is "idle" again · actual (read): InvalidateChannel pops the levels without `AbortStateMachine` (`SbcInterface.cpp:843-871` upstream), so `doingToolChange` stays set (`GCodes4.cpp:417`) and `state.status` stays "changingTool" until M999 (`RepRap.cpp:1966-1969`). Needs tool 0 defined and selected. tfree0.g aborts before RRF puts the tool on standby, so no heater and no axis is touched. A T-code typed at the console does not show the finding: it runs at the base level, where standalone RRF carries on as well.
@@ -580,19 +591,19 @@ Samples:
   M98 P"0:/macros/k37.g"
   echo state.status
   ```
-- **[byte count]** · DSF side run at a99c81f1; RRF side read · expected: 1, and the M291 accepted (3 characters) · actual (read): 2, and `Error: M291: default value is outside limits` (6 bytes; `MessageBox.cpp:216-219` takes `strlen`, `:226-229` compares with H, fork RRF cde4e4fa1)
+- **[byte count]** · seen on printer (2026-11-11); DSF side run at a99c81f1; RRF side read · expected: 1, and the M291 accepted (3 characters) · actual (read): 2, and `Error: M291: default value is outside limits` (6 bytes; `MessageBox.cpp:216-219` takes `strlen`, `:226-229` compares with H, fork RRF cde4e4fa1)
   ```
   var m = #"é"
   echo var.m
   M291 S7 P"Name" H3 F"äöü"
   ```
-- **S4 (new)** · derived, not run · expected: `var c` is "a" · actual (read): "Cannot index into variable … of non-array type"
+- **S4 (new)** · seen on printer (2026-11-11); derived, not run · expected: `var c` is "a" · actual (read): "Cannot index into variable … of non-array type"
   ```
   var s = "abc"
   var c = var.s[0]
   var d = (var.s)[0]     ; works
   ```
-- **S1 (new)** · derived, not run · expected: 70 (wiki: up to 100 characters) · actual (read): 61 (title read into 100 bytes, `GCodes7.cpp`, copied into `String<61>`, `MessageBox.cpp:85`)
+- **S1 (new)** · seen on printer (2026-11-11); derived, not run · expected: 70 (wiki: up to 100 characters) · actual (read): 61 (title read into 100 bytes, `GCodes7.cpp`, copied into `String<61>`, `MessageBox.cpp:85`)
   ```
   M291 S1 T0 R"1234567890123456789012345678901234567890123456789012345678901234567890" P"x"
   echo #state.messageBox.title
@@ -636,6 +647,7 @@ The sources do not say whose code these are (OF, sections "FW/plugin/startup" an
   - P2 (OF): the current OF names it only as fixed by #137; its text is from OF at 384138dd. P1 (OF) is the F3 case of DU and has no row of its own.
 - **Fork PRs:** #181 (I3) and #184 (O3) are merged in the fork's `v3.7-dev`; #185 (O4 and the handler log) is open.
 - **Trigger macros:** the effect class says what the code does, not what a machine's macro does with it. A trigger macro (M581 T2 and higher) is a user-defined reaction, so T3, T1 and P4 (OF) are rated as a delayed or blocked macro, although on a machine whose trigger macro stops it they keep a stop from happening. Trigger 0, the emergency stop that RRF makes itself, is T7 and K20.
+- **Samples on the printer:** on 2026-11-11 the samples marked "seen on printer (2026-11-11)" were typed in on the lab printer as they stand here (DSF 3.7.0+mp.13 and RRF 3.7.0+1.mp.8, fork builds without the fork fixes named in the rows, except #118). 29 samples were confirmed that way; G7 and O3 had been seen there earlier that day. I3, G1, G2 and SU1 each end with a DCS that has to be restarted. Not tried on the printer: G9 (needs a real print job), T7 (registers a trigger 0), K37 (needs a selected tool) and L1 (fixed in that build).
 - **O3 on the printer:** lab printer, 2026-11-11 09:29:48 to 09:34:56 UTC, DSF 3.7.0+mp.13 and RRF 3.7.0+1.mp.8 (fork builds; at the lines involved the code is upstream's). Nothing recovered by itself; `G10 P0 X0` sent with POST /machine/code restored the model within a second, and the subscribing plugin stayed up.
 
 ## Left out
