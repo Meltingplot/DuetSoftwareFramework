@@ -322,11 +322,6 @@ public class ObjectModelJsonFuzz
         {
             return JsonSerializer.Serialize(model, ObjectModelContext.Default.ObjectModel);
         }
-        catch (ArgumentException e) when (e.TargetSite?.DeclaringType?.FullName == "System.Text.Json.ThrowHelper" && e.Message.Contains("infinity"))
-        {
-            // Known bug, see InfiniteNumberKeepsTheModelSerializable
-            return null;
-        }
         catch (JsonException e) when (e.InnerException is InvalidOperationException { InnerException: DecoderFallbackException })
         {
             // Known bug, see InvalidUtf8KeepsTheModelSerializable
@@ -379,7 +374,8 @@ public class ObjectModelJsonFuzz
     /// A value that does not fit the type of a property is invalid data, which the update methods document as JsonException ("Failed to deserialize
     /// data") and which UpdateService handles. The getters of JsonElement and Utf8JsonReader throw a FormatException for a number or date that does
     /// not fit, DateTime.Parse in the date converters did the same, and the first character of an empty string gave an IndexOutOfRangeException;
-    /// UpdateService.ExecuteAsync catches only ArgumentException, InvalidOperationException and JsonException. Finding O2 of design/open-findings.md
+    /// UpdateService.ExecuteAsync catches only ArgumentException, InvalidOperationException and JsonException. Finding O2 of design/open-findings.md.
+    /// A number beyond the range of a float or double does not throw in the getters, they return infinity; the update refuses it as well (O3)
     /// </summary>
     /// <param name="json">Update of the object model</param>
     [TestCase("{\"spindles\":[{\"current\":9223372036854775807}]}", TestName = "{m}(int)")]
@@ -393,6 +389,14 @@ public class ObjectModelJsonFuzz
     [TestCase("{\"move\":{\"axes\":[{\"letter\":\"\"}]}}", TestName = "{m}(char)")]
     [TestCase("{\"move\":{\"compensation\":{\"probeGrid\":{\"axes\":[\"\",\"Y\"]}}}}", TestName = "{m}(char in a list)")]
     [TestCase("{\"messages\":[{\"time\":\"2026-11-07T012:00:00\",\"type\":0,\"content\":\"x\"}]}", TestName = "{m}(date of a message)")]
+    [TestCase("{\"heat\":{\"heaters\":[{\"current\":1e39}]}}", TestName = "{m}(float)")]
+    [TestCase("{\"heat\":{\"heaters\":[{\"current\":-1e39}]}}", TestName = "{m}(negative float)")]
+    [TestCase("{\"heat\":{\"heaters\":[{\"current\":3.403e+38}]}}", TestName = "{m}(float that RRF rounds beyond the range)")]
+    [TestCase("{\"spindles\":[{\"idlePwm\":1e39}]}", TestName = "{m}(nullable float)")]
+    [TestCase("{\"tools\":[{\"offsets\":[0,1e39]}]}", TestName = "{m}(float in a list)")]
+    [TestCase("{\"move\":{\"kinematics\":{\"name\":\"cartesian\",\"forwardMatrix\":[[1,1e39]]}}}", TestName = "{m}(float in an array in a list)")]
+    [TestCase("{\"state\":{\"messageBox\":{\"default\":1e39}}}", TestName = "{m}(float in a property of type object)")]
+    [TestCase("{\"sbc\":{\"uptime\":1e400}}", TestName = "{m}(double)")]
     public void ValueThatDoesNotFitFailsWithJsonException(string json)
     {
         using JsonDocument document = JsonDocument.Parse(json);
@@ -427,6 +431,7 @@ public class ObjectModelJsonFuzz
     /// <param name="type">Type of the property that does not fit</param>
     [TestCase("{\"move\":{\"axes\":[{\"letter\":\"\",\"max\":123}]}}", typeof(char))]
     [TestCase("{\"move\":{\"axes\":[{\"microstepping\":{\"value\":9223372036854775807},\"max\":123}]}}", typeof(int))]
+    [TestCase("{\"move\":{\"axes\":[{\"min\":1e39,\"max\":123}]}}", typeof(float))]
     public void ValueThatDoesNotFitIsReportedToTheHandler(string json, Type type)
     {
         List<DeserializationFailedEventArgs> failures = [];
@@ -450,6 +455,7 @@ public class ObjectModelJsonFuzz
                 Assert.That(model.Move.Axes[0].Max, Is.EqualTo(123F));
                 Assert.That(model.Move.Axes[0].Letter, Is.EqualTo(new Axis().Letter));
                 Assert.That(model.Move.Axes[0].Microstepping.Value, Is.EqualTo(new Axis().Microstepping.Value));
+                Assert.That(model.Move.Axes[0].Min, Is.EqualTo(new Axis().Min));
             }
         }
         finally
@@ -599,12 +605,12 @@ public class ObjectModelJsonFuzz
     }
 
     /// <summary>
-    /// RRF reports NaN and infinity as null (ObjectModel::ReportFloat), so DCS never sends them either. A JSON number beyond the float range is
-    /// read as infinity by JsonElement.GetSingle and Utf8JsonReader.GetSingle, the update accepts it and the model cannot be serialized any more:
-    /// Utf8JsonWriter throws an ArgumentException for infinity, so GetObjectModel, the subscriptions and DWS would fail on every request
+    /// RRF reports NaN and infinity as null (ObjectModel::ReportFloat). A JSON number beyond the float range is read as infinity by the getters
+    /// of JsonElement and Utf8JsonReader. The update used to accept it, and the model could not be serialized any more: Utf8JsonWriter throws an
+    /// ArgumentException for infinity, so GetObjectModel, the subscriptions and DWS failed until the property got a finite value again.
+    /// The update refuses such a number now, see ValueThatDoesNotFitFailsWithJsonException. Finding O3 of design/open-findings.md
     /// </summary>
     [Test]
-    [Explicit("Bug: an out-of-range float is stored as infinity, after which the object model cannot be serialized")]
     public void InfiniteNumberKeepsTheModelSerializable()
     {
         using JsonDocument document = JsonDocument.Parse("{\"heat\":{\"heaters\":[{\"current\":1e39}]}}");
