@@ -4,6 +4,7 @@
 - **Date and code:** 2026-11-11. Upstream looked at: DSF `v3.7-dev` 973838bf and f76ffc70 (K32), 77684383 (K34); RRF `3.7-dev` 25ec27aec and 231daaac87, `3.7-ch` e7e30e13f3 and 7e95567976 (K34), f8c8a1d69f (USB input files); DuetIAP 9af72da4. Line numbers follow their source; the commit per source is in the Notes.
 - **Count:** 153 findings: DSF 116, RRF 13, both sides of the SBC link 24; 19 more under "Origin not checked". 35 have a sample, 68 a reproducer test, 50 neither.
 - **Evidence:** `printer` seen on the fork's lab printer (MB6HC + Pi 5); `upstream test` a test on unchanged upstream code (K32 only); `fork test` a test in the fork (unit tests, fake firmware, SPI census against a C# port of RRF); `read` read in the code only. Sample basis: "from test …", "seen on printer" or "derived, not run".
+- **Structure:** the ten most important, then every stop and deadlock at a glance, then how to run the tests, then the tables: the SBC link first (both sides, then the DSF link code), then the rest of DSF and RRF.
 - **Order:** by effect (E1 a stop or safety action that does not reach the machine, E2 deadlock, channel or DCS blocked for good, DCS exits, E3 data loss or a wrong action on the machine, E4 wrong result or error, E5 deviation from the documentation, E6 cosmetic), then by reachability (R1 seen on a printer in normal use, R2 normal codes or clients, R3 rare timing or link fault, R4 malformed input or misbehaving client, R5 not shown), then by evidence; an R5 item never ranks above a reachable item of the next lower effect class, and an R2 item that needs a narrow range of values (O3) is ordered after the other R2 items of its effect class.
 
 ## Start here: highest impact
@@ -20,6 +21,110 @@
 | 8 | [F3](#f3) | both | One bit error desynchronises the link phases: livelock until DCS restarts | E2 | R3 | printer |
 | 9 | [F8](#f8) | DSF | After a lost connection DSF keeps sending its header with a stale checksum, and the link does not recover | E2 | R3 | printer |
 | 10 | [F9](#f9) | both | A recovered link fault can leave TfrRdy low, so a new DCS fails its first start | E2 | R3 | printer |
+
+## Stops and deadlocks at a glance
+
+Every finding of the two highest effect classes, in the order of the header. The rows link to the tables below. The link faults with a lesser effect are in the SBC link tables, which come first.
+
+### A stop that does not reach the machine (E1, 3 findings)
+
+| ID | Repo | Component | Seen as | Reach | Evidence |
+|---|---|---|---|---|---|
+| [T7](#t7) | DSF | DuetControlServer / Triggers | no emergency stop | R2 | fork test |
+| [K32](#k32) | DSF | DuetControlServer / Link | M112 replies success, status halted, RRF never gets the stop; DCS exits | R3 | upstream test |
+| [K6](#k6) | DSF | DuetControlServer / Link | M112 reports success, RRF never got the stop | R3 | read |
+
+### Deadlock, a channel, the link or DCS blocked for good, DCS exits (E2, 32 findings)
+
+| ID | Repo | Component | Seen as | Reach | Evidence |
+|---|---|---|---|---|---|
+| [G1](#g1) | DSF | DuetControlServer / Codes and files | no reply (DWS 503); the next code on the channel hangs until DCS restart and M999 | R2 | printer |
+| [I3](#i3) | DSF | DuetControlServer / IPC | M115 on Telnet never answered, also after the client exited; nothing logged; only a DCS restart helps | R2 | printer |
+| [O4](#o4) | DSF | Model | GetObjectModel and new subscriptions fail; DWS closes every new WebSocket with 1001 "DCS has been stopped" (DWC unusable after a reload) until the global changes | R2 | fork test (RRF side read) |
+| [O3](#o3) | DSF | Model | DCS alive but unusable: every GetObjectModel fails ("… infinity cannot be written as valid JSON", 424 times in under 3 min), `GET /machine/model` 500, DWC's WebSocket closed again and again, model subscribers end (a plugin restarted 91 times in 5 min); status idle, link up; until the value changes | R2 (narrow) | printer |
+| [F8](#f8) | DSF | DuetControlServer / Link | link does not recover, 6,000-10,000 "bad header checksum" lines (4 of 5 watchdog resets) | R3 | printer |
+| [F3](#f3) | both | SPI link | link stuck until DCS restarts; about 20,000 warnings per second in the journal | R3 | printer |
+| [F9](#f9) | both | SPI link | the new DCS fails its first start ("Connection timeout while waiting for TfrRdy pin") | R3 | printer |
+| [T11 (resend)](#t11-resend) | both | Channels, macros and aborts | "Resending packet #0 (request InvalidateChannel)", "… none was requested"; next code never answered; channel blocked until DCS restarts | R3 | printer |
+| [F1](#f1) | DSF | DuetControlServer / Link | DCS stops (20 of 4142 census faults) | R3 | fork test |
+| [T2](#t2) | DSF | DuetControlServer / Link | "Macro file has been started … but none was requested"; channel blocked until DCS restarts | R3 | fork test |
+| [T1](#t1) | RRF | SBC interface | DSF runs a triggerN.g that RRF does not; every later trigger macro is discarded until DCS restarts | R3 | fork test |
+| [T11 (daemon.g)](#t11-daemon) | RRF | SBC interface | Daemon channel blocked (43 per 2000 aborts in the fake firmware) | R3 | fork test |
+| [P4 (OF)](#of-p4) | both | SPI link | every later trigger is held back while that trigger file stays open | R3 | fork test |
+| [S2 (OF)](#of-s2) | both | SPI link | link stuck for good | R3 | fork test |
+| [F4](#f4) | both | SPI link | connection resets and livelocks | R3 | fork test |
+| [F5](#f5) | both | SPI link | deadlock at connect; needs a reset | R3 | fork test |
+| [S6 (OF)](#of-s6) | DSF | DuetControlServer / Link | another packet with the same id is copied, or an ArgumentException ends LinkService and DCS | R3 | read |
+| [K5](#k5) | both | Channels, macros and aborts | "Stack underrun"; the link thread and DCS end | R3 | read |
+| [K34](#k34) | both | Channels, macros and aborts | a late MacroFileClosed gives "Stack underrun" and ends the link thread; a late ExecuteMacro starts at the base level; a late reply completes a newer code | R3 | read |
+| [G2](#g2) | DSF | DuetControlServer / Link | DCS stops; RRF halted until M999 | R4 | printer |
+| [O6](#o6) | DSF | Model | the process ends with a stack overflow | R4 | fork test |
+| [SU1](#su1) | DSF | Startup, shutdown and logging | DCS does not start ("Failed to initialize environment") | R4 | fork test |
+| [SU6](#su6) | DSF | Startup, shutdown and logging | DCS does not start | R4 | fork test |
+| [O2 (rest)](#o2-rest) | DSF | Model | its update loop ends | R4 | read |
+| [D3](#d3) | DSF | DuetPluginService and plugin handling in DCS | DPS does not start without the plugin directory; `--Key=value` refused; lowercase `logLevel` | R4 | read |
+| [K24](#k24) | both | Channels, macros and aborts | DSF resends forever, the channel stays blocked | R4 | read |
+| [[USB no host]](#usb-no-host) | RRF | G-code input and expressions | a macro on USB or USB2 never starts, the channel stays busy, DSF reported success | R5 | printer |
+| [T12](#t12) | both | Channels, macros and aborts | "Stack underrun on channel Telnet"; DCS exits | R5 | printer |
+| [K1](#k1) | DSF | DuetControlServer / Link | link thread deadlocked; RRF declares a link loss after 4 s; DCS hangs | R5 | read |
+| [K2](#k2) | DSF | DuetControlServer / Link | joins K1 | R5 | read |
+| [K3](#k3) | DSF | DuetControlServer / Link | deadlock, unbounded on the link thread | R5 | read |
+| [K13](#k13) | both | Channels, macros and aborts | the channel takes no further text input | R5 | read |
+
+## Running the tests
+
+Many findings have a test in the fork: 68 are named in the "Reproducers" lines under the tables, more in the samples. The tests need no hardware.
+
+- **Where:** repository `Meltingplot/DuetSoftwareFramework`, branch `v3.7-dev`, project `src/UnitTests` (NUnit, .NET 10). The tests run the real DCS, DWS and DPS code against a C# fake firmware (`src/UnitTests/FakeFirmware`) and, for the SPI link, against a C# port of RRF's side of the link (`src/UnitTests/SPI/FakeRrfSpi.cs`).
+- **Whole suite:** `dotnet test src/UnitTests/UnitTests.csproj`. About 2500 tests in about 3 minutes.
+- **One finding:** the tests of findings that are still open are `[Explicit]` and fail today; run one by its exact name, e.g. `dotnet test src/UnitTests/UnitTests.csproj --filter "FullyQualifiedName=UnitTests.Codes.TriggerMacros.MissingTriggerMacroAfterCodeOfDsfOnTriggerChannel"`.
+- **Fuzz tests** (`src/UnitTests/Fuzz`): `SpiLinkFuzz` (two bit errors on the SPI link), `StopPathFuzz` (emergency stop and trigger macros under link faults), `TriggerFuzz` (triggers interleaved with codes, macros, aborts and a job), `PacketReaderFuzz`, `CodeParserFuzz`, `ExpressionFuzz`, `FilePathFuzz`, `GCodeExecutionFuzz`, `GCodeFileFuzz`, `ObjectModelJsonFuzz`. Every run is reproducible: `DSF_FUZZ_SEED` selects the seed (default 1), `DSF_FUZZ_ITERATIONS` the number of inputs per test (default 5000). A failing input is minimized and printed with its seed and iteration. Example: `DSF_FUZZ_SEED=3 DSF_FUZZ_ITERATIONS=50000 dotnet test src/UnitTests/UnitTests.csproj --filter "FullyQualifiedName~UnitTests.Fuzz"`.
+- **SPI link:** `SPI.LinkRecovery.SingleCorruptedExchange` is the census of every single corrupted exchange with its outcome; `Fuzz.SpiLinkFuzz` adds a second bit error. `Link.ChannelEpochStress` runs aborts that cross macros, replies and requests.
+- **Against RRF's own link code:** `firmware/build.sh harness` (Docker) compiles RRF's `SBC/DataTransfer.cpp` and `Storage/CRC32.cpp` unchanged for the PC, and `LinkRecovery.PortMatchesRealFirmware` replays the census through it; the commands are in `firmware/README.md`.
+- **On unchanged upstream code:** the tests are fork-only files and use a few fork-only members of the link adapter. K32 was run on upstream f76ffc70 by copying the fake firmware and the test into `src/UnitTests` and removing the fork's link capabilities and one parameter of `ResendPacket` from the fake firmware; the product code stayed as it was.
+- **CI:** `.github/workflows/unit-tests.yml` runs the suite with the fuzz tests for every pull request and push to `v3.7-dev` (seed 1, so that a failure can be reproduced) and once a week with a new seed and more inputs; `rrf-harness.yml` runs the comparison with RRF's link code.
+
+## DSF and RRF (both sides of the SBC link)
+
+### SPI link (RRF DataTransfer ↔ DSF SPI.cs)
+
+| ID | Function / file:line | What goes wrong | Seen as | Reached by | Eff | Reach | Evidence | Fork fix | Detail |
+|---|---|---|---|---|---|---|---|---|---|
+| <a id="of-p4"></a>P4 (OF) | RRF `GCodes.cpp:423-431`, `:999`; DSF repeats a transfer with the same number after "SPI data transfer failed" | After a reconnect on the plain link a trigger macro gets lost while RRF keeps running; its open trigger file keeps IsTriggerBusy true. | every later trigger is held back while that trigger file stays open | two bit flips | E2 | R3 | fork test | open (case 2 of #57, on hold) | OF Stop path |
+| <a id="f3"></a>F3 | DSF `SPI.cs:1663` before `:1675`; case of DU: RRF `DataTransfer.cpp:959-965`, `:1005`, `:1025-1029`, DSF `SPI.cs:1655`, `:1688-1692`, `:1763-1765` | DSF in the header phase reads RRF's data as a header and adopts its protocol version before the CRC check; both sides keep exchanging, so no timeout fires. | link stuck until DCS restarts; about 20,000 warnings per second in the journal | one bit error (16 livelocks in the census; 6 header-response cases on the printer) | E2 | R3 | printer | #102 (DCS restart after 60 s), #137 (header-response case) | LU F3; DU F3 (case) |
+| <a id="f9"></a>F9 | RRF `DataTransfer.cpp:353-354`, `:1232-1235`; DSF `SPI.cs:1525-1537`, `Settings.cs:173` | A recovery that arms an odd number of extra exchanges leaves TfrRdy low; a new DCS expects it high and gives up after 500 ms. | the new DCS fails its first start ("Connection timeout while waiting for TfrRdy pin") | DCS start after a recovered fault (661 of 3234 faults) | E2 | R3 | printer | #99 | LU F9 |
+| <a id="of-s2"></a>S2 (OF) | RRF `DataTransfer.cpp:1258`, `:1434-1438`, `SbcInterface.cpp:171`; DSF `SPI.cs:1693-1711` | RRF resets the connection without a full reset, so TfrRdy stays low; DSF waits for it to go high, RRF waits without a timeout. | link stuck for good | two bit errors; builds without polling while disconnected (Duet 2 SBC; the MB6HC polls) | E2 | R3 | fork test | open | OF SBC link |
+| <a id="f4"></a>F4 | exact BadResponse word 0xFEFEFEFE | That word in place of a header, data or a response sends the two sides down different paths. | connection resets and livelocks | that exact 32-bit pattern (very unlikely) | E2 | R3 | fork test | RRF #35 + #93 (negotiated) | LU F4 |
+| <a id="f5"></a>F5 | RRF `SbcInterface.cpp:165` (`TimeoutUnlimited`) | While not connected RRF waits without a timeout with TfrRdy low, and a new DCS waits for TfrRdy high. | deadlock at connect; needs a reset | builds without polling while disconnected | E2 | R3 | fork test | open | LU F5 |
+| <a id="f2"></a>F2 | RRF `DataTransfer.cpp:859`, `DataTransfer.h:192-196` | A bit error in DSF's header response makes RRF repeat the transfer while DSF moves on, so RRF sees a sequence mismatch. | connection reset; DSF invalidates everything pending | one bit error in DSF's response (each of its 32 bits) | E3 | R3 | fork test | #92 | LU F2 |
+| <a id="f6"></a>F6 | `DataTransfer` constructor, `ResetConnection(true)`; `DataTransfer.cpp:921`, `:872-874` | A restarted RRF numbers from 1; if DSF expects 1, the restart is not noticed. | DSF's packets of that transfer lost, unnoticed by both sides | RRF restart right after the 16-bit wrap (about 1 in 65536) | E3 | R3 | fork test | RRF #35 + #93 (negotiated) | LU F6 |
+| <a id="k7"></a>K7 | DSF `SPI.cs:442-477`, `:383-390`; RRF `SbcInterface.cpp:184-186`, `:257-288`, `DataTransfer.cpp:839-853`, `:1396-1443` | After a lost connection DSF sends the same TX again, and RRF processes the next transfer whose number follows, whichever session wrote it. | codes, InvalidateChannel or MacroStarted of the old session run after DSF cancelled them | lost connection | E3 | R3 | read | open | OF v7 contract |
+| <a id="of-s3"></a>S3 (OF) | DSF `SPI.cs:1655-1670`, `Writer.cs:729`; RRF `SbcInterface.cpp:1298-1310` | DSF writes a StringHeader before the key, RRF reads the key from the start of the data. | RRF never recognises ObjectModelKeyChanged; `NetworkUpdated()`, `VolumesUpdated()` never called from the SBC | every ObjectModelKeyChanged | E4 | R2 | fork test | open | OF SBC link |
+| <a id="f10"></a>F10 | RRF `DataTransfer.cpp:451`, `SbcInterface.cpp:120-121` | After an RRF reset DSF takes the falling TfrRdy edge in the boot window as the signal for its pending exchange. | about 40 % of watchdog recoveries take 4 s longer (a second reset) | RRF reset | E4 | R3 | printer | RRF #36 | LU F10 |
+| <a id="of-p2"></a>P2 (OF) | plain link, stop path | Two bit errors delay the stop through RRF's transfer timeout and disconnect. | the stop reaches RRF after about 500 ms | two bit errors on the plain link during M112 | E4 | R3 | fork test | #137 | OF Stop path (text in OF at 384138dd) |
+| <a id="of-s8"></a>S8 (OF) | DSF writes the next code before it reads the resend request | A code that RRF refused for lack of buffer space can be overtaken by a later code of its channel. | codes of a channel out of order | not shown | E3 | R5 | read | open | OF SBC link |
+
+Reproducers: P4 (OF) `TriggerMacroRunsOrRrfStops`; F3 `SingleCorruptedExchange` (case: lab F-3 with `--plain-link`); F9 `DcsStartsAfterRecoveredFault`; S2 (OF) `Fuzz.SpiLinkFuzz.StuckWithoutPolling`; F4, F5, F2 `SingleCorruptedExchange`; F6 `RrfRestart`; S3 (OF) `SPI.LinkServiceOverSpi.ObjectModelKeyChangedIsReadByRrf`; F10 `ExtendedLinkNoticesEveryRebootQuickly`; P2 (OF) `SPI.StopPath.EmergencyStopReachesRrfWithin100Ms`.
+Neither: K7, S8 (OF).
+
+### Channels, macros and aborts (RRF SbcInterface ↔ DSF Processor and LinkService)
+
+| ID | Function / file:line | What goes wrong | Seen as | Reached by | Eff | Reach | Evidence | Fork fix | Detail |
+|---|---|---|---|---|---|---|---|---|---|
+| <a id="t11-resend"></a>T11 (resend) | RRF `GCodes.cpp:540`, `GCodeBuffer.cpp:1252`, `:1263`, `SbcInterface.cpp:45`, `:857`, `:860`, `:1300`; DSF `Processor.cs:867-870`, `SPI.cs:737` | During a macro wait RRF cannot lock the buffer within 10 ms and asks for InvalidateChannel again; DSF has gone on, so the copy drops later codes or ends a later macro wait. | "Resending packet #0 (request InvalidateChannel)", "… none was requested"; next code never answered; channel blocked until DCS restarts | abort while an M98 waits for its macro | E2 | R3 | printer | #161 | DU T11 |
+| <a id="k5"></a>K5 | DSF `Processor.cs:358-364`, `:1587-1609`, `LinkService.cs:466` (@412e5ff6) | A MacroFileClosed set just before a link loss is written in the first exchange of the new connection, and DSF pops its base level. | "Stack underrun"; the link thread and DCS end | a macro closes in the last exchange before a link loss (e.g. a DCS restart) | E2 | R3 | read | RRF #47 | OF v7 contract |
+| <a id="k34"></a>K34 | DSF `MCodeHandler.cs:104-120`, `:123-126`, `LinkInterface.cs:573-582`, `Processor.cs:1750-1763` (@412e5ff6, upstream 77684383); RRF `GCodes3.cpp:1414-1432` (7e95567976) | The cancel of a held job pops DSF's job channels with PrintPaused before RRF has done anything, and no InvalidateChannel draws a boundary. | a late MacroFileClosed gives "Stack underrun" and ends the link thread; a late ExecuteMacro starts at the base level; a late reply completes a newer code | M0/M1/M2 from another channel while the job is held (RRF feed hold, 3.7-ch e7e30e13f3), with packets on their way | E2 | R3 | read | open | OF epoch reviews |
+| <a id="k24"></a>K24 | RRF `SbcMessageFormats.h:31`, `SbcInterface.cpp:358-364`; DSF `Settings.cs:245-248` | RRF refuses a Code over 384 bytes on every copy without an error; DSF allows a larger `MaxCodeBufferSize`. | DSF resends forever, the channel stays blocked | `MaxCodeBufferSize` above 384 in config.json | E2 | R4 | read | open | OF v7 contract |
+| <a id="k18"></a>K18 | DSF `Processor.cs:914-915` (@412e5ff6) | Replies of a code that RRF still ran can follow RRF's own untagged abort of all files. | they complete DSF's next code or are logged as out of order | RRF aborts all files while a code runs | E3 | R3 | read | #167 + RRF #47 (both sides) | OF v7 contract |
+| <a id="k17"></a>K17 | DSF `Processor.cs:1383-1388`; RRF `SbcInterface.cpp:1389`, `:1514-1518`, `DataTransfer.cpp:1491-1496`, `:1545-1549` | DSF takes `BufferedCodes[0]` as the requester, but RRF can write the smaller ExecuteMacro while an earlier reply does not fit. | the macro is attributed to the wrong code | 19 to 31 free bytes (narrow window) | E3 | R3 | read | open | OF v7 contract |
+| <a id="k22"></a>K22 | RRF `SbcInterface.cpp:1145-1285`, `:2331-2336`; DSF `LinkService.cs:1152-1494` | File results carry no id; after RRF's 3 s timeout a late result answers the next request. | wrong file result | slow file system (DSF serves file requests on the link thread) | E3 | R3 | read | open | OF v7 contract |
+| <a id="k23"></a>K23 | RRF `GCodeBuffer.cpp:1263-1274`, `SbcInterface.cpp:850-853`, `:383`, `:567-576` | After RRF's 3 s macro timeout, late answers act on the current level. | "none was requested"; late codes run at the caller's level; DSF stays one level deeper | macro start slower than 3 s | E3 | R3 | read | open | OF v7 contract |
+| <a id="k4"></a>K4 | RRF `SbcInterface.cpp:326-330`; DSF `LinkService.cs:611-701` | Unknown request types are dropped without an error: RRF ends its read loop, DSF's switch has no default. | the rest of the transfer, codes included, is neither processed nor refused | unknown request type (32 or more, not 0x4D50) | E3 | R4 | read | open | OF v7 contract |
+| <a id="t12"></a>T12 | DSF `Processor.AbortAllFilesAsync` `:722`, `:770`, `:1218-1232`; RRF `SbcInterface.cpp:865-866`, `:1450`, `GCodes.cpp:722` | The abort pops all macro files at once, while RRF still reports a macro that it closed just before. | "Stack underrun on channel Telnet"; DCS exits | `abort` while RRF closes a macro on the same channel; not shown upstream (printer case used the IPC command) | E2 | R5 | printer | #158 + RRF #45 | DU T12 |
+| <a id="k13"></a>K13 | DSF `Executed.cs:170-230` | DSF answers a DoCode only when it has a result; RRF's GB stays "executing on SBC" without a timeout. | the channel takes no further text input | not shown (which cancellations reach it is not listed) | E2 | R5 | read | RRF #47 (abort, link loss); rest open | OF v7 contract (and its correction) |
+
+Reproducers: T11 (resend) `TriggerFuzz.CodesAfterAnAbortWaitUntilRrfHasProcessedIt`, `MacroRequestBetweenTwoCopiesOfAnAbortIsDiscarded`; T12 `TriggerFuzz.DcsKeepsRunningWhenAnAbortCrossesAMacroFileClosal`.
+Neither: K5, K34, K24, K18, K17, K22, K23, K4, K13.
 
 ## DSF
 
@@ -432,48 +537,6 @@ Samples:
   ```
 
 Neither: [USB no host] (the upstream path is not shown).
-
-## DSF and RRF (both sides of the SBC link)
-
-### SPI link (RRF DataTransfer ↔ DSF SPI.cs)
-
-| ID | Function / file:line | What goes wrong | Seen as | Reached by | Eff | Reach | Evidence | Fork fix | Detail |
-|---|---|---|---|---|---|---|---|---|---|
-| <a id="of-p4"></a>P4 (OF) | RRF `GCodes.cpp:423-431`, `:999`; DSF repeats a transfer with the same number after "SPI data transfer failed" | After a reconnect on the plain link a trigger macro gets lost while RRF keeps running; its open trigger file keeps IsTriggerBusy true. | every later trigger is held back while that trigger file stays open | two bit flips | E2 | R3 | fork test | open (case 2 of #57, on hold) | OF Stop path |
-| <a id="f3"></a>F3 | DSF `SPI.cs:1663` before `:1675`; case of DU: RRF `DataTransfer.cpp:959-965`, `:1005`, `:1025-1029`, DSF `SPI.cs:1655`, `:1688-1692`, `:1763-1765` | DSF in the header phase reads RRF's data as a header and adopts its protocol version before the CRC check; both sides keep exchanging, so no timeout fires. | link stuck until DCS restarts; about 20,000 warnings per second in the journal | one bit error (16 livelocks in the census; 6 header-response cases on the printer) | E2 | R3 | printer | #102 (DCS restart after 60 s), #137 (header-response case) | LU F3; DU F3 (case) |
-| <a id="f9"></a>F9 | RRF `DataTransfer.cpp:353-354`, `:1232-1235`; DSF `SPI.cs:1525-1537`, `Settings.cs:173` | A recovery that arms an odd number of extra exchanges leaves TfrRdy low; a new DCS expects it high and gives up after 500 ms. | the new DCS fails its first start ("Connection timeout while waiting for TfrRdy pin") | DCS start after a recovered fault (661 of 3234 faults) | E2 | R3 | printer | #99 | LU F9 |
-| <a id="of-s2"></a>S2 (OF) | RRF `DataTransfer.cpp:1258`, `:1434-1438`, `SbcInterface.cpp:171`; DSF `SPI.cs:1693-1711` | RRF resets the connection without a full reset, so TfrRdy stays low; DSF waits for it to go high, RRF waits without a timeout. | link stuck for good | two bit errors; builds without polling while disconnected (Duet 2 SBC; the MB6HC polls) | E2 | R3 | fork test | open | OF SBC link |
-| <a id="f4"></a>F4 | exact BadResponse word 0xFEFEFEFE | That word in place of a header, data or a response sends the two sides down different paths. | connection resets and livelocks | that exact 32-bit pattern (very unlikely) | E2 | R3 | fork test | RRF #35 + #93 (negotiated) | LU F4 |
-| <a id="f5"></a>F5 | RRF `SbcInterface.cpp:165` (`TimeoutUnlimited`) | While not connected RRF waits without a timeout with TfrRdy low, and a new DCS waits for TfrRdy high. | deadlock at connect; needs a reset | builds without polling while disconnected | E2 | R3 | fork test | open | LU F5 |
-| <a id="f2"></a>F2 | RRF `DataTransfer.cpp:859`, `DataTransfer.h:192-196` | A bit error in DSF's header response makes RRF repeat the transfer while DSF moves on, so RRF sees a sequence mismatch. | connection reset; DSF invalidates everything pending | one bit error in DSF's response (each of its 32 bits) | E3 | R3 | fork test | #92 | LU F2 |
-| <a id="f6"></a>F6 | `DataTransfer` constructor, `ResetConnection(true)`; `DataTransfer.cpp:921`, `:872-874` | A restarted RRF numbers from 1; if DSF expects 1, the restart is not noticed. | DSF's packets of that transfer lost, unnoticed by both sides | RRF restart right after the 16-bit wrap (about 1 in 65536) | E3 | R3 | fork test | RRF #35 + #93 (negotiated) | LU F6 |
-| <a id="k7"></a>K7 | DSF `SPI.cs:442-477`, `:383-390`; RRF `SbcInterface.cpp:184-186`, `:257-288`, `DataTransfer.cpp:839-853`, `:1396-1443` | After a lost connection DSF sends the same TX again, and RRF processes the next transfer whose number follows, whichever session wrote it. | codes, InvalidateChannel or MacroStarted of the old session run after DSF cancelled them | lost connection | E3 | R3 | read | open | OF v7 contract |
-| <a id="of-s3"></a>S3 (OF) | DSF `SPI.cs:1655-1670`, `Writer.cs:729`; RRF `SbcInterface.cpp:1298-1310` | DSF writes a StringHeader before the key, RRF reads the key from the start of the data. | RRF never recognises ObjectModelKeyChanged; `NetworkUpdated()`, `VolumesUpdated()` never called from the SBC | every ObjectModelKeyChanged | E4 | R2 | fork test | open | OF SBC link |
-| <a id="f10"></a>F10 | RRF `DataTransfer.cpp:451`, `SbcInterface.cpp:120-121` | After an RRF reset DSF takes the falling TfrRdy edge in the boot window as the signal for its pending exchange. | about 40 % of watchdog recoveries take 4 s longer (a second reset) | RRF reset | E4 | R3 | printer | RRF #36 | LU F10 |
-| <a id="of-p2"></a>P2 (OF) | plain link, stop path | Two bit errors delay the stop through RRF's transfer timeout and disconnect. | the stop reaches RRF after about 500 ms | two bit errors on the plain link during M112 | E4 | R3 | fork test | #137 | OF Stop path (text in OF at 384138dd) |
-| <a id="of-s8"></a>S8 (OF) | DSF writes the next code before it reads the resend request | A code that RRF refused for lack of buffer space can be overtaken by a later code of its channel. | codes of a channel out of order | not shown | E3 | R5 | read | open | OF SBC link |
-
-Reproducers: P4 (OF) `TriggerMacroRunsOrRrfStops`; F3 `SingleCorruptedExchange` (case: lab F-3 with `--plain-link`); F9 `DcsStartsAfterRecoveredFault`; S2 (OF) `Fuzz.SpiLinkFuzz.StuckWithoutPolling`; F4, F5, F2 `SingleCorruptedExchange`; F6 `RrfRestart`; S3 (OF) `SPI.LinkServiceOverSpi.ObjectModelKeyChangedIsReadByRrf`; F10 `ExtendedLinkNoticesEveryRebootQuickly`; P2 (OF) `SPI.StopPath.EmergencyStopReachesRrfWithin100Ms`.
-Neither: K7, S8 (OF).
-
-### Channels, macros and aborts (RRF SbcInterface ↔ DSF Processor and LinkService)
-
-| ID | Function / file:line | What goes wrong | Seen as | Reached by | Eff | Reach | Evidence | Fork fix | Detail |
-|---|---|---|---|---|---|---|---|---|---|
-| <a id="t11-resend"></a>T11 (resend) | RRF `GCodes.cpp:540`, `GCodeBuffer.cpp:1252`, `:1263`, `SbcInterface.cpp:45`, `:857`, `:860`, `:1300`; DSF `Processor.cs:867-870`, `SPI.cs:737` | During a macro wait RRF cannot lock the buffer within 10 ms and asks for InvalidateChannel again; DSF has gone on, so the copy drops later codes or ends a later macro wait. | "Resending packet #0 (request InvalidateChannel)", "… none was requested"; next code never answered; channel blocked until DCS restarts | abort while an M98 waits for its macro | E2 | R3 | printer | #161 | DU T11 |
-| <a id="k5"></a>K5 | DSF `Processor.cs:358-364`, `:1587-1609`, `LinkService.cs:466` (@412e5ff6) | A MacroFileClosed set just before a link loss is written in the first exchange of the new connection, and DSF pops its base level. | "Stack underrun"; the link thread and DCS end | a macro closes in the last exchange before a link loss (e.g. a DCS restart) | E2 | R3 | read | RRF #47 | OF v7 contract |
-| <a id="k34"></a>K34 | DSF `MCodeHandler.cs:104-120`, `:123-126`, `LinkInterface.cs:573-582`, `Processor.cs:1750-1763` (@412e5ff6, upstream 77684383); RRF `GCodes3.cpp:1414-1432` (7e95567976) | The cancel of a held job pops DSF's job channels with PrintPaused before RRF has done anything, and no InvalidateChannel draws a boundary. | a late MacroFileClosed gives "Stack underrun" and ends the link thread; a late ExecuteMacro starts at the base level; a late reply completes a newer code | M0/M1/M2 from another channel while the job is held (RRF feed hold, 3.7-ch e7e30e13f3), with packets on their way | E2 | R3 | read | open | OF epoch reviews |
-| <a id="k24"></a>K24 | RRF `SbcMessageFormats.h:31`, `SbcInterface.cpp:358-364`; DSF `Settings.cs:245-248` | RRF refuses a Code over 384 bytes on every copy without an error; DSF allows a larger `MaxCodeBufferSize`. | DSF resends forever, the channel stays blocked | `MaxCodeBufferSize` above 384 in config.json | E2 | R4 | read | open | OF v7 contract |
-| <a id="k18"></a>K18 | DSF `Processor.cs:914-915` (@412e5ff6) | Replies of a code that RRF still ran can follow RRF's own untagged abort of all files. | they complete DSF's next code or are logged as out of order | RRF aborts all files while a code runs | E3 | R3 | read | #167 + RRF #47 (both sides) | OF v7 contract |
-| <a id="k17"></a>K17 | DSF `Processor.cs:1383-1388`; RRF `SbcInterface.cpp:1389`, `:1514-1518`, `DataTransfer.cpp:1491-1496`, `:1545-1549` | DSF takes `BufferedCodes[0]` as the requester, but RRF can write the smaller ExecuteMacro while an earlier reply does not fit. | the macro is attributed to the wrong code | 19 to 31 free bytes (narrow window) | E3 | R3 | read | open | OF v7 contract |
-| <a id="k22"></a>K22 | RRF `SbcInterface.cpp:1145-1285`, `:2331-2336`; DSF `LinkService.cs:1152-1494` | File results carry no id; after RRF's 3 s timeout a late result answers the next request. | wrong file result | slow file system (DSF serves file requests on the link thread) | E3 | R3 | read | open | OF v7 contract |
-| <a id="k23"></a>K23 | RRF `GCodeBuffer.cpp:1263-1274`, `SbcInterface.cpp:850-853`, `:383`, `:567-576` | After RRF's 3 s macro timeout, late answers act on the current level. | "none was requested"; late codes run at the caller's level; DSF stays one level deeper | macro start slower than 3 s | E3 | R3 | read | open | OF v7 contract |
-| <a id="k4"></a>K4 | RRF `SbcInterface.cpp:326-330`; DSF `LinkService.cs:611-701` | Unknown request types are dropped without an error: RRF ends its read loop, DSF's switch has no default. | the rest of the transfer, codes included, is neither processed nor refused | unknown request type (32 or more, not 0x4D50) | E3 | R4 | read | open | OF v7 contract |
-| <a id="t12"></a>T12 | DSF `Processor.AbortAllFilesAsync` `:722`, `:770`, `:1218-1232`; RRF `SbcInterface.cpp:865-866`, `:1450`, `GCodes.cpp:722` | The abort pops all macro files at once, while RRF still reports a macro that it closed just before. | "Stack underrun on channel Telnet"; DCS exits | `abort` while RRF closes a macro on the same channel; not shown upstream (printer case used the IPC command) | E2 | R5 | printer | #158 + RRF #45 | DU T12 |
-| <a id="k13"></a>K13 | DSF `Executed.cs:170-230` | DSF answers a DoCode only when it has a result; RRF's GB stays "executing on SBC" without a timeout. | the channel takes no further text input | not shown (which cancellations reach it is not listed) | E2 | R5 | read | RRF #47 (abort, link loss); rest open | OF v7 contract (and its correction) |
-
-Reproducers: T11 (resend) `TriggerFuzz.CodesAfterAnAbortWaitUntilRrfHasProcessedIt`, `MacroRequestBetweenTwoCopiesOfAnAbortIsDiscarded`; T12 `TriggerFuzz.DcsKeepsRunningWhenAnAbortCrossesAMacroFileClosal`.
-Neither: K5, K34, K24, K18, K17, K22, K23, K4, K13.
 
 ## Origin not checked
 
