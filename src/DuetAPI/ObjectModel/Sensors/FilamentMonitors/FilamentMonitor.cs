@@ -66,6 +66,41 @@ public partial class FilamentMonitor : ModelObject, IDynamicModelObject
     private FilamentMonitorType _type = FilamentMonitorType.Unknown;
 
     /// <summary>
+    /// Read the type of a filament monitor as the <see cref="Type"/> property reads it, which also takes another case and the number of the value.
+    /// The class is chosen by this value, so that the class and the property never disagree
+    /// </summary>
+    /// <param name="value">Value of the type</param>
+    /// <returns>Type or null if it is none</returns>
+    private static FilamentMonitorType? ReadType(JsonElement value)
+    {
+        try
+        {
+            return value.Deserialize(ObjectModelContext.Default.FilamentMonitorType);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Read the type of a filament monitor as the <see cref="Type"/> property reads it
+    /// </summary>
+    /// <param name="reader">Reader at the value of the type</param>
+    /// <returns>Type or null if it is none</returns>
+    private static FilamentMonitorType? ReadType(ref Utf8JsonReader reader)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize(ref reader, ObjectModelContext.Default.FilamentMonitorType);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Update this instance from a given JSON element
     /// </summary>
     /// <param type="jsonElement">Element to update this intance from</param>
@@ -81,8 +116,8 @@ public partial class FilamentMonitor : ModelObject, IDynamicModelObject
 
         if (jsonElement.TryGetProperty("type", out JsonElement nameProperty))
         {
-            string? type = nameProperty.GetString();
-            if (type is "laser")
+            FilamentMonitorType? type = ReadType(nameProperty);
+            if (type is FilamentMonitorType.Laser)
             {
                 if (this is not LaserFilamentMonitor)
                 {
@@ -90,7 +125,7 @@ public partial class FilamentMonitor : ModelObject, IDynamicModelObject
                     return newInstance.UpdateFromJson(jsonElement, ignoreSbcProperties);
                 }
             }
-            else if (type is "pulsed")
+            else if (type is FilamentMonitorType.Pulsed)
             {
                 if (this is not PulsedFilamentMonitor)
                 {
@@ -98,7 +133,7 @@ public partial class FilamentMonitor : ModelObject, IDynamicModelObject
                     return newInstance.UpdateFromJson(jsonElement, ignoreSbcProperties);
                 }
             }
-            else if (type is "rotatingMagnet")
+            else if (type is FilamentMonitorType.RotatingMagnet)
             {
                 if (this is not RotatingMagnetFilamentMonitor)
                 {
@@ -158,8 +193,8 @@ public partial class FilamentMonitor : ModelObject, IDynamicModelObject
 
         if (hasKey)
         {
-            string? type = keyReader.GetString();
-            if (type is "laser")
+            FilamentMonitorType? type = ReadType(ref keyReader);
+            if (type is FilamentMonitorType.Laser)
             {
                 if (this is not LaserFilamentMonitor)
                 {
@@ -167,7 +202,7 @@ public partial class FilamentMonitor : ModelObject, IDynamicModelObject
                     return newInstance.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
                 }
             }
-            else if (type is "pulsed")
+            else if (type is FilamentMonitorType.Pulsed)
             {
                 if (this is not PulsedFilamentMonitor)
                 {
@@ -175,7 +210,7 @@ public partial class FilamentMonitor : ModelObject, IDynamicModelObject
                     return newInstance.UpdateFromJsonReader(ref reader, ignoreSbcProperties, scope);
                 }
             }
-            else if (type is "rotatingMagnet")
+            else if (type is FilamentMonitorType.RotatingMagnet)
             {
                 if (this is not RotatingMagnetFilamentMonitor)
                 {

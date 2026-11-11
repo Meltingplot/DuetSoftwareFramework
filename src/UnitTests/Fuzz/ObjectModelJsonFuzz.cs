@@ -498,6 +498,106 @@ public class ObjectModelJsonFuzz
         Assert.That(JsonSerializer.Serialize(readerModel, ObjectModelContext.Default.ObjectModel), Is.EqualTo(JsonSerializer.Serialize(elementModel, ObjectModelContext.Default.ObjectModel)));
     }
 
+    private static IEnumerable<TestCaseData> TypeKeysInOtherSpellings()
+    {
+        static object? FilamentMonitor(ObjectModel model) => model.Sensors.FilamentMonitors[0];
+        static object? Screen(ObjectModel model) => ((MainBoard)model.Boards[0]).DirectDisplay?.Screen;
+        static TestCaseData Monitor(string type, Type expected) =>
+            new TestCaseData($"{{\"sensors\":{{\"filamentMonitors\":[{{\"type\":{type}}}]}}}}", (Func<ObjectModel, object?>)FilamentMonitor, expected).SetName($"{{m}}(filament monitor {type.Replace('"', '\'')})");
+        static TestCaseData Display(string controller, Type expected) =>
+            new TestCaseData($"{{\"boards\":[{{\"directDisplay\":{{\"screen\":{{\"controller\":{controller}}}}}}}]}}", (Func<ObjectModel, object?>)Screen, expected).SetName($"{{m}}(screen {controller.Replace('"', '\'')})");
+
+        yield return Monitor("\"rotatingMagnet\"", typeof(RotatingMagnetFilamentMonitor));
+        yield return Monitor("\"rotatingMagnEt\"", typeof(RotatingMagnetFilamentMonitor));
+        yield return Monitor("\"LASER\"", typeof(LaserFilamentMonitor));
+        yield return Monitor("\"2\"", typeof(PulsedFilamentMonitor));
+        yield return Monitor("2", typeof(PulsedFilamentMonitor));
+        yield return Monitor("\"simple\"", typeof(FilamentMonitor));
+        yield return Monitor("\"SIMPLE\"", typeof(FilamentMonitor));
+        yield return Monitor("\"Unknown\"", typeof(FilamentMonitor));
+        yield return Display("\"ST7567\"", typeof(DirectDisplayScreenST7567));
+        yield return Display("\"st7567\"", typeof(DirectDisplayScreenST7567));
+        yield return Display("\"1\"", typeof(DirectDisplayScreenST7567));
+        yield return Display("1", typeof(DirectDisplayScreenST7567));
+        yield return Display("\"st7920\"", typeof(DirectDisplayScreen));
+        yield return Display("\"ILI9488\"", typeof(DirectDisplayScreen));
+    }
+
+    /// <summary>
+    /// The class of a filament monitor and of a screen follows the same key as their Type and Controller property. The property is read by the
+    /// converter of its enumeration, which also takes another case and the number of the value. The class was chosen by comparing the text, so
+    /// "rotatingMagnEt" gave a FilamentMonitor of the base class whose Type was RotatingMagnet: its own properties were missing, and a model made
+    /// from its JSON had a RotatingMagnetFilamentMonitor instead. Finding O7 of design/open-findings.md; found by MutatedJson with seed 2 and
+    /// 50000 inputs. RRF writes the names as the comparison expected them (FilamentMonitors/*.h, GetTypeText)
+    /// </summary>
+    /// <param name="json">Update with one filament monitor or screen</param>
+    /// <param name="select">Get that object from the model</param>
+    /// <param name="type">Class that belongs to the value the property gets</param>
+    [TestCaseSource(nameof(TypeKeysInOtherSpellings))]
+    public void ClassFollowsTheTypeProperty(string json, Func<ObjectModel, object?> select, Type type)
+    {
+        ObjectModel elementModel = new(), readerModel = new(), copy = new();
+        using (JsonDocument document = JsonDocument.Parse(json))
+        {
+            elementModel.UpdateFromJson(document.RootElement, false);
+        }
+        Utf8JsonReader reader = new(Encoding.UTF8.GetBytes(json));
+        reader.Read();
+        readerModel.UpdateFromJsonReader(ref reader, false);
+
+        Assert.That(select(elementModel), Is.TypeOf(type), "UpdateFromJson");
+        Assert.That(select(readerModel), Is.TypeOf(type), "UpdateFromJsonReader");
+        string serialized = JsonSerializer.Serialize(elementModel, ObjectModelContext.Default.ObjectModel);
+        Assert.That(JsonSerializer.Serialize(readerModel, ObjectModelContext.Default.ObjectModel), Is.EqualTo(serialized));
+
+        // A model made from the JSON of this one is the same
+        using (JsonDocument document = JsonDocument.Parse(serialized))
+        {
+            copy.UpdateFromJson(document.RootElement, false);
+        }
+        Assert.That(select(copy), Is.TypeOf(type), "Round trip");
+        Assert.That(JsonSerializer.Serialize(copy, ObjectModelContext.Default.ObjectModel), Is.EqualTo(serialized));
+    }
+
+    /// <summary>
+    /// A type that the enumeration does not know still fails with a JsonException, and with a handler for OnDeserializationFailed, as in DCS,
+    /// the object keeps the base class and its type
+    /// </summary>
+    [Test]
+    public void UnknownTypeKeyIsHandledAsBefore()
+    {
+        const string json = "{\"sensors\":{\"filamentMonitors\":[{\"type\":\"nonsense\",\"status\":\"ok\"}]}}";
+        using JsonDocument document = JsonDocument.Parse(json);
+        Assert.Throws(Is.InstanceOf<JsonException>(), () => new ObjectModel().UpdateFromJson(document.RootElement, false));
+        Assert.Throws(Is.InstanceOf<JsonException>(), () =>
+        {
+            Utf8JsonReader reader = new(Encoding.UTF8.GetBytes(json));
+            reader.Read();
+            new ObjectModel().UpdateFromJsonReader(ref reader, false);
+        });
+
+        DeserializationFailedEventHandler handler = delegate { };
+        ObjectModel.OnDeserializationFailed += handler;
+        try
+        {
+            ObjectModel elementModel = new(), readerModel = new();
+            elementModel.UpdateFromJson(document.RootElement, false);
+            Utf8JsonReader reader = new(Encoding.UTF8.GetBytes(json));
+            reader.Read();
+            readerModel.UpdateFromJsonReader(ref reader, false);
+            foreach (ObjectModel model in (ObjectModel[])[elementModel, readerModel])
+            {
+                Assert.That(model.Sensors.FilamentMonitors[0], Is.TypeOf<FilamentMonitor>());
+                Assert.That(model.Sensors.FilamentMonitors[0]!.Type, Is.EqualTo(FilamentMonitorType.Unknown));
+                Assert.That(model.Sensors.FilamentMonitors[0]!.Status, Is.EqualTo(FilamentMonitorStatus.Ok));
+            }
+        }
+        finally
+        {
+            ObjectModel.OnDeserializationFailed -= handler;
+        }
+    }
+
     /// <summary>
     /// RRF reports NaN and infinity as null (ObjectModel::ReportFloat), so DCS never sends them either. A JSON number beyond the float range is
     /// read as infinity by JsonElement.GetSingle and Utf8JsonReader.GetSingle, the update accepts it and the model cannot be serialized any more:
