@@ -85,6 +85,7 @@ A partial line can only be a text line, because `GCodeBuffer::Put` clears `isBin
 The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the trigger tests of #129 found 9 more, and the stop path tests of #130 another 4.
 - **Fixed and removed from this list (2026-11-08):** H1 (#136), G2 (#132), I1 (#135), T2 (#134), T3 (#133), P1 and P2 (#137), the extended-link part of P4 (#138), H13 (upstream 5130ca43 through #143) and T1 (Meltingplot/RepRapFirmware#43 with #144). The lab printer showed each fix, and the stock build showed the bug (`design/lab-test-plan.md`, section 14, 2026-11-08).
 - **Fixed and removed from this list (2026-11-10):** O2 (#176; a value that does not fit the property type threw FormatException or IndexOutOfRangeException instead of `JsonException`). What stays: DCS skips such a property and logs it once per type (`DuetControlServer/Model/ObjectModel.cs:173-185`), but an item of a value list is not skipped in `UpdateFromJsonReader` (O1), and `UpdateService.ExecuteAsync` logs a JsonException and throws it again (`UpdateService.cs:373-376`), which ends its update loop. O6 (#177; an object with two different type keys, e.g. two `name` in `move.kinematics`, ended the process with a stack overflow in `UpdateFromJsonReader`. The last key decides now, as in `UpdateFromJson`; Kinematics, FilamentMonitor and DirectDisplayScreen). O7 (#179; a filament monitor or screen whose type key was spelled in another case or given as its number got the base class, while its `Type` or `Controller` property got the value, so its own properties were missing and a model made from its JSON differed. The class now follows the value that the property reads).
+- **Fixed and removed from this list (2026-11-11):** I3 (#181; an Executed interceptor with filters and AutoFlush, the DuetAPIClient default, blocked its channel for good, also after its client had exited; seen on the printer. The flush for a code in the Executed stage waited for that stage itself, `ChannelProcessor.FlushAsync`. It waits for nothing now, because nothing is ahead of such a code; this also covers the Flush command of an Executed interceptor).
 - **The others:** each has an `[Explicit]` test in `src/UnitTests` that reproduces it and fails today. Run one by its exact name, e.g. `dotnet test src/UnitTests/bin/Debug/net10.0/UnitTests.dll --filter "FullyQualifiedName=UnitTests.Codes.TriggerMacros.TriggerChannelWorksAfterInvalidationDuringTriggerRequest"`. Once a finding is fixed, remove the `[Explicit]` of its test and this entry.
 
 - **Line numbers:** DSF `v3.7-dev` at c6d225f2. The production code there is the same as at d576ee9e, where the tests started. Entries added on 2026-11-08 cite DSF at 9e6449d1. RRF `3.7-dev` at cde4e4fa1 (3.7.0+1.mp.8).
@@ -93,9 +94,8 @@ The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the tr
 
 ### Highest priority
 
-1. **I3** An Executed interceptor with filters blocks its channel for good. Printer.
-2. **O3** and **O4** An out-of-range float or a global string with invalid UTF-8 makes the object model unserializable, so model queries, subscriptions and DWS fail.
-3. **P4** (plain link) A trigger macro can get lost after a reconnect while RRF keeps running. The fix is case 2 of #57, which is on hold.
+1. **O3** and **O4** An out-of-range float or a global string with invalid UTF-8 makes the object model unserializable, so model queries, subscriptions and DWS fail.
+2. **P4** (plain link) A trigger macro can get lost after a reconnect while RRF keeps running. The fix is case 2 of #57, which is on hold.
 
 ### SBC link (#122)
 
@@ -205,10 +205,6 @@ Open questions:
   - With the filter `M10*`, comments and codes like `G4 P0` fail with `ArgumentOutOfRangeException` (`CodeInterception.cs:242-243`).
   - The interceptor stayed registered after its client had exited, until a code matching the filter came along.
   - Tests: `IpcInterceptionStages.WildcardFilterLongerThanAComment`, `WildcardFilterLongerThanTheCodeOutlivesTheClient`, `IpcInterception.WildcardFilterLongerThanTheCode`.
-- **I3. An Executed interceptor with filters and AutoFlush (the DuetAPIClient default) deadlocks its channel for good.**
-  - Printer: M115 on Telnet got no reply, even after the client had exited. Nothing was logged, and only a DCS restart helped.
-  - Cause: `CodeInterception.cs:263` flushes the channel, and `ChannelProcessor.cs:288` waits for the Executed stage, which is busy with this very code.
-  - Tests: `IpcInterceptionStages.ExecutedInterceptorWithAutoFlushBlocksTheChannelAfterTheClientHasGone`, `IpcInterception.ExecutedCodesWithAutoFlush`.
 - **I4. Code stream replies come out of order when BufferSize is above 1** (`CodeStream.cs:179-220`). Test: `IpcCodeStreamReplies.RepliesStayInTheOrderOfTheCodes`.
 - **I5. A failing code in a code stream cancels the next code, and its reply is lost.** The code object is reused (`CodeStream.cs:169, 212-219`, `CodeProcessor.cs:277-285`). Test: `FailedCodeKeepsTheReplyOfTheNextCode`.
 - **I6. `job.layers` still reaches subscribers with API version 10 or older.** `nameof(Layers)` is compared with the JSON name "layers" (`ModelSubscription.cs:495`). Test: `IpcSubscriptionConsistency.JobLayersAreNotSentToOutdatedClients`.

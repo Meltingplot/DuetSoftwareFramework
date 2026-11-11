@@ -252,8 +252,8 @@ public class IpcInterceptionStages
     public async Task ExecutedStageResolveReplacesTheResult()
     {
         // The Executed stage passes the code after it has been executed and keeps what the interceptor left in code.Result (Executed.cs:155-167 appends the newline first, 169-221 uses the result),
-        // so a resolved code replies with the content of Resolve (CodeInterception.cs:298-301). AutoFlush is off, see IpcInterception.ExecutedCodesWithAutoFlush
-        using InterceptConnection executed = await ConnectAsync(InterceptionMode.Executed, [CodeChannel.Telnet], ["M7506"], autoFlush: false);
+        // so a resolved code replies with the content of Resolve (CodeInterception.cs:298-301)
+        using InterceptConnection executed = await ConnectAsync(InterceptionMode.Executed, [CodeChannel.Telnet], ["M7506"]);
         Task<string> reply = StartCode("M7506", CodeChannel.Telnet);
         Code code = await ReceiveAsync(executed);
         Assert.That(code.Result?.Content, Is.EqualTo("from firmware\n"));
@@ -322,17 +322,16 @@ public class IpcInterceptionStages
     }
 
     /// <summary>
-    /// Confirmed on the printer (DSF 3.7.0+mp.13, 2026-11-07): with an Executed interceptor that had a filter and the DuetAPIClient default
+    /// Seen on the printer (DSF 3.7.0+mp.13, 2026-11-07): with an Executed interceptor that had a filter and the DuetAPIClient default
     /// AutoFlush=true, M115 on Telnet got no reply, the channel stayed blocked after the client process had exited, other channels were fine
     /// and nothing was logged; only a DCS restart cleared it. CodeInterception.InterceptAsync flushes the channel before it passes the code
-    /// (CodeInterception.cs:263), and for a code in the Executed stage ChannelProcessor.FlushAsync waits for every stage including Executed
-    /// (ChannelProcessor.cs:288) to become idle (PipelineStackItem.FlushAsync), but that stage is busy with this very code. The code is never
-    /// sent, so the processor never does I/O on its socket and does not notice that the client is gone either.
+    /// (CodeInterception.cs:263), and for a code in the Executed stage ChannelProcessor.FlushAsync waited for every stage including Executed
+    /// to become idle (PipelineStackItem.FlushAsync), but that stage is busy with this very code. The code was never sent, so the processor
+    /// never did I/O on its socket and did not notice that the client was gone either.
     /// See <see cref="IpcInterception.ExecutedCodesWithAutoFlush"/> for the interceptor side
     /// </summary>
     [Test]
-    [Explicit("Bug: an Executed interceptor with filters and AutoFlush blocks its code channel for good, also after the client has gone")]
-    public async Task ExecutedInterceptorWithAutoFlushBlocksTheChannelAfterTheClientHasGone()
+    public async Task ChannelWorksAfterAnExecutedInterceptorWithAutoFlushHasGone()
     {
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware => firmware.OnCode("M115", _ => FakeReply.Ok("FIRMWARE_NAME: RepRapFirmware")), ipc: true);
         InterceptConnection interceptor = await ConnectAsync(host, InterceptionMode.Executed, [CodeChannel.Telnet], ["M115"]);
