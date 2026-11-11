@@ -237,6 +237,27 @@ Samples:
   M409 K"tools[0].offsets"
   G10 P0 X0                    ; restores the model
   ```
+
+Reproducers: O1 (LU) `VerboseFieldsAfterReset`; O1 (OF) `Fuzz.ObjectModelJsonFuzz.ScalarListItemIsSkippedTheSameWayByBothUpdateMethods`; O5 `ObjectPropertyWithArrayIsReadLikeUpdateFromJson`.
+Neither: O6, O2 (rest), O2, O7, [O4 side bug].
+
+### DuetWebServer
+
+| ID | Function / file:line | What goes wrong | Seen as | Reached by | Eff | Reach | Evidence | Fork fix | Detail |
+|---|---|---|---|---|---|---|---|---|---|
+| <a id="h3"></a>H3 | `RepRapFirmwareEndpoints.cs:261-285` | rr_upload writes into the target; RRF and DWS's own PUT use a `.part` file. | a failed upload deletes the file it was meant to replace | rr_upload with a wrong crc32 | E3 | R3 | printer | open | OF HTTP |
+| <a id="h2"></a>H2 | `SessionStorage.cs:404`, `:420-422`; DCS `Settings.cs:116` | Each expiry opens its own IPC connection; the DCS backlog is 4 and there is no retry. | expired sessions stay in DCS ("Failed to unregister … (11) Resource temporarily unavailable") | many sessions expiring at once (40 logins left 4) | E4 | R2 | printer | open | OF HTTP |
+| <a id="h5"></a>H5 | `MachineEndpoints.cs:294`, `:504` | `UrlPathEncode` stops at `?`, so the Location header throws. | unhandled 500, the item is created anyway | PUT /machine/directory or /machine/file with `?` and a non-ASCII character | E4 | R2 | printer | open | OF HTTP |
+| <a id="h6"></a>H6 | `WebSocketEndpoint.cs:283-287`; `CustomEndpointMiddleware.cs:156-160` | DWS never answers a WebSocket close frame. | clients see 1006 | client closes the WebSocket | E4 | R2 | printer | open | OF HTTP |
+| <a id="h10"></a>H10 | rr_gcode | Returns `{"bufferSpace":255,"err":0}` instead of `{"buff":N}` (RRF `HttpResponder.cpp:566`). | the PollConnector cannot send codes to DWS | rr_gcode | E4 | R2 | printer | open | OF HTTP |
+| <a id="h11"></a>H11 | rr_disconnect | Returns 204 instead of `{"err":0}`. | clients expecting RRF's reply | rr_disconnect | E4 | R2 | printer | open | OF HTTP |
+| <a id="h7"></a>H7 | `WebSocketEndpoint.cs:223-227`, `:240-243` | A cancelled task is not faulted. | no close message on the WebSocket when DWS stops | DWS stop | E4 | R2 | fork test | open | OF HTTP |
+| <a id="h8"></a>H8 | `ModelObserver.cs:120` vs `:178` | rr_ endpoints registered while DWS runs end up at `/machine/rr_/{path}`. | endpoint at the wrong URL | plugin registers an rr_ endpoint at run time | E4 | R2 | fork test | open | OF HTTP |
+| <a id="h9"></a>H9 | `RepRapFirmwareEndpoints.cs:112` | rr_connect always reports `sessionTimeout` 8000 instead of the setting. | clients that rely on it lose their session | rr_connect | E4 | R2 | fork test | open | OF HTTP |
+| <a id="h4"></a>H4 | `MachineEndpoints.cs:397` | `ReadFormAsync` is outside the try. | unhandled 500 | POST /machine/file/move with an invalid form | E4 | R4 | printer | open | OF HTTP |
+| <a id="h12"></a>H12 | rr_connect (`RepRapFirmwareEndpoints.cs:88-89`) | Every rr_connect adds another IP-based session; RRF does not register a second IP-based session for a client (`HttpResponder.cpp:803-808`). This may be intended. | one more session per call in the session list (5 → 8 on the printer) | repeated rr_connect from one client | E5 | R2 | printer | open | OF HTTP |
+
+Samples (with a session; `{key}` = the session key):
 - **H3** · seen on printer · expected: `0:/gcodes/keep.g` unchanged, `{"err":1}` · actual: the file is gone
   ```
   POST /rr_upload?name=0:/gcodes/keep.g&crc32=<crc32 that does not match the body>
@@ -253,7 +274,7 @@ Samples:
   ```
   GET /rr_disconnect
   ```
-- **H12** · seen on printer · expected: one session for the client · actual: one more per call
+- **H12** · seen on printer · RRF: a client keeps one IP-based session · DSF: one more session per call; possibly intended
   ```
   GET /rr_connect?password=secret    (three times from the same client)
   ```
