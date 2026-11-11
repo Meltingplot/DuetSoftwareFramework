@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -181,7 +182,23 @@ public partial class ObjectModel : DuetAPI.ObjectModel.ObjectModel, IDiagnostics
                 return;
             }
         }
-        _logger.LogError("Failed to deserialize {TypeName} -> {TargetType} from {JSON}", sender.GetType().Name, e.TargetType.Name, e.JsonValue.GetRawText());
+        _logger.LogError("Failed to deserialize {TypeName} -> {TargetType} from {JSON}", sender.GetType().Name, e.TargetType.Name, GetJsonText(e.JsonValue));
+    }
+
+    /// <summary>
+    /// Get the JSON text of a value that failed to be deserialized. Unlike GetRawText this does not throw if a string of the value
+    /// is not valid UTF-8, which is one reason for a value to fail; such bytes are replaced
+    /// </summary>
+    /// <param name="value">JSON value</param>
+    /// <returns>JSON text</returns>
+    private static string GetJsonText(JsonElement value)
+    {
+        using MemoryStream stream = new();
+        using (Utf8JsonWriter writer = new(stream, new JsonWriterOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }))
+        {
+            value.WriteTo(writer);
+        }
+        return Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length);
     }
 
     [GeneratedRegex(@"^Hardware\s*:\s*(\w+)", RegexOptions.IgnoreCase)]
@@ -854,7 +871,7 @@ public partial class ObjectModel : DuetAPI.ObjectModel.ObjectModel, IDiagnostics
 
             foreach (var kv in _deserializationErrors)
             {
-                builder.AppendLine($"- {kv.Value.Item1.Name} -> {kv.Key.Name} from {kv.Value.Item2.GetRawText()}");
+                builder.AppendLine($"- {kv.Value.Item1.Name} -> {kv.Key.Name} from {GetJsonText(kv.Value.Item2)}");
             }
         }
     }

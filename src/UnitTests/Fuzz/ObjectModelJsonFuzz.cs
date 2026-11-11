@@ -322,11 +322,6 @@ public class ObjectModelJsonFuzz
         {
             return JsonSerializer.Serialize(model, ObjectModelContext.Default.ObjectModel);
         }
-        catch (JsonException e) when (e.InnerException is InvalidOperationException { InnerException: DecoderFallbackException })
-        {
-            // Known bug, see InvalidUtf8KeepsTheModelSerializable
-            return null;
-        }
         catch (Exception e)
         {
             throw new FuzzFailure("serialize", $"Model cannot be serialized after {after}: {e.GetType().Name}: {e.Message}\n{e.StackTrace}");
@@ -350,8 +345,11 @@ public class ObjectModelJsonFuzz
                 throw new FuzzFailure("round trip exception", $"Serialized model cannot be applied again: {e.GetType().Name}: {e.Message}\n{json}");
             }
         }
+        // Bytes that are not valid UTF-8 are written as the escape of the replacement character. The copy holds that character itself,
+        // which is written as it is, so only the spelling of that one character may differ
+        static string WithReplacementCharacter(string text) => text.Replace("\\uFFFD", "\uFFFD");
         string? copyJson = SerializeChecked(copy, "round trip");
-        if (copyJson is not null && copyJson != json)
+        if (copyJson is not null && WithReplacementCharacter(copyJson) != WithReplacementCharacter(json))
         {
             string? difference = IPC.IpcSubscription.FirstDifference(JsonNode.Parse(json), JsonNode.Parse(copyJson), string.Empty);
             throw new FuzzFailure("round trip", $"Serialize, update and serialize again differs at {difference}");
@@ -628,11 +626,11 @@ public class ObjectModelJsonFuzz
 
     /// <summary>
     /// RRF copies the bytes of strings into its JSON as they are (OutputBuffer::EncodeChar escapes only control characters, quotes and
-    /// backslashes), so a global string set from a host that does not send UTF-8 reaches DCS as invalid UTF-8. UpdateService applies the
-    /// response with UpdateFromFirmwareJsonReader, which stores the value without checking it, and afterwards the model cannot be serialized
+    /// backslashes), so a global string that is not valid UTF-8 reaches DCS as it is. UpdateService applies the response with
+    /// UpdateFromFirmwareJsonReader, which stores the value without checking it, and afterwards the model could not be serialized.
+    /// It is written with the replacement character now, see Machine.InvalidUtf8. Finding O4 of design/open-findings.md
     /// </summary>
     [Test]
-    [Explicit("Bug: a global value with invalid UTF-8 is stored, after which the object model cannot be serialized")]
     public void InvalidUtf8KeepsTheModelSerializable()
     {
         byte[] global = [.. "{\"text\":\""u8, 0xE9, .. "\"}"u8];
