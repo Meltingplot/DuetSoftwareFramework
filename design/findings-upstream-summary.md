@@ -130,7 +130,7 @@ How the stock link behaves under faults, measured before the fork changed anythi
 | Plain link, DSF fixes only | about 850 bits | 3e-5 | 1e-4 (transfer 6409) |
 | Plain link, DSF fixes only | about 17,000 bits | 1e-6 | 1e-5 (transfer 1689, stuck) |
 
-With the extension the limit is about one flipped bit per transfer on average, which is where the retries no longer get a transfer through within the retry limit of 10. The plain link fails one to two orders of magnitude earlier, at 0.03 to 0.2 flipped bits per transfer, through the response words without a checksum.
+With the extension the link survived 0.5 and 0.85 flipped bits per transfer on average and failed at 1.7, which is where the retries no longer get a transfer through within the retry limit of 10. The plain link survived a bit error rate about 30 times lower: it held at 0.02 to 0.03 flipped bits per transfer and failed at 0.09 to 0.17, through the response words without a checksum.
 
 The census and the fuzz tests can be run as described under "Running the tests"; `LinkRecovery.TraceCase` prints the exchanges of a single case.
 
