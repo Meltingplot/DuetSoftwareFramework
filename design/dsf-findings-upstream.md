@@ -204,7 +204,8 @@ Checked on 2026-11-11 at DSF `upstream/v3.7-dev` f76ffc70; the line numbers of t
 - **Test:** `SPI.EmergencyStopCrossingMacroEnd.EmergencyStopWhileTheClosalOfAMacroIsPending`.
   - It runs the real DCS services against the fake firmware and fails without the fix: "RRF did not get the emergency stop, transfer thread Faulted Stack underrun on channel HTTP".
   - Run against upstream on 2026-11-11: the product code under `src` was byte-identical to f76ffc70 (`git diff upstream/v3.7-dev -- src ':!src/UnitTests'` empty), with the fork's fake firmware and this test added. The fake firmware needed its fork-only parts removed (the link capabilities and one parameter of `ResendPacket`); the test itself is unchanged. It failed with the same message in every run.
-  - A second test, written for this check and not in the repository, ran the same case in the generic host as `Program.cs` builds it. It showed the outcome: M112 replied with success, `state.status` was `halted`, RRF had received no `EmergencyStop`, the packet was left in DSF's transmit buffer, and the host stopped.
+  - A second test, written for this check (`design/k32-upstream/K32UpstreamHostOutcome.cs`), ran the same case in the generic host as `Program.cs` builds it. It showed the outcome: M112 replied with success, `state.status` was `halted`, RRF had received no `EmergencyStop`, the packet was left in DSF's transmit buffer, and the host stopped.
+  - `design/k32-upstream/reproduce.sh` repeats both runs on a checkout of f76ffc70; `design/k32-upstream/README.md` has the result.
 - **Not checked:** real RRF and a printer; the fake firmware models RRF writing the closal into the transfer before it reads the stop. Upstream commits after f76ffc70.
 
 ## Permissions and files
