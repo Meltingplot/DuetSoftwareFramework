@@ -154,15 +154,15 @@ public class IntrusiveCodes : LabTest
             Assert.That(await SendCodeAsync("G10 P0 X{1.7013e38 * 2}"), Does.Not.Contain("Error"));
             Assert.That(await SendCodeAsync("M409 K\"tools[0].offsets[0]\""), Does.Contain("3.403e+38"), "RRF does not report the offset as a number beyond the float range, so this run shows nothing");
 
-            // DSF gets the changed key with one of its next model updates. A new session needs the whole model, which could not be written before
-            await Task.Delay(TimeSpan.FromSeconds(3));
-            float modelOffset = float.NaN;
-            Assert.That(async () =>
-            {
-                await using DuetHttpSession session = await Lab.ConnectAsync();
-                modelOffset = Lab.Read(session, model => model.Tools[0]!.Offsets[0]);
-            }, Throws.Nothing, "The object model cannot be read any more");
-            Assert.That(modelOffset, Is.EqualTo(offset.Value), "The model does not hold the last valid offset");
+            // DSF answers a key without an index from its own model, and only once that model is up to date: it has got the offset from RRF by then
+            JsonElement tools = await QueryAsync("tools");
+            Assert.That(tools[0].GetProperty("offsets")[0].GetSingle(), Is.EqualTo(offset.Value), "The model of DSF does not hold the last valid offset");
+
+            // A new session gets the whole model, which could not be written before. Its model is empty until that first update has arrived
+            await using DuetHttpSession session = await Lab.ConnectAsync();
+            Assert.That(await Lab.TryWaitForModelAsync(session, model => model.Tools.Count > 0 && model.Tools[0] is Tool tool && tool.Offsets.Count > 0, TimeSpan.FromSeconds(30)),
+                "The object model cannot be read any more");
+            Assert.That(Lab.Read(session, model => model.Tools[0]!.Offsets[0]), Is.EqualTo(offset.Value), "The model of a new session does not hold the last valid offset");
         }
         finally
         {
