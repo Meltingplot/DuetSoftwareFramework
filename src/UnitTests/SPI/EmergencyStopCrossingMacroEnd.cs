@@ -106,7 +106,8 @@ public class EmergencyStopCrossingMacroEnd
     /// <summary>
     /// M112 while RRF's main task has closed the macro but its SBC task writes the closal only into the transfer that carries the stop
     /// (FakeFirmware.ExchangeData, SbcInterface.cpp:1507-1511 at RRF ddec2d001). DSF has invalidated the codes by the time it processes that closal.
-    /// Whatever DSF does with it, the stop has reached RRF before
+    /// Whatever DSF does with it, the stop has reached RRF before. With the channel epoch the invalidation of the stop has armed every channel, so the
+    /// closal, which carries the epoch of the macro, is stale: it pops nothing and the transfer thread keeps running (see also EmergencyStopEpoch)
     /// </summary>
     [Test]
     public async Task EmergencyStopWhenRrfClosesAMacroInTheTransferOfTheStop()
@@ -135,6 +136,13 @@ public class EmergencyStopCrossingMacroEnd
         FakePacket closal = host.Firmware.GetSentPackets().Single(IsClosal);
         FakeSbcRequest stop = host.Firmware.GetReceivedRequests().Single(request => request.Request == SbcRequest.EmergencyStop);
         Assert.That(closal.Transfer, Is.EqualTo(stop.Transfer), "The closal did not come with the transfer of the stop");
+
+        // DSF has processed the closal once a later transfer is through. No code reaches RRF after the stop until it is reset, so the transfers show
+        // that the transfer thread is alive
+        int transfer = host.Firmware.TransferCount;
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.TransferCount > transfer + 5, Timeout), Is.True, $"No transfers after the closal, {LinkState(host)}");
+        Assert.That(LinkTask(host).IsCompleted, Is.False, LinkState(host));
+        Assert.That(StackDepth(http), Is.EqualTo(1));
         cts.Cancel();
     }
 

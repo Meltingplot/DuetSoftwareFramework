@@ -49,6 +49,12 @@ public sealed class SimpleCode(Codes.CodeFactory codeFactory, Model.ObjectModel 
     public bool IsFromFirmware { get; set; }
 
     /// <summary>
+    /// Tag of the channel epoch of the DoCode request, see <see cref="Code.FirmwareTag"/>. Only used internally
+    /// </summary>
+    [JsonIgnore]
+    internal ushort FirmwareTag { get; set; }
+
+    /// <summary>
     /// Parse codes from the given input string asynchronously
     /// </summary>
     /// <returns>Parsed G/M/T-codes</returns>
@@ -105,6 +111,7 @@ public sealed class SimpleCode(Codes.CodeFactory codeFactory, Model.ObjectModel 
                 if (IsFromFirmware)
                 {
                     code.Flags |= CodeFlags.IsPrioritized | CodeFlags.IsFromFirmware;
+                    code.FirmwareTag = FirmwareTag;
                     priorityCodes.Add(code);
                 }
                 // M108, M112, M122, M292, M25.1, and M999 (B0) always go to an idle channel so we (hopefully) get a low-latency response.

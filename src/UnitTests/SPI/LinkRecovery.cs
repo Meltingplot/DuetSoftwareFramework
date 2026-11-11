@@ -525,7 +525,7 @@ public partial class LinkRecovery
             rrf.ExchangeBudget = rrf.Exchanges + 5000;
             rrf.TimeBudget = rrf.Now + 10000;
 
-            if (activation && !dsf.WriteActivateLinkCapabilities(capabilities))
+            if (activation && !dsf.WriteActivateLinkCapabilities(capabilities, 0))
             {
                 return "DSF did not request the capabilities";
             }
@@ -533,7 +533,7 @@ public partial class LinkRecovery
             {
                 // The fake RRF records only the "dsf:N" part of a message
                 string payload = $"dsf:{++dsfId}";
-                if (dsf.WriteMessage(MessageTypeFlags.UsbMessage, payload + new string('y', padding)))
+                if (dsf.WriteMessage(MessageTypeFlags.UsbMessage, payload + new string('y', padding), 0))
                 {
                     dsfSent.Add(payload);
                 }
@@ -1464,14 +1464,14 @@ public partial class LinkRecovery
         // Perform a full transfer and read the payloads RRF sent. Returns whether the transfer was clean
         bool Transfer(bool dsfData, bool connecting = false, bool activation = false)
         {
-            if (activation && !dsf.WriteActivateLinkCapabilities(options.Capabilities))
+            if (activation && !dsf.WriteActivateLinkCapabilities(options.Capabilities, 0))
             {
                 throw new InvalidOperationException("DSF did not request the capabilities");
             }
             if (dsfData)
             {
                 string payload = $"dsf:{++dsfId}";
-                if (dsf.WriteMessage(MessageTypeFlags.UsbMessage, payload))
+                if (dsf.WriteMessage(MessageTypeFlags.UsbMessage, payload, 0))
                 {
                     dsfSent.Add(payload);
                 }

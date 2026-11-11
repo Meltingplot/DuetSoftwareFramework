@@ -86,7 +86,7 @@ public class FakeFirmwareProtocolTests
     public void ReplyLatency()
     {
         Transfer();
-        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P1")), Is.True);
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P1"), 0), Is.True);
 
         // The SBC task stores the code after the transfer that sent it, the main task executes it before the next transfer
         // and the SBC task writes the reply after that one, so DSF receives it with the third transfer
@@ -102,15 +102,15 @@ public class FakeFirmwareProtocolTests
     public void VariableRequestWhileWaitingForMacro()
     {
         Transfer();
-        _firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M98 P\"test.g\""));
+        _firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M98 P\"test.g\""), 0);
         Assert.That(NextPackets().Single().Request, Is.EqualTo(Request.ExecuteMacro));
 
         // The main task holds the mutex of the channel while it waits for the macro, so the variable request has to be sent again
-        _firmware.WriteSetVariable(CodeChannel.HTTP, true, "var.x", "1");
+        _firmware.WriteSetVariable(CodeChannel.HTTP, true, "var.x", "1", 0);
         Assert.That(NextPackets().Single().Request, Is.EqualTo(Request.ResendPacket));
 
         // Once the macro has been started, the resent request creates the variable in the frame of the macro
-        Assert.That(_firmware.WriteMacroStarted(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.WriteMacroStarted(CodeChannel.HTTP, 0), Is.True);
         Assert.That(NextPackets().Single().Request, Is.EqualTo(Request.ResendPacket));
         List<FakePacket> packets = NextPackets();
         Assert.That(packets.Single().Request, Is.EqualTo(Request.VariableResult));
@@ -119,7 +119,7 @@ public class FakeFirmwareProtocolTests
         Assert.That(_firmware.TryGetLocalVariable(CodeChannel.HTTP, "x", out object? value) ? value : null, Is.EqualTo(1));
 
         // The reply to M98 comes before the notification about the closed file, and the variable is gone afterwards
-        _firmware.WriteMacroCompleted(CodeChannel.HTTP, false);
+        _firmware.WriteMacroCompleted(CodeChannel.HTTP, false, 0);
         packets = NextPackets();
         Assert.That(packets.Select(packet => packet.Request), Is.EqualTo(new[] { Request.Message, Request.MacroFileClosed }));
         Assert.That(packets[0].RelatedCode?.Text, Is.EqualTo("M98 P\"test.g\""));
@@ -130,30 +130,30 @@ public class FakeFirmwareProtocolTests
     public void ResendBlocksRequestsOfSameType()
     {
         Transfer();
-        _firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M98 P\"test.g\""));
+        _firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M98 P\"test.g\""), 0);
         NextPackets();
-        _firmware.WriteSetVariable(CodeChannel.HTTP, true, "var.x", "1");
+        _firmware.WriteSetVariable(CodeChannel.HTTP, true, "var.x", "1", 0);
         Assert.That(NextPackets().Single().Request, Is.EqualTo(Request.ResendPacket));
 
         // SPI.cs does not write another request of a type that is being resent, else the order would change
-        Assert.That(_firmware.WriteSetVariable(CodeChannel.HTTP, true, "var.y", "2"), Is.False);
-        Assert.That(_firmware.WriteEvaluateExpression(CodeChannel.Telnet, "1"), Is.True);
+        Assert.That(_firmware.WriteSetVariable(CodeChannel.HTTP, true, "var.y", "2", 0), Is.False);
+        Assert.That(_firmware.WriteEvaluateExpression(CodeChannel.Telnet, "1", 0), Is.True);
     }
 
     [Test]
     public void MovementLock()
     {
         Transfer();
-        _firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.HTTP);
+        _firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.HTTP, 0);
         Assert.That(NextPackets().Single().Request, Is.EqualTo(Request.Locked));
 
         // Another channel has to wait until the lock is released, see GCodes::LockResource
-        _firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.Telnet);
+        _firmware.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.Telnet, 0);
         Assert.That(NextPackets().Single().Request, Is.EqualTo(Request.ResendPacket));
         Assert.That(NextPackets().Single().Request, Is.EqualTo(Request.ResendPacket));
 
         // The resent lock request goes out before the unlock request because resends are written while the packets are read
-        _firmware.WriteUnlock(CodeChannel.HTTP);
+        _firmware.WriteUnlock(CodeChannel.HTTP, 0);
         Assert.That(NextPackets().Single().Request, Is.EqualTo(Request.ResendPacket));
         List<FakePacket> packets = NextPackets();
         Assert.That(packets.Single().Request, Is.EqualTo(Request.Locked));
@@ -164,8 +164,8 @@ public class FakeFirmwareProtocolTests
     public void CodesDiscardedAfterMacroRequest()
     {
         Transfer();
-        _firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M98 P\"test.g\""));
-        _firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P2"));
+        _firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M98 P\"test.g\""), 0);
+        _firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P2"), 0);
 
         // The macro request invalidates the channel, so RRF throws away the read-ahead code and DSF sends it again later
         Assert.That(NextPackets().Single().Request, Is.EqualTo(Request.ExecuteMacro));

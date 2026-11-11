@@ -256,10 +256,19 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// <param name="firstSequenceNumber">Sequence number of the first transfer</param>
     /// <param name="capabilities">Proposed change: capabilities RRF offers, which DSF activates with a request</param>
     /// <param name="disabledRules">Rules of the proposed changes that are switched off</param>
+    /// <param name="firstPackets">Packets that are in the first transfer, as RRF has written them after the last transfer of a connection that the SBC
+    /// then ended, e.g. by a restart of DCS that RRF has not noticed yet. Packets passed to <see cref="SendPacket"/> go out with the second transfer
+    /// at the earliest, because the data of the first one is set up here</param>
     public FakeRrfSpi(Func<int, bool> sendData, SequenceMismatchHandling sequenceMismatchHandling = SequenceMismatchHandling.ConnectionReset,
         bool pollWhileDisconnected = false, bool rrfFirstOnTie = true, byte underrunByte = 0, bool phaseGuard = false, bool sequenceGuard = false, ushort firstSequenceNumber = 1,
-        LinkCapabilities capabilities = LinkCapabilities.None, RrfRule disabledRules = RrfRule.None)
+        LinkCapabilities capabilities = LinkCapabilities.None, RrfRule disabledRules = RrfRule.None,
+        IEnumerable<(FirmwareRequest Request, byte[] Payload, ushort Tag)>? firstPackets = null)
     {
+        foreach ((FirmwareRequest request, byte[] payload, ushort tag) in firstPackets ?? [])
+        {
+            _packetsToSend.Enqueue((request, payload, tag, null));
+        }
+
         _offeredCapabilities = capabilities;
         _disabledRules = disabledRules;
         _phaseGuard = phaseGuard;
@@ -720,7 +729,13 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
     /// <param name="Payload">Packet data</param>
     /// <param name="Time">Virtual time at which RRF processed it</param>
     /// <param name="Exchange">Number of exchanges at that time</param>
-    public sealed record ProcessedPacket(SbcRequest Request, ushort Id, byte[] Payload, double Time, int Exchange);
+    public sealed record ProcessedPacket(SbcRequest Request, ushort Id, byte[] Payload, double Time, int Exchange)
+    {
+        /// <summary>
+        /// Header field ResendPacketId of the packet, which carries the tag of the channel epoch (design/sbc-link-v8-requirements.md CE-5)
+        /// </summary>
+        public ushort Tag { get; init; }
+    }
 
     private readonly List<ProcessedPacket> _processedPackets = [];
 
@@ -1399,7 +1414,7 @@ public sealed class FakeRrfSpi : ISpiDevice, IInputGpioPin
                     if (RecordPackets)
                     {
                         _receivedPackets.Add(((SbcRequest)packet.Request, packet.Id, payload));
-                        _processedPackets.Add(new((SbcRequest)packet.Request, packet.Id, payload, Now, Exchanges));
+                        _processedPackets.Add(new((SbcRequest)packet.Request, packet.Id, payload, Now, Exchanges) { Tag = packet.ResendPacketId });
                         Monitor.PulseAll(_packetLock);
                     }
                     foreach (var answer in Respond?.Invoke((SbcRequest)packet.Request, packet.Id, payload) ?? [])

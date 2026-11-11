@@ -78,7 +78,7 @@ public class ChannelProcessor
         StartMacro(startCode, m99, readAhead);
 
         // RRF does not reply to an M99 that requested a single file abort, it writes [abort][empty reply for the start code]
-        _processor.FilesAborted(false);
+        _processor.FilesAborted(false, false);
         Assert.That(IsCompleted(m99), Is.True);
         Assert.That(IsCompleted(readAhead), Is.False);
         Assert.That(_processor.BufferedCodes, Is.EqualTo(new[] { startCode }));
@@ -104,7 +104,7 @@ public class ChannelProcessor
 
         // Older RRF versions write [M99 reply][abort][empty reply for the start code]
         _processor.HandleReply(ReplyFlags, string.Empty);
-        _processor.FilesAborted(false);
+        _processor.FilesAborted(false, false);
         Code nextCode = MakeCode(98);
         _processor.BufferedCodes.Add(nextCode);
         _processor.HandleReply(ReplyFlags, string.Empty);
@@ -124,7 +124,7 @@ public class ChannelProcessor
         Code startCode = MakeCode(98), m99 = MakeCode(99), secondM99 = MakeCode(99);
         StartMacro(startCode, m99, secondM99);
 
-        _processor.FilesAborted(false);
+        _processor.FilesAborted(false, false);
         _processor.HandleReply(ReplyFlags, string.Empty);
 
         Assert.That(IsCompleted(m99), Is.True);
@@ -140,7 +140,7 @@ public class ChannelProcessor
         Code m99 = MakeCode(99);
         StartMacro(null, m99);
 
-        _processor.FilesAborted(false);
+        _processor.FilesAborted(false, false);
         Assert.That(IsCompleted(m99), Is.True);
         Assert.That(_processor.BufferedCodes, Is.Empty);
 
@@ -239,7 +239,7 @@ public class ChannelProcessor
     public void InvalidateStopsWaitingForPrintCompletion()
     {
         _processor.WaitForPrintCompletion();
-        _processor.Invalidate();
+        _processor.Invalidate(false);
         Assert.That(_processor.HandleReply(ReplyFlags, string.Empty), Is.False);
     }
 
@@ -315,7 +315,7 @@ public class ChannelProcessor
         StartMacro(startCode, macroCode);
 
         // e.g. after RRF has been reset
-        _processor.Invalidate();
+        _processor.Invalidate(false);
         Assert.That(IsCompleted(macroCode), Is.False);
         Assert.That(_processor.BufferedCodes, Is.Empty);
         Assert.That(_processor.Stack, Has.Count.EqualTo(1));

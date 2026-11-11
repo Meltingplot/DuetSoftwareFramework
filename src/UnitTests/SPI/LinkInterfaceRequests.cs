@@ -221,15 +221,15 @@ public class LinkInterfaceRequests
 
         // A code buffered ahead must not take the spare room, whichever channel it is on
         link.BufferSpace = spareRoom + 100;
-        Assert.That(link.SendCode(code, 100, false), Is.False);
+        Assert.That(link.SendCode(code, 100, false, 0), Is.False);
         Assert.That(link.BufferSpace, Is.EqualTo(spareRoom + 100));
-        Assert.That(link.SendCode(code, 99, false), Is.True);
+        Assert.That(link.SendCode(code, 99, false, 0), Is.True);
         Assert.That(link.BufferSpace, Is.EqualTo(spareRoom + 1));
-        Assert.That(link.SendCode(code, 1, false), Is.False);
+        Assert.That(link.SendCode(code, 1, false, 0), Is.False);
 
         // The next code of two channels without buffered codes still fits, even with the maximum size
-        Assert.That(link.SendCode(code, maxCodeSize, true), Is.True);
-        Assert.That(link.SendCode(code, maxCodeSize, true), Is.True);
+        Assert.That(link.SendCode(code, maxCodeSize, true, 0), Is.True);
+        Assert.That(link.SendCode(code, maxCodeSize, true, 0), Is.True);
         Assert.That(link.BufferSpace, Is.EqualTo(1));
         Assert.That(link.BytesReserved, Is.EqualTo(99 + 2 * maxCodeSize));
     }

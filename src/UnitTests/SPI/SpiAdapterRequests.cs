@@ -98,27 +98,27 @@ public class SpiAdapterRequests
     /// </summary>
     private Dictionary<SbcRequest, bool> WriteEveryRequest(SpiAdapter dsf) => new()
     {
-        [SbcRequest.Code] = dsf.WriteCode(CreateCode()),
-        [SbcRequest.GetObjectModel] = dsf.WriteGetObjectModel("state", "v"),
-        [SbcRequest.SetPrintFileInfo] = dsf.WritePrintFileInfo(new GCodeFileInfo { FileName = "0:/gcodes/print.gcode" }),
-        [SbcRequest.PrintStopped] = dsf.WritePrintStopped(PrintStoppedReason.UserCancelled),
-        [SbcRequest.MacroCompleted] = dsf.WriteMacroCompleted(CodeChannel.Trigger, false),
-        [SbcRequest.Unlock] = dsf.WriteUnlock(CodeChannel.SBC),
-        [SbcRequest.FileChunk] = dsf.WriteFileChunk([1, 2, 3], 3),
-        [SbcRequest.EvaluateExpression] = dsf.WriteEvaluateExpression(CodeChannel.SBC, "1+1"),
-        [SbcRequest.Message] = dsf.WriteMessage(MessageTypeFlags.UsbMessage, "hi"),
-        [SbcRequest.MacroStarted] = dsf.WriteMacroStarted(CodeChannel.Trigger),
-        [SbcRequest.InvalidateChannel] = dsf.WriteInvalidateChannel(CodeChannel.Trigger),
-        [SbcRequest.SetVariable] = dsf.WriteSetVariable(CodeChannel.SBC, true, "global.x", "1"),
-        [SbcRequest.DeleteLocalVariable] = dsf.WriteDeleteLocalVariable(CodeChannel.SBC, "x"),
-        [SbcRequest.CheckFileExistsResult] = dsf.WriteCheckFileExistsResult(true),
-        [SbcRequest.FileDeleteResult] = dsf.WriteFileDeleteResult(true),
-        [SbcRequest.FileListResult] = dsf.WriteFileListResult([], true),
-        [SbcRequest.OpenFileResult] = dsf.WriteOpenFileResult(1, 10),
-        [SbcRequest.FileReadResult] = dsf.WriteFileReadResult([1, 2], 2),
-        [SbcRequest.FileWriteResult] = dsf.WriteFileWriteResult(true),
-        [SbcRequest.FileSeekResult] = dsf.WriteFileSeekResult(true),
-        [SbcRequest.FileTruncateResult] = dsf.WriteFileTruncateResult(true)
+        [SbcRequest.Code] = dsf.WriteCode(CreateCode(), 0),
+        [SbcRequest.GetObjectModel] = dsf.WriteGetObjectModel("state", "v", 0),
+        [SbcRequest.SetPrintFileInfo] = dsf.WritePrintFileInfo(new GCodeFileInfo { FileName = "0:/gcodes/print.gcode" }, 0),
+        [SbcRequest.PrintStopped] = dsf.WritePrintStopped(PrintStoppedReason.UserCancelled, 0),
+        [SbcRequest.MacroCompleted] = dsf.WriteMacroCompleted(CodeChannel.Trigger, false, 0),
+        [SbcRequest.Unlock] = dsf.WriteUnlock(CodeChannel.SBC, 0),
+        [SbcRequest.FileChunk] = dsf.WriteFileChunk([1, 2, 3], 3, 0),
+        [SbcRequest.EvaluateExpression] = dsf.WriteEvaluateExpression(CodeChannel.SBC, "1+1", 0),
+        [SbcRequest.Message] = dsf.WriteMessage(MessageTypeFlags.UsbMessage, "hi", 0),
+        [SbcRequest.MacroStarted] = dsf.WriteMacroStarted(CodeChannel.Trigger, 0),
+        [SbcRequest.InvalidateChannel] = dsf.WriteInvalidateChannel(CodeChannel.Trigger, 0),
+        [SbcRequest.SetVariable] = dsf.WriteSetVariable(CodeChannel.SBC, true, "global.x", "1", 0),
+        [SbcRequest.DeleteLocalVariable] = dsf.WriteDeleteLocalVariable(CodeChannel.SBC, "x", 0),
+        [SbcRequest.CheckFileExistsResult] = dsf.WriteCheckFileExistsResult(true, 0),
+        [SbcRequest.FileDeleteResult] = dsf.WriteFileDeleteResult(true, 0),
+        [SbcRequest.FileListResult] = dsf.WriteFileListResult([], true, 0),
+        [SbcRequest.OpenFileResult] = dsf.WriteOpenFileResult(1, 10, 0),
+        [SbcRequest.FileReadResult] = dsf.WriteFileReadResult([1, 2], 2, 0),
+        [SbcRequest.FileWriteResult] = dsf.WriteFileWriteResult(true, 0),
+        [SbcRequest.FileSeekResult] = dsf.WriteFileSeekResult(true, 0),
+        [SbcRequest.FileTruncateResult] = dsf.WriteFileTruncateResult(true, 0)
     };
 
     /// <summary>
@@ -134,7 +134,7 @@ public class SpiAdapterRequests
 
         // A message packet takes the packet header, the message header and the text: 8 + 8 + 8172 bytes leave 4 bytes, too few for any packet
         string text = new('x', Consts.BufferSize - 2 * Marshal.SizeOf<PacketHeader>() - 4);
-        Assert.That(dsf.WriteMessage(MessageTypeFlags.UsbMessage, text), Is.True);
+        Assert.That(dsf.WriteMessage(MessageTypeFlags.UsbMessage, text, 0), Is.True);
 
         Assert.Multiple(() =>
         {
@@ -142,12 +142,12 @@ public class SpiAdapterRequests
             {
                 Assert.That(written, Is.False, request.ToString());
             }
-            Assert.That(dsf.WriteEmergencyStop(), Is.False, "EmergencyStop");
-            Assert.That(dsf.WriteReset(), Is.False, "Reset");
-            Assert.That(dsf.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.SBC), Is.False, "LockAllMovementSystemsAndWaitForStandstill");
-            Assert.That(dsf.WriteActivateLinkCapabilities(LinkCapabilities.All), Is.False, "ActivateLinkCapabilities");
-            Assert.That(dsf.WriteSetLastCodeResult(CodeChannel.SBC, CodeResult.Ok), Is.False, "SetLastCodeResult");
-            Assert.That(dsf.WriteObjectModelKeyChanged("network"), Is.False, "ObjectModelKeyChanged");
+            Assert.That(dsf.WriteEmergencyStop(0), Is.False, "EmergencyStop");
+            Assert.That(dsf.WriteReset(0), Is.False, "Reset");
+            Assert.That(dsf.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.SBC, 0), Is.False, "LockAllMovementSystemsAndWaitForStandstill");
+            Assert.That(dsf.WriteActivateLinkCapabilities(LinkCapabilities.All, 0), Is.False, "ActivateLinkCapabilities");
+            Assert.That(dsf.WriteSetLastCodeResult(CodeChannel.SBC, CodeResult.Ok, 0), Is.False, "SetLastCodeResult");
+            Assert.That(dsf.WriteObjectModelKeyChanged("network", 0), Is.False, "ObjectModelKeyChanged");
         });
 
         // RRF gets the message in one piece (DataTransfer::ReadMessage)
@@ -157,7 +157,7 @@ public class SpiAdapterRequests
         Assert.That(Encoding.UTF8.GetString(packets[0].Payload, 8, BitConverter.ToUInt16(packets[0].Payload, 4)), Is.EqualTo(text));
 
         // The next transfer has room again
-        Assert.That(dsf.WriteEmergencyStop(), Is.True);
+        Assert.That(dsf.WriteEmergencyStop(0), Is.True);
     }
 
     /// <summary>
@@ -180,7 +180,7 @@ public class SpiAdapterRequests
 
         Dictionary<SbcRequest, bool> written = WriteEveryRequest(dsf);
         Assert.That(written.Values, Is.All.True);
-        Assert.That(dsf.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.SBC), Is.True);
+        Assert.That(dsf.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.SBC, 0), Is.True);
         dsf.PerformFullTransfer();
         resend = false;
         List<(SbcRequest Request, ushort Id, byte[] Payload)> sent = rrf.GetReceivedPackets();
@@ -209,7 +209,7 @@ public class SpiAdapterRequests
                 Assert.That(again, Is.False, request.ToString());
             }
         });
-        Assert.That(dsf.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.SBC), Is.True);
+        Assert.That(dsf.WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel.SBC, 0), Is.True);
 
         // RRF gets the same packets again, with new ids
         int before = rrf.GetReceivedPackets().Count;
@@ -235,7 +235,7 @@ public class SpiAdapterRequests
         FakeRrfSpi rrf = CreateRrf();
         SpiAdapter dsf = CreateAdapter(rrf);
         dsf.PerformFullTransfer(true);
-        Assert.That(dsf.WriteCode(CreateCode()), Is.True);
+        Assert.That(dsf.WriteCode(CreateCode(), 0), Is.True);
         dsf.PerformFullTransfer();
 
         StringBuilder diagnostics = new();
@@ -265,7 +265,7 @@ public class SpiAdapterRequests
         ListLogger logger = new();
         SpiAdapter dsf = CreateAdapter(rrf, logger);
         dsf.PerformFullTransfer(true);
-        Assert.That(dsf.WriteActivateLinkCapabilities(LinkCapabilities.All), Is.True);
+        Assert.That(dsf.WriteActivateLinkCapabilities(LinkCapabilities.All, 0), Is.True);
         for (int i = 0; i < 17; i++)
         {
             dsf.PerformFullTransfer();
@@ -286,8 +286,8 @@ public class SpiAdapterRequests
         FakeRrfSpi rrf = CreateRrf(firstSequenceNumber: ExtendedLink.LastSafeRegularNumber + 1);
         SpiAdapter dsf = CreateAdapter(rrf);
         dsf.PerformFullTransfer(true);
-        Assert.That(dsf.WriteActivateLinkCapabilities(LinkCapabilities.All), Is.False);
-        Assert.That(dsf.WriteActivateLinkCapabilities(LinkCapabilities.PhaseGuard | LinkCapabilities.SequenceGuard), Is.True, "only the extended link depends on the numbers");
+        Assert.That(dsf.WriteActivateLinkCapabilities(LinkCapabilities.All, 0), Is.False);
+        Assert.That(dsf.WriteActivateLinkCapabilities(LinkCapabilities.PhaseGuard | LinkCapabilities.SequenceGuard, 0), Is.True, "only the extended link depends on the numbers");
     }
 
     /// <summary>

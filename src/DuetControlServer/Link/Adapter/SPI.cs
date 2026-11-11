@@ -779,14 +779,16 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="request">SBC request to send</param>
     /// <param name="dataLength">Length of the extra payload</param>
-    private void WritePacket(Protocol.SbcRequests.Request request, int dataLength = 0)
+    /// <param name="tag">Tag of the channel epoch, which goes into ResendPacketId. A firmware without the epoch ignores that field outside
+    /// ResendPacket (design/sbc-link-v8-requirements.md CE-5)</param>
+    private void WritePacket(Protocol.SbcRequests.Request request, int dataLength = 0, ushort tag = 0)
     {
         PacketHeader header = new()
         {
             Request = (ushort)request,
             Id = _packetId++,
             Length = (ushort)dataLength,
-            ResendPacketId = 0
+            ResendPacketId = tag
         };
 
         Span<byte> span = _txBuffer.Value[_txPointer..].Span;
@@ -834,7 +836,8 @@ public class SPI : IDiagnostics, ILinkAdapter
                 sbcRequest = (Protocol.SbcRequests.Request)header.Request;
                 invalidatedChannel = (sbcRequest == Protocol.SbcRequests.Request.InvalidateChannel)
                     ? MemoryMarshal.Read<CodeChannelHeader>(buffer.Slice(headerSize, header.Length)).Channel : null;
-                WritePacket(sbcRequest, header.Length);
+                // The copy keeps the tag of the original, but not the first marker, which only the first packet of a connection carries (CE-4, CE-8)
+                WritePacket(sbcRequest, header.Length, (ushort)(header.ResendPacketId & ~ChannelEpoch.FirstMarker));
                 buffer.Slice(headerSize, header.Length).CopyTo(GetWriteBuffer(header.Length));
 
                 // Keep track of it
@@ -858,8 +861,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// <summary>
     /// Request an emergency stop
     /// </summary>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteEmergencyStop()
+    public bool WriteEmergencyStop(ushort tag)
     {
         // E-STOP is unconditional
         if (!CanWritePacket())
@@ -867,15 +871,16 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.EmergencyStop);
+        WritePacket(Protocol.SbcRequests.Request.EmergencyStop, 0, tag);
         return true;
     }
 
     /// <summary>
     /// Request a firmware reset
     /// </summary>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteReset()
+    public bool WriteReset(ushort tag)
     {
         // Reset is unconditional
         if (!CanWritePacket())
@@ -885,7 +890,7 @@ public class SPI : IDiagnostics, ILinkAdapter
 
         _txPointer = 0;
         _resetting = true;
-        WritePacket(Protocol.SbcRequests.Request.Reset);
+        WritePacket(Protocol.SbcRequests.Request.Reset, 0, tag);
         return true;
     }
 
@@ -893,8 +898,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// Request a code to be executed
     /// </summary>
     /// <param name="code">Code to send</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteCode(Code code)
+    public bool WriteCode(Code code, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.Code))
@@ -914,7 +920,7 @@ public class SPI : IDiagnostics, ILinkAdapter
         _numMeasuredCodes++;
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.Code, codeLength);
+        WritePacket(Protocol.SbcRequests.Request.Code, codeLength, tag);
         span[..codeLength].CopyTo(GetWriteBuffer(codeLength));
         return true;
     }
@@ -933,8 +939,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// Only for firmware that offers them in limits.sbcLinkCapabilities
     /// </summary>
     /// <param name="capabilities">Capabilities to activate</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteActivateLinkCapabilities(LinkCapabilities capabilities)
+    public bool WriteActivateLinkCapabilities(LinkCapabilities capabilities, ushort tag)
     {
         bool extended = capabilities.HasFlag(LinkCapabilities.ExtendedHeader);
         if (extended && !_extendedRequested &&
@@ -948,7 +955,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.ActivateLinkCapabilities, sizeof(uint));
+        WritePacket(Protocol.SbcRequests.Request.ActivateLinkCapabilities, sizeof(uint), tag);
         MemoryMarshal.Write(GetWriteBuffer(sizeof(uint)), (uint)capabilities);
         if (extended && !_extendedRequested)
         {
@@ -963,8 +970,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="key">Object model key to query</param>
     /// <param name="flags">Object model flags to query</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteGetObjectModel(string key, string flags)
+    public bool WriteGetObjectModel(string key, string flags, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.GetObjectModel))
@@ -983,7 +991,7 @@ public class SPI : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.GetObjectModel, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.GetObjectModel, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1024,8 +1032,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// Notify the firmware that a file print has started
     /// </summary>
     /// <param name="info">Information about the file being printed</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WritePrintFileInfo(GCodeFileInfo info)
+    public bool WritePrintFileInfo(GCodeFileInfo info, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.SetPrintFileInfo))
@@ -1044,7 +1053,7 @@ public class SPI : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.SetPrintFileInfo, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.SetPrintFileInfo, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1053,8 +1062,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// Notify that a file print has been stopped
     /// </summary>
     /// <param name="reason">Reason why the print has been stopped</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WritePrintStopped(PrintStoppedReason reason)
+    public bool WritePrintStopped(PrintStoppedReason reason, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.PrintStopped))
@@ -1068,7 +1078,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.PrintStopped, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.PrintStopped, dataLength, tag);
         Protocol.Writer.WritePrintStopped(GetWriteBuffer(dataLength), reason);
         return true;
     }
@@ -1079,8 +1089,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="channel">Code channel of the finished macro</param>
     /// <param name="error">Whether an error occurred</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteMacroCompleted(CodeChannel channel, bool error)
+    public bool WriteMacroCompleted(CodeChannel channel, bool error, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.MacroCompleted))
@@ -1094,7 +1105,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.MacroCompleted, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.MacroCompleted, dataLength, tag);
         Protocol.Writer.WriteMacroCompleted(GetWriteBuffer(dataLength), channel, error);
         return true;
     }
@@ -1103,8 +1114,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// Request the movement systems to be locked and wait for standstill
     /// </summary>
     /// <param name="channel">Code channel that requires the lock</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel channel)
+    public bool WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel channel, ushort tag)
     {
         // Resends of this request are expected as it may take a moment before the lock is acquired
 
@@ -1114,7 +1126,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.LockAllMovementSystemsAndWaitForStandstill, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.LockAllMovementSystemsAndWaitForStandstill, dataLength, tag);
         Protocol.Writer.WriteCodeChannel(GetWriteBuffer(dataLength), channel);
         return true;
     }
@@ -1123,8 +1135,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// Release all acquired locks again
     /// </summary>
     /// <param name="channel">Code channel that releases the locks</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteUnlock(CodeChannel channel)
+    public bool WriteUnlock(CodeChannel channel, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.Unlock))
@@ -1138,7 +1151,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.Unlock, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.Unlock, dataLength, tag);
         Protocol.Writer.WriteCodeChannel(GetWriteBuffer(dataLength), channel);
         return true;
     }
@@ -1262,8 +1275,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="data">File chunk data</param>
     /// <param name="fileLength">Total length of the file in bytes</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>Whether the firmware has been written successfully</returns>
-    public bool WriteFileChunk(Span<byte> data, long fileLength)
+    public bool WriteFileChunk(Span<byte> data, long fileLength, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.FileChunk))
@@ -1282,7 +1296,7 @@ public class SPI : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.FileChunk, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.FileChunk, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1292,8 +1306,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="channel">Where to evaluate the expression</param>
     /// <param name="expression">Expression to evaluate</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>Whether the evaluation request has been written successfully</returns>
-    public bool WriteEvaluateExpression(CodeChannel channel, string expression)
+    public bool WriteEvaluateExpression(CodeChannel channel, string expression, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.EvaluateExpression))
@@ -1312,7 +1327,7 @@ public class SPI : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.EvaluateExpression, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.EvaluateExpression, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1322,8 +1337,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="flags">Message flags</param>
     /// <param name="message">Message content</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>Whether the firmware has been written successfully</returns>
-    public bool WriteMessage(MessageTypeFlags flags, string message)
+    public bool WriteMessage(MessageTypeFlags flags, string message, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.Message))
@@ -1342,7 +1358,7 @@ public class SPI : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.Message, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.Message, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1351,8 +1367,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// Notify RepRapFirmware that a macro file could be started
     /// </summary>
     /// <param name="channel">Code channel that requires the lock</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteMacroStarted(CodeChannel channel)
+    public bool WriteMacroStarted(CodeChannel channel, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.MacroStarted))
@@ -1366,7 +1383,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.MacroStarted, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.MacroStarted, dataLength, tag);
         Protocol.Writer.WriteCodeChannel(GetWriteBuffer(dataLength), channel);
         return true;
     }
@@ -1375,8 +1392,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// Called when a code channel is supposed to be invalidated (e.g. via abort keyword)
     /// </summary>
     /// <param name="channel">Code channel that requires the lock</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteInvalidateChannel(CodeChannel channel)
+    public bool WriteInvalidateChannel(CodeChannel channel, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.InvalidateChannel))
@@ -1390,7 +1408,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.InvalidateChannel, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.InvalidateChannel, dataLength, tag);
         Protocol.Writer.WriteCodeChannel(GetWriteBuffer(dataLength), channel);
         return true;
     }
@@ -1402,8 +1420,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// <param name="createVariable">Whether the variable should be created or updated</param>
     /// <param name="varName">Name of the variable including global or var prefix</param>
     /// <param name="expression">New value of the variable</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteSetVariable(CodeChannel channel, bool createVariable, string varName, string expression)
+    public bool WriteSetVariable(CodeChannel channel, bool createVariable, string varName, string expression, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.SetVariable))
@@ -1422,7 +1441,7 @@ public class SPI : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.SetVariable, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.SetVariable, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1432,8 +1451,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="channel">G-code channel</param>
     /// <param name="varName">Name of the variable excluding var prefix</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>True if the packet could be written</returns>
-    public bool WriteDeleteLocalVariable(CodeChannel channel, string varName)
+    public bool WriteDeleteLocalVariable(CodeChannel channel, string varName, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.DeleteLocalVariable))
@@ -1452,7 +1472,7 @@ public class SPI : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.DeleteLocalVariable, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.DeleteLocalVariable, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1461,8 +1481,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// Send back whether a file exists or not
     /// </summary>
     /// <param name="exists">Whether the file exists</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteCheckFileExistsResult(bool exists)
+    public bool WriteCheckFileExistsResult(bool exists, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.CheckFileExistsResult))
@@ -1476,7 +1497,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.CheckFileExistsResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.CheckFileExistsResult, dataLength, tag);
         Protocol.Writer.WriteBoolean(GetWriteBuffer(dataLength), exists);
         return true;
     }
@@ -1485,8 +1506,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// Send back whether a file or directory could be deleted
     /// </summary>
     /// <param name="success">Whether the file operation was successful</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteFileDeleteResult(bool success)
+    public bool WriteFileDeleteResult(bool success, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.FileDeleteResult))
@@ -1500,7 +1522,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.FileDeleteResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.FileDeleteResult, dataLength, tag);
         Protocol.Writer.WriteBoolean(GetWriteBuffer(dataLength), success);
         return true;
     }
@@ -1510,8 +1532,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="entries">Entries to send back</param>
     /// <param name="endOfList">Whether the final entry of the directory is part of this response</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteFileListResult(IList<FileSystemInfo> entries, bool endOfList)
+    public bool WriteFileListResult(IList<FileSystemInfo> entries, bool endOfList, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.FileListResult))
@@ -1530,7 +1553,7 @@ public class SPI : IDiagnostics, ILinkAdapter
         }
 
         // Write it
-        WritePacket(Protocol.SbcRequests.Request.FileListResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.FileListResult, dataLength, tag);
         span[..dataLength].CopyTo(GetWriteBuffer(dataLength));
         return true;
     }
@@ -1540,8 +1563,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="fileHandle">New file handle or noFileHandle if the file could not be opened</param>
     /// <param name="length">Length of the file</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteOpenFileResult(uint fileHandle, long length)
+    public bool WriteOpenFileResult(uint fileHandle, long length, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.OpenFileResult))
@@ -1555,7 +1579,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.OpenFileResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.OpenFileResult, dataLength, tag);
         Protocol.Writer.WriteOpenFileResult(GetWriteBuffer(dataLength), fileHandle, length);
         return true;
     }
@@ -1565,8 +1589,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="data">File data</param>
     /// <param name="bytesRead">Number of bytes read or negative on error</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteFileReadResult(Span<byte> data, int bytesRead)
+    public bool WriteFileReadResult(Span<byte> data, int bytesRead, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.FileReadResult))
@@ -1580,7 +1605,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.FileReadResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.FileReadResult, dataLength, tag);
         Protocol.Writer.WriteFileReadResult(GetWriteBuffer(dataLength), data, bytesRead);
         return true;
     }
@@ -1589,8 +1614,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// Tell RRF if the last file block could be written
     /// </summary>
     /// <param name="success">If the file data could be written</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteFileWriteResult(bool success)
+    public bool WriteFileWriteResult(bool success, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.FileWriteResult))
@@ -1604,7 +1630,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.FileWriteResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.FileWriteResult, dataLength, tag);
         Protocol.Writer.WriteBoolean(GetWriteBuffer(dataLength), success);
         return true;
     }
@@ -1613,8 +1639,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// Tell RRF if the seek operation was successful
     /// </summary>
     /// <param name="success">If the seek operation succeeded</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteFileSeekResult(bool success)
+    public bool WriteFileSeekResult(bool success, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.FileSeekResult))
@@ -1628,7 +1655,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.FileSeekResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.FileSeekResult, dataLength, tag);
         Protocol.Writer.WriteBoolean(GetWriteBuffer(dataLength), success);
         return true;
     }
@@ -1637,8 +1664,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// Tell RRF if the seek operation was successful
     /// </summary>
     /// <param name="success">If the seek operation succeeded</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteFileTruncateResult(bool success)
+    public bool WriteFileTruncateResult(bool success, ushort tag)
     {
         // Don't send a new request if another one is still pending
         if (_packetsBeingResent.Contains(Protocol.SbcRequests.Request.FileTruncateResult))
@@ -1652,7 +1680,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.FileTruncateResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.FileTruncateResult, dataLength, tag);
         Protocol.Writer.WriteBoolean(GetWriteBuffer(dataLength), success);
         return true;
     }
@@ -1662,8 +1690,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// </summary>
     /// <param name="channel">Code channel</param>
     /// <param name="result">Last code result</param>
+    /// <param name="tag">Tag of the channel epoch for the header field ResendPacketId, 0 for none (design/sbc-link-v8-requirements.md CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteSetLastCodeResult(CodeChannel channel, CodeResult result)
+    public bool WriteSetLastCodeResult(CodeChannel channel, CodeResult result, ushort tag)
     {
         if (ProtocolVersion < 7)
         {
@@ -1677,7 +1706,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.SetLastCodeResult, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.SetLastCodeResult, dataLength, tag);
         Protocol.Writer.WriteSetLastCodeResult(GetWriteBuffer(dataLength), channel, result);
         return true;
     }
@@ -1686,8 +1715,9 @@ public class SPI : IDiagnostics, ILinkAdapter
     /// Notify RRF that an object model key has changed
     /// </summary>
     /// <param name="key">Key that has changed</param>
+    /// <param name="tag">Tag for the header field ResendPacketId: the first marker alone on DSF's first packet of a connection, else 0 (design/sbc-link-v8-requirements.md CE-4, CE-5)</param>
     /// <returns>If the packet could be written</returns>
-    public bool WriteObjectModelKeyChanged(string key)
+    public bool WriteObjectModelKeyChanged(string key, ushort tag)
     {
         if (ProtocolVersion < 7)
         {
@@ -1701,7 +1731,7 @@ public class SPI : IDiagnostics, ILinkAdapter
             return false;
         }
 
-        WritePacket(Protocol.SbcRequests.Request.ObjectModelKeyChanged, dataLength);
+        WritePacket(Protocol.SbcRequests.Request.ObjectModelKeyChanged, dataLength, tag);
         Protocol.Writer.WriteStringRequest(GetWriteBuffer(dataLength), key);
         return true;
     }

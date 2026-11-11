@@ -20,7 +20,37 @@ internal sealed class FakeMachineState
         /// <summary>
         /// GCodeState::waitingForAcknowledgement, set by M291 in SBC mode before the message box frame is pushed
         /// </summary>
-        WaitingForAcknowledgement
+        WaitingForAcknowledgement,
+
+        /// <summary>
+        /// GCodeState::homing1: request the homing file of the lowest axis still to be homed (GCodes4.cpp:358-392)
+        /// </summary>
+        Homing1,
+
+        /// <summary>
+        /// GCodeState::homing2: the homing file has ended, check that it homed its axis (GCodes4.cpp:394-413)
+        /// </summary>
+        Homing2,
+
+        /// <summary>
+        /// GCodeState::toolChange0: run tfree of the old tool (GCodes4.cpp:415-441)
+        /// </summary>
+        ToolChange0,
+
+        /// <summary>
+        /// GCodeState::toolChange1: tfree has ended, run tpre of the new tool (GCodes4.cpp:443-469)
+        /// </summary>
+        ToolChange1,
+
+        /// <summary>
+        /// GCodeState::toolChange2: tpre has ended, select the new tool and run its tpost (GCodes4.cpp:471-522)
+        /// </summary>
+        ToolChange2,
+
+        /// <summary>
+        /// GCodeState::toolChangeComplete: tpost has ended, the T-code ends (GCodes4.cpp:524-542)
+        /// </summary>
+        ToolChangeComplete
     }
 
     /// <summary>
@@ -41,6 +71,8 @@ internal sealed class FakeMachineState
         FileName = previous.FileName;
         DoingFileMacro = previous.DoingFileMacro;
         LastCodeFromSbc = previous.LastCodeFromSbc;
+        CodeEpoch = previous.CodeEpoch;
+        IsCodeOfEndedConnection = previous.IsCodeOfEndedConnection;
         MacroStartedByCode = previous.MacroStartedByCode;
         FileFinished = previous.FileFinished;
         LockedMovement = previous.LockedMovement;
@@ -75,6 +107,22 @@ internal sealed class FakeMachineState
     /// Whether the last code on this frame came from DSF in binary form
     /// </summary>
     public bool LastCodeFromSbc { get; set; }
+
+    /// <summary>
+    /// Epoch of the code from DSF that this frame runs or ran last (codeEpoch, CE-9), null if invalid. FillBuffer carries it over from the stamp of
+    /// the code in the ring (PutBinary), a new frame takes it from the frame below as it takes <see cref="LastCodeFromSbc"/>. The replies of the
+    /// frame and the requests of its codes carry it. It lives on the frame and not on the buffer (decision of 2026-11-10), so that the codes of a
+    /// macro that a code of an older epoch starts after an abort do not overwrite the stamp of that code, which waits on the frame below: when the
+    /// macro has ended, its next request and its final reply carry its own epoch again
+    /// </summary>
+    public byte? CodeEpoch { get; set; }
+
+    /// <summary>
+    /// Whether the code from DSF that this frame runs or ran last belongs to a connection that has ended, so that none of its replies goes to DSF
+    /// (GCodeMachineState::codeOfEndedConnection, GCodeMachineState.h:283 at RRF 78a997f74). The apply of a lost connection sets it on every frame,
+    /// PutBinary clears it on the frame that takes the next code, a new frame takes it from the frame below, and a pop brings back that of the caller
+    /// </summary>
+    public bool IsCodeOfEndedConnection { get; set; }
 
     /// <summary>
     /// Whether the last macro requested on this frame was started by a code
@@ -125,6 +173,12 @@ internal sealed class FakeMachineState
     /// Code that put this frame into a non-normal state, used to attribute the final reply in the packet log
     /// </summary>
     public FakeCode? StateCode { get; set; }
+
+    /// <summary>
+    /// Macros of the tool change that this frame runs, tfree, tpre and tpost, null for one that is not run. RRF derives them from the tool numbers of
+    /// the movement state (GCodes4.cpp:431-438, :459-466, :512-519)
+    /// </summary>
+    public string?[] ToolChangeMacros { get; set; } = [];
 
     /// <summary>
     /// Local variables of this frame

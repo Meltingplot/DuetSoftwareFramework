@@ -115,6 +115,96 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     public bool IsCodeReplySurplus { get; set; }
 
     /// <summary>
+    /// Flag the replies of the code being executed as surplus where a channel abort records or applies it (RRF #46, SbcInterface.cpp:991, :2009),
+    /// but only if they would go out untagged: the stamp of the latest frame, which the replies carry, is invalid or the channel epoch is unknown.
+    /// A reply with a valid stamp while the epoch is known goes out, and DSF decides by its tag (decision of 2026-11-10), as DSF's v7 windows act only
+    /// on untagged packets. The models without the epoch never know an epoch, so for them every such code is flagged as before
+    /// </summary>
+    public void MarkCodeReplySurplus()
+    {
+        if (!IsEpochKnown || CodeEpoch is null)
+        {
+            IsCodeReplySurplus = true;
+        }
+    }
+
+    /// <summary>
+    /// Whether the SBC task has recorded an abort of this channel that the main task has yet to apply (abortRecorded, the byte of invalidationPending
+    /// renamed, design/sbc-link-v8-requirements.md CE-7). The SBC task sets it, the main task takes it before the routine. Not used by
+    /// <see cref="FakeRrfModel.V7"/>
+    /// </summary>
+    public bool IsAbortRecorded { get; set; }
+
+    /// <summary>
+    /// Whether the connection that the stamps of the frames belong to has been lost (connectionEndRecorded, GCodeBuffer.h:420-421). The Epoch model's
+    /// InvalidateResources sets it together with <see cref="IsAbortRecorded"/>, the main task takes both at the apply and then voids the stamps
+    /// (<see cref="EndConnectionOfCodes"/>). Until then the stamps count as invalid (<see cref="CodeEpoch"/>)
+    /// </summary>
+    public bool IsConnectionEndRecorded { get; set; }
+
+    /// <summary>
+    /// Epoch of the code on the latest frame (GCodeBuffer::GetCodeEpoch, GCodeBuffer.cpp:349-352), null if it is invalid or the connection it belongs to
+    /// has been lost and the apply has not voided it yet. Replies and the requests of the code are tagged with it
+    /// </summary>
+    public byte? CodeEpoch => IsConnectionEndRecorded ? null : MachineState.CodeEpoch;
+
+    /// <summary>
+    /// Epoch of the channel (6 bits), valid if <see cref="IsEpochKnown"/>. RRF keeps it in one byte per channel with the two flags below (CE-4, CE-24)
+    /// </summary>
+    public byte Epoch { get; set; }
+
+    /// <summary>
+    /// Whether RRF knows the epoch of the channel, from the first tagged DSF packet of the channel in this connection (adopt rule, CE-4)
+    /// </summary>
+    public bool IsEpochKnown { get; set; }
+
+    /// <summary>
+    /// Abort gate: set where RRF writes a tagged AbortFile(all), cleared by the record of the InvalidateChannel DSF answers it with (CE-24). While it is
+    /// set, every DSF packet of the channel except InvalidateChannel is dropped
+    /// </summary>
+    public bool IsGated { get; set; }
+
+    /// <summary>
+    /// Start the channel at epoch 0 when the SBC starts a connection (first marker), or forget the epoch when the connection is lost, see
+    /// GCodeBuffer::ResetChannelEpoch (GCodeBuffer.cpp:330-336). Either way there is no gate. The stamps of the frames are left alone: none is valid at
+    /// boot, and after a lost connection InvalidateResources has recorded the end of the connection, whose apply voids them
+    /// </summary>
+    /// <param name="known">Whether the epoch is known (0) from here on</param>
+    public void ResetChannelEpoch(bool known)
+    {
+        Epoch = 0;
+        IsEpochKnown = known;
+        IsGated = false;
+    }
+
+    /// <summary>
+    /// Apply the end of the connection that the codes on every frame belong to: their stamps are void, and none of their replies goes to DSF, see
+    /// GCodeBuffer::EndConnectionOfCodes (GCodeBuffer.cpp:343 at RRF 78a997f74). Only the main task changes the frames
+    /// </summary>
+    public void EndConnectionOfCodes()
+    {
+        for (FakeMachineState? ms = MachineState; ms is not null; ms = ms.Previous)
+        {
+            ms.CodeEpoch = null;
+            ms.IsCodeOfEndedConnection = true;
+        }
+    }
+
+    /// <summary>
+    /// Whether the code being executed belongs to a connection that has ended, so that none of its replies goes to DSF, see
+    /// GCodeBuffer::IsCodeOfEndedConnection (GCodeBuffer.cpp:354 at RRF 78a997f74). Between the record of the end and its apply this holds for every
+    /// frame
+    /// </summary>
+    public bool IsCodeOfEndedConnection => IsConnectionEndRecorded || MachineState.IsCodeOfEndedConnection;
+
+    /// <summary>
+    /// Whether the buffer is completely idle, see GCodeBuffer::IsCompletelyIdle (GCodeBuffer.cpp:951-954): the state of the latest frame is normal and
+    /// the buffer is neither ready nor executing. A text code that DSF executes (executingOnSbc) counts as idle, one that is yet to be sent does not,
+    /// because RRF runs it again on every spin until it has gone out (GCodes2.cpp:603-606)
+    /// </summary>
+    public bool IsCompletelyIdle => MachineState.State == FakeMachineState.MachineStateKind.Normal && CurrentCode is null && !IsSendRequested;
+
+    /// <summary>
     /// Whether a macro request has yet to be sent to DSF
     /// </summary>
     public bool IsMacroRequestPending => RequestedMacroFile is not null;
@@ -148,6 +238,42 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     /// Called when DSF has been told about the acknowledged message box
     /// </summary>
     public void MessageAcknowledgementSent() => IsMessageAcknowledged = false;
+
+    /// <summary>
+    /// Text code that RRF passes on to DSF (DoCode) because it cannot run it itself, see the default case of GCodes::HandleMcode
+    /// (GCodes2.cpp:600-606). Null if there is none
+    /// </summary>
+    public string? SbcCode { get; private set; }
+
+    /// <summary>
+    /// Whether the text code is yet to be sent to DSF (sendToSbc, GCodeBuffer.h:416)
+    /// </summary>
+    public bool IsSendRequested { get; private set; }
+
+    /// <summary>
+    /// Whether DSF executes the text code (GCodeBufferState::executingOnSbc, GCodeBuffer::IsExecutingOnSbc)
+    /// </summary>
+    public bool IsExecutingOnSbc { get; private set; }
+
+    /// <summary>
+    /// Pass a text code on to DSF, see GCodeBuffer::SendToSbc. A text code clears lastCodeFromSbc (GCodeBuffer::Put, GCodeBuffer.cpp:294)
+    /// </summary>
+    /// <param name="code">Text of the code</param>
+    public void SendToSbc(string code)
+    {
+        MachineState.LastCodeFromSbc = false;
+        SbcCode = code;
+        IsSendRequested = true;
+    }
+
+    /// <summary>
+    /// The text code has been sent to DSF, see GCodeBuffer::SentToSbc (GCodeBuffer.h:447-452)
+    /// </summary>
+    public void SentToSbc()
+    {
+        IsSendRequested = false;
+        IsExecutingOnSbc = true;
+    }
     #endregion
 
     /// <summary>
@@ -201,7 +327,10 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
         {
             if (MachineState.LastCodeFromSbc)
             {
-                return (MessageTypeFlags)(1u << (int)Channel) | MessageTypeFlags.BinaryCodeReplyFlag;
+                // The epoch of the code goes into the free bits 18-23 and 26, which WriteCodeReply moves into the header (CE-11). It is the stamp of the
+                // latest frame
+                uint epochBits = (CodeEpoch is byte epoch) ? ((uint)epoch << FakeTag.TypeEpochShift) | FakeTag.TypeEpochValid : 0;
+                return (MessageTypeFlags)((1u << (int)Channel) | epochBits) | MessageTypeFlags.BinaryCodeReplyFlag;
             }
             return Channel switch
             {
@@ -243,6 +372,8 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
         MachineState.LastCodeFromSbc = true;
         HasJustStartedMacro = false;
         IsCodeReplySurplus = false;     // the dropped code has finished, or this code belongs to a macro that the dropped code has started since
+        MachineState.CodeEpoch = code.Stamp;    // FillBuffer carries the stamp of the ring over to the latest frame (CE-9)
+        MachineState.IsCodeOfEndedConnection = false;
         CurrentCode = code;
         IsExecuting = false;
     }
@@ -255,8 +386,11 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     {
         if (finished)
         {
+            // This ends a text code passed on to DSF as well (sendToSbc = false and the parser's SetFinished, GCodeBuffer.cpp:957-966)
             CurrentCode = null;
             IsExecuting = false;
+            SbcCode = null;
+            IsSendRequested = IsExecutingOnSbc = false;
         }
         else
         {
@@ -318,7 +452,10 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
     /// Abort the files being executed and flag the abort for DSF, see GCodeBuffer::AbortFile
     /// </summary>
     /// <param name="abortAll">Whether all files are aborted or only the last one</param>
-    public void AbortFile(bool abortAll)
+    /// <param name="clearsJustStartedMacro">Whether the RRF of the model clears macroJustStarted here: a macro that has just been started and has had
+    /// no code yet is closed as well, so the next reply of the code below it is no push message (RRF 67e3c69f0, GCodeBuffer.cpp:1198). Firmware without
+    /// that fix leaves the flag set</param>
+    public void AbortFile(bool abortAll, bool clearsJustStartedMacro)
     {
         if (MachineState.DoingFile)
         {
@@ -333,6 +470,10 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
 
             IsAbortRequested = true;
             IsAbortAllRequested = abortAll;
+            if (clearsJustStartedMacro)
+            {
+                HasJustStartedMacro = false;
+            }
         }
     }
 
@@ -479,7 +620,11 @@ internal sealed class FakeGCodeBuffer(CodeChannel channel)
         LastResult = CodeResult.Ok;
         IsWaitingForMacro = HasJustStartedMacro = MacroFileError = IsMacroEmpty = IsMacroFileClosed = false;
         IsAbortRequested = IsAbortAllRequested = IsMessagePromptPending = IsMessageAcknowledged = IsInvalidated = IsInvalidationPending = IsCodeReplySurplus = false;
+        IsAbortRecorded = IsConnectionEndRecorded = false;
+        ResetChannelEpoch(false);
         RequestedMacroFile = null;
+        SbcCode = null;
+        IsSendRequested = IsExecutingOnSbc = false;
     }
 
     /// <summary>

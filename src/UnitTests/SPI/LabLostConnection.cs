@@ -57,13 +57,13 @@ public partial class LinkRecovery
         // Perform a full transfer and return whether it was clean
         bool Transfer(bool connecting = false, bool activation = false)
         {
-            if (activation && !dsf.WriteActivateLinkCapabilities(LinkCapabilities.All))
+            if (activation && !dsf.WriteActivateLinkCapabilities(LinkCapabilities.All, 0))
             {
                 throw new InvalidOperationException("DSF did not request the capabilities");
             }
             if (dsfData)
             {
-                dsf.WriteMessage(MessageTypeFlags.UsbMessage, $"dsf:{++dsfId}");
+                dsf.WriteMessage(MessageTypeFlags.UsbMessage, $"dsf:{++dsfId}", 0);
             }
             int lossesBefore = losses, disconnectsBefore = rrf.Disconnects;
             dsf.PerformFullTransfer(connecting, rrf.Budget.Token);

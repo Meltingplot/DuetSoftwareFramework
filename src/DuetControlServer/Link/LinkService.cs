@@ -317,6 +317,9 @@ public sealed class LinkService(
         TaskCompletionSource? transferredHaltRequest = null;
         do
         {
+            // A full transfer has completed, the one of Connect at first, and its data of RRF is processed below
+            _connection.Transferred();
+
             bool skipChannels = false;
             TaskCompletionSource? writtenHaltRequest = null;
             using (linkInterface.FirmwareActionLock.Lock(stoppingToken))
@@ -324,8 +327,10 @@ public sealed class LinkService(
                 // Check if an emergency stop has been requested. It is written first and transferred as soon as the data RRF sent before it has been processed
                 if (linkInterface.FirmwareHaltRequest is not null)
                 {
-                    if (linkAdapter.WriteEmergencyStop())
+                    ushort tag = _connection.Tag();
+                    if (linkAdapter.WriteEmergencyStop(tag))
                     {
+                        _connection.Written(tag);
                         logger.LogWarning("Emergency stop");
                         writtenHaltRequest = linkInterface.FirmwareHaltRequest;
                         linkInterface.FirmwareHaltRequest = null;
@@ -337,8 +342,10 @@ public sealed class LinkService(
                 if (linkInterface.FirmwareResetRequest is not null)
                 {
                     Invalidate();
-                    if (linkAdapter.WriteReset())
+                    ushort tag = _connection.Tag();
+                    if (linkAdapter.WriteReset(tag))
                     {
+                        _connection.Written(tag);
                         logger.LogWarning("Resetting controller");
                         linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken);
                         linkInterface.FirmwareResetRequest.SetResult();
@@ -390,8 +397,17 @@ public sealed class LinkService(
                 Invalidate();
                 eventLogger.LogOutput(MessageType.Warning, "Connection to controller has been reset");
 
-                // The capabilities of the link end with the connection
+                // The capabilities of the link end with the connection, and so do the epochs of the channels. The first packet of the next connection,
+                // whatever its type, carries the first marker, on which RRF sets its epochs to 0 as well (CE-4)
                 _queryLinkCapabilities = true;
+                _connection = new EpochConnection();
+                foreach (Channel.Processor channel in channels)
+                {
+                    using (channel.Lock())
+                    {
+                        channel.ResetEpoch();
+                    }
+                }
             }
 
             // Activate the capabilities of the link that RRF offers
@@ -401,16 +417,19 @@ public sealed class LinkService(
             bool printStopped = false;
             using (linkInterface.PrintStateLock.Lock(stoppingToken))
             {
-                if (linkInterface.SetPrintInfoRequest is not null && linkAdapter.WritePrintFileInfo(model.Job.File))
+                ushort tag = _connection.Tag();
+                if (linkInterface.SetPrintInfoRequest is not null && linkAdapter.WritePrintFileInfo(model.Job.File, tag))
                 {
                     // The packet providing file info has be sent first because it includes a time_t value that must reside on a 64-bit boundary!
+                    _connection.Written(tag);
                     linkInterface.SetPrintInfoRequest.SetResult();
                     linkInterface.SetPrintInfoRequest = null;
                 }
                 else
                 {
-                    if (linkInterface.StopPrintRequest is not null && linkAdapter.WritePrintStopped(linkInterface.StopPrintReason))
+                    if (linkInterface.StopPrintRequest is not null && linkAdapter.WritePrintStopped(linkInterface.StopPrintReason, tag))
                     {
+                        _connection.Written(tag);
                         // Only a print that really ran to the end makes RRF execute stop.g and reply once more. A simulation exits
                         // early in RRF's StopPrint, and after M0/M1/M2 it has run stop.g for that code long before this notification
                         printStopped = (linkInterface.StopPrintReason == PrintStoppedReason.NormalCompletion) && !jobProcessor.IsSimulating && !jobProcessor.IsStoppedByCode;
@@ -464,10 +483,12 @@ public sealed class LinkService(
             transferredHaltRequest = null;
 
             // Transfer an emergency stop at once, like a reset. The codes are invalidated only now, because the data RRF sent before the stop
-            // belongs to them, e.g. the closal of a macro file that DSF still has on the stack
+            // belongs to them, e.g. the closal of a macro file that DSF still has on the stack. The stop ends the work of every channel as an abort of
+            // all files does: RRF's packets of the current epoch are stale from here on, also those that come with the transfer of the stop, and each
+            // channel writes InvalidateChannel(e+1) in a later Spin, never before the stop
             if (writtenHaltRequest is not null)
             {
-                InvalidateCodes();
+                InvalidateCodes(true);
                 linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken);
                 transferredHaltRequest = writtenHaltRequest;
                 continue;
@@ -476,7 +497,7 @@ public sealed class LinkService(
             // Process pending codes, macro files and requests for resource locks/unlocks as well as flush requests
             if (!skipChannels)
             {
-                channels.Spin();
+                channels.Spin(_connection);
             }
 
             // Request object model updates
@@ -488,9 +509,11 @@ public sealed class LinkService(
             // Only allow one object model query per transfer because the response is usually quite large
             lock (linkInterface.ModelQueryRequests)
             {
+                ushort tag = _connection.Tag();
                 if (linkInterface.ModelQueryRequests.TryPeek(out ModelQueryRequest? request) &&
-                    !request.QuerySent && linkAdapter.WriteGetObjectModel(request.Key, request.Flags))
+                    !request.QuerySent && linkAdapter.WriteGetObjectModel(request.Key, request.Flags, tag))
                 {
+                    _connection.Written(tag);
                     request.QuerySent = true;
                 }
             }
@@ -500,8 +523,10 @@ public sealed class LinkService(
             {
                 foreach (string key in linkInterface.UpdatedObjectModelKeys.ToList())
                 {
-                    if (linkAdapter.WriteObjectModelKeyChanged(key))
+                    ushort tag = _connection.Tag();
+                    if (linkAdapter.WriteObjectModelKeyChanged(key, tag))
                     {
+                        _connection.Written(tag);
                         linkInterface.UpdatedObjectModelKeys.Remove(key);
                     }
                     else
@@ -517,8 +542,16 @@ public sealed class LinkService(
             {
                 foreach (SetLastCodeResultRequest request in linkInterface.SetLastCodeResultRequests.ToList())
                 {
-                    if (linkAdapter.WriteSetLastCodeResult(request.Channel, request.Result))
+                    if (channels[request.Channel].IsAbortUnsent)
                     {
+                        // Nothing of the channel goes out before its InvalidateChannel, which fails this request (CE-25 (f))
+                        continue;
+                    }
+
+                    ushort tag = _connection.Tag(channels[request.Channel].Epoch);
+                    if (linkAdapter.WriteSetLastCodeResult(request.Channel, request.Result, tag))
+                    {
+                        _connection.Written(tag);
                         request.SetResult();
                         linkInterface.SetLastCodeResultRequests.Remove(request);
                     }
@@ -538,11 +571,14 @@ public sealed class LinkService(
                 {
                     foreach (EvaluateExpressionRequest request in linkInterface.EvaluateExpressionRequests)
                     {
-                        if (!request.Written)
+                        if (!request.Written && !channels[request.Channel].IsAbortUnsent)
                         {
-                            if (linkAdapter.WriteEvaluateExpression(request.Channel, request.Expression))
+                            ushort tag = _connection.Tag(channels[request.Channel].Epoch);
+                            if (linkAdapter.WriteEvaluateExpression(request.Channel, request.Expression, tag))
                             {
+                                _connection.Written(tag);
                                 request.Written = true;
+                                request.Tag = tag;
 
                                 numEvaluationsSent++;
                                 if (numEvaluationsSent >= Consts.MaxEvaluationRequestsPerTransfer)
@@ -564,11 +600,14 @@ public sealed class LinkService(
                 {
                     foreach (VariableRequest request in linkInterface.VariableRequests.ToList())
                     {
-                        if (!request.Written)
+                        if (!request.Written && !channels[request.Channel].IsAbortUnsent)
                         {
-                            if ((request.Expression is not null && linkAdapter.WriteSetVariable(request.Channel, request.CreateVariable, request.VariableName, request.Expression)) ||
-                                (request.Expression is null && linkAdapter.WriteDeleteLocalVariable(request.Channel, request.VariableName)))
+                            ushort tag = _connection.Tag(channels[request.Channel].Epoch);
+                            if ((request.Expression is not null && linkAdapter.WriteSetVariable(request.Channel, request.CreateVariable, request.VariableName, request.Expression, tag)) ||
+                                (request.Expression is null && linkAdapter.WriteDeleteLocalVariable(request.Channel, request.VariableName, tag)))
                             {
+                                _connection.Written(tag);
+                                request.Tag = tag;
                                 if (request.Expression is null)
                                 {
                                     request.SetResult(null);
@@ -598,10 +637,20 @@ public sealed class LinkService(
             // Send pending messages
             lock (linkInterface.MessagesToSend)
             {
-                while (linkInterface.MessagesToSend.TryPeek(out Tuple<MessageTypeFlags, string>? message))
+                while (linkInterface.MessagesToSend.TryPeek(out (MessageTypeFlags Flags, string Message, ushort Tag) message))
                 {
-                    if (linkAdapter.WriteMessage(message.Item1, message.Item2))
+                    // The result of a DoCode of an older epoch is not sent: RRF has ended that DoCode at the abort and drops the chunks (CE-25 (e), CE-10)
+                    if (ChannelEpoch.IsTagged(message.Tag) && TryGetDestinationChannel(message.Flags, out CodeChannel destination) &&
+                        !channels[destination].IsResultOfCurrentEpoch(message.Tag))
                     {
+                        linkInterface.MessagesToSend.Dequeue();
+                        continue;
+                    }
+
+                    ushort tag = _connection.Mark(message.Tag);
+                    if (linkAdapter.WriteMessage(message.Flags, message.Message, tag))
+                    {
+                        _connection.Written(tag);
                         linkInterface.MessagesToSend.Dequeue();
                     }
                     else
@@ -625,6 +674,18 @@ public sealed class LinkService(
     /// <returns>Asynchronous task</returns>
     private void ProcessPacket(PacketHeader packet)
     {
+        // Outside ResendPacket the header field carries the tag of the channel epoch (CE-5). A packet of another epoch is dropped by its handler,
+        // with the channel locked, because DSF aborts a channel under that lock (Processor.IsStale)
+        ushort tag = ((Request)packet.Request != Request.ResendPacket) ? packet.ResendPacketId : (ushort)0;
+        if (!_connection.Received(tag))
+        {
+            // RRF tagged this packet before it read DSF's first packet of this connection, so it belongs to an older connection, whose work both
+            // sides have ended: DSF has no code or request left that it could belong to, and RRF ends that connection as a lost one at the latest
+            // when it reads the first marker
+            logger.LogDebug("Dropped {Request} of an older connection", (Request)packet.Request);
+            return;
+        }
+
         switch ((Request)packet.Request)
         {
             case Request.ResendPacket:
@@ -649,40 +710,40 @@ public sealed class LinkService(
                 HandleCodeBufferUpdate();
                 break;
             case Request.Message:
-                HandleMessage();
+                HandleMessage(tag);
                 break;
             case Request.ExecuteMacro:
-                HandleMacroRequest();
+                HandleMacroRequest(tag);
                 break;
             case Request.AbortFile:
-                HandleAbortFileRequest();
+                HandleAbortFileRequest(tag);
                 break;
             case Request.PrintPaused:
-                HandlePrintPaused();
+                HandlePrintPaused(tag);
                 break;
             case Request.Locked:
-                HandleResourceLocked();
+                HandleResourceLocked(tag);
                 break;
             case Request.FileChunk:
                 HandleFileChunkRequest();
                 break;
             case Request.EvaluationResult:
-                HandleEvaluationResult();
+                HandleEvaluationResult(tag);
                 break;
             case Request.DoCode:
-                HandleDoCode();
+                HandleDoCode(tag);
                 break;
             case Request.WaitForAcknowledgement:
-                HandleWaitForAcknowledgement();
+                HandleWaitForAcknowledgement(tag);
                 break;
             case Request.MacroFileClosed:
-                HandleMacroFileClosed();
+                HandleMacroFileClosed(tag);
                 break;
             case Request.MessageAcknowledged:
-                HandleMessageAcknowledgement();
+                HandleMessageAcknowledgement(tag);
                 break;
             case Request.VariableResult:
-                HandleVariableResult();
+                HandleVariableResult(tag);
                 break;
             case Request.CheckFileExists:
                 HandleCheckFileExists();
@@ -778,7 +839,7 @@ public sealed class LinkService(
     /// <summary>
     /// Process an incoming message
     /// </summary>
-    private void HandleMessage()
+    private void HandleMessage(ushort tag)
     {
         linkAdapter.ReadMessage(out MessageTypeFlags flags, out string reply);
         logger.LogTrace("Received message [{Flags}] {Message}", flags, reply);
@@ -807,7 +868,7 @@ public sealed class LinkService(
         // Check if this is a code reply
         if (flags.HasFlag(MessageTypeFlags.BinaryCodeReplyFlag))
         {
-            if (!channels.HandleReply(flags, reply))
+            if (!channels.HandleReply(flags, reply, tag))
             {
                 // Must be a left-over error message...
                 OutputGenericMessage(flags, reply);
@@ -859,7 +920,7 @@ public sealed class LinkService(
     /// <summary>
     /// Handle a macro request
     /// </summary>
-    private void HandleMacroRequest()
+    private void HandleMacroRequest(ushort tag)
     {
         linkAdapter.ReadMacroRequest(out CodeChannel channel, out bool fromCode, out string filename);
         logger.LogTrace("Received macro request for file {File} on channel {Channel}", filename, channel);
@@ -868,7 +929,10 @@ public sealed class LinkService(
         {
             using (channels[channel].Lock())
             {
-                channels[channel].DoMacroFile(filename, fromCode);
+                if (!channels[channel].IsStale(tag, Request.ExecuteMacro))
+                {
+                    channels[channel].DoMacroFile(filename, fromCode, ChannelEpoch.IsTagged(tag), _connection);
+                }
             }
         }
         else if (!settings.Value.UpdateOnly)
@@ -880,7 +944,7 @@ public sealed class LinkService(
     /// <summary>
     /// Handle a file abort request
     /// </summary>
-    private void HandleAbortFileRequest()
+    private void HandleAbortFileRequest(ushort tag)
     {
         linkAdapter.ReadAbortFile(out CodeChannel channel, out bool abortAll);
         if (channel != CodeChannel.Daemon)
@@ -896,7 +960,10 @@ public sealed class LinkService(
         {
             using (channels[channel].Lock())
             {
-                channels[channel].FilesAborted(abortAll);
+                if (!channels[channel].IsStale(tag, Request.AbortFile))
+                {
+                    channels[channel].FilesAborted(abortAll, ChannelEpoch.IsTagged(tag));
+                }
             }
         }
         else if (!settings.Value.UpdateOnly)
@@ -909,9 +976,18 @@ public sealed class LinkService(
     /// Deal with paused print events
     /// </summary>
     /// <returns>Asynchronous task</returns>
-    private void HandlePrintPaused()
+    private void HandlePrintPaused(ushort tag)
     {
         linkAdapter.ReadPrintPaused(out uint filePosition, out uint filePosition2, out PrintPausedReason pauseReason);
+        using (channels[CodeChannel.File].Lock())
+        {
+            // PrintPaused carries the epoch of File (CE-6). Here the check and the pause below do not share one lock, as an abort of File meanwhile
+            // would void the pause anyway (the job is aborted with it)
+            if (channels[CodeChannel.File].IsStale(tag, Request.PrintPaused))
+            {
+                return;
+            }
+        }
         logger.LogDebug("Received print pause notification for file position {Offset}/{Offset2}, reason {PauseReason}", (filePosition == Consts.NoFilePosition) ? "(none)" : filePosition.ToString(), (filePosition2 == Consts.NoFilePosition) ? "(none)" : filePosition2.ToString(), pauseReason);
 
         // Update the object model
@@ -945,7 +1021,7 @@ public sealed class LinkService(
     /// Deal with the confirmation that a resource has been locked
     /// </summary>
     /// <returns>Asynchronous task</returns>
-    private void HandleResourceLocked()
+    private void HandleResourceLocked(ushort tag)
     {
         linkAdapter.ReadCodeChannel(out CodeChannel channel);
         logger.LogTrace("Received resource locked notification for channel {Channel}", channel);
@@ -954,7 +1030,10 @@ public sealed class LinkService(
         {
             using (channels[channel].Lock())
             {
-                channels[channel].ResourceLocked();
+                if (!channels[channel].IsStale(tag, Request.Locked))
+                {
+                    channels[channel].ResourceLocked();
+                }
             }
         }
         else if (!settings.Value.UpdateOnly)
@@ -969,6 +1048,7 @@ public sealed class LinkService(
     /// <returns>Asynchronous task</returns>
     private void HandleFileChunkRequest()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadFileChunkRequest(out string filename, out uint offset, out int maxLength);
         logger.LogDebug("Received file chunk request for {File}, offset {Offset}, maxLength {MaxLength}", filename, offset, maxLength);
 
@@ -999,7 +1079,7 @@ public sealed class LinkService(
             Span<byte> buffer = stackalloc byte[maxLength];
             int bytesRead = fs.Read(buffer);
 
-            linkAdapter.WriteFileChunk((bytesRead > 0) ? buffer[..bytesRead] : [], fs.Length);
+            Answered(linkAdapter.WriteFileChunk((bytesRead > 0) ? buffer[..bytesRead] : [], fs.Length, tag), tag);
         }
         catch (Exception e)
         {
@@ -1007,23 +1087,27 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to send requested file chunk of {File}", filename);
             }
-            linkAdapter.WriteFileChunk(null, 0);
+            Answered(linkAdapter.WriteFileChunk(null, 0, tag), tag);
         }
     }
 
     /// <summary>
     /// Handle the result of an evaluated expression
     /// </summary>
-    private void HandleEvaluationResult()
+    private void HandleEvaluationResult(ushort tag)
     {
         linkAdapter.ReadEvaluationResult(out CodeChannel? channel, out string expression, out object? result);
         logger.LogDebug("Received evaluation result for expression via {Channel}: {Expression} = {Result}", channel, expression, result);
+        if (IsStaleAnswer(channel, tag, Request.EvaluationResult))
+        {
+            return;
+        }
 
         lock (linkInterface.EvaluateExpressionRequests)
         {
             foreach (EvaluateExpressionRequest request in linkInterface.EvaluateExpressionRequests)
             {
-                if (request.Written && (channel == null || request.Channel == channel) && request.Expression == expression)
+                if (request.Written && (channel == null || request.Channel == channel) && request.Expression == expression && (!ChannelEpoch.IsTagged(tag) || ChannelEpoch.IsSameTag(request.Tag, tag)))
                 {
                     if (result is Exception exception)
                     {
@@ -1048,7 +1132,7 @@ public sealed class LinkService(
     /// <summary>
     /// Handle a firmware request to perform a G/M/T-code in DSF
     /// </summary>
-    private void HandleDoCode()
+    private void HandleDoCode(ushort tag)
     {
         linkAdapter.ReadDoCode(out CodeChannel channel, out string code);
         logger.LogTrace("Received firmware code request on channel {Channel} => {Code}", channel, code);
@@ -1057,7 +1141,11 @@ public sealed class LinkService(
         {
             using (channels[channel].Lock())
             {
-                channels[channel].DoFirmwareCode(code);
+                // A DoCode of an older epoch is not run, RRF has ended it at the abort (CE-14, CE-25)
+                if (!channels[channel].IsStale(tag, Request.DoCode))
+                {
+                    channels[channel].DoFirmwareCode(code, tag);
+                }
             }
         }
         else if (!settings.Value.UpdateOnly)
@@ -1069,7 +1157,7 @@ public sealed class LinkService(
     /// <summary>
     /// Handle a firmware request to wait for a message to be acknowledged
     /// </summary>
-    private void HandleWaitForAcknowledgement()
+    private void HandleWaitForAcknowledgement(ushort tag)
     {
         linkAdapter.ReadCodeChannel(out CodeChannel channel);
         logger.LogTrace("Received wait for message acknowledgement on channel {Channel}", channel);
@@ -1078,7 +1166,10 @@ public sealed class LinkService(
         {
             using (channels[channel].Lock())
             {
-                channels[channel].WaitForAcknowledgement();
+                if (!channels[channel].IsStale(tag, Request.WaitForAcknowledgement))
+                {
+                    channels[channel].WaitForAcknowledgement();
+                }
             }
         }
         else if (!settings.Value.UpdateOnly)
@@ -1090,7 +1181,7 @@ public sealed class LinkService(
     /// <summary>
     /// Handle a firmware request that is sent when RRF has internally closed a macro file
     /// </summary>
-    private void HandleMacroFileClosed()
+    private void HandleMacroFileClosed(ushort tag)
     {
         linkAdapter.ReadCodeChannel(out CodeChannel channel);
         logger.LogTrace("Received file closal on channel {Channel}", channel);
@@ -1099,7 +1190,10 @@ public sealed class LinkService(
         {
             using (channels[channel].Lock())
             {
-                channels[channel].MacroFileClosed();
+                if (!channels[channel].IsStale(tag, Request.MacroFileClosed))
+                {
+                    channels[channel].MacroFileClosed(ChannelEpoch.IsTagged(tag));
+                }
             }
         }
         else if (!settings.Value.UpdateOnly)
@@ -1111,7 +1205,7 @@ public sealed class LinkService(
     /// <summary>
     /// Handle a firmware request that is sent when RRF has successfully acknowledged a blocking message
     /// </summary>
-    private void HandleMessageAcknowledgement()
+    private void HandleMessageAcknowledgement(ushort tag)
     {
         linkAdapter.ReadCodeChannel(out CodeChannel channel);
         logger.LogTrace("Received message acknowledgement on channel {Channel}", channel);
@@ -1120,7 +1214,10 @@ public sealed class LinkService(
         {
             using (channels[channel].Lock())
             {
-                channels[channel].MessageAcknowledged();
+                if (!channels[channel].IsStale(tag, Request.MessageAcknowledged))
+                {
+                    channels[channel].MessageAcknowledged();
+                }
             }
         }
         else if (!settings.Value.UpdateOnly)
@@ -1132,16 +1229,20 @@ public sealed class LinkService(
     /// <summary>
     /// Handle the result of a variable assignment
     /// </summary>
-    private void HandleVariableResult()
+    private void HandleVariableResult(ushort tag)
     {
         linkAdapter.ReadEvaluationResult(out CodeChannel? channel, out string varName, out object? result);
         logger.LogTrace("Received variable assignment result for {Channel}: {Variable} = {Result}", channel, varName, result);
+        if (IsStaleAnswer(channel, tag, Request.VariableResult))
+        {
+            return;
+        }
 
         lock (linkInterface.VariableRequests)
         {
             foreach (VariableRequest request in linkInterface.VariableRequests)
             {
-                if (request.VariableName == varName && (channel == null || request.Channel == channel))
+                if (request.VariableName == varName && (channel == null || request.Channel == channel) && (!ChannelEpoch.IsTagged(tag) || ChannelEpoch.IsSameTag(request.Tag, tag)))
                 {
                     if (result is Exception exception)
                     {
@@ -1168,6 +1269,7 @@ public sealed class LinkService(
     /// </summary>
     private void HandleCheckFileExists()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadCheckFileExists(out string filename);
         logger.LogDebug("Checking if file {File} exists", filename);
 
@@ -1175,7 +1277,7 @@ public sealed class LinkService(
         {
             string physicalFile = filePathResolver.ToPhysical(filename);
             bool exists = File.Exists(physicalFile);
-            linkAdapter.WriteCheckFileExistsResult(exists);
+            Answered(linkAdapter.WriteCheckFileExistsResult(exists, tag), tag);
         }
         catch (Exception e)
         {
@@ -1183,7 +1285,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to check if file {File} exists", filename);
             }
-            linkAdapter.WriteCheckFileExistsResult(false);
+            Answered(linkAdapter.WriteCheckFileExistsResult(false, tag), tag);
         }
     }
 
@@ -1193,6 +1295,7 @@ public sealed class LinkService(
     /// <param name="recursive">Delete file or directory recursively</param>
     private void HandleDeleteFileOrDirectory(bool recursive)
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadDeleteFileOrDirectory(out string filename);
         logger.LogDebug("Attempting to delete {File}", filename);
 
@@ -1207,7 +1310,7 @@ public sealed class LinkService(
             {
                 File.Delete(physicalFile);
             }
-            linkAdapter.WriteFileDeleteResult(true);
+            Answered(linkAdapter.WriteFileDeleteResult(true, tag), tag);
         }
         catch (Exception e)
         {
@@ -1215,7 +1318,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to delete file or directory {File}", filename);
             }
-            linkAdapter.WriteFileDeleteResult(false);
+            Answered(linkAdapter.WriteFileDeleteResult(false, tag), tag);
         }
     }
 
@@ -1227,6 +1330,7 @@ public sealed class LinkService(
     /// </summary>
     private void HandleSecureDeleteFile()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadDeleteFileOrDirectory(out string filename);
         logger.LogDebug("Attempting to securely delete {File}", filename);
 
@@ -1259,7 +1363,7 @@ public sealed class LinkService(
             // File.Delete is a no-op if the file is missing, so it is safe outside the exists-check;
             // placed after the if-block so the using declaration has disposed fs before the unlink
             File.Delete(physicalFile);
-            linkAdapter.WriteFileDeleteResult(true);
+            Answered(linkAdapter.WriteFileDeleteResult(true, tag), tag);
         }
         catch (Exception e)
         {
@@ -1267,7 +1371,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to securely delete {File}", filename);
             }
-            linkAdapter.WriteFileDeleteResult(false);
+            Answered(linkAdapter.WriteFileDeleteResult(false, tag), tag);
         }
     }
 
@@ -1278,6 +1382,7 @@ public sealed class LinkService(
     /// </summary>
     private void HandleGetFileList()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadGetFileList(out string directory, out uint startIndex, out uint maxLength);
         logger.LogDebug("Listing {Directory} from entry {StartIndex}", directory, startIndex);
 
@@ -1318,7 +1423,7 @@ public sealed class LinkService(
             entries.Clear();
             endOfList = true;
         }
-        linkAdapter.WriteFileListResult(entries, endOfList);
+        Answered(linkAdapter.WriteFileListResult(entries, endOfList, tag), tag);
     }
 
     /// <summary>
@@ -1326,6 +1431,7 @@ public sealed class LinkService(
     /// </summary>
     private void HandleOpenFile()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadOpenFile(out string filename, out bool forWriting, out bool append, out long preAllocSize);
         logger.LogDebug("Opening {File} for {Operation} ({NotAppending}appending), prealloc {Prealloc}", filename, forWriting ? "writing" : "reading", append ? string.Empty : "not ", preAllocSize);
 
@@ -1356,7 +1462,7 @@ public sealed class LinkService(
             _openFiles.Add(_openFileHandleCounter, fs);
 
             logger.LogDebug("File {File} opened with handle #{Handle}", filename, _openFileHandleCounter);
-            linkAdapter.WriteOpenFileResult(_openFileHandleCounter, fs.Length);
+            Answered(linkAdapter.WriteOpenFileResult(_openFileHandleCounter, fs.Length, tag), tag);
         }
         catch (Exception e)
         {
@@ -1364,7 +1470,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to open {File} for {Operation}", filename, forWriting ? "writing" : "reading");
             }
-            linkAdapter.WriteOpenFileResult(Consts.NoFileHandle, 0);
+            Answered(linkAdapter.WriteOpenFileResult(Consts.NoFileHandle, 0, tag), tag);
         }
     }
 
@@ -1374,6 +1480,7 @@ public sealed class LinkService(
     /// <returns>Asynchronous task</returns>
     private void HandleReadFile()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadFileRequest(out uint handle, out int maxLength);
         logger.LogTrace("Reading up to {MaxLength} bytes from file #{Handle}", maxLength, handle);
 
@@ -1387,7 +1494,7 @@ public sealed class LinkService(
             int bytesRead = fs.Read(data);
 
             // Send it back
-            linkAdapter.WriteFileReadResult((bytesRead > 0) ? data[..bytesRead] : [], bytesRead);
+            Answered(linkAdapter.WriteFileReadResult((bytesRead > 0) ? data[..bytesRead] : [], bytesRead, tag), tag);
         }
         catch (Exception e)
         {
@@ -1395,7 +1502,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to read {MaxLength} bytes from file #{Handle}", maxLength, handle);
             }
-            linkAdapter.WriteFileReadResult([], -1);
+            Answered(linkAdapter.WriteFileReadResult([], -1, tag), tag);
         }
     }
 
@@ -1405,6 +1512,7 @@ public sealed class LinkService(
     /// <returns>Asynchronous task</returns>
     private void HandleWriteFile()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadWriteRequest(out uint handle, out ReadOnlySpan<byte> data);
         logger.LogTrace("Writing {DataLength} bytes to file #{Handle}", data.Length, handle);
 
@@ -1415,7 +1523,7 @@ public sealed class LinkService(
             fs.Write(data);
 
             // Send it back
-            linkAdapter.WriteFileWriteResult(true);
+            Answered(linkAdapter.WriteFileWriteResult(true, tag), tag);
         }
         catch (Exception e)
         {
@@ -1423,7 +1531,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to write {DataLength} bytes to file #{Handle}", data.Length, handle);
             }
-            linkAdapter.WriteFileWriteResult(false);
+            Answered(linkAdapter.WriteFileWriteResult(false, tag), tag);
         }
     }
 
@@ -1432,6 +1540,7 @@ public sealed class LinkService(
     /// </summary>
     private void HandleSeekFile()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadSeekFile(out uint handle, out long offset);
         logger.LogTrace("Seeking to position {Offset} in file #{Handle}", offset, handle);
 
@@ -1442,7 +1551,7 @@ public sealed class LinkService(
             fs.Seek(offset, SeekOrigin.Begin);
 
             // Send it back
-            linkAdapter.WriteFileSeekResult(true);
+            Answered(linkAdapter.WriteFileSeekResult(true, tag), tag);
         }
         catch (Exception e)
         {
@@ -1450,7 +1559,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to go to position {Offset} in file #{Handle}", offset, handle);
             }
-            linkAdapter.WriteFileSeekResult(false);
+            Answered(linkAdapter.WriteFileSeekResult(false, tag), tag);
         }
     }
 
@@ -1459,6 +1568,7 @@ public sealed class LinkService(
     /// </summary>
     private void HandleTruncateFile()
     {
+        ushort tag = _connection.Tag();
         linkAdapter.ReadTruncateFile(out uint handle);
         logger.LogDebug("Truncating file #{Handle}", handle);
 
@@ -1470,7 +1580,7 @@ public sealed class LinkService(
             logger.LogDebug("Truncated file #{Handle} at byte {Length}", handle, fs.Length);
 
             // Send it back
-            linkAdapter.WriteFileTruncateResult(true);
+            Answered(linkAdapter.WriteFileTruncateResult(true, tag), tag);
         }
         catch (Exception e)
         {
@@ -1478,7 +1588,7 @@ public sealed class LinkService(
             {
                 logger.LogError(e, "Failed to truncate file #{Handle}", handle);
             }
-            linkAdapter.WriteFileTruncateResult(false);
+            Answered(linkAdapter.WriteFileTruncateResult(false, tag), tag);
         }
     }
 
@@ -1511,12 +1621,69 @@ public sealed class LinkService(
     }
     
     /// <summary>
-    /// Invalidate pending codes and code-relevant requests due to an emergency stop
+    /// State of the channel epoch for the current connection (CE-4). Replaced where a connection ends
     /// </summary>
-    private void InvalidateCodes()
+    private EpochConnection _connection = new();
+
+    /// <summary>
+    /// Check if an answer to a request of DSF (EvaluationResult, VariableResult) is of another epoch than the current one of its channel (CE-14).
+    /// The answer is matched outside the channel lock, so it also only answers a request that was written with its tag
+    /// </summary>
+    /// <param name="channel">Channel of the answer</param>
+    /// <param name="tag">Tag of the answer</param>
+    /// <param name="request">Type of the answer</param>
+    /// <returns>Whether the answer is dropped</returns>
+    private bool IsStaleAnswer(CodeChannel? channel, ushort tag, Request request)
+    {
+        if (channel is null || channel >= CodeChannel.Unknown || !ChannelEpoch.IsTagged(tag))
+        {
+            return false;
+        }
+        using (channels[channel.Value].Lock())
+        {
+            return channels[channel.Value].IsStale(tag, request);
+        }
+    }
+
+    /// <summary>
+    /// Keep track of an answer to a file request of RRF for the first marker (CE-4). The answer is lost if it could not be written, as before
+    /// </summary>
+    /// <param name="written">Whether the answer was written</param>
+    /// <param name="tag">Tag it was written with, from <see cref="EpochConnection.Tag()"/></param>
+    private void Answered(bool written, ushort tag)
+    {
+        if (written)
+        {
+            _connection.Written(tag);
+        }
+    }
+
+    /// <summary>
+    /// Get the channel of a message whose only destination is one code channel, as the result of a DoCode is (Executed.cs:177)
+    /// </summary>
+    /// <param name="flags">Message flags</param>
+    /// <param name="channel">Destination channel</param>
+    /// <returns>Whether there is exactly one destination channel</returns>
+    private static bool TryGetDestinationChannel(MessageTypeFlags flags, out CodeChannel channel)
+    {
+        uint destinations = (uint)flags & ((1u << (int)CodeChannel.Unknown) - 1);
+        if (destinations != 0 && (destinations & (destinations - 1)) == 0)
+        {
+            channel = (CodeChannel)System.Numerics.BitOperations.TrailingZeroCount(destinations);
+            return true;
+        }
+        channel = CodeChannel.Unknown;
+        return false;
+    }
+
+    /// <summary>
+    /// Invalidate pending codes and code-relevant requests due to an emergency stop, a lost connection or a reset
+    /// </summary>
+    /// <param name="emergencyStop">Whether this is for an emergency stop, see <see cref="Channel.Processor.Invalidate"/></param>
+    private void InvalidateCodes(bool emergencyStop)
     {
         // Invalidate pending codes and code-relevant requests
-        linkInterface.InvalidateCodes();
+        linkInterface.InvalidateCodes(emergencyStop);
 
         // Cancel the file being printed (if any)
         using (jobProcessor.Lock())
@@ -1529,7 +1696,7 @@ public sealed class LinkService(
         {
             using (channel.Lock())
             {
-                channel.Invalidate();
+                channel.Invalidate(emergencyStop);
             }
         }
     }
@@ -1583,8 +1750,10 @@ public sealed class LinkService(
             }
         }
 
-        if (_linkCapabilitiesToActivate != LinkCapabilities.None && linkAdapter.WriteActivateLinkCapabilities(_linkCapabilitiesToActivate))
+        ushort tag = _connection.Tag();
+        if (_linkCapabilitiesToActivate != LinkCapabilities.None && linkAdapter.WriteActivateLinkCapabilities(_linkCapabilitiesToActivate, tag))
         {
+            _connection.Written(tag);
             _activatedLinkCapabilities = _linkCapabilitiesToActivate;
             _linkCapabilitiesToActivate = LinkCapabilities.None;
             _linkCapabilitiesQuery = linkInterface.RequestObjectModel("state.sbcLinkCapabilities", string.Empty);
@@ -1622,7 +1791,7 @@ public sealed class LinkService(
     private void Invalidate()
     {
         // Invalidate codes and code-relevant requests
-        InvalidateCodes();
+        InvalidateCodes(false);
 
         // Invalidate remaining link interface requests
         linkInterface.Invalidate();

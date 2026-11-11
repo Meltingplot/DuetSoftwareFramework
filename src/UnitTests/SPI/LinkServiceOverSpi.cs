@@ -80,10 +80,12 @@ public partial class LinkServiceOverSpi
         /// <param name="transferDelay">See <see cref="FakeRrfSpi.TransferDelay"/></param>
         /// <param name="noiseSeed">Seed of the random bit errors, see <see cref="FakeRrfSpi.BitErrorRate"/></param>
         /// <param name="configure">Set up the fake RRF before DCS connects</param>
+        /// <param name="firstPackets">Packets of RRF that come with the transfer of the connect, see <see cref="FakeRrfSpi"/></param>
         public static async Task<Host> StartAsync(LinkCapabilities capabilities = LinkCapabilities.None,
             Func<IServiceProvider, FakeRrfSpi, IOptions<Settings>, SpiAdapter>? createAdapter = null,
             Func<SbcRequest, ushort, byte[], IEnumerable<(FirmwareRequest Request, byte[] Payload, ushort ResendPacketId)>>? respond = null, bool answerCapabilities = true,
-            double bootArmDelay = 0, double transferDelay = 0, int noiseSeed = 1, Action<FakeRrfSpi, string>? configure = null)
+            double bootArmDelay = 0, double transferDelay = 0, int noiseSeed = 1, Action<FakeRrfSpi, string>? configure = null,
+            IEnumerable<(FirmwareRequest Request, byte[] Payload, ushort Tag)>? firstPackets = null)
         {
             string baseDirectory = Path.Combine(Path.GetTempPath(), "dsf-spi-link-" + Guid.NewGuid().ToString("N"));
             foreach (string directory in new[] { "sys", "macros", "gcodes", "filaments", "firmware" })
@@ -92,7 +94,7 @@ public partial class LinkServiceOverSpi
             }
 
             Settings settings = new() { BaseDirectory = baseDirectory };
-            FakeRrfSpi rrf = new(_ => false, pollWhileDisconnected: true, capabilities: capabilities)
+            FakeRrfSpi rrf = new(_ => false, pollWhileDisconnected: true, capabilities: capabilities, firstPackets: firstPackets)
             {
                 RecordPackets = true,
                 ExchangeBudget = int.MaxValue,

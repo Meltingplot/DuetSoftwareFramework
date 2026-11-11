@@ -112,7 +112,8 @@ public sealed class Processor
     public async ValueTask<IDisposable> LockAsync(CancellationToken cancellationToken = default) => await _lock.LockAsync(cancellationToken);
 
     /// <summary>
-    /// This is set to true if all the files have been aborted and RRF has to be notified
+    /// This is set to true if all the files have been aborted, by DSF, by RRF (a tagged AbortFile) or by an emergency stop of DSF, and RRF has to be
+    /// notified with InvalidateChannel(e+1)
     /// </summary>
     private bool _allFilesAborted;
 
@@ -134,6 +135,168 @@ public sealed class Processor
     /// This is set to true if RRF asked for the notification about aborted files again in the data being processed. The copy goes out with the next transfer
     /// </summary>
     private bool _allFilesAbortResent;
+
+    /// <summary>
+    /// Whether the positional windows above act on untagged packets of RRF (design/sbc-link-v8-requirements.md CE-13). They stay until milestone E3,
+    /// a test switches them off to measure the link without them (AC-1, AC-2)
+    /// </summary>
+    internal bool UseAbortWindows { get; set; } = true;
+
+    /// <summary>
+    /// Epoch of this channel (design/sbc-link-v8-requirements.md CE-13). DSF is the only writer of an epoch: it increments it where it writes
+    /// InvalidateChannel, and LinkService resets it where a connection ends (CE-4). Both happen on the link thread, which tags the packets of the
+    /// channel with it and drops RRF's packets of other epochs (CE-14). <see cref="Invalidate"/> does not reset it, because it runs on every
+    /// emergency stop as well, while RRF keeps its epochs across a stop
+    /// </summary>
+    public byte Epoch { get; private set; }
+
+    /// <summary>
+    /// Tagged packets of RRF that this channel dropped because their epoch was not the current one, per request (CE-20). Packets of the current epoch
+    /// that arrive after DSF aborted the channel and before it wrote InvalidateChannel count as well. Access it with the channel locked
+    /// </summary>
+    internal Dictionary<Protocol.FirmwareRequests.Request, int> StaleDrops { get; } = [];
+
+    /// <summary>
+    /// Tagged packets of RRF whose epoch follows the current one, which cannot happen on an intact link (CE-5). They are dropped too and counted here
+    /// </summary>
+    internal int AheadDrops { get; private set; }
+
+    /// <summary>
+    /// Out-of-order replies that are not of an older epoch (CE-20, evidence gate EG-1)
+    /// </summary>
+    internal int OutOfOrderReplies { get; private set; }
+
+    /// <summary>
+    /// Complete replies of work that DSF has ended that this channel showed as messages (decision of 2026-11-10). Their packets are counted in
+    /// <see cref="StaleDrops"/> as well, because they complete no code
+    /// </summary>
+    internal int ShownStaleReplies { get; private set; }
+
+    /// <summary>
+    /// Check if a packet of RRF belongs to work of this channel that DSF has ended, and count it then (CE-14). A tagged packet is current only if its
+    /// epoch is the current one and DSF has not aborted all files since: from that abort until the write of InvalidateChannel(e+1) RRF still writes
+    /// epoch e, but DSF has removed e's work from its stack. An untagged packet is decided by the v7 windows (CE-13).
+    /// Call it with the channel locked, because the abort happens under that lock
+    /// </summary>
+    /// <param name="tag">Header field ResendPacketId of the packet</param>
+    /// <param name="request">Type of the packet</param>
+    /// <returns>Whether the packet is dropped</returns>
+    internal bool IsStale(ushort tag, Protocol.FirmwareRequests.Request request)
+    {
+        if (!ChannelEpoch.IsTagged(tag))
+        {
+            return false;
+        }
+
+        byte epoch = ChannelEpoch.EpochOf(tag);
+        if (epoch == Epoch && !_allFilesAborted)
+        {
+            return false;
+        }
+
+        if (IsAhead(epoch))
+        {
+            AheadDrops++;
+            _logger.LogWarning("Dropped {Request} of epoch {Epoch}, which is ahead of epoch {Current}", request, epoch, Epoch);
+        }
+        else
+        {
+            StaleDrops[request] = StaleDrops.GetValueOrDefault(request) + 1;
+            _logger.LogDebug("Dropped {Request} of epoch {Epoch}, current epoch is {Current}", request, epoch, Epoch);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Whether an epoch follows the current one, which cannot happen on an intact link (CE-5)
+    /// </summary>
+    /// <param name="epoch">Epoch of a packet</param>
+    /// <returns>Whether it is ahead</returns>
+    private bool IsAhead(byte epoch) => epoch != Epoch && ChannelEpoch.Follows(epoch, Epoch);
+
+    /// <summary>
+    /// Whether all files of this channel are aborted and InvalidateChannel is not written yet. Nothing of the channel goes out until then: the codes
+    /// wait in Spin, and LinkService holds the requests of the channel, which the new epoch fails (CE-25 (f)). Read on the link thread without the lock;
+    /// a request that is written in the same instant as the abort carries the old epoch and is failed the same way
+    /// </summary>
+    internal bool IsAbortUnsent => _allFilesAborted;
+
+    /// <summary>
+    /// Results of a DoCode of an older epoch that were not sent (CE-25 (e))
+    /// </summary>
+    internal int DroppedResults { get; private set; }
+
+    /// <summary>
+    /// Check if the result of a code that RRF passed on (DoCode) may be sent: one of an older epoch is not, because RRF has ended that DoCode at the
+    /// abort and drops its chunks (CE-25 (e), CE-10). Called on the link thread, which is the only writer of <see cref="Epoch"/>
+    /// </summary>
+    /// <param name="tag">Tag of the DoCode request</param>
+    /// <returns>Whether the result is sent</returns>
+    internal bool IsResultOfCurrentEpoch(ushort tag)
+    {
+        if (ChannelEpoch.IsTagged(tag) && (ChannelEpoch.EpochOf(tag) != Epoch || _allFilesAborted))
+        {
+            DroppedResults++;
+            _logger.LogDebug("Not sending the result of a firmware code of epoch {Epoch}, current epoch is {Current}", ChannelEpoch.EpochOf(tag), Epoch);
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Start a new epoch of this channel where InvalidateChannel(e+1) has been written: the partial reply of the old epoch must not be prepended to
+    /// the next reply, and the requests of the old epoch are failed, because RRF drops them (CE-13, CE-25)
+    /// </summary>
+    /// <param name="epoch">New epoch</param>
+    private void ChangeEpoch(byte epoch)
+    {
+        Epoch = epoch;
+        DiscardPartialReply();
+        _linkInterface.FailChannelRequests(Channel);
+    }
+
+    /// <summary>
+    /// Reset the epoch where a connection ends (CE-4). RRF sets its epochs to 0 at the first marker of the next connection
+    /// </summary>
+    public void ResetEpoch()
+    {
+        Epoch = 0;
+        DiscardPartialReply();
+        _stalePartialReply = null;
+
+        // The epochs start at 0 again, so a reply of the old connection that waits here would look current
+        if (PendingReplies.Count > 0)
+        {
+            _logger.LogDebug("Discarding {Count} pending replies of the old connection", PendingReplies.Count);
+            PendingReplies.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Called where the work of the current epoch is aborted, i.e. where <see cref="_allFilesAborted"/> is set: from here on its replies are stale
+    /// (<see cref="IsStale"/>). The head of a reply that a code of that work has begun moves to the incomplete stale reply, so that its tail, which
+    /// comes stale before or after InvalidateChannel, completes it and the reply is shown as one message. An untagged head stays, as in v7
+    /// </summary>
+    private void MovePartialReplyToStale()
+    {
+        if (_lastPartialMessage is not null && ChannelEpoch.IsTagged(_lastPartialMessageTag))
+        {
+            _stalePartialReply = _lastPartialMessage;
+            _stalePartialReplyType = _lastPartialMessageType;
+            _stalePartialReplyTag = _lastPartialMessageTag;
+            DiscardPartialReply();
+        }
+    }
+
+    /// <summary>
+    /// Discard the incomplete reply of the current code (K11 for an epoch change)
+    /// </summary>
+    private void DiscardPartialReply()
+    {
+        _lastPartialMessage = null;
+        _lastPartialMessageType = MessageTypeFlags.NoDestinationMessage;
+        _lastPartialMessageTag = 0;
+    }
 
     /// <summary>
     /// Stack of the different channel states
@@ -445,9 +608,10 @@ public sealed class Processor
 
     /// <summary>
     /// Queue of code replies for codes that pushed the stack (e.g. macro files or blocking messages).
-    /// Replies must be consumed in arrival order, else multi-chunk replies are reassembled wrongly
+    /// Replies must be consumed in arrival order, else multi-chunk replies are reassembled wrongly.
+    /// Each reply keeps the tag of its packet (CE-11), so that one of work that DSF has ended while it waited is decided by its tag when it is taken
     /// </summary>
-    public Queue<Tuple<MessageTypeFlags, string>> PendingReplies { get; } = new();
+    public Queue<(MessageTypeFlags Flags, string Reply, ushort Tag)> PendingReplies { get; } = new();
 
     /// <summary>
     /// Print diagnostics of this class
@@ -478,6 +642,11 @@ public sealed class Processor
         if (BytesBuffered != 0)
         {
             channelDiagostics.AppendLine($"Buffered codes: {BytesBuffered} bytes total");
+        }
+        int staleDrops = StaleDrops.Values.Sum();
+        if (Epoch != 0 || staleDrops != 0 || AheadDrops != 0 || OutOfOrderReplies != 0)
+        {
+            channelDiagostics.AppendLine($"Epoch {Epoch}, stale drops {staleDrops}, ahead drops {AheadDrops}, out-of-order replies {OutOfOrderReplies}, stale replies shown {ShownStaleReplies}");
         }
 
         string prefix = ">";
@@ -643,7 +812,8 @@ public sealed class Processor
     /// Called when the last or all files have been aborted by the firmware
     /// </summary>
     /// <param name="abortAll">Whether to abort all files</param>
-    public void FilesAborted(bool abortAll)
+    /// <param name="tagged">Whether RRF tagged the request, which it does once it knows the epoch of the channel</param>
+    public void FilesAborted(bool abortAll, bool tagged)
     {
         bool macroAborted = false;
 
@@ -739,6 +909,14 @@ public sealed class Processor
 
             // Cancel pending codes and requests
             InvalidateRegular();
+
+            // RRF's own abort of all files of the current epoch is answered with InvalidateChannel(e+1), which also opens RRF's gate (CE-15, CE-24).
+            // An untagged one is handled as in v7, without an answer (V7-46)
+            if (tagged)
+            {
+                _allFilesAborted = true;
+                MovePartialReplyToStale();
+            }
         }
         else
         {
@@ -830,6 +1008,7 @@ public sealed class Processor
 
         // Cancel pending codes and requests
         _allFilesAborted = _linkAdapter.ProtocolVersion >= 3;
+        MovePartialReplyToStale();
         InvalidateRegular();
 
         // Abort the job files if necessary
@@ -879,16 +1058,17 @@ public sealed class Processor
     /// </summary>
     private void ResolvePendingReplies()
     {
-        while (BufferedCodes.Count > 0 && PendingReplies.TryDequeue(out Tuple<MessageTypeFlags, string>? reply))
+        while (BufferedCodes.Count > 0 && PendingReplies.TryDequeue(out (MessageTypeFlags Flags, string Reply, ushort Tag) reply))
         {
-            HandleReply(reply.Item1, reply.Item2);
+            HandleReply(reply.Flags, reply.Reply, reply.Tag);
         }
     }
 
     /// <summary>
     /// Process pending requests on this channel
     /// </summary>
-    public void Spin()
+    /// <param name="connection">State of the channel epoch for the current connection</param>
+    internal void Spin(EpochConnection connection)
     {
         if (_allFilesAbortResent)
         {
@@ -906,28 +1086,48 @@ public sealed class Processor
             _allFilesAbortUnconfirmed = false;
         }
 
-        // 1. Whole line comments and pending replies
+        // 1. Whole line comments and pending replies. An RRF that tags never refuses InvalidateChannel (CE-7), so nothing waits for its confirmation
         ResolveCommentCodes();
         ResolvePendingReplies();
-        if (_allFilesAbortUnconfirmed)
+        if (_allFilesAbortUnconfirmed && !connection.PeerTags && UseAbortWindows)
         {
             return;
         }
 
-        // 2. Lock/Unlock requests
+        // 2. Abort requests. InvalidateChannel carries the new epoch, which is the current one once it is written (CE-13). Nothing of the channel goes
+        // out before it: the abort has failed the lock requests of the old epoch, so one that is queued here came after the abort. Written first, RRF
+        // would drop it behind its gate (CE-24) or answer it with a tag that is stale already, and this channel would wait for the answer forever
+        if (_allFilesAborted)
+        {
+            byte epoch = ChannelEpoch.Next(Epoch);
+            ushort tag = connection.Tag(epoch);
+            if (_linkAdapter.WriteInvalidateChannel(Channel, tag))
+            {
+                connection.Written(tag);
+                ChangeEpoch(epoch);
+                _allFilesAbortedSent = _allFilesAbortUnconfirmed = true;
+                _allFilesAborted = false;
+            }
+            return;
+        }
+
+        // 3. Lock/Unlock requests
         if (CurrentState.LockRequests.TryPeek(out LockMovementRequest? lockRequest))
         {
+            ushort tag = connection.Tag(Epoch);
             if (lockRequest.IsLockRequest)
             {
-                if (!lockRequest.IsLockRequested && _linkAdapter.WriteLockAllMovementSystemsAndWaitForStandstill(Channel))
+                if (!lockRequest.IsLockRequested && _linkAdapter.WriteLockAllMovementSystemsAndWaitForStandstill(Channel, tag))
                 {
+                    connection.Written(tag);
                     lockRequest.IsLockRequested = true;
                 }
                 return;
             }
 
-            if (_linkAdapter.WriteUnlock(Channel))
+            if (_linkAdapter.WriteUnlock(Channel, tag))
             {
+                connection.Written(tag);
                 lockRequest.Resolve(true);
                 CurrentState.LockRequests.Dequeue();
                 // Resources unlocked; carry on
@@ -938,29 +1138,28 @@ public sealed class Processor
             }
         }
 
-        // 3. Abort requests
-        if (_allFilesAborted)
-        {
-            _allFilesAbortedSent = _allFilesAbortUnconfirmed = _linkAdapter.WriteInvalidateChannel(Channel);
-            _allFilesAborted = !_allFilesAbortedSent;
-            return;
-        }
-
         // 4. Macro files (must come before any other code unless the stack state is being cloned)
         if (CurrentState.File is MacroFile || CurrentState.MacroError)
         {
             // Tell RRF as quickly as possible about the new macro being started
             if (CurrentState.File is MacroFile macro && macro.JustStarted)
             {
-                macro.JustStarted = (_linkAdapter.ProtocolVersion >= 3) && !_linkAdapter.WriteMacroStarted(Channel);
+                ushort tag = connection.Tag(Epoch);
+                macro.JustStarted = (_linkAdapter.ProtocolVersion >= 3) && !_linkAdapter.WriteMacroStarted(Channel, tag);
+                if (!macro.JustStarted)
+                {
+                    connection.Written(tag);
+                }
                 return;
             }
 
             // Check if the macro file has finished
             if (CurrentState.File is MacroFile { WasStarted: true, IsExecuting: false } || CurrentState.MacroError)
             {
-                if (!CurrentState.MacroCompleted && _linkAdapter.WriteMacroCompleted(Channel, CurrentState.MacroError))
+                ushort tag = connection.Tag(Epoch);
+                if (!CurrentState.MacroCompleted && _linkAdapter.WriteMacroCompleted(Channel, CurrentState.MacroError, tag))
                 {
+                    connection.Written(tag);
                     CurrentState.MacroCompleted = true;
                     if (_linkAdapter.ProtocolVersion >= 3)
                     {
@@ -1001,7 +1200,7 @@ public sealed class Processor
         // 5. Suspended codes being resumed (may include priority and macro codes)
         while (CurrentState.SuspendedCodes.TryPeek(out Code? suspendedCode))
         {
-            if (BufferCode(suspendedCode))
+            if (BufferCode(suspendedCode, connection))
             {
                 _logger.LogDebug("-> Resumed suspended code");
                 CurrentState.SuspendedCodes.Dequeue();
@@ -1015,7 +1214,7 @@ public sealed class Processor
         // 6. Pending codes
         while (CurrentState.PendingCodes.Reader.TryPeek(out Code? pendingCode))
         {
-            if (BufferCode(pendingCode))
+            if (BufferCode(pendingCode, connection))
             {
                 CurrentState.PendingCodes.Reader.TryRead(out _);
             }
@@ -1036,10 +1235,13 @@ public sealed class Processor
             CurrentState.SetBusy(false);
         }
 
-        // Log untracked code replies
-        while (PendingReplies.TryDequeue(out Tuple<MessageTypeFlags, string>? reply))
+        // Log untracked code replies. One of work that DSF has ended since it was queued is no out-of-order reply
+        while (PendingReplies.TryDequeue(out (MessageTypeFlags Flags, string Reply, ushort Tag) reply))
         {
-            _logger.LogWarning("Pending out-of-order reply: '{Reply}'", reply.Item2);
+            if (!HandleStaleReply(reply.Flags, reply.Reply, reply.Tag))
+            {
+                _logger.LogWarning("Pending out-of-order reply: '{Reply}'", reply.Reply);
+            }
         }
     }
 
@@ -1047,7 +1249,8 @@ public sealed class Processor
     /// Perform a regular code that was requested from the firmware
     /// </summary>
     /// <param name="code">Code to perform</param>
-    public void DoFirmwareCode(string code)
+    /// <param name="tag">Tag of the DoCode request, which the chunks of the result carry (CE-6)</param>
+    public void DoFirmwareCode(string code, ushort tag)
     {
         _logger.LogDebug("Running code from firmware '{Code}'", code);
 
@@ -1055,6 +1258,7 @@ public sealed class Processor
         simpleCode.Code = code;
         simpleCode.Channel = Channel;
         simpleCode.IsFromFirmware = true;
+        simpleCode.FirmwareTag = tag;
         simpleCode.ExecuteAsynchronously = true;
         _ = simpleCode.ExecuteAsync();
     }
@@ -1063,8 +1267,9 @@ public sealed class Processor
     /// Store a pending code for transmission to RepRapFirmware
     /// </summary>
     /// <param name="pendingCode">Code to transfer</param>
+    /// <param name="connection">State of the channel epoch for the current connection</param>
     /// <returns>True if the code could be buffered</returns>
-    private bool BufferCode(Code pendingCode)
+    private bool BufferCode(Code pendingCode, EpochConnection connection)
     {
         try
         {
@@ -1085,9 +1290,11 @@ public sealed class Processor
 
             // Try to send it to RepRapFirmware. Only the next code of a channel without buffered codes may use the spare room
             int maxBufferSpace = _linkInterface.GetMaxBufferSpacePerChannel(_jobProcessor.NumJobStreams);
+            ushort tag = connection.Tag(Epoch);
             if ((BytesBuffered == 0 || BytesBuffered + pendingCode.BinarySize <= maxBufferSpace) &&
-                _linkInterface.SendCode(pendingCode, pendingCode.BinarySize, BytesBuffered == 0))
+                _linkInterface.SendCode(pendingCode, pendingCode.BinarySize, BytesBuffered == 0, tag))
             {
+                connection.Written(tag);
                 BytesBuffered += pendingCode.BinarySize;
                 BufferedCodes.Add(pendingCode);
                 _logger.LogDebug("Sent {Code}, remaining space {BytesRemaining}, needed {BytesNeeded}", pendingCode, maxBufferSpace - BytesBuffered, pendingCode.BinarySize);
@@ -1108,9 +1315,16 @@ public sealed class Processor
     /// </summary>
     /// <param name="flags">Message flags</param>
     /// <param name="reply">Code reply</param>
+    /// <param name="tag">Tag of the reply, the epoch of the code that produced it (CE-11). A reply of work that DSF has ended completes no code; it is
+    /// shown as a message instead (decision of 2026-11-10, <see cref="ShowStaleReply"/>), one whose epoch is ahead is dropped (CE-14)</param>
     /// <returns>Whether the reply could be processed</returns>
-    public bool HandleReply(MessageTypeFlags flags, string reply)
+    public bool HandleReply(MessageTypeFlags flags, string reply, ushort tag = 0)
     {
+        if (HandleStaleReply(flags, reply, tag))
+        {
+            return true;
+        }
+
         // Replies are not meant for comment codes, resolve them separately
         ResolveCommentCodes();
 
@@ -1118,7 +1332,7 @@ public sealed class Processor
         if (BufferedCodes.Count > 0)
         {
             int codeSize = BufferedCodes[0].BinarySize;
-            if (HandleCodeReply(BufferedCodes[0], flags, reply))
+            if (HandleCodeReply(BufferedCodes[0], flags, reply, tag))
             {
                 BytesBuffered -= codeSize;
                 BufferedCodes.RemoveAt(0);
@@ -1142,7 +1356,7 @@ public sealed class Processor
                     _waitingForPrintCompletion = false;
                     return true;
                 }
-                PendingReplies.Enqueue(new Tuple<MessageTypeFlags, string>(flags, reply));
+                PendingReplies.Enqueue((flags, reply, tag));
                 return true;
             }
         }
@@ -1157,7 +1371,7 @@ public sealed class Processor
             }
             else if (_linkAdapter.ProtocolVersion >= 3)
             {
-                PendingReplies.Enqueue(new Tuple<MessageTypeFlags, string>(flags, reply));
+                PendingReplies.Enqueue((flags, reply, tag));
                 return true;
             }
         }
@@ -1172,9 +1386,81 @@ public sealed class Processor
         // Unless this message comes from the file or code queue it is out-of-order...
         if (Channel != CodeChannel.Queue)
         {
+            OutOfOrderReplies++;
             _logger.LogWarning("Out-of-order reply (flags {Flags}): '{Reply}'", flags, reply);
         }
         return false;
+    }
+
+    /// <summary>
+    /// Check if a reply belongs to work that DSF has ended (CE-14) and show it as a message then, unless its epoch is ahead
+    /// </summary>
+    /// <param name="flags">Message flags</param>
+    /// <param name="reply">Reply</param>
+    /// <param name="tag">Tag of the reply</param>
+    /// <returns>Whether the reply is stale and has been dealt with</returns>
+    private bool HandleStaleReply(MessageTypeFlags flags, string reply, ushort tag)
+    {
+        if (!IsStale(tag, Protocol.FirmwareRequests.Request.Message))
+        {
+            return false;
+        }
+        if (!IsAhead(ChannelEpoch.EpochOf(tag)))
+        {
+            ShowStaleReply(flags, reply, tag);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Incomplete reply of work that DSF has ended (PushFlag), with its flags and its tag. It is kept apart from the incomplete reply of the current code
+    /// (<see cref="_lastPartialMessage"/>)
+    /// </summary>
+    private string? _stalePartialReply;
+    private MessageTypeFlags _stalePartialReplyType;
+    private ushort _stalePartialReplyTag;
+
+    /// <summary>
+    /// Show a reply of work that DSF has ended, e.g. of a code that survived the abort at the base level in RRF, as a message that belongs to no code,
+    /// with the type of its flags, as a generic message is shown (LinkService.OutputGenericMessage). An empty one is dropped. Its parts are assembled
+    /// apart from the reply of the current code, and only parts with the same tag are joined: the part of a reply that never completes is discarded
+    /// by the next stale reply of another epoch or by the end of the connection
+    /// </summary>
+    /// <param name="flags">Message flags</param>
+    /// <param name="reply">Reply</param>
+    /// <param name="tag">Tag of the reply</param>
+    private void ShowStaleReply(MessageTypeFlags flags, string reply, ushort tag)
+    {
+        if (_stalePartialReply is not null)
+        {
+            if (_stalePartialReplyTag == tag)
+            {
+                reply = _stalePartialReply + reply;
+                flags |= _stalePartialReplyType & ~MessageTypeFlags.PushFlag;
+            }
+            else
+            {
+                _logger.LogDebug("Discarding incomplete reply of epoch {Epoch}: '{Reply}'", ChannelEpoch.EpochOf(_stalePartialReplyTag), _stalePartialReply);
+            }
+            _stalePartialReply = null;
+        }
+
+        if (flags.HasFlag(MessageTypeFlags.PushFlag))
+        {
+            _stalePartialReply = reply;
+            _stalePartialReplyType = flags;
+            _stalePartialReplyTag = tag;
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(reply))
+        {
+            ShownStaleReplies++;
+            MessageType type = flags.HasFlag(MessageTypeFlags.ErrorMessageFlag) ? MessageType.Error
+                : flags.HasFlag(MessageTypeFlags.WarningMessageFlag) ? MessageType.Warning
+                : MessageType.Success;
+            _model.Output(type, reply.TrimEnd());
+        }
     }
 
     /// <summary>
@@ -1199,13 +1485,19 @@ public sealed class Processor
     private string? _lastPartialMessage;
 
     /// <summary>
+    /// Tag of the last incomplete code reply
+    /// </summary>
+    private ushort _lastPartialMessageTag;
+
+    /// <summary>
     /// Process a firmware code reply
     /// </summary>
     /// <param name="code">Destination code</param>
     /// <param name="flags">Reply flags</param>
     /// <param name="reply">Reply</param>
+    /// <param name="tag">Tag of the reply, kept with an incomplete one</param>
     /// <returns>Whether the code has finished</returns>
-    private bool HandleCodeReply(Code code, MessageTypeFlags flags, string reply)
+    private bool HandleCodeReply(Code code, MessageTypeFlags flags, string reply, ushort tag)
     {
         if (!string.IsNullOrEmpty(_lastPartialMessage))
         {
@@ -1221,6 +1513,7 @@ public sealed class Processor
             // Code reply is not complete yet
             _lastPartialMessageType |= flags;
             _lastPartialMessage = reply;
+            _lastPartialMessageTag = tag;
             return false;
         }
 
@@ -1290,10 +1583,11 @@ public sealed class Processor
     /// <summary>
     /// Called when RepRapFirmware has closed the last macro file internally
     /// </summary>
-    public void MacroFileClosed()
+    /// <param name="tagged">Whether RRF tagged the closal. A tagged one is decided by its tag (<see cref="IsStale"/>), the windows are for untagged ones (CE-13)</param>
+    public void MacroFileClosed(bool tagged = false)
     {
         // The abort of all files has removed the macro from the stack already, and RRF does not report the files it closes for the abort
-        if (_allFilesAborted || _allFilesAbortedSent)
+        if (!tagged && UseAbortWindows && (_allFilesAborted || _allFilesAbortedSent))
         {
             _logger.LogDebug("Macro file was closed before RRF got the abort of all files. Discarding closal.");
             return;
@@ -1359,13 +1653,15 @@ public sealed class Processor
     /// </summary>
     /// <param name="virtualFile">Requested name of the macro file</param>
     /// <param name="fromCode">Request comes from a real G/M/T-code</param>
-    public void DoMacroFile(string virtualFile, bool fromCode)
+    /// <param name="tagged">Whether RRF tagged the request. A tagged one is decided by its tag (<see cref="IsStale"/>), the windows are for untagged ones (CE-13)</param>
+    /// <param name="connection">State of the channel epoch for the current connection, for the answer that refuses the request</param>
+    internal void DoMacroFile(string virtualFile, bool fromCode, bool tagged, EpochConnection connection)
     {
         // Macro requests are not meant for comment codes, resolve them separately
         ResolveCommentCodes();
 
         // RRF ends a pending macro request with an error when it is notified about aborted files, so a request it sent before is void
-        if (_allFilesAborted || _allFilesAbortedSent)
+        if (!tagged && UseAbortWindows && (_allFilesAborted || _allFilesAbortedSent))
         {
             _logger.LogDebug("Macro file {File} was requested before RRF got the abort of all files. Discarding request.", virtualFile);
             return;
@@ -1375,7 +1671,7 @@ public sealed class Processor
         if (!fromCode && Stack.Count > 1)
         {
             _logger.LogWarning("System macro {File} is requested but the stack is not empty. Discarding request.", virtualFile);
-            _linkAdapter.WriteMacroCompleted(Channel, true);
+            RefuseMacroRequest(connection);
             return;
         }
 
@@ -1400,7 +1696,7 @@ public sealed class Processor
         else if (Stack.Count > 1)
         {
             _logger.LogWarning("System macro {File} is requested but the stack is not empty. Discarding request.", virtualFile);
-            _linkAdapter.WriteMacroCompleted(Channel, true);
+            RefuseMacroRequest(connection);
             return;
         }
 
@@ -1432,6 +1728,19 @@ public sealed class Processor
         {
             // Report back to RRF that the file could not be opened
             newState.MacroError = true;
+        }
+    }
+
+    /// <summary>
+    /// Tell RRF that a requested system macro cannot be started
+    /// </summary>
+    /// <param name="connection">State of the channel epoch for the current connection</param>
+    private void RefuseMacroRequest(EpochConnection connection)
+    {
+        ushort tag = connection.Tag(Epoch);
+        if (_linkAdapter.WriteMacroCompleted(Channel, true, tag))
+        {
+            connection.Written(tag);
         }
     }
 
@@ -1497,8 +1806,12 @@ public sealed class Processor
     /// <summary>
     /// Invalidate every request and buffered code on this channel
     /// </summary>
-    /// <returns>If any resource has been invalidated</returns>
-    public void Invalidate()
+    /// <param name="emergencyStop">Whether DSF invalidates the channel for an emergency stop. Then the work of the channel has ended as at an abort of all
+    /// files (decision of 2026-11-10): from here on a tagged packet of the current epoch is stale (<see cref="IsStale"/>), and <see cref="Spin"/> writes
+    /// InvalidateChannel(e+1) and changes the epoch, to every peer. LinkService skips Spin in the iteration that writes the stop, so the InvalidateChannel
+    /// goes out with a later transfer. False where a connection ends, a reset is requested or DCS stops: the epochs are reset to 0 there (CE-4) or the
+    /// link ends, so nothing stays armed</param>
+    public void Invalidate(bool emergencyStop)
     {
         // Invalidate the stack
         do
@@ -1544,6 +1857,11 @@ public sealed class Processor
 
         // Clear codes that are still pending but have not been fed into the SPI interface yet
         _codeProcessor.CancelPending(Channel);
-        _allFilesAborted = _allFilesAbortedSent = _allFilesAbortUnconfirmed = _allFilesAbortResent = false;
+        _allFilesAbortedSent = _allFilesAbortUnconfirmed = _allFilesAbortResent = false;
+        _allFilesAborted = emergencyStop;
+        if (emergencyStop)
+        {
+            MovePartialReplyToStale();
+        }
     }
 }

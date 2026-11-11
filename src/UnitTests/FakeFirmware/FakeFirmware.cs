@@ -34,11 +34,19 @@ namespace UnitTests.FakeFirmware;
 /// src/GCodes/GCodeBuffer/GCodeBuffer.cpp. Packets are passed as objects, there is no binary encoding and the transfer buffer size is not limited
 /// </para>
 /// <para>
+/// Channel aborts follow <see cref="Model"/>: the InvalidateChannel handler of fork RRF 0dccb9efe (<see cref="FakeRrfModel.V7"/>), the record by the SBC
+/// task and the apply by the main task of design/sbc-link-v8-requirements.md (<see cref="FakeRrfModel.RecordApply"/>), or that plus the channel epoch
+/// (<see cref="FakeRrfModel.Epoch"/>, the default), whose tags travel in the header field resendPacketId (<see cref="FakePacket.Tag"/>). The fake
+/// has one loop for both RRF tasks, so the record happens while the SBC task reads the requests of a transfer and the apply at the start of the main
+/// task's spin that follows; <see cref="ApplyDelay"/> puts transfers in between
+/// </para>
+/// <para>
 /// Emulated: code buffer and buffer updates, code replies with RRF's flags, macro requests (M98, system macros), pending triggers and their
 /// macros (GCodes::CheckTriggers, see <see cref="FireTrigger"/>), macro completion and M99 aborts, message boxes (M291/M292), M409, the result variables of M260/M261, expression evaluation, local and global variables,
 /// movement locks, channel invalidation, emergency stop, reset, resend requests, the mutex hand-over between RRF's SBC and main tasks
-/// while a code waits for a macro, and main firmware updates through the SBC IAP program (FakeFirmwareIap.cs).
-/// Not emulated: job files and pausing, file requests from RRF, codes RRF passes on to DSF (DoCode), timeouts, motion, heaters,
+/// while a code waits for a macro, text codes that RRF passes on to DSF (DoCode, see <see cref="PassCodeToSbc"/>), RRF's own abort of all files
+/// (see <see cref="AbortAllFiles"/>) and main firmware updates through the SBC IAP program (FakeFirmwareIap.cs).
+/// Not emulated: job files and pausing, file requests from RRF, timeouts, motion, heaters,
 /// the binary protocol and its transfer buffer limits. Codes without a test handler succeed with an empty reply
 /// </para>
 /// </summary>
@@ -94,6 +102,177 @@ public sealed partial class FakeFirmware : ILinkAdapter
     /// Logger for the packets exchanged with DSF (debug level)
     /// </summary>
     public ILogger Logger { get; set; } = NullLogger.Instance;
+
+    /// <summary>
+    /// RRF that the fake models. Set it before DSF connects
+    /// </summary>
+    public FakeRrfModel Model { get; set; } = FakeRrfModel.Epoch;
+
+    /// <summary>
+    /// Number of transfers that RRF's main task needs after the SBC task recorded a channel abort to reach the top of its next spin, where it applies
+    /// the abort (CE-7). The rest of a pass can be long, e.g. while the main task waits for an expansion board (Q38). 0 applies it in the transfer of the record
+    /// </summary>
+    public int ApplyDelay
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _applyDelay;
+            }
+        }
+        set
+        {
+            lock (_lock)
+            {
+                _applyDelay = value;
+            }
+        }
+    }
+    private int _applyDelay;
+
+    /// <summary>
+    /// Whether the fork catch code of RRF #46 (codeReplySurplus, GCodeBuffer.h:405) suppresses the replies of a code that DSF dropped at its abort.
+    /// It stays until milestone E3 (CE-7), switch it off to model E3. With the channel epoch it acts only on a code whose replies would go out
+    /// untagged (<see cref="FakeGCodeBuffer.MarkCodeReplySurplus"/>)
+    /// </summary>
+    public bool CodeReplySurplus { get; set; } = true;
+
+    /// <summary>
+    /// Whether the SBC task has recorded an abort of a channel that the main task has yet to apply
+    /// </summary>
+    /// <param name="channel">Code channel</param>
+    /// <returns>Whether the abort is recorded but not applied</returns>
+    public bool IsAbortRecorded(CodeChannel channel)
+    {
+        lock (_lock)
+        {
+            return _gcodes[channel].IsAbortRecorded;
+        }
+    }
+
+    /// <summary>
+    /// Longest time from the record of a channel abort to its apply, in transfers (CE-20 counts it in ms)
+    /// </summary>
+    public int MaxRecordToApply
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _gcodes.MaxRecordToApply;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Channel that holds the movement lock, or null if none does
+    /// </summary>
+    public CodeChannel? MovementLockOwner
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _gcodes.MovementLockOwner?.Channel;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Emulate a lost connection to the SBC that RRF notices while it keeps running, see the connection loss in SbcInterface::TaskLoop
+    /// (SbcInterface.cpp:194-229 at 4d687cec0): RRF is no longer connected (isConnected), ends the connection (EndConnection, :282-298: emergency stop
+    /// and InvalidateResources) and lets the main task run before it processes new data. The main task spins once here, without a connection, so a
+    /// macro that it requests now fails at once (RequestMacroFile, GCodeBuffer.cpp:1298-1302). The next transfer connects again. DSF sees the
+    /// connection reset
+    /// </summary>
+    public void SimulateConnectionLoss()
+    {
+        lock (_lock)
+        {
+            _connected = false;
+            EndConnection();
+            _gcodes.Spin();
+            _hadReset = true;
+        }
+    }
+
+    /// <summary>
+    /// Emulate that DSF ends the connection while RRF keeps running and notices nothing, e.g. when the link stalls for longer than DSF waits but not as
+    /// long as RRF waits (SbcConnectionTimeout). DSF sees the connection reset and starts a new connection, whose first packet carries the first marker
+    /// </summary>
+    public void SimulateDsfConnectionEnd()
+    {
+        lock (_lock)
+        {
+            _hadReset = true;
+        }
+    }
+
+    /// <summary>
+    /// Whether RRF counts the SBC as connected (SbcInterface::isConnected): false after it noticed a lost connection, true again when the next transfer
+    /// completes (SbcInterface.cpp:194-196, :248-253). The first marker of a new connection that RRF still runs does not change it
+    /// </summary>
+    internal bool IsConnected
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _connected;
+            }
+        }
+    }
+    private bool _connected = true;
+
+    /// <summary>
+    /// <see cref="IsConnected"/> for the emulated main task, which runs with the firmware locked
+    /// </summary>
+    internal bool IsConnectedForMainTask => _connected;
+
+    /// <summary>
+    /// Emulate that the SBC task reads DSF's first marker on the connection that it still runs while the main task is in the middle of a code, e.g. from
+    /// the handler of that code: the SBC task records the end of the connection at once, before the code replies and before the main task applies it
+    /// at its next spin. Then the SBC task handles the packet as the first one of the new connection
+    /// </summary>
+    internal void SimulateFirstMarkerWhileTheMainTaskRuns()
+    {
+        lock (_lock)
+        {
+            ReadFirstMarker();
+            _sbcPacketRead = true;
+        }
+    }
+
+    /// <summary>
+    /// Act on DSF's first marker (SbcInterface.cpp:333-357 at 4d687cec0): end the connection as a lost one if a packet of it has been read already (owner
+    /// decision D-B of 2026-11-10), then start every channel at epoch 0. Every channel starts at epoch 0, which DSF's epochs are at that event, not
+    /// unknown as CE-4 said: then RRF tags the packets of a channel before DSF has sent anything on it (Q34). An InvalidateChannel with the marker then
+    /// moves its channel on as usual. The stamps are left alone: none is valid at boot, and after a loss InvalidateResources has recorded the end of
+    /// the connection
+    /// </summary>
+    private void ReadFirstMarker()
+    {
+        if (_sbcPacketRead)
+        {
+            EndConnection();
+        }
+        foreach (FakeGCodeBuffer buffer in _gcodes.Buffers)
+        {
+            buffer.ResetChannelEpoch(true);
+        }
+    }
+
+    /// <summary>
+    /// End the connection as lost, see SbcInterface::EndConnection (SbcInterface.cpp:282-298): emergency stop and InvalidateResources. The disconnect
+    /// counter and the wait for the main task are not modelled
+    /// </summary>
+    private void EndConnection()
+    {
+        _repRapStopped = true;
+        _gcodes.RequestEmergencyStop();
+        InvalidateResources();
+    }
 
     /// <summary>
     /// Object model of the fake firmware. Changes are reported to DSF via the sequence numbers
@@ -200,6 +379,60 @@ public sealed partial class FakeFirmware : ILinkAdapter
         lock (_lock)
         {
             _gcodes.SetTriggerPending(number);
+        }
+    }
+
+    /// <summary>
+    /// Let a channel pass a text code on to DSF, as RRF does for a code from PanelDue, USB or a trigger action that it cannot run itself
+    /// (default case of GCodes::HandleMcode, GCodes2.cpp:600-606). The main task takes the code once the channel is idle, and the SBC task writes it
+    /// as DoCode (SbcInterface.cpp:1613-1634). The channel stays busy until DSF sends a message to that channel alone, which is the result
+    /// (SbcInterface.cpp:774-793)
+    /// </summary>
+    /// <param name="channel">Channel of the code</param>
+    /// <param name="code">Text of the code</param>
+    public void PassCodeToSbc(CodeChannel channel, string code)
+    {
+        lock (_lock)
+        {
+            _gcodes.QueueSbcCode(channel, code);
+        }
+    }
+
+    /// <summary>
+    /// Let the main task abort all files of a channel on its next spin, as GCodes::AbortPrint does after an error of the state machine
+    /// (GCodes.cpp:3623-3640). The SBC task tells DSF with AbortFile(all) (SbcInterface.cpp:1541-1577). A channel without a file is left alone,
+    /// see GCodeBuffer::AbortFile
+    /// </summary>
+    /// <param name="channel">Code channel</param>
+    public void AbortAllFiles(CodeChannel channel)
+    {
+        lock (_lock)
+        {
+            _gcodes.QueueAbortAllFiles(channel);
+        }
+    }
+
+    /// <summary>
+    /// Get the messages DSF sent to the firmware, e.g. the results of the text codes RRF passed on
+    /// </summary>
+    /// <returns>Messages in order</returns>
+    public IReadOnlyList<FakeSbcRequest> GetReceivedMessages()
+    {
+        lock (_lock)
+        {
+            return [.. _receivedMessages];
+        }
+    }
+
+    /// <summary>
+    /// Get the text codes that RRF passed on to DSF and that a message of DSF finished, with the text of that message
+    /// </summary>
+    /// <returns>Finished codes and the results that finished them, in order</returns>
+    public IReadOnlyList<(string Code, string Result)> GetFinishedSbcCodes()
+    {
+        lock (_lock)
+        {
+            return [.. _finishedSbcCodes];
         }
     }
 
@@ -470,8 +703,8 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <summary>
-    /// Whether a channel has nothing to do: no file on its stack, no macro request, no code being executed, no message box and no file abort
-    /// that DSF has yet to be told about. For the trigger channel this means that the next pending trigger macro can be requested
+    /// Whether a channel has nothing to do: no file on its stack, no macro request, no code being executed, no state machine step, no message box and
+    /// no file abort that DSF has yet to be told about. For the trigger channel this means that the next pending trigger macro can be requested
     /// (GCodes::IsTriggerBusy, GCodes.cpp:423-433)
     /// </summary>
     /// <param name="channel">Code channel</param>
@@ -482,7 +715,8 @@ public sealed partial class FakeFirmware : ILinkAdapter
         {
             FakeGCodeBuffer gb = _gcodes[channel];
             return !gb.IsDoingFile && !gb.IsWaitingForMacro && gb.PendingMacroCall is null && gb.CurrentCode is null &&
-                !gb.MachineState.WaitingForAcknowledgement && !gb.IsAbortRequested && gb.MachineState.Previous is null;
+                !gb.MachineState.WaitingForAcknowledgement && !gb.IsAbortRequested && gb.MachineState.Previous is null && gb.SbcCode is null &&
+                !gb.IsAbortRecorded && !_gcodes.HasQueuedSbcCode(channel) && gb.MachineState.State == FakeMachineState.MachineStateKind.Normal;
         }
     }
 
@@ -496,6 +730,34 @@ public sealed partial class FakeFirmware : ILinkAdapter
         lock (_lock)
         {
             return _gcodes[channel].CurrentCode;
+        }
+    }
+
+    /// <summary>
+    /// Whether a tool change is in progress (GCodes::doingToolChange), see <see cref="FakeReply.ToolChange"/>
+    /// </summary>
+    public bool IsDoingToolChange
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _gcodes.DoingToolChange;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Axes that are homed (GCodes::axesHomed), see <see cref="FakeReply.Home"/>
+    /// </summary>
+    public IReadOnlyCollection<char> AxesHomed
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return [.. _gcodes.AxesHomed];
+            }
         }
     }
 
@@ -563,10 +825,20 @@ public sealed partial class FakeFirmware : ILinkAdapter
     private readonly List<(MessageTypeFlags type, StringBuilder text, FakeCode? code, bool isOutputBuffer)> _gcodeReply = [];
     private bool _repRapStopped;
 
+    /// <summary>
+    /// Whether the SBC task has read the header of a packet from DSF in this connection, of any type and with or without the first marker. It is false
+    /// after boot and after a lost connection (InvalidateResources). While it is false, the RRF of milestone E2 writes nothing that belongs to a channel
+    /// (decision of 2026-11-10): its first requests of a channel go out once it knows whether DSF tags, and with the marker of a DSF that tags they
+    /// carry an epoch. Without the marker the epochs stay unknown and RRF writes untagged packets, as in v7
+    /// </summary>
+    private bool _sbcPacketRead;
+
     // Logs
     private readonly List<FakeCode> _receivedCodes = [], _executedCodes = [], _discardedCodes = [];
     private readonly List<FakePacket> _sentPackets = [];
     private readonly List<FakeSbcRequest> _receivedRequests = [];
+    private readonly List<FakeSbcRequest> _receivedMessages = [];
+    private readonly List<(string code, string result)> _finishedSbcCodes = [];
     private readonly List<string> _unemulated = [];
 
     /// <summary>
@@ -581,6 +853,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
         _txPackets.Clear();
         _sendBufferUpdate = true;
         _repRapStopped = false;
+        _sbcPacketRead = false;
         ObjectModel.ClearGlobals();
         SetActiveLinkCapabilities(LinkCapabilities.None);
         _hadReset = true;
@@ -616,6 +889,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
             _transferNumber++;
             long timestamp = Stopwatch.GetTimestamp();
             _requestsBeingResent.Clear();
+            _connected = true;
 
             // Deliver what the SBC task wrote after the previous transfer
             _rxPackets = _txPackets;
@@ -698,6 +972,30 @@ public sealed partial class FakeFirmware : ILinkAdapter
         {
             bool acknowledged = true;
             FakeGCodeBuffer? gb = (request.Channel < CodeChannel.Unknown) ? _gcodes[request.Channel] : null;
+
+            // Only the RRF of milestone E2 reads the tags of DSF (CE-5), the others see 0 there
+            ushort tag = (Model == FakeRrfModel.Epoch) ? request.Tag : (ushort)0;
+            if ((tag & FakeTag.FirstMarker) != 0)
+            {
+                // DSF's first packet after it started or ended a connection, whatever its type, usually a GetObjectModel (CE-4). It acts before the packet
+                // can be refused, because a copy does not carry it (CE-8; SbcInterface.cpp:333-357 at 4d687cec0). Read while a packet of this connection
+                // has been read already, it means that DSF has ended the connection that RRF still runs (owner decision D-B of 2026-11-10): RRF ends it
+                // as a lost one first, with the emergency stop and InvalidateResources, and then handles this packet as the first one of the new
+                // connection. The message "Lost connection to SBC (the SBC has started a new connection)" is not modelled: it is a NetworkInfoMessage
+                // (USB, aux, log), which does not go to the SBC (MessageType.h:62, :72, Platform.cpp:3254-3258)
+                ReadFirstMarker();
+            }
+            _sbcPacketRead = true;
+            if (DropByEpoch(request, gb, tag))
+            {
+                if (request.Request == SbcRequest.Code)
+                {
+                    _receivedCodes.Add(request.Code!);
+                    _discardedCodes.Add(request.Code!);
+                }
+                continue;
+            }
+
             switch (request.Request)
             {
                 case SbcRequest.EmergencyStop:
@@ -712,7 +1010,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     return;
 
                 case SbcRequest.Code:
-                    acknowledged = StoreCode(request.Code!, gb!, ref codeBufferAvailable);
+                    acknowledged = StoreCode(request.Code!, gb!, tag, ref codeBufferAvailable);
                     break;
 
                 case SbcRequest.GetObjectModel:
@@ -760,7 +1058,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                 case SbcRequest.LockAllMovementSystemsAndWaitForStandstill:
                     if (TryLockBuffer(gb!) && _gcodes.LockAllMovementSystemsAndWaitForStandstill(gb!))
                     {
-                        WritePacket(new FakePacket { Request = FirmwareRequest.Locked, Channel = request.Channel });
+                        WritePacket(new FakePacket { Request = FirmwareRequest.Locked, Channel = request.Channel, Tag = AnswerTag(tag) });
                     }
                     else
                     {
@@ -792,7 +1090,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                             // WriteEvaluationError sends the message as an expression, which DSF turns into an exception
                             result = new CodeParserException(e.Message);
                         }
-                        WritePacket(new FakePacket { Request = FirmwareRequest.EvaluationResult, Channel = request.Channel, Text = request.Text, Value = result });
+                        WritePacket(new FakePacket { Request = FirmwareRequest.EvaluationResult, Channel = request.Channel, Text = request.Text, Value = result, Tag = AnswerTag(tag) });
                     }
                     else
                     {
@@ -801,7 +1099,23 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     break;
 
                 case SbcRequest.Message:
-                    // Messages for other devices and replies to codes executed by DSF (DoCode) are not emulated
+                    // A message to a single channel whose text code DSF executes is the result of that code and finishes it (SbcInterface.cpp:774-793).
+                    // Output to other devices is not emulated, the fake records the message instead
+                    if (!request.MessageFlags.HasFlag(MessageTypeFlags.PushFlag) && TryGetSingleChannel(request.MessageFlags, out CodeChannel destination))
+                    {
+                        FakeGCodeBuffer target = _gcodes[destination];
+                        if (target.IsExecutingOnSbc)
+                        {
+                            if (!TryLockBuffer(target))
+                            {
+                                acknowledged = false;
+                                break;
+                            }
+                            _finishedSbcCodes.Add((target.SbcCode!, request.Text));
+                            target.SetFinished(true);
+                        }
+                    }
+                    _receivedMessages.Add(request);
                     break;
 
                 case SbcRequest.MacroStarted:
@@ -813,6 +1127,10 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     {
                         PlatformMessage(MessageTypeFlags.GenericMessage | MessageTypeFlags.LogWarn | MessageTypeFlags.WarningMessageFlag, $"Macro file has been started on channel {request.Channel} but none was requested\n", null);
                     }
+                    break;
+
+                case SbcRequest.InvalidateChannel when Model != FakeRrfModel.V7:
+                    RecordAbort(gb!, tag);
                     break;
 
                 case SbcRequest.InvalidateChannel:
@@ -832,7 +1150,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     }
                     if (TryLockBuffer(gb))
                     {
-                        gb.AbortFile(true);
+                        gb.AbortFile(true, false);    // the V7 model is firmware without the clear of macroJustStarted (RRF 67e3c69f0)
                         gb.FileAbortSent();
                         // DSF has removed all its macro files, so a closal that has not gone out yet is void (RRF Meltingplot/RepRapFirmware#45, as GCodeBuffer::Reset)
                         gb.MacroFileClosedSent();
@@ -855,7 +1173,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
                 case SbcRequest.SetVariable:
                     if (TryLockBuffer(gb!))
                     {
-                        SetVariable(gb!, request.Flag, request.Text, request.Argument);
+                        SetVariable(gb!, request.Flag, request.Text, request.Argument, AnswerTag(tag));
                     }
                     else
                     {
@@ -928,9 +1246,33 @@ public sealed partial class FakeFirmware : ILinkAdapter
             _sendBufferUpdate = false;
         }
 
+        // Nothing of a buffer whose abort is recorded is written before the main task has applied it (CE-12). A macro wait that began after the record
+        // ends here with an error instead of a request, as the record ends one. This comes before the hold below, so that such a wait ends in this
+        // exchange also before DSF's first packet of a new connection (SbcInterface.cpp:1611-1630 at 4d687cec0)
+        foreach (FakeGCodeBuffer gb in _gcodes.Buffers)
+        {
+            if (gb.IsAbortRecorded && gb.IsWaitingForMacro)
+            {
+                gb.MacroRequestSent();
+                gb.ResolveMacroRequest(true, false);
+            }
+        }
+
+        // Nothing of a channel is written before the SBC task has read DSF's first packet of the connection (milestone E2). It is held, not dropped
+        if (Model == FakeRrfModel.Epoch && !_sbcPacketRead)
+        {
+            return;
+        }
+
         // Deal with code channel requests
         foreach (FakeGCodeBuffer gb in _gcodes.Buffers)
         {
+            // See above
+            if (gb.IsAbortRecorded)
+            {
+                continue;
+            }
+
             // Invalidate buffered codes if required
             if (gb.IsInvalidated)
             {
@@ -941,14 +1283,14 @@ public sealed partial class FakeFirmware : ILinkAdapter
             // Deal with macro files being closed
             if (gb.IsMacroFileClosed)
             {
-                WritePacket(new FakePacket { Request = FirmwareRequest.MacroFileClosed, Channel = gb.Channel });
+                WritePacket(new FakePacket { Request = FirmwareRequest.MacroFileClosed, Channel = gb.Channel, Tag = ChannelTag(gb) });
                 gb.MacroFileClosedSent();
             }
 
             // Handle blocking macro requests
             if (gb.IsWaitingForMacro && gb.IsMacroRequestPending)
             {
-                WritePacket(new FakePacket { Request = FirmwareRequest.ExecuteMacro, Channel = gb.Channel, Text = gb.RequestedMacroFile!, IsFromCode = gb.IsMacroStartedByCode });
+                WriteMacroRequest(gb);
                 gb.MacroRequestSent();
                 gb.IsInvalidated = true;
             }
@@ -965,13 +1307,20 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     }
 
                     bool abortAll = gb.IsAbortAllRequested;
-                    WritePacket(new FakePacket { Request = FirmwareRequest.AbortFile, Channel = gb.Channel, AbortAll = abortAll });
-
-                    // Send back a final code reply for codes that started the last macros, else the corresponding code will never finish
-                    if (!abortAll && gb.MachineState.State == FakeMachineState.MachineStateKind.Normal &&
-                        (!gb.MachineState.LastCodeFromSbc || gb.MachineState.MacroStartedByCode))
+                    ushort abortTag = ChannelTag(gb);
+                    WritePacket(new FakePacket { Request = FirmwareRequest.AbortFile, Channel = gb.Channel, AbortAll = abortAll, Tag = abortTag });
+                    if (abortAll && FakeTag.IsTagged(abortTag))
                     {
-                        WritePacket(new FakePacket { Request = FirmwareRequest.Message, MessageType = gb.ResponseMessageType, Channel = gb.Channel });
+                        // A tagged abort of all files closes the gate until DSF answers it with InvalidateChannel(e+1) (CE-24)
+                        gb.IsGated = true;
+                    }
+
+                    // Send back a final code reply for codes that started the last macros, else the corresponding code will never finish. Not for a code of
+                    // a connection that has ended, which DSF does not know (SbcInterface.cpp:1726-1729 at RRF 78a997f74)
+                    if (!abortAll && gb.MachineState.State == FakeMachineState.MachineStateKind.Normal &&
+                        (!gb.MachineState.LastCodeFromSbc || gb.MachineState.MacroStartedByCode) && !IsReplyToCodeOfEndedConnection(gb.ResponseMessageType))
+                    {
+                        WriteCodeReply(gb.ResponseMessageType, string.Empty, null, gb.Channel);
                     }
                     gb.FileAbortSent();
                     gb.IsInvalidated = true;
@@ -981,25 +1330,30 @@ public sealed partial class FakeFirmware : ILinkAdapter
                 if (gb.MachineState.WaitingForAcknowledgement && gb.IsMessagePromptPending)
                 {
                     WriteQueuedCodeReplies();
-                    WritePacket(new FakePacket { Request = FirmwareRequest.WaitForAcknowledgement, Channel = gb.Channel });
+                    WritePacket(new FakePacket { Request = FirmwareRequest.WaitForAcknowledgement, Channel = gb.Channel, Tag = ChannelTag(gb) });
                     gb.MessagePromptSent();
                     gb.IsInvalidated = true;
                 }
                 else if (gb.IsMessageAcknowledged)
                 {
-                    WritePacket(new FakePacket { Request = FirmwareRequest.MessageAcknowledged, Channel = gb.Channel });
+                    WritePacket(new FakePacket { Request = FirmwareRequest.MessageAcknowledged, Channel = gb.Channel, Tag = ChannelTag(gb) });
                     gb.MessageAcknowledgementSent();
                 }
 
                 // Handle non-blocking macro requests (e.g. daemon.g)
                 if (gb.IsMacroRequestPending)
                 {
-                    WritePacket(new FakePacket { Request = FirmwareRequest.ExecuteMacro, Channel = gb.Channel, Text = gb.RequestedMacroFile!, IsFromCode = gb.IsMacroStartedByCode });
+                    WriteMacroRequest(gb);
                     gb.MacroRequestSent();
                     gb.IsInvalidated = true;
                 }
 
-                // Codes that RRF passes on to DSF (DoCode) are not emulated
+                // Send pending firmware codes (SbcInterface.cpp:1613-1634). Explicit line numbers are not emulated
+                if (gb.IsSendRequested)
+                {
+                    WritePacket(new FakePacket { Request = FirmwareRequest.DoCode, Channel = gb.Channel, Text = gb.SbcCode!, Tag = ChannelTag(gb) });
+                    gb.SentToSbc();
+                }
             }
         }
 
@@ -1007,14 +1361,272 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <summary>
+    /// Counters of the channel epoch (CE-20). Read them with <see cref="EpochCounterTotal"/> while DSF is connected
+    /// </summary>
+    public FakeEpochCounters EpochCounters { get; } = new();
+
+    /// <summary>
+    /// Sum of the counters of the channel epoch
+    /// </summary>
+    public int EpochCounterTotal
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return EpochCounters.Total;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Requests whose tag the filter checks, in addition to the chunks of a DoCode result (CE-10). InvalidateChannel is decided by its record
+    /// </summary>
+    private static readonly HashSet<SbcRequest> FilteredRequests =
+    [
+        SbcRequest.Code, SbcRequest.MacroStarted, SbcRequest.MacroCompleted, SbcRequest.LockAllMovementSystemsAndWaitForStandstill, SbcRequest.Unlock,
+        SbcRequest.EvaluateExpression, SbcRequest.SetVariable, SbcRequest.DeleteLocalVariable, SbcRequest.SetLastCodeResult
+    ];
+
+    /// <summary>
+    /// Apply the adopt rule (CE-4), the gate (CE-24) and the filter of stale DSF packets (CE-10) to a request, before any side effect of it
+    /// </summary>
+    /// <param name="request">Request from DSF</param>
+    /// <param name="gb">Buffer of the request's channel, if any</param>
+    /// <param name="tag">Tag of the request as RRF reads it</param>
+    /// <returns>Whether the request is dropped. A dropped request gets no answer and is not asked for again</returns>
+    private bool DropByEpoch(FakeSbcRequest request, FakeGCodeBuffer? gb, ushort tag)
+    {
+        if (Model != FakeRrfModel.Epoch)
+        {
+            return false;
+        }
+
+        FakeGCodeBuffer? target = null;
+        if (FilteredRequests.Contains(request.Request))
+        {
+            target = gb;
+        }
+        else if (request.Request == SbcRequest.Message && FakeTag.IsTagged(tag) && TryGetSingleChannel(request.MessageFlags, out CodeChannel destination))
+        {
+            // The chunks of a DoCode result carry the tag of their DoCode, other messages are untagged and not bound to a channel
+            target = _gcodes[destination];
+        }
+        if (target is null)
+        {
+            return false;
+        }
+
+        // While the epoch of the channel is unknown, the first tagged packet of the channel sets it, whatever its type
+        if (FakeTag.IsTagged(tag) && !target.IsEpochKnown)
+        {
+            target.Epoch = FakeTag.EpochOf(tag);
+            target.IsEpochKnown = true;
+        }
+
+        if (target.IsGated)
+        {
+            EpochCounters.Count(EpochCounters.GateDrops, target.Channel, request.Request);
+            return true;
+        }
+        if (FakeTag.IsTagged(tag) && FakeTag.EpochOf(tag) != target.Epoch)
+        {
+            EpochCounters.Count(FakeTag.Follows(FakeTag.EpochOf(tag), target.Epoch) ? EpochCounters.AheadDrops : EpochCounters.StaleDrops, target.Channel, request.Request);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Tag of an answer (Locked, EvaluationResult, VariableResult): the tag of the request it answers, without the first marker (CE-6). It is passed
+    /// as a parameter, because each answer is written inside the handler of its request
+    /// </summary>
+    /// <param name="requestTag">Tag of the request as RRF read it</param>
+    /// <returns>Tag of the answer</returns>
+    private static ushort AnswerTag(ushort requestTag) => FakeTag.IsTagged(requestTag) ? FakeTag.Of(FakeTag.EpochOf(requestTag)) : (ushort)0;
+
+    /// <summary>
+    /// Tag source (2) of CE-9: the epoch of the channel when the SBC task writes the packet, none while the epoch is unknown
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <returns>Tag</returns>
+    private ushort ChannelTag(FakeGCodeBuffer gb) => (Model == FakeRrfModel.Epoch && gb.IsEpochKnown) ? FakeTag.Of(gb.Epoch) : (ushort)0;
+
+    /// <summary>
+    /// Tag source (1) of CE-9: the epoch of the code that the packet belongs to, the stamp of the latest frame, none if it is invalid or the channel
+    /// epoch unknown
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    /// <returns>Tag</returns>
+    private ushort CodeTag(FakeGCodeBuffer gb) => (Model == FakeRrfModel.Epoch && gb.IsEpochKnown && gb.CodeEpoch is byte epoch) ? FakeTag.Of(epoch) : (ushort)0;
+
+    /// <summary>
+    /// Write the pending macro request of a buffer (ExecuteMacro). The request of a code carries the stamp of that code (CE-9 source (1)). While the
+    /// channel epoch is known, one of a code whose stamp is not that epoch (another epoch, or an invalid stamp) is written as a request without a code
+    /// (fromCode false) with the channel epoch, so that DSF starts it as a system macro: such a code survived an abort or the end of a connection at the
+    /// base level and goes on as in standalone RRF (decision of 2026-11-10, replaces CE-12 (b)). While the channel epoch is unknown the request is
+    /// written as in v7, with fromCode as it is and untagged
+    /// </summary>
+    /// <param name="gb">G-code buffer</param>
+    private void WriteMacroRequest(FakeGCodeBuffer gb)
+    {
+        bool fromCode = gb.IsMacroStartedByCode;
+        ushort tag;
+        if (!fromCode)
+        {
+            tag = ChannelTag(gb);
+        }
+        else if (Model == FakeRrfModel.Epoch && gb.IsEpochKnown && gb.CodeEpoch != gb.Epoch)
+        {
+            fromCode = false;
+            tag = ChannelTag(gb);
+        }
+        else
+        {
+            tag = CodeTag(gb);
+        }
+        WritePacket(new FakePacket { Request = FirmwareRequest.ExecuteMacro, Channel = gb.Channel, Text = gb.RequestedMacroFile!, IsFromCode = fromCode, Tag = tag });
+    }
+
+    /// <summary>
+    /// Record an abort of a channel on the SBC task (design/sbc-link-v8-requirements.md CE-7, "Record"). It takes no buffer mutex, so it is never
+    /// refused. The main task applies it at the top of its next spin with <see cref="FakeGCodes.EndChannelWork"/>
+    /// </summary>
+    /// <param name="gb">G-code buffer of the channel</param>
+    /// <param name="tag">Tag of the InvalidateChannel, the new epoch of the channel</param>
+    private void RecordAbort(FakeGCodeBuffer gb, ushort tag)
+    {
+        // A tagged InvalidateChannel acts only if the epoch is unknown or the tag follows it (RFC 1982). An equal or preceding one is a repeat, e.g. of a
+        // transfer that RRF processes twice, and is counted and ignored (CE-5, CE-7, FD-28). Its tag becomes the epoch and opens the gate (CE-24)
+        if (FakeTag.IsTagged(tag))
+        {
+            byte epoch = FakeTag.EpochOf(tag);
+            if (gb.IsEpochKnown && !FakeTag.Follows(epoch, gb.Epoch))
+            {
+                EpochCounters.Count(EpochCounters.Repeats, gb.Channel, SbcRequest.InvalidateChannel);
+                return;
+            }
+            gb.Epoch = epoch;
+            gb.IsEpochKnown = true;
+        }
+        gb.IsGated = false;
+
+        // Purge the codes of the channel in the ring, the step the write phase does today (SbcInterface.cpp:1497-1504). A code of the new work is then
+        // stored as usual and not dropped by the read-ahead rule (:376-380), whose cause the abort has voided
+        InvalidateBufferedCodes(gb.Channel);
+
+        // Until E3 the fork catch code of RRF #46 flags a code that waits for its macro (:886-889, :991 in the branch), unless its replies are tagged
+        if (CodeReplySurplus && gb.IsWaitingForMacro && gb.IsMacroStartedByCode)
+        {
+            gb.MarkCodeReplySurplus();
+        }
+        RecordChannelAbort(gb, false);
+    }
+
+    /// <summary>
+    /// Record the abort of a channel for the main task, see SbcInterface::RecordChannelAbort (SbcInterface.cpp:1936-1954 at 4d687cec0): when DSF aborts
+    /// the channel and, in the Epoch model, for every channel when the connection is lost
+    /// </summary>
+    /// <param name="gb">G-code buffer of the channel</param>
+    /// <param name="connectionLost">Whether the connection has been lost, so that the stamps of the frames are voided at the apply</param>
+    private void RecordChannelAbort(FakeGCodeBuffer gb, bool connectionLost)
+    {
+        // The event that invalidated the buffer is void, the codes that DSF sends from now on are kept
+        gb.IsInvalidated = false;
+
+        // Flag the abort for the main task before the next packet is read
+        gb.IsAbortRecorded = true;
+        if (connectionLost)
+        {
+            gb.IsConnectionEndRecorded = true;
+        }
+        _gcodes.RequestApply(_applyDelay, _transferNumber);
+
+        // End a macro wait with an error, so that a main task blocked in it returns (:893-894)
+        if (gb.IsWaitingForMacro)
+        {
+            gb.MacroRequestSent();
+            gb.ResolveMacroRequest(true, false);
+        }
+    }
+
+    /// <summary>
+    /// Invalidate the resources of the SBC interface after a lost connection, see SbcInterface::InvalidateResources (SbcInterface.cpp:1881-1930 at
+    /// 4d687cec0). The RRF of E1 runs the routine of a channel abort on every buffer at once (CE-25), which also fixes K5. The RRF of E2 records the
+    /// abort and the end of the connection on every buffer, because only the main task changes the stack of a buffer; the main task applies both at its
+    /// next spin, after the emergency stop that the caller has requested. The epoch of every channel is unknown from here on
+    /// </summary>
+    private void InvalidateResources()
+    {
+        _sbcPacketRead = false;
+        _discardedCodes.AddRange(_codeBuffer);
+        _codeBuffer.Clear();
+        _codeBufferUsed = 0;
+        _sendBufferUpdate = true;
+        _txPackets.Clear();
+        foreach (FakeGCodeBuffer gb in _gcodes.Buffers)
+        {
+            if (Model == FakeRrfModel.Epoch)
+            {
+                gb.ResetChannelEpoch(false);
+                RecordChannelAbort(gb, true);
+                continue;
+            }
+
+            if (gb.IsWaitingForMacro)
+            {
+                gb.ResolveMacroRequest(true, false);
+            }
+
+            // RRF takes the buffer mutex without a timeout here, and the main task finishes a code that waited for its macro before it releases it
+            if (gb.PendingMacroCall is not null)
+            {
+                _gcodes.ContinueMacroCall(gb);
+            }
+
+            if (Model == FakeRrfModel.V7)
+            {
+                if (gb.IsExecutingOnSbc)
+                {
+                    gb.SetFinished(true);
+                }
+                gb.MacroRequestSent();
+                gb.AbortFile(true, false);    // the V7 model is firmware without the clear of macroJustStarted (RRF 67e3c69f0)
+                gb.FileAbortSent();
+                gb.MessageAcknowledged(true, true, 0);
+            }
+            else
+            {
+                // E1 voided a closal that has not gone out and the invalidation in the routine itself
+                gb.MacroFileClosedSent();
+                gb.IsInvalidated = false;
+                _gcodes.EndChannelWork(gb);
+                gb.IsAbortRecorded = false;
+                gb.IsCodeReplySurplus = false;
+            }
+            gb.ResetChannelEpoch(false);
+        }
+
+        // Queued replies are released after the record of the end of the connection, so that a reply of a code of the ended connection that the main
+        // task queues meanwhile is either released here or dropped by PlatformMessage (SbcInterface.cpp:1921-1926 at RRF 78a997f74)
+        _gcodeReply.Clear();
+    }
+
+    /// <summary>
     /// Try to take the mutex of a G-code buffer from the SBC task.
     /// While the main task waits in RequestMacroFile for a macro started by a code, it holds the mutex and the SBC task gives up
-    /// after SbcYieldTimeout. Once the request has been resolved, the main task finishes that code before it releases the mutex
+    /// after SbcYieldTimeout. Once the request has been resolved, the main task finishes that code before it releases the mutex.
+    /// From milestone E1 the SBC task keeps off a buffer whose abort it has recorded until the main task has applied it (CE-7 (d)),
+    /// so the packets that need the mutex are refused as for a busy one
     /// </summary>
     /// <param name="gb">G-code buffer</param>
     /// <returns>Whether the mutex could be taken</returns>
     private bool TryLockBuffer(FakeGCodeBuffer gb)
     {
+        if (gb.IsAbortRecorded)
+        {
+            return false;
+        }
         if (_failedBufferLocks.TryGetValue(gb.Channel, out int failures) && failures > 0)
         {
             _failedBufferLocks[gb.Channel] = failures - 1;
@@ -1038,7 +1650,8 @@ public sealed partial class FakeFirmware : ILinkAdapter
     /// <param name="gb">G-code buffer of the code's channel</param>
     /// <param name="codeBufferAvailable">Whether codes can still be stored in this transfer</param>
     /// <returns>Whether the packet has been acknowledged</returns>
-    private bool StoreCode(FakeCode code, FakeGCodeBuffer gb, ref bool codeBufferAvailable)
+    /// <param name="tag">Tag of the Code packet, which passed the filter</param>
+    private bool StoreCode(FakeCode code, FakeGCodeBuffer gb, ushort tag, ref bool codeBufferAvailable)
     {
         _receivedCodes.Add(code);
 
@@ -1071,6 +1684,8 @@ public sealed partial class FakeFirmware : ILinkAdapter
             return false;
         }
 
+        // Stamp the code with the epoch of its packet in the free padding of its header (CE-9)
+        code.Stamp = FakeTag.IsTagged(tag) ? FakeTag.EpochOf(tag) : null;
         _codeBuffer.Add(code);
         _codeBufferUsed += bufferedCodeSize;
         _sendBufferUpdate = true;
@@ -1085,9 +1700,10 @@ public sealed partial class FakeFirmware : ILinkAdapter
     internal bool FillBuffer(FakeGCodeBuffer gb)
     {
         if (gb.IsInvalidated || gb.IsMacroFileClosed || gb.IsMessageAcknowledged || gb.IsAbortRequested ||
-            (gb.MachineState.WaitingForAcknowledgement && gb.IsMessagePromptPending))
+            (gb.MachineState.WaitingForAcknowledgement && gb.IsMessagePromptPending) || gb.IsAbortRecorded)
         {
-            // Don't process codes that are supposed to be suspended
+            // Don't process codes that are supposed to be suspended. A recorded abort holds the codes as well, because within one spin the main task
+            // fetches up to 8 codes without passing the guard of SpinGCodeBuffer again (CE-7 (b), GCodes.cpp:808-828)
             return false;
         }
 
@@ -1127,9 +1743,10 @@ public sealed partial class FakeFirmware : ILinkAdapter
     /// <param name="createVariable">Whether the variable is created</param>
     /// <param name="varName">Name of the variable including global or var prefix</param>
     /// <param name="expression">Expression to assign</param>
-    private void SetVariable(FakeGCodeBuffer gb, bool createVariable, string varName, string expression)
+    /// <param name="tag">Tag of the answer</param>
+    private void SetVariable(FakeGCodeBuffer gb, bool createVariable, string varName, string expression, ushort tag)
     {
-        void writeResult(object? value) => WritePacket(new FakePacket { Request = FirmwareRequest.VariableResult, Channel = gb.Channel, Text = varName, Value = value });
+        void writeResult(object? value) => WritePacket(new FakePacket { Request = FirmwareRequest.VariableResult, Channel = gb.Channel, Text = varName, Value = value, Tag = tag });
 
         bool isGlobal = varName.StartsWith("global.");
         if (!isGlobal && !varName.StartsWith("var."))
@@ -1189,9 +1806,24 @@ public sealed partial class FakeFirmware : ILinkAdapter
     {
         foreach (var (type, text, code, _) in _gcodeReply)
         {
-            WritePacket(new FakePacket { Request = FirmwareRequest.Message, MessageType = type, Text = text.ToString(), RelatedCode = code, Channel = code?.Channel ?? CodeChannel.Unknown });
+            WriteCodeReply(type, text.ToString(), code, code?.Channel ?? CodeChannel.Unknown);
         }
         _gcodeReply.Clear();
+    }
+
+    /// <summary>
+    /// Write a message, see DataTransfer::WriteCodeReply: the epoch of a code reply moves from the free MessageType bits into the header, and the bits
+    /// are cleared in the type that goes out (CE-11)
+    /// </summary>
+    /// <param name="type">Message type, possibly with the epoch bits of GetResponseMessageType</param>
+    /// <param name="text">Message text</param>
+    /// <param name="code">Code the reply belongs to, if known</param>
+    /// <param name="channel">Channel of the packet log</param>
+    private void WriteCodeReply(MessageTypeFlags type, string text, FakeCode? code, CodeChannel channel)
+    {
+        uint bits = (uint)type & FakeTag.TypeEpochBits;
+        ushort tag = ((bits & FakeTag.TypeEpochValid) != 0) ? FakeTag.Of((int)(bits >> FakeTag.TypeEpochShift)) : (ushort)0;
+        WritePacket(new FakePacket { Request = FirmwareRequest.Message, MessageType = (MessageTypeFlags)((uint)type & ~FakeTag.TypeEpochBits), Text = text, RelatedCode = code, Channel = channel, Tag = tag });
     }
 
     /// <summary>
@@ -1203,11 +1835,42 @@ public sealed partial class FakeFirmware : ILinkAdapter
         packet.Id = (ushort)_txPackets.Count;
         _txPackets.Add(packet);
     }
+
+    /// <summary>
+    /// Get the channel of a message whose only destination is one code channel, as SbcInterface.cpp:774-793 checks with
+    /// Bitmap::IsOnlyBitSet over the destination bits
+    /// </summary>
+    /// <param name="flags">Message flags</param>
+    /// <param name="channel">Channel of the destination</param>
+    /// <returns>Whether exactly one channel is the destination</returns>
+    private static bool TryGetSingleChannel(MessageTypeFlags flags, out CodeChannel channel)
+    {
+        uint destinations = (uint)flags & ((1u << (int)CodeChannel.Unknown) - 1);
+        if (destinations != 0 && (destinations & (destinations - 1)) == 0)
+        {
+            channel = (CodeChannel)System.Numerics.BitOperations.TrailingZeroCount(destinations);
+            return true;
+        }
+        channel = CodeChannel.Unknown;
+        return false;
+    }
     #endregion
+
+    /// <summary>
+    /// Whether a message is a reply to a code from DSF that belongs to a connection that has ended (FakeGCodeBuffer.IsCodeOfEndedConnection), see
+    /// SbcInterface::IsReplyToCodeOfEndedConnection (SbcInterface.cpp:2744 at RRF 78a997f74). None of its replies goes to DSF, whatever
+    /// connection is up when it replies. Messages without the code reply flag are not affected
+    /// </summary>
+    /// <param name="type">Message type</param>
+    /// <returns>Whether the message is dropped</returns>
+    private bool IsReplyToCodeOfEndedConnection(MessageTypeFlags type) =>
+        type.HasFlag(MessageTypeFlags.BinaryCodeReplyFlag) && TryGetSingleChannel(type, out CodeChannel channel) && _gcodes[channel].IsCodeOfEndedConnection;
 
     #region Interface for the emulated main task
     /// <summary>
-    /// Output a message, see Platform::Message and SbcInterface::HandleGCodeReply. Only messages that go to the SBC are emulated
+    /// Output a message, see Platform::Message and SbcInterface::HandleGCodeReply. Only messages that go to the SBC are emulated. While no SBC is
+    /// connected, it is dropped (SbcInterface.cpp:2676, :2716 at RRF 78a997f74), and so is a reply to a code of a connection that has ended
+    /// (:2689, :2730)
     /// </summary>
     /// <param name="type">Message type</param>
     /// <param name="message">Message content</param>
@@ -1219,6 +1882,10 @@ public sealed partial class FakeFirmware : ILinkAdapter
             (type & MessageTypeFlags.LogOff) == MessageTypeFlags.LogOff)
         {
             // Not for the SBC
+            return;
+        }
+        if (!_connected || IsReplyToCodeOfEndedConnection(type))
+        {
             return;
         }
 
@@ -1290,7 +1957,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
             {
                 Request = (ushort)_currentPacket.Request,
                 Id = _currentPacket.Id,
-                ResendPacketId = _currentPacket.ResendRequest?.Id ?? 0
+                ResendPacketId = _currentPacket.ResendRequest?.Id ?? _currentPacket.Tag
             };
         }
     }
@@ -1363,7 +2030,12 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <inheritdoc />
-    public void ReadDoCode(out CodeChannel channel, out string code) => throw new NotSupportedException("The fake firmware does not pass codes to DSF");
+    public void ReadDoCode(out CodeChannel channel, out string code)
+    {
+        FakePacket packet = CurrentPacket(FirmwareRequest.DoCode);
+        channel = packet.Channel;
+        code = packet.Text;
+    }
 
     /// <inheritdoc />
     public void ReadCheckFileExists(out string filename) => throw new NotSupportedException("The fake firmware does not request files");
@@ -1435,21 +2107,21 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <inheritdoc />
-    public bool WriteEmergencyStop() => AddRequest(new FakeSbcRequest { Request = SbcRequest.EmergencyStop });
+    public bool WriteEmergencyStop(ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.EmergencyStop, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteReset()
+    public bool WriteReset(ushort tag)
     {
         lock (_lock)
         {
             // SPI.cs discards the other packets of this transfer
             _incoming.Clear();
-            return AddRequest(new FakeSbcRequest { Request = SbcRequest.Reset });
+            return AddRequest(new FakeSbcRequest { Request = SbcRequest.Reset, Tag = tag });
         }
     }
 
     /// <inheritdoc />
-    public bool WriteCode(DuetControlServer.Commands.Code code)
+    public bool WriteCode(DuetControlServer.Commands.Code code, ushort tag)
     {
         lock (_lock)
         {
@@ -1457,83 +2129,83 @@ public sealed partial class FakeFirmware : ILinkAdapter
             {
                 return false;
             }
-            return AddRequest(new FakeSbcRequest { Request = SbcRequest.Code, Channel = code.Channel, Code = new FakeCode(code, _maxCodeLength) });
+            return AddRequest(new FakeSbcRequest { Request = SbcRequest.Code, Channel = code.Channel, Code = new FakeCode(code, _maxCodeLength), Tag = tag });
         }
     }
 
     /// <inheritdoc />
-    public bool WriteGetObjectModel(string key, string flags) => AddRequest(new FakeSbcRequest { Request = SbcRequest.GetObjectModel, Text = key, Argument = flags });
+    public bool WriteGetObjectModel(string key, string flags, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.GetObjectModel, Text = key, Argument = flags, Tag = tag });
 
     /// <inheritdoc />
     public LinkCapabilities SupportedLinkCapabilities { get; set; } = LinkCapabilities.All;
 
     /// <inheritdoc />
-    public bool WriteActivateLinkCapabilities(LinkCapabilities capabilities) => AddRequest(new FakeSbcRequest { Request = SbcRequest.ActivateLinkCapabilities, LinkCapabilities = capabilities });
+    public bool WriteActivateLinkCapabilities(LinkCapabilities capabilities, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.ActivateLinkCapabilities, LinkCapabilities = capabilities, Tag = tag });
 
     /// <inheritdoc />
-    public bool WritePrintFileInfo(GCodeFileInfo info) => AddRequest(new FakeSbcRequest { Request = SbcRequest.SetPrintFileInfo, Text = info.FileName });
+    public bool WritePrintFileInfo(GCodeFileInfo info, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.SetPrintFileInfo, Text = info.FileName, Tag = tag });
 
     /// <inheritdoc />
-    public bool WritePrintStopped(PrintStoppedReason reason) => AddRequest(new FakeSbcRequest { Request = SbcRequest.PrintStopped, PrintStoppedReason = reason });
+    public bool WritePrintStopped(PrintStoppedReason reason, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.PrintStopped, PrintStoppedReason = reason, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteMacroCompleted(CodeChannel channel, bool error) => AddRequest(new FakeSbcRequest { Request = SbcRequest.MacroCompleted, Channel = channel, Flag = error });
+    public bool WriteMacroCompleted(CodeChannel channel, bool error, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.MacroCompleted, Channel = channel, Flag = error, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel channel) => AddRequest(new FakeSbcRequest { Request = SbcRequest.LockAllMovementSystemsAndWaitForStandstill, Channel = channel });
+    public bool WriteLockAllMovementSystemsAndWaitForStandstill(CodeChannel channel, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.LockAllMovementSystemsAndWaitForStandstill, Channel = channel, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteUnlock(CodeChannel channel) => AddRequest(new FakeSbcRequest { Request = SbcRequest.Unlock, Channel = channel });
+    public bool WriteUnlock(CodeChannel channel, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.Unlock, Channel = channel, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteFileChunk(Span<byte> data, long fileLength) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileChunk });
+    public bool WriteFileChunk(Span<byte> data, long fileLength, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileChunk, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteEvaluateExpression(CodeChannel channel, string expression) => AddRequest(new FakeSbcRequest { Request = SbcRequest.EvaluateExpression, Channel = channel, Text = expression });
+    public bool WriteEvaluateExpression(CodeChannel channel, string expression, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.EvaluateExpression, Channel = channel, Text = expression, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteMessage(MessageTypeFlags flags, string message) => AddRequest(new FakeSbcRequest { Request = SbcRequest.Message, MessageFlags = flags, Text = message });
+    public bool WriteMessage(MessageTypeFlags flags, string message, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.Message, Channel = CodeChannel.Unknown, MessageFlags = flags, Text = message, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteMacroStarted(CodeChannel channel) => AddRequest(new FakeSbcRequest { Request = SbcRequest.MacroStarted, Channel = channel });
+    public bool WriteMacroStarted(CodeChannel channel, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.MacroStarted, Channel = channel, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteInvalidateChannel(CodeChannel channel) => AddRequest(new FakeSbcRequest { Request = SbcRequest.InvalidateChannel, Channel = channel });
+    public bool WriteInvalidateChannel(CodeChannel channel, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.InvalidateChannel, Channel = channel, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteSetVariable(CodeChannel channel, bool createVariable, string varName, string expression) => AddRequest(new FakeSbcRequest { Request = SbcRequest.SetVariable, Channel = channel, Flag = createVariable, Text = varName, Argument = expression });
+    public bool WriteSetVariable(CodeChannel channel, bool createVariable, string varName, string expression, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.SetVariable, Channel = channel, Flag = createVariable, Text = varName, Argument = expression, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteDeleteLocalVariable(CodeChannel channel, string varName) => AddRequest(new FakeSbcRequest { Request = SbcRequest.DeleteLocalVariable, Channel = channel, Text = varName });
+    public bool WriteDeleteLocalVariable(CodeChannel channel, string varName, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.DeleteLocalVariable, Channel = channel, Text = varName, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteCheckFileExistsResult(bool exists) => AddRequest(new FakeSbcRequest { Request = SbcRequest.CheckFileExistsResult, Flag = exists });
+    public bool WriteCheckFileExistsResult(bool exists, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.CheckFileExistsResult, Flag = exists, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteFileDeleteResult(bool success) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileDeleteResult, Flag = success });
+    public bool WriteFileDeleteResult(bool success, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileDeleteResult, Flag = success, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteFileListResult(IList<FileSystemInfo> entries, bool endOfList) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileListResult, Flag = endOfList });
+    public bool WriteFileListResult(IList<FileSystemInfo> entries, bool endOfList, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileListResult, Flag = endOfList, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteOpenFileResult(uint fileHandle, long length) => AddRequest(new FakeSbcRequest { Request = SbcRequest.OpenFileResult });
+    public bool WriteOpenFileResult(uint fileHandle, long length, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.OpenFileResult, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteFileReadResult(Span<byte> data, int bytesRead) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileReadResult });
+    public bool WriteFileReadResult(Span<byte> data, int bytesRead, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileReadResult, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteFileWriteResult(bool success) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileWriteResult, Flag = success });
+    public bool WriteFileWriteResult(bool success, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileWriteResult, Flag = success, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteFileSeekResult(bool success) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileSeekResult, Flag = success });
+    public bool WriteFileSeekResult(bool success, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileSeekResult, Flag = success, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteFileTruncateResult(bool success) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileTruncateResult, Flag = success });
+    public bool WriteFileTruncateResult(bool success, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.FileTruncateResult, Flag = success, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteSetLastCodeResult(CodeChannel channel, CodeResult result) => AddRequest(new FakeSbcRequest { Request = SbcRequest.SetLastCodeResult, Channel = channel, CodeResult = result });
+    public bool WriteSetLastCodeResult(CodeChannel channel, CodeResult result, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.SetLastCodeResult, Channel = channel, CodeResult = result, Tag = tag });
 
     /// <inheritdoc />
-    public bool WriteObjectModelKeyChanged(string key) => AddRequest(new FakeSbcRequest { Request = SbcRequest.ObjectModelKeyChanged, Text = key });
+    public bool WriteObjectModelKeyChanged(string key, ushort tag) => AddRequest(new FakeSbcRequest { Request = SbcRequest.ObjectModelKeyChanged, Text = key, Tag = tag });
     #endregion
 }
