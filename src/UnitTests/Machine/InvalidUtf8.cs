@@ -1,9 +1,15 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using DuetAPI.ObjectModel;
+using DuetControlServer;
+using Microsoft.Extensions.Hosting.Internal;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using NUnit.Framework;
 
 namespace UnitTests.Machine;
@@ -128,5 +134,69 @@ public class InvalidUtf8
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Logger that keeps the messages of the DCS object model
+    /// </summary>
+    private sealed class ListLogger : ILogger<DuetControlServer.Model.ObjectModel>
+    {
+        public List<string> Lines { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            Lines.Add($"{logLevel}: {formatter(state, exception)}");
+    }
+
+    private static DuetControlServer.Model.ObjectModel CreateDcsModel(ListLogger logger) =>
+        new(new ApplicationLifetime(NullLogger<ApplicationLifetime>.Instance), logger, Options.Create(new Settings()));
+
+    /// <summary>
+    /// A property of type string refuses a value that is not valid UTF-8 (GetString throws), and DCS registers a handler that skips such a
+    /// property and logs it once per type (DuetControlServer/Model/ObjectModel.cs, DeserializationFailedHandler). The handler logged the raw text
+    /// of the value, and getting that text threw for the very same reason. It is called from an exception filter, so the first such value of a
+    /// type was not skipped: the update of the key ended with the InvalidOperationException ("Failed to merge JSON due to internal error" in
+    /// UpdateService), and the rest of the response was not applied. Every later one was skipped without a log line.
+    /// The log shows the invalid bytes as the escape of the replacement character
+    /// </summary>
+    [Test]
+    public void FirstStringWithInvalidUtf8IsSkippedAndLogged()
+    {
+        ListLogger logger = new();
+        DuetControlServer.Model.ObjectModel model = CreateDcsModel(logger);
+        string displayMessage = model.State.DisplayMessage;
+
+        Assert.DoesNotThrow(() => UpdateKey(model, "state", WithHalfCharacter("{\"displayMessage\":\"a", "\",\"msUpTime\":5}")));
+        using (Assert.EnterMultipleScope())
+        {
+            Assert.That(model.State.DisplayMessage, Is.EqualTo(displayMessage), "The property was not skipped");
+            Assert.That(model.State.MsUpTime, Is.EqualTo(5), "The rest of the response was not applied");
+            Assert.That(logger.Lines, Has.Exactly(1).Contains("Failed to deserialize").And.Contains("\"a\\uFFFD\""));
+        }
+
+        // Logged once per type, as before
+        Assert.DoesNotThrow(() => UpdateKey(model, "state", WithHalfCharacter("{\"displayMessage\":\"b", "\",\"msUpTime\":6}")));
+        using (Assert.EnterMultipleScope())
+        {
+            Assert.That(model.State.MsUpTime, Is.EqualTo(6));
+            Assert.That(logger.Lines, Has.Exactly(1).Contains("Failed to deserialize"));
+        }
+    }
+
+    /// <summary>
+    /// M122 lists the values that failed to be deserialized, with their text as well
+    /// </summary>
+    [Test]
+    public void DiagnosticsListAStringWithInvalidUtf8()
+    {
+        DuetControlServer.Model.ObjectModel model = CreateDcsModel(new ListLogger());
+        UpdateKey(model, "state", WithHalfCharacter("{\"displayMessage\":\"a", "\"}"));
+
+        StringBuilder builder = new();
+        Assert.DoesNotThrow(() => model.PrintDiagnostics(builder));
+        Assert.That(builder.ToString(), Does.Contain("Failed to deserialize the following properties").And.Contain("\"a\\uFFFD\""));
     }
 }
