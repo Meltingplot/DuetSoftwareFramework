@@ -37,7 +37,7 @@ public class ExecutedHandlerErrors
         }
     }
 
-    [Test, Explicit("M122 P{0} never gets a reply and blocks its channel: CodeExecutedAsync reads P with GetInt (MCodeHandler.cs:1432), which throws for the unevaluated expression")]
+    [Test]
     public async Task DiagnosticsWithExpressionParameter()
     {
         // RRF evaluates P with GetIValue and prints the normal diagnostics for 0 (GCodes2.cpp:2291, 2313). DCS leaves the expression to RRF

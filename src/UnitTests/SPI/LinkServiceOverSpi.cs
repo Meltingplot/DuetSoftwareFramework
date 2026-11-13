@@ -957,7 +957,7 @@ public partial class LinkServiceOverSpi
             file.NumLayers = 7;
             file.Filament.Add(1.5F);
         }
-        await host.Link.SetPrintFileInfo().WaitAsync(Timeout);
+        await host.Link.SetPrintFileInfo().Unwrap().WaitAsync(Timeout);
         byte[] info = host.WaitFor(SbcRequest.SetPrintFileInfo);
         const int headerSize = 40;
         int fileNameLength = BitConverter.ToUInt16(info, 0), generatedByLength = BitConverter.ToUInt16(info, 2), numFilaments = (int)BitConverter.ToUInt32(info, 4);
@@ -1010,13 +1010,13 @@ public partial class LinkServiceOverSpi
 
         int ILinkAdapter.ProtocolVersion => ReportedProtocolVersion ?? ProtocolVersion;
 
-        void ILinkAdapter.PerformFullTransfer(bool connecting, CancellationToken cancellationToken)
+        bool ILinkAdapter.PerformFullTransfer(bool connecting, CancellationToken cancellationToken)
         {
             if (!connecting && ThrowInTransfer is Exception e)
             {
                 throw e;
             }
-            PerformFullTransfer(connecting, cancellationToken);
+            return PerformFullTransfer(connecting, cancellationToken);
         }
 
         bool ILinkAdapter.FlashFirmwareSegment(Stream stream)

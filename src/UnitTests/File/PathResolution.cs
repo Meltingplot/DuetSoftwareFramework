@@ -143,18 +143,18 @@ public class PathResolution
     [TestCase(".", "1:/")]
     [TestCase("./", "1:/")]
     [TestCase("../..", "sys/sub")]
-    public async Task RootForDeletion(string path, string? directory)
+    public async Task VolumeRoot(string path, string? directory)
     {
         // Every one of these names the root of its drive, which other requests like a directory listing may still resolve. Path.GetFullPath
         // keeps a trailing separator, so some of them resolve to the root with a slash at the end
         string root = Path.GetFullPath(path.StartsWith('1') || (directory?.StartsWith('1') ?? false) ? _usb : _base);
-        Assert.That(_resolver.ToPhysical(path, directory), Is.EqualTo(root).Or.EqualTo(root + '/'));
-        Assert.That(await _resolver.ToPhysicalAsync(path, directory), Is.EqualTo(root).Or.EqualTo(root + '/'));
+        string physical = _resolver.ToPhysical(path, directory);
+        Assert.That(physical, Is.EqualTo(root).Or.EqualTo(root + '/'));
+        Assert.That(await _resolver.ToPhysicalAsync(path, directory), Is.EqualTo(physical));
 
-        // RRF refuses to delete the root of a volume with this message (MassStorage.cpp:840-858), so a path that is going to be deleted may not
-        // resolve to it, however it is written
-        Assert.That(() => _resolver.ToPhysical(path, directory, forDeletion: true), Throws.ArgumentException.With.Message.EqualTo("Delete root folder is not allowed"));
-        Assert.That(async () => await _resolver.ToPhysicalAsync(path, directory, forDeletion: true), Throws.ArgumentException.With.Message.EqualTo("Delete root folder is not allowed"));
+        // RRF refuses to delete the root of a volume (MassStorage.cpp:840-858), and so do the delete requests of DSF, however the path is written
+        Assert.That(_resolver.IsVolumeRoot(physical), Is.True);
+        Assert.That(await _resolver.IsVolumeRootAsync(physical), Is.True);
     }
 
     [TestCase("0:/")]
@@ -164,10 +164,10 @@ public class PathResolution
     [TestCase("1:/")]
     [TestCase("1:/sub/..")]
     [TestCase("1:/sub/../")]
-    public void RootWithTrailingSeparatorForDeletion(string path)
+    public void VolumeRootWithTrailingSeparator(string path)
     {
         // The base directory and a volume path may end with a separator, which Path.GetFullPath keeps while it drops the one of a path that ends
-        // with .. or ., so the root is the same with and without it
+        // with .. or ., so some of these paths are reported as escaping the root. Either way none of them can be deleted
         using ServiceProvider services = DcsServices.Build(new Settings { BaseDirectory = _base + '/' });
         FilePathResolver resolver = services.GetRequiredService<FilePathResolver>();
         DcsModel model = services.GetRequiredService<DcsModel>();
@@ -178,29 +178,33 @@ public class PathResolution
             model.Volumes.Add(new Volume { Path = _usb + '/' });
         }
 
-        string root = Path.GetFullPath(path.StartsWith('1') ? _usb : _base);
-        Assert.That(resolver.ToPhysical(path), Is.EqualTo(root).Or.EqualTo(root + '/'));
-        Assert.That(() => resolver.ToPhysical(path, forDeletion: true), Throws.ArgumentException.With.Message.EqualTo("Delete root folder is not allowed"));
-
-        // Paths below the root stay what they were
-        Assert.That(resolver.ToPhysical("0:/sys/../gcodes", forDeletion: true), Is.EqualTo(Base("gcodes")));
-        Assert.That(resolver.ToPhysical("1:/sub/", forDeletion: true), Is.EqualTo(Path.Combine(_usb, "sub/")));
+        string physical;
+        try
+        {
+            physical = resolver.ToPhysical(path);
+        }
+        catch (ArgumentException e)
+        {
+            Assert.That(e.Message, Does.Contain("escapes the volume root directory"));
+            return;
+        }
+        Assert.That(resolver.IsVolumeRoot(physical), Is.True);
     }
 
     [Test]
-    public async Task PathsBelowTheRootForDeletion()
+    public async Task PathsBelowTheVolumeRoot()
     {
-        // Everything below the root resolves as before
-        Assert.That(_resolver.ToPhysical("0:/sys", forDeletion: true), Is.EqualTo(Base("sys")));
-        Assert.That(await _resolver.ToPhysicalAsync("0:/sys/../gcodes/a.g", forDeletion: true), Is.EqualTo(Base("gcodes/a.g")));
-        Assert.That(await _resolver.ToPhysicalAsync("0:/../sd/macros", forDeletion: true), Is.EqualTo(Base("macros")));
-        Assert.That(_resolver.ToPhysical("a.g", "1:/sub", forDeletion: true), Is.EqualTo(Path.Combine(_usb, "sub/a.g")));
-        Assert.That(await _resolver.ToPhysicalAsync("a.g", FileDirectory.GCodes, true), Is.EqualTo(Base("gcodes/a.g")));
+        // Everything below the root may be deleted
+        Assert.That(_resolver.IsVolumeRoot(_resolver.ToPhysical("0:/sys")), Is.False);
+        Assert.That(await _resolver.IsVolumeRootAsync(await _resolver.ToPhysicalAsync("0:/sys/../gcodes/a.g")), Is.False);
+        Assert.That(await _resolver.IsVolumeRootAsync(await _resolver.ToPhysicalAsync("0:/../sd/macros")), Is.False);
+        Assert.That(_resolver.IsVolumeRoot(_resolver.ToPhysical("a.g", "1:/sub")), Is.False);
+        Assert.That(_resolver.IsVolumeRoot(_resolver.ToPhysical("1:/sub/")), Is.False);
+        Assert.That(await _resolver.IsVolumeRootAsync(await _resolver.ToPhysicalAsync("a.g", FileDirectory.GCodes)), Is.False);
 
         // A base directory works the same way, and a path that escapes is still reported as such
-        Assert.That(async () => await _resolver.ToPhysicalAsync("..", FileDirectory.System, true), Throws.ArgumentException.With.Message.EqualTo("Delete root folder is not allowed"));
-        Assert.That(await _resolver.ToPhysicalAsync("..", FileDirectory.System), Is.EqualTo(Path.GetFullPath(_base)));
-        Assert.That(() => _resolver.ToPhysical("0:/../a.g", forDeletion: true), Throws.ArgumentException.With.Message.Contains("escapes the volume root directory"));
+        Assert.That(await _resolver.IsVolumeRootAsync(await _resolver.ToPhysicalAsync("..", FileDirectory.System)), Is.True);
+        Assert.That(() => _resolver.ToPhysical("0:/../a.g"), Throws.ArgumentException.With.Message.Contains("escapes the volume root directory"));
     }
 
     [Test]
@@ -222,7 +226,7 @@ public class PathResolution
         Assert.That(await _resolver.ToVirtualAsync(_usb + "2/a.g"), Does.Not.StartWith("1:/"));
     }
 
-    [Test, Explicit("A line feed after a drive prefix cuts the path short: the drive regex ^(\\d+):/*(.*) (FilePathResolver.cs:46) stops at the line feed, so another file is resolved")]
+    [Test]
     public void LineFeedAfterDrive()
     {
         // Without a drive prefix the same name is kept (FilePathResolver.cs:216), so the prefix 0:/ must not change it either

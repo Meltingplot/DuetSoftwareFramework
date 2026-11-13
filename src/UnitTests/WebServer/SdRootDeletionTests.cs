@@ -164,8 +164,7 @@ public class SdRootDeletionTests : WebServerFixture
 
     /// <summary>
     /// A path can also name the root through the name of the SD card directory, which no check of the path string like RRF's (MassStorage.cpp:841-851)
-    /// would see. DCS refuses the resolved path instead, with RRF's message (FilePathResolver.CombineContained), and DWS reports it like every other
-    /// path that DCS refuses
+    /// would see. DWS compares the resolved path with the root of its volume instead (EndpointHelper.IsVolumeRootAsync)
     /// </summary>
     [Test]
     public async Task RootCannotBeDeletedThroughItsName()
@@ -177,7 +176,7 @@ public class SdRootDeletionTests : WebServerFixture
         {
             using HttpResponseMessage response = await SendAsync(_client, HttpMethod.Delete, $"machine/file/0%3A%2F..%2F{name}?recursive=true", _key);
             Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.InternalServerError));
-            Assert.That(await response.Content.ReadAsStringAsync(), Is.EqualTo("Delete root folder is not allowed"));
+            Assert.That(await response.Content.ReadAsStringAsync(), Is.EqualTo("Cannot delete the root directory of a volume"));
             Assert.That(SdCardIntact, Is.True);
         }
         finally

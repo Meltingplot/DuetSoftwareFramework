@@ -10,8 +10,8 @@ namespace DuetSharedLibrary;
 /// <remarks>
 /// Uncontended acquisitions do not allocate, which matters because some of these locks are taken per G-code.
 /// Both <see cref="Lock"/> and <see cref="LockAsync"/> queue on the same waiter list, so waiters are served in FIFO order.
-/// Like Nito.AsyncEx.AsyncLock, which this replaces, a free lock is taken even if the cancellation token is cancelled already, and only a wait for the lock
-/// is cancelled. Callers lock with ApplicationStopping, e.g. the event log, and must still get a free lock while DCS stops
+/// A free lock is acquired even if the cancellation token is already cancelled, so cleanup code running during
+/// cancellation can still take locks; the token only aborts a wait
 /// </remarks>
 public sealed class AsyncLock
 {

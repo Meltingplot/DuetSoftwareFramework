@@ -868,7 +868,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
     public int ProtocolVersion => Consts.ProtocolVersion;
 
     /// <inheritdoc />
-    public void PerformFullTransfer(bool connecting = false, CancellationToken cancellationToken = default)
+    public bool PerformFullTransfer(bool connecting = false, CancellationToken cancellationToken = default)
     {
         bool busy;
         lock (_lock)
@@ -934,6 +934,9 @@ public sealed partial class FakeFirmware : ILinkAdapter
         {
             cancellationToken.WaitHandle.WaitOne(IdleTransferDelay);
         }
+
+        // The emulated transfer never loses the packets of DSF
+        return true;
     }
 
     /// <inheritdoc />

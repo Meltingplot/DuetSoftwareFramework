@@ -248,7 +248,6 @@ public class IpcInterception
     }
 
     [Test]
-    [Explicit("Bug: CodeInterception.CanIntercept throws ArgumentOutOfRangeException for a wildcard filter longer than the code")]
     public async Task WildcardFilterLongerThanTheCode()
     {
         // "M10*" should match M100 to M109 and leave G4 alone, but filter[..3] is compared with "G4"[..3].

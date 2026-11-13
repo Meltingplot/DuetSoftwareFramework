@@ -238,9 +238,8 @@ public class FilePathFuzz
         {
             throw new FuzzFailure("virtual drive", $"'{result}' maps to '{virtualPath}', not to drive {drive}");
         }
-        // A trailing separator names the same location. A line feed cuts a path with a drive prefix short, which is a known finding
-        // (PathResolution.LineFeedAfterDrive), so such paths are left out of the round trip
-        if (!virtualPath.Contains('\n') && Path.TrimEndingDirectorySeparator(_resolver.ToPhysical(virtualPath)) != Path.TrimEndingDirectorySeparator(result!))
+        // A trailing separator names the same location
+        if (Path.TrimEndingDirectorySeparator(_resolver.ToPhysical(virtualPath)) != Path.TrimEndingDirectorySeparator(result!))
         {
             throw new FuzzFailure("round trip", $"'{result}' maps to '{virtualPath}', which resolves to '{_resolver.ToPhysical(virtualPath)}'");
         }

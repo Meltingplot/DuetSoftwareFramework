@@ -151,14 +151,6 @@ public class IpcClientApi
         Assert.That(_connection.ResolvePath("b.g", FileDirectory.Macros), Is.EqualTo(Path.Combine(_host.BaseDirectory, "macros", "b.g")));
         Assert.That(await _connection.ResolvePathAsync("c.g", FileDirectory.GCodes), Is.EqualTo(Path.Combine(_host.BaseDirectory, "gcodes", "c.g")));
 
-        // A path that is going to be deleted may not be the root of its volume, like in RRF's MassStorage::Delete (MassStorage.cpp:840-858)
-        Assert.That(_connection.ResolvePath("0:/sys", true), Is.EqualTo(Path.Combine(_host.BaseDirectory, "sys")));
-        Assert.That(await _connection.ResolvePathAsync("0:/gcodes", true), Is.EqualTo(Path.Combine(_host.BaseDirectory, "gcodes")));
-        Assert.That(_connection.ResolvePath("0:/", false), Is.EqualTo(Path.GetFullPath(_host.BaseDirectory)));
-        Assert.That(() => _connection.ResolvePath("0:/", true), Throws.TypeOf<InternalServerException>().With.Message.EqualTo("Delete root folder is not allowed"));
-        Assert.That(async () => await _connection.ResolvePathAsync("0:/sys/..", true), Throws.TypeOf<InternalServerException>().With.Message.EqualTo("Delete root folder is not allowed"));
-        Assert.That(async () => await _connection.ResolvePathAsync("0:/sys/../", true), Throws.TypeOf<InternalServerException>().With.Message.EqualTo("Delete root folder is not allowed"));
-
         // GetFileInfo takes a physical path (FileInfoParser.ParseAsync opens it as is)
         string file = Path.Combine(_host.BaseDirectory, "gcodes", "info.gcode");
         await System.IO.File.WriteAllTextAsync(file, ";Generated with Cura_SteamEngine 5.0\n;LAYER_COUNT:2\nG1 Z0.2\nG1 Z0.4\n");

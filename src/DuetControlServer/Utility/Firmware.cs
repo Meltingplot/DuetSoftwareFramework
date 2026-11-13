@@ -83,25 +83,14 @@ public static class Firmware
         }
         while (block.BlockNo + 1 < block.NumBlocks);
 
+        // IAP erases the flash before it receives the firmware image, so a UF2 file without one would brick the board like an empty file
+        if (result.Length == 0)
+        {
+            throw new IOException("UF2 file does not contain a firmware image");
+        }
+
         result.Seek(0, SeekOrigin.Begin);
         return result;
-    }
-
-    /// <summary>
-    /// Open a firmware file. A UF2 file is unpacked, so the stream holds the image that is flashed
-    /// </summary>
-    /// <param name="filename">Firmware file</param>
-    /// <param name="bufferSize">Buffer size for reading the file</param>
-    /// <returns>Firmware image at its start</returns>
-    /// <exception cref="IOException">File could not be read or is no valid UF2 file</exception>
-    public static async Task<Stream> OpenFirmwareAsync(string filename, int bufferSize)
-    {
-        if (string.Equals(Path.GetExtension(filename), ".uf2", StringComparison.OrdinalIgnoreCase))
-        {
-            await using FileStream fs = new(filename, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize);
-            return await UnpackUF2Async(fs);
-        }
-        return new FileStream(filename, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize);
     }
 
     /// <summary>
@@ -131,7 +120,15 @@ public static class Firmware
         try
         {
             // Get a stream containing the binary content
-            firmwareFile = await OpenFirmwareAsync(filename, bufferSize);
+            if (Path.GetExtension(filename).Equals(".uf2", StringComparison.OrdinalIgnoreCase))
+            {
+                await using FileStream fs = new(filename, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize);
+                firmwareFile = await UnpackUF2Async(fs);
+            }
+            else
+            {
+                firmwareFile = new FileStream(filename, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize);
+            }
 
             // Check if we can read the version and load addresses
             if (firmwareFile.Length < Math.Max(FirmwareIdentifierOffset, FirmwareLoadOffset) + sizeof(uint))
