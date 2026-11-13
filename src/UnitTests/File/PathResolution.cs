@@ -167,7 +167,8 @@ public class PathResolution
     public void VolumeRootWithTrailingSeparator(string path)
     {
         // The base directory and a volume path may end with a separator, which Path.GetFullPath keeps while it drops the one of a path that ends
-        // with .. or ., so some of these paths are reported as escaping the root. Either way none of them can be deleted
+        // with .. or ., so the root is normalized like IsVolumeRoot does (FilePathResolver.NormalizePath). Each path is the root of its volume,
+        // cannot be deleted, and maps back to its drive
         using ServiceProvider services = DcsServices.Build(new Settings { BaseDirectory = _base + '/' });
         FilePathResolver resolver = services.GetRequiredService<FilePathResolver>();
         DcsModel model = services.GetRequiredService<DcsModel>();
@@ -178,17 +179,9 @@ public class PathResolution
             model.Volumes.Add(new Volume { Path = _usb + '/' });
         }
 
-        string physical;
-        try
-        {
-            physical = resolver.ToPhysical(path);
-        }
-        catch (ArgumentException e)
-        {
-            Assert.That(e.Message, Does.Contain("escapes the volume root directory"));
-            return;
-        }
+        string physical = resolver.ToPhysical(path);
         Assert.That(resolver.IsVolumeRoot(physical), Is.True);
+        Assert.That(resolver.ToVirtual(physical), Is.EqualTo(path[..3]));
     }
 
     [Test]
