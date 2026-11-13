@@ -444,9 +444,15 @@ public sealed class LinkService(
                     }
                     ProcessPacket(packet.Value);
                 }
-                catch (ArgumentOutOfRangeException)
+                catch (Exception e)
                 {
-                    linkAdapter.DumpMalformedPacket();
+                    if (e is ArgumentOutOfRangeException)
+                    {
+                        linkAdapter.DumpMalformedPacket();
+                    }
+
+                    // The error ends the transfer thread. A requested emergency stop must not depend on RRF's data, so it goes out first
+                    TransferEmergencyStop();
                     throw;
                 }
             }
@@ -651,6 +657,39 @@ public sealed class LinkService(
             }
         }
         while (!stoppingToken.IsCancellationRequested);
+    }
+
+    /// <summary>
+    /// Write a requested emergency stop and transfer it before an error ends the transfer thread.
+    /// As in the regular path, the request completes only if the transfer succeeds. The codes are not invalidated, the error may have come from their stacks
+    /// </summary>
+    private void TransferEmergencyStop()
+    {
+        try
+        {
+            using (linkInterface.FirmwareActionLock.Lock(lifetime.ApplicationStopped))
+            {
+                if (linkInterface.FirmwareHaltRequest is not null)
+                {
+                    ushort tag = _connection.Tag();
+                    if (linkAdapter.WriteEmergencyStop(tag))
+                    {
+                        _connection.Written(tag);
+                        if (linkAdapter.PerformFullTransfer(cancellationToken: lifetime.ApplicationStopped))
+                        {
+                            logger.LogWarning("Emergency stop");
+                            linkInterface.FirmwareHaltRequest.SetResult();
+                            linkInterface.FirmwareHaltRequest = null;
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            // Keep the error that ends the transfer thread
+            logger.LogError(e, "Failed to transfer the emergency stop");
+        }
     }
 
     /// <summary>

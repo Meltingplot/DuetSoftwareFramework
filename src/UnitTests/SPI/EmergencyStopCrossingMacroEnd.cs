@@ -17,11 +17,11 @@ using SbcRequest = DuetControlServer.Link.Protocol.SbcRequests.Request;
 namespace UnitTests.SPI;
 
 /// <summary>
-/// An emergency stop that DSF writes while the data RRF sent before it is still to be processed. The transfer thread writes the stop as the first
-/// packet of its cycle, processes that data, invalidates the codes and transfers the stop at once (LinkService.Execute). RRF wrote that data before
-/// it got the stop, e.g. the closal of a macro file that DSF still has on its stack (SbcInterface.cpp:1507-1511 at RRF ddec2d001), so it belongs to
-/// the codes and macros before the invalidation. When DSF invalidated first, the closal popped the base level, Processor.Pop threw
-/// "Stack underrun", and the transfer thread ended before the stop had gone out
+/// An emergency stop that DSF writes while the data RRF sent before it is still to be processed. The transfer thread processes that data, then
+/// invalidates the codes and writes the stop (LinkService.Execute, upstream 61df011e). RRF wrote that data before it got the stop, e.g. the closal
+/// of a macro file that DSF still has on its stack (SbcInterface.cpp:1507-1511 at RRF ddec2d001), so it belongs to the codes and macros before the
+/// invalidation. When DSF invalidated first, the closal popped the base level, Processor.Pop threw "Stack underrun", and the transfer thread ended
+/// before the stop had gone out
 /// </summary>
 [TestFixture]
 public class EmergencyStopCrossingMacroEnd
@@ -147,11 +147,12 @@ public class EmergencyStopCrossingMacroEnd
     }
 
     /// <summary>
-    /// An emergency stop is written into a cycle whose data from RRF cannot be processed, here a packet that runs past the data of its transfer
-    /// (ArgumentOutOfRangeException, see LinkServiceOverSpi.MalformedPacketStopsTheTransferThread). The stop still goes out as the first packet of the
-    /// next transfer before the error ends the transfer thread. Real SPI adapter against the SPI port of RRF (<see cref="FakeRrfSpi"/>)
+    /// An emergency stop is requested in a cycle whose data from RRF cannot be processed, here a packet that runs past the data of its transfer
+    /// (ArgumentOutOfRangeException, see LinkServiceOverSpi.MalformedPacketStopsTheTransferThread). The stop still goes out with the next transfer
+    /// before the error ends the transfer thread (LinkService.TransferEmergencyStop), and it completes because that transfer succeeds.
+    /// Real SPI adapter against the SPI port of RRF (<see cref="FakeRrfSpi"/>)
     /// </summary>
-    [Test, Explicit("Upstream 61df011e writes the stop after RRF's data has been processed, so an error in that data ends the transfer thread before the stop is written (LinkService.Execute); see design/open-findings.md")]
+    [Test]
     public async Task EmergencyStopWhenTheDataBeforeItCannotBeProcessed()
     {
         await using Host host = await Host.StartAsync();
@@ -164,7 +165,7 @@ public class EmergencyStopCrossingMacroEnd
         rrf.HoldBeforeHeader(rrf.Exchanges + 1);
         Assert.That(rrf.WaitUntilHeld(Timeout), Is.True, "DSF did not reach the transfer of the malformed packet");
 
-        // DSF writes the stop in the cycle that processes the malformed packet
+        // The stop is pending in the cycle that processes the malformed packet
         Task stop = host.Link.EmergencyStopAsync();
         Assert.That(SpinWait.SpinUntil(() => host.Link.FirmwareHaltRequest is not null, Timeout), Is.True, "The emergency stop was not requested");
         rrf.Release();
@@ -173,7 +174,6 @@ public class EmergencyStopCrossingMacroEnd
         Assert.That(host.Fault?.InnerException, Is.InstanceOf<ArgumentOutOfRangeException>());
         FakeRrfSpi.ProcessedPacket? stopPacket = rrf.GetProcessedPackets().SingleOrDefault(packet => packet.Request == SbcRequest.EmergencyStop);
         Assert.That(stopPacket, Is.Not.Null, "RRF did not get the emergency stop");
-        Assert.That(stopPacket!.Id, Is.Zero, "The stop was not the first packet of its transfer");
-        Assert.That(stop.IsCompleted, Is.False, "The stop completed although the data RRF sent with it was not processed");
+        Assert.That(stop.IsCompletedSuccessfully, Is.True, "The stop that RRF got was not completed");
     }
 }
