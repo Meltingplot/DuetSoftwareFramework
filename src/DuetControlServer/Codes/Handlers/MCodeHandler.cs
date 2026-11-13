@@ -261,14 +261,16 @@ public class MCodeHandler(
                             return new Message(MessageType.Error, $"Could not find file {fileName}");
                         }
 
+                        Task fileInfoSent;
                         using (await jobProcessor.LockAsync(cancellationToken))
                         {
                             if (!code.IsFromFileChannel && (jobProcessor.IsProcessing || jobProcessor.IsPaused))
                             {
                                 return new Message(MessageType.Error, "Cannot set file to print, because a file is already being printed");
                             }
-                            await jobProcessor.SelectFileAsync(fileName, physicalFile, false, code.IsFromFileChannel, cancellationToken);
+                            fileInfoSent = await jobProcessor.SelectFileAsync(fileName, physicalFile, false, code.IsFromFileChannel, cancellationToken);
                         }
+                        await fileInfoSent;
 
                         // Reassign the code's cancellation token so the job that just selected the next file still gets this code's reply
                         if (code.IsFromFileChannel)
@@ -535,6 +537,7 @@ public class MCodeHandler(
                             return new Message(MessageType.Error, $"GCode file \"{fileName}\" not found");
                         }
 
+                        Task fileInfoSent;
                         using (await jobProcessor.LockAsync(cancellationToken))
                         {
                             if (!code.IsFromFileChannel && (jobProcessor.IsProcessing || jobProcessor.IsPaused))
@@ -542,11 +545,12 @@ public class MCodeHandler(
                                 return new Message(MessageType.Error, "Cannot set file to simulate, because a file is already being printed");
                             }
 
-                            await jobProcessor.SelectFileAsync(fileName, physicalFile, true, code.IsFromFileChannel, cancellationToken);
+                            fileInfoSent = await jobProcessor.SelectFileAsync(fileName, physicalFile, true, code.IsFromFileChannel, cancellationToken);
                             // F0 suppresses writing the simulated time back to the file; absent or F1 updates it, as in standalone mode
                             jobProcessor.UpdateSimulatedTime = code.GetInt('F', 1) == 1;
                             // Simulation is started when M37 has been processed by the firmware
                         }
+                        await fileInfoSent;
                     }
 
                     // Let RRF do everything else
@@ -934,7 +938,11 @@ public class MCodeHandler(
             case 472:
                 if (await codeProcessor.FlushAsync(code, cancellationToken: cancellationToken))
                 {
-                    string path = code.GetString('P'), physicalPath = await filePathResolver.ToPhysicalAsync(path, forDeletion: true, cancellationToken: cancellationToken);
+                    string path = code.GetString('P'), physicalPath = await filePathResolver.ToPhysicalAsync(path, cancellationToken: cancellationToken);
+                    if (await filePathResolver.IsVolumeRootAsync(physicalPath, cancellationToken))
+                    {
+                        return new Message(MessageType.Error, $"Cannot delete {path} because it is the root directory of a volume");
+                    }
                     if (!Path.Exists(physicalPath))
                     {
                         // File.Delete does not fail if the file does not exist, but RRF does
@@ -1160,13 +1168,10 @@ public class MCodeHandler(
                         }
 
                         // Try to fork the file and report an error if anything went wrong
-                        using (await jobProcessor.LockAsync(cancellationToken))
+                        Message result = await jobProcessor.ForkAsync(cancellationToken);
+                        if (result.Type != MessageType.Success)
                         {
-                            Message result = await jobProcessor.ForkAsync(cancellationToken);
-                            if (result.Type != MessageType.Success)
-                            {
-                                return result;
-                            }
+                            return result;
                         }
                     }
 
@@ -1297,22 +1302,10 @@ public class MCodeHandler(
                             physicalFirmwareFile = fallbackFirmwareFile;
                         }
 
-                        // Get the firmware image before anything is stopped, because the IAP program erases the flash before it gets the
-                        // image. Like RRF, refuse an image whose first word, the initial stack pointer, cannot be read (RepRap.cpp:2063-2083).
-                        // RRF also compares it with the top of the RAM and the size with the flash, which DCS does not know for the board
-                        Stream openedFirmwareStream;
-                        try
+                        // IAP erases the flash before it receives the firmware image, so an empty file would brick the board
+                        if (new FileInfo(physicalFirmwareFile).Length == 0)
                         {
-                            openedFirmwareStream = await Firmware.OpenFirmwareAsync(physicalFirmwareFile, settings.Value.FileBufferSize);
-                        }
-                        catch (IOException e)
-                        {
-                            return new Message(MessageType.Error, $"Failed to read firmware file {firmwareFile}: {e.Message}");
-                        }
-                        await using Stream firmwareStream = openedFirmwareStream;
-                        if (firmwareStream.Length < sizeof(uint))
-                        {
-                            return new Message(MessageType.Error, $"Firmware binary \"{firmwareFile}\" is not valid for this electronics");
+                            return new Message(MessageType.Error, $"Firmware file {firmwareFile} is empty");
                         }
 
                         // Stop all the plugins
@@ -1321,10 +1314,19 @@ public class MCodeHandler(
 
                         // Update the firmware
                         await using FileStream iapStream = new(physicalIapFile, FileMode.Open, FileAccess.Read, FileShare.Read, settings.Value.FileBufferSize);
+                        await using FileStream firmwareStream = new(physicalFirmwareFile, FileMode.Open, FileAccess.Read, FileShare.Read, settings.Value.FileBufferSize);
                         Message result = new();
                         try
                         {
-                            await linkInterface.UpdateFirmware(iapStream, firmwareStream, lifetime.ApplicationStopped);
+                            if (Path.GetExtension(firmwareFile).Equals(".uf2", StringComparison.OrdinalIgnoreCase))
+                            {
+                                await using MemoryStream unpackedFirmwareStream = await Firmware.UnpackUF2Async(firmwareStream);
+                                await linkInterface.UpdateFirmware(iapStream, unpackedFirmwareStream, lifetime.ApplicationStopped);
+                            }
+                            else
+                            {
+                                await linkInterface.UpdateFirmware(iapStream, firmwareStream, lifetime.ApplicationStopped);
+                            }
                         }
                         catch (InvalidOperationException e)
                         {
@@ -1476,7 +1478,7 @@ public class MCodeHandler(
 
             // Diagnostics
             case 122:
-                if (code.GetInt('B', 0) == 0 && code.GetInt('P', 0) == 0 && code.GetUnprecedentedString() != "DSF" && !string.IsNullOrEmpty(code.Result.Content))
+                if (code.GetParameter('B') is not { IsExpression: true } && code.GetParameter('P') is not { IsExpression: true } && code.GetInt('B', 0) == 0 && code.GetInt('P', 0) == 0 && code.GetUnprecedentedString() != "DSF" && !string.IsNullOrEmpty(code.Result.Content))
                 {
                     // Append our own diagnostics to RRF's M122 output
                     string diagnostics = await diagnosticsProvider.PrintAsync();

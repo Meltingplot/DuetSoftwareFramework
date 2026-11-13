@@ -97,10 +97,6 @@ internal static class UpdateFromJsonReader
         // The Get methods of System.Text.Json throw a FormatException for it
         static string Checked(string type) => $"TryGet{type}(out var checkedValue) ? checkedValue : throw new JsonException(\"value does not fit {type}\")";
 
-        // A number beyond the range of the property type is read as infinity, which is invalid data as well: no JSON number stands for it,
-        // so a model that holds one cannot be serialized any more
-        static string Finite(string type) => $"TryGet{type}(out var checkedValue) && {(type == "Single" ? "float" : "double")}.IsFinite(checkedValue) ? checkedValue : throw new JsonException(\"value does not fit {type}\")";
-
         // An empty string holds no character
         const string CharGetter = "GetString() is { Length: > 0 } charValue ? charValue[0] : throw new JsonException(\"expected a character\")";
 
@@ -220,7 +216,7 @@ internal static class UpdateFromJsonReader
                         "int" => new("newIntValue", $"reader.{Checked("Int32")}"),
                         "string" => new("newStringValue", "reader.GetString()!"),
                         "char" => new("newCharValue", $"reader.{CharGetter}"),
-                        "float" => new("newFloatValue", $"reader.{Finite("Single")}"),
+                        "float" => new("newFloatValue", "reader.GetFiniteSingle()"),
                         "float[]" => new("newFloatArrayValue", "ReadFloatArray(ref reader)"),
                         "int[]" => new("newIntArrayValue", "ReadIntArray(ref reader)"),
                         "DriverId" => new("newDriverIdValue", "new DriverId(reader.GetString()!)"),
@@ -243,7 +239,7 @@ internal static class UpdateFromJsonReader
                         writer.WriteLine("while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)");
                         writer.WriteLine("{");
                         writer.Indent++;
-                        writer.WriteLine($"values.Add(reader.{(genericPropType == "float[]" ? Finite("Single") : Checked("Int32"))});");
+                        writer.WriteLine($"values.Add(reader.{(genericPropType == "float[]" ? "GetFiniteSingle()" : Checked("Int32"))});");
                         writer.Indent--;
                         writer.WriteLine("}");
                         writer.WriteLine("return values.ToArray();");
@@ -371,8 +367,8 @@ internal static class UpdateFromJsonReader
                             "char" => CharGetter,
                             "int" => Checked("Int32"),
                             "bool" => $"TokenType == JsonTokenType.Number ? (reader.{Checked("Int32")}) != 0 : reader.GetBoolean()",
-                            "double" => Finite("Double"),
-                            "float" => Finite("Single"),
+                            "double" => "GetDouble()",
+                            "float" => "GetFiniteSingle()",
                             "long" => Checked("Int64"),
                             "ulong" => Checked("UInt64"),
                             "uint" => Checked("UInt32"),
@@ -446,7 +442,7 @@ internal static class UpdateFromJsonReader
                             writer.WriteLine("else");
                             writer.WriteLine("{");
                             writer.Indent++;
-                            writer.WriteLine($"{prop.Identifier.ValueText} = reader.{Finite("Single")};");
+                            writer.WriteLine($"{prop.Identifier.ValueText} = reader.GetFiniteSingle();");
                             writer.Indent--;
                             writer.WriteLine("}");
                             writer.Indent--;

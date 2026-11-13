@@ -158,7 +158,7 @@ public class LinkInterfaceRequests
 
         Task[] pending =
         [
-            link.SetPrintFileInfo(),
+            link.SetPrintFileInfo().Unwrap(),
             link.StopPrintAsync(PrintStoppedReason.Abort),
             link.SetLastCodeResultAsync(code),
             link.EvaluateExpressionAsync(CodeChannel.SBC, "1+1"),

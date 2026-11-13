@@ -463,9 +463,10 @@ public class FileCodes
     {
         string config = WriteFile("M550 P\"test\"\n", "sys", "config.g");
 
-        // RRF refuses to delete the root folder (MassStorage.cpp:840-858). M472 resolves its path outside its try block (MCodeHandler.cs:907), so
-        // the refusal fails the code like every other path that FilePathResolver refuses
-        Assert.That(async () => await _host.ExecuteCodeAsync(code), Throws.ArgumentException.With.Message.EqualTo("Delete root folder is not allowed"));
+        // RRF refuses to delete the root folder (MassStorage.cpp:840-858), and so does M472 for the root of every volume (FilePathResolver.IsVolumeRoot)
+        Message? result = await _host.ExecuteCodeAsync(code);
+        Assert.That(result?.Type, Is.EqualTo(MessageType.Error));
+        Assert.That(result?.Content, Does.StartWith("M472: Cannot delete ").And.EndWith(" because it is the root directory of a volume\n"));
         Assert.That(System.IO.File.Exists(config), Is.True);
 
         // The channel goes on

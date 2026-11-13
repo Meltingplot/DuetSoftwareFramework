@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
+using System.Text.Unicode;
 using System.Threading;
 using System.Threading.Tasks;
 using DuetAPI;
@@ -312,32 +314,14 @@ public sealed class LinkService(
     /// <param name="stoppingToken">Cancellation token</param>
     private void Execute(CancellationToken stoppingToken)
     {
-        // Emergency stop that went out with the last transfer. RRF carries it out as soon as it reads it, but the data RRF sent
-        // with the same transfer was written before, so the stop is complete only once that data has been processed
-        TaskCompletionSource? transferredHaltRequest = null;
         do
         {
             // A full transfer has completed, the one of Connect at first, and its data of RRF is processed below
             _connection.Transferred();
 
             bool skipChannels = false;
-            TaskCompletionSource? writtenHaltRequest = null;
             using (linkInterface.FirmwareActionLock.Lock(stoppingToken))
             {
-                // Check if an emergency stop has been requested. It is written first and transferred as soon as the data RRF sent before it has been processed
-                if (linkInterface.FirmwareHaltRequest is not null)
-                {
-                    ushort tag = _connection.Tag();
-                    if (linkAdapter.WriteEmergencyStop(tag))
-                    {
-                        _connection.Written(tag);
-                        logger.LogWarning("Emergency stop");
-                        writtenHaltRequest = linkInterface.FirmwareHaltRequest;
-                        linkInterface.FirmwareHaltRequest = null;
-                    }
-                    skipChannels = true;
-                }
-
                 // Check if a firmware reset has been requested
                 if (linkInterface.FirmwareResetRequest is not null)
                 {
@@ -350,10 +334,6 @@ public sealed class LinkService(
                         linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken);
                         linkInterface.FirmwareResetRequest.SetResult();
                         linkInterface.FirmwareResetRequest = null;
-
-                        // RRF performs an emergency stop before it resets
-                        transferredHaltRequest?.SetResult();
-                        writtenHaltRequest?.SetResult();
                         break;
                     }
                     skipChannels = true;
@@ -366,10 +346,6 @@ public sealed class LinkService(
                 if (linkInterface.IapStream is not null && linkInterface.FirmwareStream is not null)
                 {
                     Invalidate();
-
-                    // RRF performs an emergency stop when it receives the first IAP segment
-                    transferredHaltRequest?.SetResult();
-                    writtenHaltRequest?.SetResult();
 
                     try
                     {
@@ -449,49 +425,44 @@ public sealed class LinkService(
             }
 
             // Process incoming packets
-            try
+            for (int i = 0; i < linkAdapter.PacketsToRead; i++)
             {
-                for (int i = 0; i < linkAdapter.PacketsToRead; i++)
+                try
                 {
-                    try
+                    PacketHeader? packet = linkAdapter.ReadNextPacket();
+                    if (packet is null)
                     {
-                        PacketHeader? packet = linkAdapter.ReadNextPacket();
-                        if (packet is null)
-                        {
-                            logger.LogError("Read invalid packet");
-                            break;
-                        }
-                        ProcessPacket(packet.Value);
+                        logger.LogError("Read invalid packet");
+                        break;
                     }
-                    catch (ArgumentOutOfRangeException)
-                    {
-                        linkAdapter.DumpMalformedPacket();
-                        throw;
-                    }
+                    ProcessPacket(packet.Value);
                 }
-            }
-            catch when (writtenHaltRequest is not null)
-            {
-                // The emergency stop must reach RRF even if the data RRF sent before it cannot be processed
-                linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken);
-                throw;
+                catch (ArgumentOutOfRangeException)
+                {
+                    linkAdapter.DumpMalformedPacket();
+                    throw;
+                }
             }
             linkInterface.BytesReserved = 0;
 
-            // RRF has carried out the emergency stop that went out with the last transfer, and the data it sent before has been processed
-            transferredHaltRequest?.SetResult();
-            transferredHaltRequest = null;
-
-            // Transfer an emergency stop at once, like a reset. The codes are invalidated only now, because the data RRF sent before the stop
-            // belongs to them, e.g. the closal of a macro file that DSF still has on the stack. The stop ends the work of every channel as an abort of
-            // all files does: RRF's packets of the current epoch are stale from here on, also those that come with the transfer of the stop, and each
-            // channel writes InvalidateChannel(e+1) in a later Spin, never before the stop
-            if (writtenHaltRequest is not null)
+            // Check if an emergency stop has been requested. The packets above were sent by RRF before the stop,
+            // so the stacks may only be invalidated once they have been processed
+            bool emergencyStopWritten = false;
+            using (linkInterface.FirmwareActionLock.Lock(stoppingToken))
             {
-                InvalidateCodes(true);
-                linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken);
-                transferredHaltRequest = writtenHaltRequest;
-                continue;
+                if (linkInterface.FirmwareHaltRequest is not null)
+                {
+                    // The stop ends the work of every channel as an abort of all files does: RRF's packets of the current epoch are stale from here on,
+                    // also those that come with the transfer of the stop, and each channel writes InvalidateChannel(e+1) in a later Spin, never before the stop
+                    InvalidateCodes(true);
+                    ushort tag = _connection.Tag();
+                    emergencyStopWritten = linkAdapter.WriteEmergencyStop(tag);
+                    if (emergencyStopWritten)
+                    {
+                        _connection.Written(tag);
+                    }
+                    skipChannels = true;
+                }
             }
 
             // Process pending codes, macro files and requests for resource locks/unlocks as well as flush requests
@@ -661,8 +632,16 @@ public sealed class LinkService(
             }
 
             // Do another full SPI transfer. It ends with this service, like the loop around it, else a transfer that does not complete keeps the
-            // service from stopping until the shutdown timeout
-            linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken);
+            // service from stopping until the shutdown timeout. If it fails, the emergency stop request remains pending and is written again
+            if (linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken) && emergencyStopWritten)
+            {
+                logger.LogWarning("Emergency stop");
+                using (linkInterface.FirmwareActionLock.Lock(lifetime.ApplicationStopped))
+                {
+                    linkInterface.FirmwareHaltRequest?.SetResult();
+                    linkInterface.FirmwareHaltRequest = null;
+                }
+            }
         }
         while (!stoppingToken.IsCancellationRequested);
     }
@@ -807,7 +786,8 @@ public sealed class LinkService(
                 }
                 else
                 {
-                    query.Tcs.SetResult(json.ToArray());
+                    // RRF cuts long strings by bytes, which may leave an incomplete UTF-8 sequence that cannot be serialized again
+                    query.Tcs.SetResult(Utf8.IsValid(json) ? json.ToArray() : Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(json)));
                 }
             }
             else
@@ -1301,7 +1281,12 @@ public sealed class LinkService(
 
         try
         {
-            string physicalFile = filePathResolver.ToPhysical(filename, forDeletion: true);
+            string physicalFile = filePathResolver.ToPhysical(filename);
+            if (filePathResolver.IsVolumeRoot(physicalFile))
+            {
+                throw new IOException("Cannot delete the root directory of a volume");
+            }
+
             if (Directory.Exists(physicalFile))
             {
                 Directory.Delete(physicalFile, recursive);

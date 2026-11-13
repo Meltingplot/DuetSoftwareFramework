@@ -84,11 +84,7 @@ public sealed class PipelineStackItem
                     }
                     catch (Exception e)
                     {
-                        // Complete the code, else whoever waits for it waits for good. A cancellation while DCS stops is expected
-                        if (e is not OperationCanceledException || !_lifetime.ApplicationStopping.IsCancellationRequested)
-                        {
-                            pipeline.ChannelProcessor.Logger.LogError(e, "Failed to process code in stage {0}", pipeline.Stage);
-                        }
+                        pipeline.ChannelProcessor.Logger.LogError(e, "Failed to process code in stage {0}", pipeline.Stage);
                         code.SetException(e);
                     }
 

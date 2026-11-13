@@ -726,38 +726,6 @@ public abstract class BaseCommandConnection(ConnectionMode mode) : BaseConnectio
     }
 
     /// <summary>
-    /// Resolve a RepRapFirmware-style file path to a real file path
-    /// </summary>
-    /// <param name="path">File path to resolve</param>
-    /// <param name="forDeletion">Path is going to be deleted, so the root directory of its volume is refused</param>
-    /// <returns>Resolved file path</returns>
-    /// <exception cref="InternalServerException">Path resolves to the root directory of its volume and is going to be deleted</exception>
-    /// <exception cref="SocketException">Command could not be processed</exception>
-    /// <seealso cref="SbcPermissions.CommandExecution"/>
-    /// <seealso cref="SbcPermissions.FileSystemAccess"/>
-    public string ResolvePath(string path, bool forDeletion)
-    {
-        return PerformCommand<string>(new ResolvePath { Path = path, ForDeletion = forDeletion });
-    }
-
-    /// <summary>
-    /// Resolve a RepRapFirmware-style file path to a real file path asynchronously
-    /// </summary>
-    /// <param name="path">File path to resolve</param>
-    /// <param name="forDeletion">Path is going to be deleted, so the root directory of its volume is refused</param>
-    /// <param name="cancellationToken">Optional cancellation token</param>
-    /// <returns>Resolved file path</returns>
-    /// <exception cref="InternalServerException">Path resolves to the root directory of its volume and is going to be deleted</exception>
-    /// <exception cref="OperationCanceledException">Operation has been cancelled</exception>
-    /// <exception cref="SocketException">Command could not be processed</exception>
-    /// <seealso cref="SbcPermissions.CommandExecution"/>
-    /// <seealso cref="SbcPermissions.FileSystemAccess"/>
-    public async Task<string> ResolvePathAsync(string path, bool forDeletion, CancellationToken cancellationToken = default)
-    {
-        return await PerformCommandAsync<string>(new ResolvePath { Path = path, ForDeletion = forDeletion }, cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
     /// Set custom plugin data in the object model
     /// </summary>
     /// <param name="key">Key to set</param>

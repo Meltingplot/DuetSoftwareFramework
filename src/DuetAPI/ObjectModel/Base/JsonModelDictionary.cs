@@ -381,8 +381,6 @@ public class JsonModelDictionaryConverter : JsonConverter<JsonModelDictionary>
             }
             else
             {
-                // Not the raw text: getting it throws if a string of the value is not valid UTF-8, which is stored as it comes.
-                // WriteTo replaces such bytes, as the patches of a subscription do
                 kv.Value.Value.WriteTo(writer);
             }
         }

@@ -283,7 +283,6 @@ public class IpcInterceptionStages
     /// A comment must behave as if there was no interceptor, since "M10*" cannot match it
     /// </summary>
     [Test]
-    [Explicit("Bug: a wildcard filter longer than the short code string (Q0 for a comment) makes the code fail with ArgumentOutOfRangeException")]
     public async Task WildcardFilterLongerThanAComment()
     {
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(ipc: true);
@@ -300,7 +299,6 @@ public class IpcInterceptionStages
     /// anything is sent (see <see cref="WildcardFilterLongerThanAComment"/>), codes shorter than the filter never get that far
     /// </summary>
     [Test]
-    [Explicit("Bug: after the client has gone, its interceptor with a filter longer than the code keeps making short codes fail until a matching code is sent")]
     public async Task WildcardFilterLongerThanTheCodeOutlivesTheClient()
     {
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware => firmware.OnCode("G4", _ => FakeReply.Ok("dwell")), ipc: true);

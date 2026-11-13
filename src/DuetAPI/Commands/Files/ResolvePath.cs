@@ -17,10 +17,4 @@ public partial class ResolvePath : Command<string>
     /// Optional base directory to resolve the path relative to
     /// </summary>
     public FileDirectory? BaseDirectory { get; set; }
-
-    /// <summary>
-    /// Path is going to be deleted, so the command fails if it resolves to the root directory of its volume.
-    /// RepRapFirmware does not allow the root folder to be deleted either
-    /// </summary>
-    public bool ForDeletion { get; set; }
 }

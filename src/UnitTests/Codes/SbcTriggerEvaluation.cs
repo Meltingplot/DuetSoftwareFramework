@@ -16,7 +16,7 @@ namespace UnitTests.Codes;
 
 /// <summary>
 /// M581.1 triggers whose expressions use SBC fields, which DSF evaluates itself (SbcTriggerService) because RRF cannot.
-/// DSF watches the object model for changes of the fields of the expression and starts sys/triggerN.g with M98 on the trigger channel
+/// DSF watches the object model for changes of the fields of the expression and fires a trigger with M582 T<n> S1 on the trigger channel, so that RRF starts sys/triggerN.g
 /// when the expression changes from false to true and the enable condition (R) is met, like RRF's TriggerItem::Check (TriggerItem.cpp:113-156)
 /// </summary>
 [TestFixture]
@@ -67,16 +67,16 @@ public class SbcTriggerEvaluation
     }
 
     /// <summary>
-    /// Number of times DSF started a trigger macro. SbcTriggerService sends M98 P"triggerN.g" on the trigger channel (SbcTriggerService.cs:298-308).
+    /// Number of times DSF fired a trigger. SbcTriggerService sends M582 T<n> S1 on the trigger channel, and RRF starts the macro (SbcTriggerService.cs:300-323).
     /// The executed codes count, because RRF discards the codes it has buffered when a macro starts and DSF sends them again
     /// </summary>
-    private int Runs(int trigger) => _host.Firmware.GetExecutedCodes(CodeChannel.Trigger).Count(code => code.Text == $"M98 P\"trigger{trigger}.g\"");
+    private int Runs(int trigger) => _host.Firmware.GetExecutedCodes(CodeChannel.Trigger).Count(code => code.Text == $"M582 T{trigger} S1");
 
     /// <summary>
-    /// Wait until DSF has started a trigger macro the given number of times and its code has run
+    /// Wait until DSF has fired a trigger the given number of times and the code of its macro has run
     /// </summary>
     private void WaitForRuns(int trigger, int runs) =>
-        Assert.That(_host.Firmware.WaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.Trigger).Count(code => code.Text == $"M98 P\"trigger{trigger}.g\"") >= runs &&
+        Assert.That(_host.Firmware.WaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.Trigger).Count(code => code.Text == $"M582 T{trigger} S1") >= runs &&
             firmware.GetExecutedCodes(CodeChannel.Trigger).Count(code => code.Text == $"G4 P{trigger}01") >= runs, FakeFirmwareHost.DefaultTimeout), Is.True, $"trigger{trigger}.g did not run {runs} times");
 
     /// <summary>
@@ -90,7 +90,7 @@ public class SbcTriggerEvaluation
     }
 
     /// <summary>
-    /// Let a sentinel fire and wait for its macro. A trigger that fires wrongly on an earlier change has sent its M98 on the same channel before.
+    /// Let a sentinel fire and wait for its macro. A trigger that fires wrongly on an earlier change has sent its M582 on the same channel before.
     /// The loop evaluates the expressions when it gets to them, so a change that is undone before is not seen; that is why the sentinels take turns
     /// instead of one of them going high and low again
     /// </summary>
@@ -168,7 +168,7 @@ public class SbcTriggerEvaluation
 
         // The trigger macros run on the trigger channel
         Assert.That(_host.Firmware.GetExecutedCodes(CodeChannel.Trigger).Count(code => code.Text == "G4 P2001"), Is.EqualTo(2));
-        Assert.That(_host.Firmware.GetReceivedCodes().Where(code => code.Channel != CodeChannel.Trigger).Select(code => code.Text), Has.None.StartWith("M98"));
+        Assert.That(_host.Firmware.GetReceivedCodes().Where(code => code.Channel != CodeChannel.Trigger).Select(code => code.Text), Has.None.StartWith("M98").And.None.StartWith("M582"));
     }
 
     [Test]
@@ -308,7 +308,7 @@ public class SbcTriggerEvaluation
         }
     }
 
-    [Test, Explicit("SbcTriggerService.cs:298-308 starts trigger0.g for trigger 0 instead of an emergency stop (upstream 4229f552)")]
+    [Test]
     public async Task TriggerZeroIsAnEmergencyStop()
     {
         // Wiki M581: "Trigger number 0 causes an emergency stop as if M112 had been received ... T0 and T1 cannot be overridden with trigger files",
@@ -318,7 +318,7 @@ public class SbcTriggerEvaluation
         await SetAsync(avgLoad: 0.9F);
 
         Assert.That(_host.Firmware.WaitUntil(firmware => firmware.IsEmergencyStopped, TimeSpan.FromSeconds(2)), Is.True);
-        Assert.That(_host.Firmware.GetExecutedCodes(CodeChannel.Trigger).Select(code => code.Text), Does.Not.Contain("M98 P\"trigger0.g\""));
+        Assert.That(_host.Firmware.GetExecutedCodes(CodeChannel.Trigger).Select(code => code.Text), Has.None.StartWith("M98").And.None.StartWith("M582"));
     }
 
     [Test, Explicit("DSF passes M582 on to RRF, whose trigger slot is empty, so a trigger that DSF evaluates is not checked (no M582 case in MCodeHandler.cs, SbcTriggerService.cs)")]

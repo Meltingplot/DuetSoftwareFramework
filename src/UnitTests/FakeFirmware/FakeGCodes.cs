@@ -198,7 +198,7 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
 
     /// <summary>
     /// Mark a trigger as pending like GCodes::CheckTriggers does when TriggerItem::Check reports that it fired (GCodes.cpp:983-989).
-    /// M582 does the same (GCodes3.cpp:421-431) but is not emulated. A trigger that is pending already stays pending only once
+    /// M582 S1 does the same (GCodes3.cpp:422-431). A trigger that is pending already stays pending only once
     /// </summary>
     /// <param name="number">Trigger number from 2 up, because trigger 0 (emergency stop) and trigger 1 (pause) are not emulated</param>
     public void SetTriggerPending(int number)
@@ -1030,6 +1030,22 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
                 // Get object model values in JSON format
                 case 409:
                     return GetObjectModel(gb, code);
+
+                // Check external trigger, see GCodes::CheckTrigger (GCodes3.cpp:422-431). The trigger slots of RRF are not emulated, so the level check
+                // finds nothing and only S1 makes a trigger pending. Like SetTriggerPending, triggers 0 (emergency stop) and 1 (pause) are not emulated
+                case 582:
+                    {
+                        int number = (int)code.GetParameter('T')!;
+                        if (number < 0 || number >= MaxTriggers)
+                        {
+                            return HandleResult(gb, CodeResult.Error, "parameter 'T' too high");
+                        }
+                        if (number >= 2 && code.HasParameter('S') && (int)code.GetParameter('S')! == 1)
+                        {
+                            TriggersPending |= 1u << number;
+                        }
+                        return HandleResult(gb, CodeResult.Ok, string.Empty);
+                    }
 
                 // I2C or Modbus send and receive, see Platform::SendI2cOrModbus and Platform::ReceiveI2cOrModbus
                 case 260:

@@ -348,30 +348,28 @@ public class FirmwareUpdateFlashing
     }
 
     /// <summary>
-    /// RRF refuses to start an update from a firmware file whose first word cannot be read or is not the initial stack pointer of the board
-    /// (RepRap.cpp:2063-2083, called by GCodes3.cpp:832), so an empty file never reaches the IAP program, which would erase the flash and then wait
-    /// in vain for the first block until it resets into the bootloader (src/iap.cpp:370-410, src/iap_spi.cpp:388-410). An empty file is what a
-    /// failed upload or a full SD card leaves behind. DCS does not know the top of the RAM of the board, so it checks only that the first word is there
+    /// An empty file never reaches the IAP program, which would erase the flash and then wait in vain for the first block until it resets into the
+    /// bootloader (src/iap.cpp:370-410, src/iap_spi.cpp:388-410). An empty file is what a failed upload or a full SD card leaves behind. M997 refuses it
+    /// before anything is stopped (MCodeHandler.cs, upstream 61df011e)
     /// </summary>
-    [TestCase(0)]
-    [TestCase(3)]
-    public async Task UpdateRefusesEmptyFirmwareFile(int length)
+    [Test]
+    public async Task UpdateRefusesEmptyFirmwareFile()
     {
         FakeFirmwareHost host = await StartWithPluginsAsync();
-        WriteFile("firmware", FirmwareFile, new byte[length]);
+        WriteFile("firmware", FirmwareFile, []);
 
-        Assert.That(await host.ExecuteAsync("M997"), Is.EqualTo($"Error: M997: Firmware binary \"{FirmwareFile}\" is not valid for this electronics\n"));
+        Assert.That(await host.ExecuteAsync("M997"), Is.EqualTo($"Error: M997: Firmware file {FirmwareFile} is empty\n"));
         await AssertRefusedAsync();
     }
 
     /// <summary>
-    /// A firmware image that holds the first word is flashed, whatever it is
+    /// A firmware file that is not empty is flashed, whatever it is
     /// </summary>
     [Test]
     public async Task UpdateWithShortestFirmwareFile()
     {
         FakeFirmwareHost host = await StartAsync();
-        byte[] firmware = [0x00, 0x00, 0x46, 0x20];
+        byte[] firmware = [0x20];
         WriteFile("firmware", IapFile, _iap);
         WriteFile("firmware", FirmwareFile, firmware);
 
@@ -380,8 +378,9 @@ public class FirmwareUpdateFlashing
     }
 
     /// <summary>
-    /// For a UF2 file the unpacked image counts, so a file whose blocks are all flagged as not for the main flash is refused as well
-    /// (FlagNoFlash, Firmware.cs:79-82)
+    /// For a UF2 file the unpacked image counts. A file whose blocks are all flagged as not for the main flash (FlagNoFlash, Firmware.cs:79-82) holds
+    /// no image, which would erase the flash like an empty file. Unpacking it fails before the IAP program is sent, so the update fails like one
+    /// with an invalid UF2 file
     /// </summary>
     [Test]
     public async Task UpdateRefusesUf2FileWithoutImage()
@@ -389,21 +388,27 @@ public class FirmwareUpdateFlashing
         FakeFirmwareHost host = await StartWithPluginsAsync();
         WriteFile("firmware", "Duet3Firmware_Mini5plus.uf2", FirmwareImage.ToUf2(new byte[1000], flags: FirmwareImage.Uf2NotMainFlash));
 
-        Assert.That(await host.ExecuteAsync("M997 P\"Duet3Firmware_Mini5plus.uf2\""), Is.EqualTo("Error: M997: Firmware binary \"Duet3Firmware_Mini5plus.uf2\" is not valid for this electronics\n"));
-        await AssertRefusedAsync();
+        const string error = "Failed to update firmware: UF2 file does not contain a firmware image";
+        Assert.That(await host.ExecuteAsync("M997 P\"Duet3Firmware_Mini5plus.uf2\""), Is.EqualTo($"Error: M997: {error}\n"));
+        Assert.That(host.Firmware.GetIapSegments(), Is.Empty, "RRF must not get the IAP binary");
+        Assert.That(System.IO.File.ReadAllText(StartErrorFile), Is.EqualTo(error));
+        Assert.That(await StopsAsync(StopTimeout), Is.True, "DCS did not stop after the failed update");
     }
 
     /// <summary>
-    /// A UF2 file is unpacked before anything is stopped, so an invalid one is refused like a missing file instead of failing the update, which
-    /// would restart DCS (Firmware.cs:40-76)
+    /// A UF2 file is unpacked after the plugins have been stopped, so an invalid one fails the update and restarts DCS, before the IAP program is sent
+    /// (MCodeHandler.cs, Firmware.cs:40-76)
     /// </summary>
     [Test]
-    public async Task UpdateRefusesInvalidUf2File()
+    public async Task UpdateFailsWithInvalidUf2File()
     {
         FakeFirmwareHost host = await StartWithPluginsAsync();
         WriteFile("firmware", "Duet3Firmware_Mini5plus.uf2", new byte[512]);
 
-        Assert.That(await host.ExecuteAsync("M997 P\"Duet3Firmware_Mini5plus.uf2\""), Is.EqualTo("Error: M997: Failed to read firmware file Duet3Firmware_Mini5plus.uf2: Invalid magic start in UF2 block\n"));
-        await AssertRefusedAsync();
+        const string error = "Failed to update firmware: Invalid magic start in UF2 block";
+        Assert.That(await host.ExecuteAsync("M997 P\"Duet3Firmware_Mini5plus.uf2\""), Is.EqualTo($"Error: M997: {error}\n"));
+        Assert.That(host.Firmware.GetIapSegments(), Is.Empty, "RRF must not get the IAP binary");
+        Assert.That(System.IO.File.ReadAllText(StartErrorFile), Is.EqualTo(error));
+        Assert.That(await StopsAsync(StopTimeout), Is.True, "DCS did not stop after the failed update");
     }
 }
