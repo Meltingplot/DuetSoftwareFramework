@@ -331,9 +331,16 @@ public sealed class LinkService(
                     {
                         _connection.Written(tag);
                         logger.LogWarning("Resetting controller");
-                        linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken);
+                        bool resetTransferred = linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken);
                         linkInterface.FirmwareResetRequest.SetResult();
                         linkInterface.FirmwareResetRequest = null;
+
+                        // RRF performs an emergency stop before it resets, so the reset completes a pending stop as well
+                        if (resetTransferred)
+                        {
+                            linkInterface.FirmwareHaltRequest?.SetResult();
+                            linkInterface.FirmwareHaltRequest = null;
+                        }
                         break;
                     }
                     skipChannels = true;
