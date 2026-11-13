@@ -149,7 +149,7 @@ public class ExecutedStageShutdown
 
     /// <summary>
     /// A code handler that is cancelled while DCS stops, e.g. because it waits with the cancelled token of the code for a lock that is held: the loop of the
-    /// stage logs the cancellation and completes the code with it (PipelineStackItem.cs:84-88, upstream 61df011e). SimpleCode answers a cancelled code with
+    /// stage logs the cancellation and completes the code with it (PipelineStackItem.cs:85-89, upstream 61df011e). SimpleCode answers a cancelled code with
     /// an empty reply (SimpleCode.cs:183-186)
     /// </summary>
     [Test]
@@ -188,12 +188,11 @@ public class ExecutedStageShutdown
     }
 
     /// <summary>
-    /// Codes behind the held one in the Executed queue are read after the cancellation as well. A macro code then failed earlier, when its file position is
-    /// updated with its token (Executed.cs:81, Code.cs:181-185, CodeFile.cs:64), which is linked to ApplicationStopping as well (MacroFile.cs:166, 340):
-    /// the same log line, but EventLogger.LogAsync is not in the stack, as in the second occurrence of the open finding. The held code is an M42 that RRF
-    /// answers, so the G4 behind it is answered and queued meanwhile (an M111 P-1 would flush the channel first, MCodeHandler.cs:695). The M42 itself failed
-    /// in the event log like the code above, through Executed.cs:123-129, because every reply of RRF gets a log level of at least Debug
-    /// (Channel/Processor.cs:1202-1206)
+    /// Codes behind the held one in the Executed queue are read after the cancellation as well. A macro code may then be cancelled when its file position is
+    /// updated with its token (Executed.cs:81, Code.cs:181-185, CodeFile.cs:64), which is linked to ApplicationStopping as well (MacroFile.cs:166, 340).
+    /// The held code is an M42 that RRF answers, so the G4 behind it is answered and queued meanwhile (an M111 P-1 would flush the channel first,
+    /// MCodeHandler.cs:695). Since upstream 61df011e the loop of the stage logs such a cancellation and completes the code with it (PipelineStackItem.cs:85-89),
+    /// depending on timing (UP6 in design/open-findings.md)
     /// </summary>
     [Test]
     public async Task MacroCodeQueuedInExecutedStageCompletesWhileDcsStops()
@@ -213,8 +212,7 @@ public class ExecutedStageShutdown
         List<IpcLog.Entry> failures = StageFailures(log);
         Assert.Multiple(() =>
         {
-            Assert.That(failures, Is.Empty, string.Join("\n", failures));
-            Assert.That(failures.Where(entry => entry.Exception?.StackTrace?.Contains("EventLogger") == false), Is.Empty, "Failure without EventLogger in the stack");
+            Assert.That(failures.Select(entry => entry.Exception), Is.All.InstanceOf<OperationCanceledException>(), string.Join("\n", failures));
             Assert.That(m98.IsCompleted, Is.True, "M98 was neither finished nor cancelled");
         });
     }

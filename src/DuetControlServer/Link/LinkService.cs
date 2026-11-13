@@ -314,6 +314,8 @@ public sealed class LinkService(
     /// <param name="stoppingToken">Cancellation token</param>
     private void Execute(CancellationToken stoppingToken)
     {
+        // Whether the last transfer carried an emergency stop. RRF wrote its data of that transfer before it read the stop
+        bool emergencyStopTransferred = false;
         do
         {
             // A full transfer has completed, the one of Connect at first, and its data of RRF is processed below
@@ -442,7 +444,7 @@ public sealed class LinkService(
                         logger.LogError("Read invalid packet");
                         break;
                     }
-                    ProcessPacket(packet.Value);
+                    ProcessPacket(packet.Value, emergencyStopTransferred);
                 }
                 catch (Exception e)
                 {
@@ -457,6 +459,7 @@ public sealed class LinkService(
                 }
             }
             linkInterface.BytesReserved = 0;
+            emergencyStopTransferred = false;
 
             // Check if an emergency stop has been requested. The packets above were sent by RRF before the stop,
             // so the stacks may only be invalidated once they have been processed
@@ -649,6 +652,7 @@ public sealed class LinkService(
             if (linkAdapter.PerformFullTransfer(cancellationToken: stoppingToken) && emergencyStopWritten)
             {
                 logger.LogWarning("Emergency stop");
+                emergencyStopTransferred = true;
                 using (linkInterface.FirmwareActionLock.Lock(lifetime.ApplicationStopped))
                 {
                     linkInterface.FirmwareHaltRequest?.SetResult();
@@ -696,8 +700,8 @@ public sealed class LinkService(
     /// Process a packet from RepRapFirmware
     /// </summary>
     /// <param name="packet">Received packet</param>
-    /// <returns>Asynchronous task</returns>
-    private void ProcessPacket(PacketHeader packet)
+    /// <param name="sentBeforeEmergencyStop">Whether RRF sent the packet with the transfer that carried an emergency stop, i.e. before it read the stop</param>
+    private void ProcessPacket(PacketHeader packet, bool sentBeforeEmergencyStop)
     {
         // Outside ResendPacket the header field carries the tag of the channel epoch (CE-5). A packet of another epoch is dropped by its handler,
         // with the channel locked, because DSF aborts a channel under that lock (Processor.IsStale)
@@ -729,7 +733,7 @@ public sealed class LinkService(
                 }
                 break;
             case Request.ObjectModel:
-                HandleObjectModel();
+                HandleObjectModel(sentBeforeEmergencyStop);
                 break;
             case Request.CodeBufferUpdate:
                 HandleCodeBufferUpdate();
@@ -807,8 +811,8 @@ public sealed class LinkService(
     /// <summary>
     /// Process an object model response
     /// </summary>
-    /// <returns>Asynchronous task</returns>
-    private void HandleObjectModel()
+    /// <param name="answeredBeforeEmergencyStop">Whether RRF answered the query before it read an emergency stop that went out with the same transfer</param>
+    private void HandleObjectModel(bool answeredBeforeEmergencyStop)
     {
         logger.LogTrace("Received object model");
         linkAdapter.ReadObjectModel(out ReadOnlySpan<byte> json);
@@ -822,6 +826,14 @@ public sealed class LinkService(
                 if (Protocol.Reader.TryReadObjectModelKey(json, out string responseKey) && responseKey != query.Key)
                 {
                     logger.LogWarning("Discarding object model response for key '{ResponseKey}' because key '{RequestedKey}' was requested", responseKey, query.Key);
+                    return;
+                }
+
+                // The state in this answer is from before the stop and would replace the halted status that the stop has set by now (M112).
+                // Ask again, RRF reports halted as soon as it has read the stop
+                if (answeredBeforeEmergencyStop)
+                {
+                    query.QuerySent = false;
                     return;
                 }
 

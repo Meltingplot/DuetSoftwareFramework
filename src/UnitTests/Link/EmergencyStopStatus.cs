@@ -17,8 +17,9 @@ namespace UnitTests.Link;
 /// The halted status that M112 sets once its stop has gone out (MCodeHandler.cs, M112) and the object model data RRF sent in the transfer that
 /// carried the stop. RRF wrote that data before it read the stop, so its state.status is the one from before the stop. From the stop on, RRF
 /// reports halted (RepRap::EmergencyStop sets stopped, RepRap.cpp:1055, and GetStatusIndex reports halted while stopped, :1957, at
-/// Meltingplot/RepRapFirmware a7199f29f). DSF processes that data in the cycle after the transfer of the stop, and the update service applies it
-/// to the model (UpdateService.cs)
+/// Meltingplot/RepRapFirmware a7199f29f). DSF processes that data in the cycle after the transfer of the stop, after M112 has completed, and the
+/// update service would apply it in a race with the M112 handler, so DSF asks again instead (LinkService.HandleObjectModel). Before that the halted
+/// status was replaced in about 1 of 4 runs
 /// </summary>
 [TestFixture]
 public class EmergencyStopStatus
@@ -30,7 +31,7 @@ public class EmergencyStopStatus
     /// </summary>
     private const int MaxSteps = 200;
 
-    [Test, Explicit("Race: DSF completes M112 after the transfer of the stop, before the data RRF sent with it has been applied, so that data replaces the halted status in about 1 of 4 runs (UP3 in design/open-findings.md)")]
+    [Test]
     public async Task HaltedIsNotReplacedByDataFromBeforeTheStop()
     {
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();

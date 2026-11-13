@@ -63,7 +63,7 @@ public partial class FilePathResolver(Model.ObjectModel model, IOptions<Settings
     /// <exception cref="ArgumentException">Resulting path escapes the root directory</exception>
     private static string CombineContained(string root, params string[] segments)
     {
-        string fullRoot = Path.GetFullPath(root);
+        string fullRoot = NormalizePath(root);
         string result = Path.GetFullPath(Path.Combine([fullRoot, .. segments.Select(segment => segment.TrimStart('/'))]));
         if (result != fullRoot && !result.StartsWith(fullRoot.EndsWith('/') ? fullRoot : fullRoot + '/', StringComparison.Ordinal))
         {
@@ -316,7 +316,7 @@ public partial class FilePathResolver(Model.ObjectModel model, IOptions<Settings
     /// <returns>True if the path is located inside the volume</returns>
     private static bool TryGetRelativeToVolume(string filePath, string volumePath, out string relativePath)
     {
-        string fullVolume = Path.GetFullPath(volumePath);
+        string fullVolume = NormalizePath(volumePath);
         if (filePath == fullVolume)
         {
             relativePath = string.Empty;
