@@ -271,16 +271,17 @@ public class EmergencyStopEpoch
     public async Task ResetRequestAfterTheStopArmsNothing()
     {
         // A reset request invalidates every channel without arming it; the link ends with the reset and DCS starts a new connection with epoch 0 and
-        // the marker. Nothing writes InvalidateChannel. The reset is handled before the stop in the same iteration, so the stop is not written at all
-        // (LinkService.Execute, upstream 61df011e); RRF stops everything when it resets
+        // the marker. Nothing writes InvalidateChannel. The reset is handled before the stop in the same iteration, so the stop is not written;
+        // the reset completes it, because RRF performs an emergency stop before it resets (EmergencyStopWithReset)
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
         await host.ExecuteAsync("G4 P1");
         Hold(host);
-        _ = RequestStop(host);
+        Task stop = RequestStop(host);
         Task reset = Link(host).ResetFirmwareAsync();
         Assert.That(SpinWait.SpinUntil(() => Link(host).FirmwareResetRequest is not null, Timeout), Is.True);
         host.Firmware.ReleaseTransfers();
         await reset.WaitAsync(Timeout);
+        await stop.WaitAsync(Timeout);
 
         Assert.That(host.Firmware.GetReceivedRequests().Any(request => request.Request == SbcRequest.Reset), Is.True);
         Assert.That(host.Firmware.GetReceivedRequests().Where(request => request.Request == SbcRequest.InvalidateChannel), Is.Empty);
