@@ -1308,25 +1308,31 @@ public class MCodeHandler(
                             return new Message(MessageType.Error, $"Firmware file {firmwareFile} is empty");
                         }
 
+                        // Unpack a UF2 file before anything is stopped, so that an invalid one is refused like an empty file
+                        await using FileStream firmwareStream = new(physicalFirmwareFile, FileMode.Open, FileAccess.Read, FileShare.Read, settings.Value.FileBufferSize);
+                        Stream firmwareImage = firmwareStream;
+                        if (Path.GetExtension(firmwareFile).Equals(".uf2", StringComparison.OrdinalIgnoreCase))
+                        {
+                            try
+                            {
+                                firmwareImage = await Firmware.UnpackUF2Async(firmwareStream);
+                            }
+                            catch (IOException e)
+                            {
+                                return new Message(MessageType.Error, $"Firmware file {firmwareFile} is invalid: {e.Message}");
+                            }
+                        }
+
                         // Stop all the plugins
                         Commands.StopPlugins stopCommand = commandFactory.Create<Commands.StopPlugins>();
                         await stopCommand.ExecuteAsync(cancellationToken);
 
                         // Update the firmware
                         await using FileStream iapStream = new(physicalIapFile, FileMode.Open, FileAccess.Read, FileShare.Read, settings.Value.FileBufferSize);
-                        await using FileStream firmwareStream = new(physicalFirmwareFile, FileMode.Open, FileAccess.Read, FileShare.Read, settings.Value.FileBufferSize);
                         Message result = new();
                         try
                         {
-                            if (Path.GetExtension(firmwareFile).Equals(".uf2", StringComparison.OrdinalIgnoreCase))
-                            {
-                                await using MemoryStream unpackedFirmwareStream = await Firmware.UnpackUF2Async(firmwareStream);
-                                await linkInterface.UpdateFirmware(iapStream, unpackedFirmwareStream, lifetime.ApplicationStopped);
-                            }
-                            else
-                            {
-                                await linkInterface.UpdateFirmware(iapStream, firmwareStream, lifetime.ApplicationStopped);
-                            }
+                            await linkInterface.UpdateFirmware(iapStream, firmwareImage, lifetime.ApplicationStopped);
                         }
                         catch (InvalidOperationException e)
                         {
