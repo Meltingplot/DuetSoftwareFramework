@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using DuetAPI;
 using DuetAPI.ObjectModel;
+using DuetHttpClient;
 using NUnit.Framework;
 
 namespace LabPrinterTests;
@@ -131,5 +132,42 @@ public class IntrusiveCodes : LabTest
         await Task.Delay(TimeSpan.FromSeconds(2));
         Assert.That(Lab.Read(Session, model => model.Inputs[CodeChannel.File2]?.State), Is.EqualTo(before), "File2 was started");
         Assert.That(Lab.Read(Session, model => model.Inputs[CodeChannel.File2]?.StackDepth), Is.EqualTo(0), "File2 got a stack");
+    }
+
+    /// <summary>
+    /// A tool offset just below the float maximum made the object model unserializable (finding O3, fixed by #184): RRF reports such an offset
+    /// with 3 decimals as 3.403e+38, which .NET reads as infinity. DSF stored it, and from then on /machine/model gave HTTP 500, DWC could not
+    /// connect and plugins that subscribe to the model were restarted in a loop, until the offset was set back (lab printer, 2026-11-11).
+    /// DSF now refuses the value, so the model keeps the last offset. The test sets the offset of tool 0 and restores it; nothing may move in between
+    /// </summary>
+    [Test]
+    public async Task ToolOffsetNearTheFloatMaximumKeepsTheObjectModel()
+    {
+        float? offset = Lab.Read(Session, model => model.Tools.Count > 0 && model.Tools[0] is Tool tool && tool.Offsets.Count > 0 ? tool.Offsets[0] : (float?)null);
+        if (offset is null)
+        {
+            Assert.Ignore("The machine has no tool 0");
+        }
+
+        try
+        {
+            Assert.That(await SendCodeAsync("G10 P0 X{1.7013e38 * 2}"), Does.Not.Contain("Error"));
+            Assert.That(await SendCodeAsync("M409 K\"tools[0].offsets[0]\""), Does.Contain("3.403e+38"), "RRF does not report the offset as a number beyond the float range, so this run shows nothing");
+
+            // DSF answers a key without an index from its own model, and only once that model is up to date: it has got the offset from RRF by then
+            JsonElement tools = await QueryAsync("tools");
+            Assert.That(tools[0].GetProperty("offsets")[0].GetSingle(), Is.EqualTo(offset.Value), "The model of DSF does not hold the last valid offset");
+
+            // A new session gets the whole model, which could not be written before. Its model is empty until that first update has arrived
+            await using DuetHttpSession session = await Lab.ConnectAsync();
+            Assert.That(await Lab.TryWaitForModelAsync(session, model => model.Tools.Count > 0 && model.Tools[0] is Tool tool && tool.Offsets.Count > 0, TimeSpan.FromSeconds(30)),
+                "The object model cannot be read any more");
+            Assert.That(Lab.Read(session, model => model.Tools[0]!.Offsets[0]), Is.EqualTo(offset.Value), "The model of a new session does not hold the last valid offset");
+        }
+        finally
+        {
+            await SendCodeAsync(FormattableString.Invariant($"G10 P0 X{offset!.Value:R}"));
+        }
+        Assert.That(await SendCodeAsync("M409 K\"tools[0].offsets[0]\""), Does.Not.Contain("e+38"), "The offset was not restored");
     }
 }

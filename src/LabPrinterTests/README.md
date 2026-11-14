@@ -77,6 +77,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 | `IntrusiveCodes.M30AndM472Delete` (explicit) | M30 used the wrong folder for a relative name, M30 and M472 reported success for a missing file | DSF #74, #80 |
 | `IntrusiveCodes.M929InvalidLevelReportsAnError` (explicit) | M929 with an invalid log level reported success | DSF #81 |
 | `IntrusiveCodes.M606FromHttpOnlyWarns` (explicit) | M606 S1 from another channel than File forked the job reader of DCS | DSF #76 |
+| `IntrusiveCodes.ToolOffsetNearTheFloatMaximumKeepsTheObjectModel` (explicit) | A tool offset near the float maximum, which RRF reports as `3.403e+38`, made the object model unserializable until the offset was set back (O3) | DSF #184 |
 | `RefusedMacroPaths.*` | M98 with a path that leaves its volume or names an unknown drive stopped DCS, RRF stayed halted until M999 (G2) | DSF #132 |
 | `CodeBufferReserve.TriggerMacroGetsRoomWhileOtherChannelsReadAhead` | Codes read ahead on two waiting channels filled RRF's code buffer, so a trigger macro got no code out (T3) | DSF #133 |
 | `AbortsCrossingMacroRequests.ChannelWorksAfterAbortsCrossingMacroRequests` (explicit) | An abort that crossed the macro request of an M98 started a macro RRF does not run and blocked the channel (T2). A block can also come from T1 (RRF) | DSF #134 |
