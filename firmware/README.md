@@ -4,7 +4,19 @@ This folder builds the Duet firmware of the CHX 350 next to DSF, so that a DSF c
 
 ## Contents
 
-The projects are git submodules of the Meltingplot forks. Each one was pinned to the commit that the firmware of the lab printer was built from: RRF `3.7.0+1.mp.8` and Duet3Expansion `3.7.0+1.mp.4`, with the library commits listed in their release notes. RRF has moved on since to the release tag `3.7.0+1.mp.9` (a7199f29f), which adds Meltingplot/RepRapFirmware#43 (macro request after InvalidateChannel), #44 (root check before the SBC hand-off), #45 (macro closal after InvalidateChannel), #46 (reply of a code that DSF dropped for InvalidateChannel) and #47 (channel epoch on the SBC link) to `3.7.0+1.mp.8`.
+The projects are git submodules of the Meltingplot forks. They were first pinned to the commits that the firmware of the lab printer was built from: RRF `3.7.0+1.mp.8` and Duet3Expansion `3.7.0+1.mp.4`, with the library commits listed in their release notes. Since then the pins have followed the fork branches:
+
+- **RRF release `3.7.0+1.mp.9`** (a7199f29f) added the following to `3.7.0+1.mp.8`:
+  - Meltingplot/RepRapFirmware#43: macro request after InvalidateChannel.
+  - #44: root check before the SBC hand-off.
+  - #45: macro closal after InvalidateChannel.
+  - #46: reply of a code that DSF dropped for InvalidateChannel.
+  - #47: channel epoch on the SBC link.
+- **Duet3D sync of 2026-11-16:**
+  - RRF and Duet3Expansion merged Duet3D `3.7-dev` up to e6f2d19c9 and 34d0a513 (Meltingplot/RepRapFirmware#49, Meltingplot/Duet3Expansion#17).
+  - CoreN2G merged Duet3D `3.7-dev` up to 0e34cea and keeps the fork's SAMC21 and SAME70 fixes (Meltingplot/CoreN2G#3).
+  - CANlib, RRFLibraries and WiFiSocketServerRTOS are at their Duet3D heads (Meltingplot/CANlib#1, Meltingplot/RRFLibraries#1, Meltingplot/WiFiSocketServerRTOS#11).
+  - The version strings still read `3.7.0+1.mp.9` and `3.7.0+1.mp.4` until the next fork release, so a build from these pins is not the released firmware of that name.
 
 | Submodule | Branch | Used by |
 |---|---|---|
@@ -58,7 +70,7 @@ RRF_HOST_HARNESS=$H/sbc-harness-usb0 RRF_HOST_RULE=1 dotnet test src/UnitTests -
 
 - `RRF_HOST_POLL=1` belongs to usb1, the MB6HC variant, which polls while not connected.
 - `RRF_HOST_RULE=1` means the RRF has the rule of Meltingplot/RepRapFirmware#41, which `3.7.0+1.mp.8` has.
-- On 2026-11-08 both passed, 6 of 6 each, against DSF `v3.7-dev` 9e6449d1.
+- On 2026-11-08 both passed, 6 of 6 each, against DSF `v3.7-dev` 9e6449d1. On 2026-11-16 they passed again with the RRF of the Duet3D sync, against DSF `v3.7-dev` 52f9602b.
 
 ### In CI
 
