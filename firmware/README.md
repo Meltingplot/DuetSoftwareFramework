@@ -4,7 +4,7 @@ This folder builds the Duet firmware of the CHX 350 next to DSF, so that a DSF c
 
 ## Contents
 
-The projects are git submodules of the Meltingplot forks. Each one was pinned to the commit that the firmware of the lab printer was built from: RRF `3.7.0+1.mp.8` and Duet3Expansion `3.7.0+1.mp.4`, with the library commits listed in their release notes. RRF has moved on since to the release tag `3.7.0+1.mp.9` (a7199f29f), which adds Meltingplot/RepRapFirmware#43 (macro request after InvalidateChannel), #44 (root check before the SBC hand-off), #45 (macro closal after InvalidateChannel), #46 (reply of a code that DSF dropped for InvalidateChannel) and #47 (channel epoch on the SBC link) to `3.7.0+1.mp.8`.
+The projects are git submodules of the Meltingplot forks. Each one was pinned to the commit that the firmware of the lab printer was built from: RRF `3.7.0+1.mp.8` and Duet3Expansion `3.7.0+1.mp.4`, with the library commits listed in their release notes. RRF has moved on since to the release tag `3.7.0+1.mp.10` (803315451). `3.7.0+1.mp.9` added Meltingplot/RepRapFirmware#43 (macro request after InvalidateChannel), #44 (root check before the SBC hand-off), #45 (macro closal after InvalidateChannel), #46 (reply of a code that DSF dropped for InvalidateChannel) and #47 (channel epoch on the SBC link) to `3.7.0+1.mp.8`; `3.7.0+1.mp.10` adds #50 (order of releasing a string or array handle), #51 (order of changing the kinematics) and #52 (raw pointer check).
 
 | Submodule | Branch | Used by |
 |---|---|---|
@@ -38,6 +38,7 @@ firmware/build.sh expansion            # TOOL1LC, EXP1HCL and SZP, the boards of
 firmware/build.sh expansion TOOL1LC
 firmware/build.sh harness              # RepRapFirmware/Tools/sbc-harness: build/sbc-harness-usb1 and -usb0
 firmware/build.sh harness check        # its own tests
+firmware/build.sh pointer-check        # RepRapFirmware/Tools/pointer-check, see below
 firmware/build.sh shell
 ```
 
@@ -69,7 +70,19 @@ RRF_HOST_HARNESS=$H/sbc-harness-usb0 RRF_HOST_RULE=1 dotnet test src/UnitTests -
 - **Tests:** the two `dotnet test` commands above. The job fails when a test fails, and also when one does not run: without `RRF_HOST_HARNESS` the tests are ignored, and `dotnet test` still exits with 0.
 - **Coverage:** gcovr 8.6 reads the counts of both variants. It and its dependencies are pinned by version and wheel hash in `.github/workflows/rrf-harness-requirements.txt`, which says where each hash comes from. The step summary lists the lines and branches of `DataTransfer.cpp`, `CRC32.cpp` and `SbcInterface::TaskLoop` that the comparison reached, for both builds together and for each alone. There is no coverage goal yet.
 - **Own tests:** the harness's `make check` runs last, so that its counts stay out of the report.
+- **RRF host tests:** after that the job runs `make check` of `Tools/heap-test` (string heap, Meltingplot/RepRapFirmware#50) and `Tools/kinematics-test` (`Move::SetKinematics`, #51) with g++ 13, each plain and with AddressSanitizer and UBSan. Like the harness they read only `RepRapFirmware/src`.
 - **Artifact:** `rrf-harness-results` holds the TRX files and the gcovr reports (HTML, Cobertura, JSON).
+
+## Raw pointers that can be reseated
+
+`RepRapFirmware/Tools/pointer-check` fails for each raw pointer member or variable outside a function that can be reseated and that its `allowlist.txt` does not name (see its README). It reads the DWARF of a `-g` build with the Arm toolchain's `readelf`, so it runs in the build container:
+
+```
+firmware/build.sh pointer-check               # Duet3_MB6HC, Duet3_MB6XD and Duet3Mini5plus, about 3.5 min
+firmware/build.sh pointer-check Duet3_MB6HC   # one configuration; allowlist entries of the others show up as notes
+```
+
+It rebuilds the configurations with `DEBUG_FLAGS=-g`, which changes only the debug sections, so the outputs in `RepRapFirmware/<config>` are then `-g` builds. The `mp-release.yml` workflow of RepRapFirmware runs the same check before it uploads a release. The DSF CI does not, because it would need every submodule and the Arm toolchain.
 
 ## Test builds on the lab printer
 
