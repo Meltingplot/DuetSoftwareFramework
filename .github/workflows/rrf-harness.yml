@@ -4,8 +4,9 @@ name: RRF harness
 # replays the census of the unit tests through the SBC link host harness of the RepRapFirmware submodule and compares every
 # exchange, against both harness variants. The harness is built here with g++ and gcov, and the step summary shows how many
 # lines and branches of DataTransfer.cpp, CRC32.cpp and SbcInterface::TaskLoop the comparison reached. There is no coverage
-# goal yet. The job also runs RRF's host tests of the string heap (Tools/heap-test) and of Move::SetKinematics
-# (Tools/kinematics-test), which read only RepRapFirmware/src as well
+# goal yet. The job also runs RRF's host tests of the string heap (Tools/heap-test), of Move::SetKinematics
+# (Tools/kinematics-test) and of the driver data of ExpansionManager (Tools/driver-data-test), which read only
+# RepRapFirmware/src as well
 on:
   pull_request:
     branches: [v3.7-dev]
@@ -165,6 +166,12 @@ jobs:
         # AddressSanitizer and UBSan (Meltingplot/RepRapFirmware#51)
         if: ${{ !cancelled() }}
         run: make -C firmware/RepRapFirmware/Tools/kinematics-test CXX=g++-13 check
+
+      - name: Run RRF's driver data test
+        # The real driver data accessors of ExpansionManager with the CAN receiver task replacing the array while they use it
+        # (Meltingplot/RepRapFirmware#54)
+        if: ${{ !cancelled() }}
+        run: make -C firmware/RepRapFirmware/Tools/driver-data-test CXX=g++-13 check
 
       - name: Upload the test results and the coverage report
         if: always()
