@@ -4,6 +4,7 @@
 #   firmware/build.sh main [CONFIG...]       RepRapFirmware, default Duet3_MB6HC; "all" builds the configurations of the release
 #   firmware/build.sh expansion [BOARD...]   Duet3Expansion, default the boards of the release: TOOL1LC EXP1HCL SZP
 #   firmware/build.sh harness [TARGET...]    host harness of the SBC link (RepRapFirmware/Tools/sbc-harness), default its "all"
+#   firmware/build.sh pointer-check [CONFIG...]  new reseatable raw pointers (RepRapFirmware/Tools/pointer-check), default the release
 #   firmware/build.sh shell                  a shell in the build container
 #
 # DSF_FIRMWARE_IMAGE names the Docker image (default dsf-firmware-build)
@@ -14,7 +15,7 @@ MODE=${1:-}
 [ $# -gt 0 ] && shift
 
 usage() {
-    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -50,6 +51,14 @@ case "$MODE" in
     harness)
         run RepRapFirmware/Tools/sbc-harness make -j"$jobs" "$@"
         ls -l "$HERE"/RepRapFirmware/Tools/sbc-harness/build/sbc-harness-* 2>/dev/null || true
+        ;;
+    pointer-check)
+        # Rebuilds the configurations with -g, then fails for each raw pointer that its allowlist.txt does not name
+        if [ $# -gt 0 ]; then
+            run RepRapFirmware/Tools/pointer-check make -j"$jobs" check CONFIGS="$*"
+        else
+            run RepRapFirmware/Tools/pointer-check make -j"$jobs" check
+        fi
         ;;
     shell)
         run . bash
