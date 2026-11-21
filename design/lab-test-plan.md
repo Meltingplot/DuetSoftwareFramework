@@ -715,4 +715,28 @@ Rückbau geprüft: ja (kein Side-Load, /var/tmp/lab-tests weg, OTA-Timer aktiv, 
 
 Bewertung:
 - Die Rate reicht: 60 min sind etwa 90.000 Schließvorgänge. Bei der Feldrate von etwa einem Reset je 40.000 wären auf mp.9 rund zwei Resets zu erwarten, die Wahrscheinlichkeit für keinen läge bei etwa 10 %. Das ist eine Hochrechnung, kein Messwert.
-- Nicht geprüft: dass der Test den Fehler auf mp.9 findet. Dafür müsste die alte Firmware zurück (`fw-sideload.sh remove`), das entscheidet Tim.
+- Ob der Test den Fehler auf mp.9 findet, zeigt der nächste Lauf.
+
+### 2026-11-21: RG-18 auf RRF mp.9, Fehler gefunden (Gegenprobe)
+
+```
+Datum, Zeit (UTC): 2026-11-21, 10:21:44 bis 10:54:37
+Anlass, PR, Commit: Gegenprobe zu RG-18, ob der Test den Fehler ohne RRF #50 findet. PR #199 (3aec3fcc)
+DSF: 3.7.0+mp.14 aus dem Image, kein Side-Load
+RRF: 3.7.0+1.mp.9 aus dem Image (fw-sideload.sh remove direkt vor dem Lauf), Erweiterungen unverändert mp.4
+Stufen und Freigabe durch: 2, Tim ("flash the old mp.9 back and validated the testcase")
+IDs: RG-18 mit 60 min, nicht bestanden wie erwartet: RRF-Reset nach 31,9 min
+Rate: 9299 Trigger-Läufe, 46.496 Schließvorgänge bis zum Reset, 25,0 je Sekunde
+M122 RRF nach dem Reset: Last software reset at 2026-11-21 10:54, reason: MemoryProtectionFault mmarValid daccViol, Gcodes spinning, slot 1
+  Software reset code 0x0163 HFSR 0x00000000 CFSR 0x00000082 ICSR 0x00400804 BFAR 0x00000000 SP 0x2041b550 Task MAIN Freestk 2206 ok
+  Stack: 00000000 20418fe8 00000000 20418fdc 00000324 00481f69 00481fb4 61070000 204371c8 0048af45 a5a5a5a5 2042a634 204371b8 00000000 204255a8 00420cd9 00000000 00000001 20424ba8 2042a8e8 00000000 0041c613 00000000 2042a8ec 2042a8e8 004283d3 00000001
+M122 DSF vorher und nachher: Full transfer restarts 0 -> 1, extended left 0 -> 1, connection resets 0 -> 1, lost connections 0 -> 0, alle übrigen 0
+Self-Test im Laufzeitraum: 1 Lauf, passed
+Journalbefunde: kein Fehlerbefund aus Abschnitt 9. Je einmal Reset, "left the extended link" und Neustart der Übertragung (der eine Reset). 1 x "Aborting orphaned macro file daemon.g", 3 x "predicted maximum temperature" (außerhalb des Plans)
+Rückbau geprüft: ja (Testmakros und sys/trigger30.g weg, idle, Erweiterungen laufen). Danach um 10:56 wieder 3.7.0+1.mp.10-dev.1 per fw-sideload.sh install (sha256 5c95be5a1590dcfe), Stand wie vor der Gegenprobe
+```
+
+Bewertung:
+- Der Test findet den Fehler. Die Signatur gleicht dem Feld-Reset von 05:28 (`M122` vor der Gegenprobe): gleicher Grund, Code, CFSR, ICSR, SP und Task, PC `00481fb4` (`Heap::DeleteSlot`+0x54) mit LR `00481f69`, und dieselben Rücksprungadressen `0048af45`, `00420cd9`, `0041c613`, `004283d3`. Es ist derselbe Fehler, nicht ein anderer Reset.
+- 46.496 Schließvorgänge bis zum Reset passen zur Feldrate von etwa einem Reset je 40.000. Ein einzelner Treffer ist keine Rate.
+- Mit RRF #50 lief derselbe Test vorher 3 min ohne Befund (Eintrag oben). Ein bestandener 60-min-Lauf auf mp.10-dev.1 steht noch aus.
