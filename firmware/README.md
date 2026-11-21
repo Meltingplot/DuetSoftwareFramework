@@ -20,7 +20,12 @@ The projects are git submodules of the Meltingplot forks. They were first pinned
   - RRF and Duet3Expansion merged Duet3D `3.7-dev` up to e6f2d19c9 and 34d0a513 (Meltingplot/RepRapFirmware#49, Meltingplot/Duet3Expansion#17).
   - CoreN2G merged Duet3D `3.7-dev` up to 0e34cea and keeps the fork's SAMC21 and SAME70 fixes (Meltingplot/CoreN2G#3).
   - CANlib, RRFLibraries and WiFiSocketServerRTOS are at their Duet3D heads (Meltingplot/CANlib#1, Meltingplot/RRFLibraries#1, Meltingplot/WiFiSocketServerRTOS#11).
-  - The version strings still read `3.7.0+1.mp.9` and `3.7.0+1.mp.4` until the next fork release, so a build from these pins is not the released firmware of that name.
+- **Duet3D sync of 2026-11-21:**
+  - RRF merged the fork's `3.7-dev` up to #54, then Duet3D `3.7-dev` up to a507cb8f0 and Duet3D `3.7-ch` up to eed7cf1fc (Duet3D/RepRapFirmware#1335).
+  - Duet3Expansion merged Duet3D `3.7-dev` up to 02000a7c and `3.7-ch` up to 8cfc9949.
+  - CoreN2G merged Duet3D `3.7-dev` up to 45ae60a, which contains its `3.7-ch`.
+  - CANlib and RRFLibraries are at their Duet3D heads 7b5866c and 08746c8.
+  - The version strings read `3.7.0+1.mp.10` and `3.7.0+1.mp.4` until the next fork release, so a build from these pins is not the released firmware of that name.
 
 | Submodule | Branch | Used by |
 |---|---|---|
@@ -75,7 +80,7 @@ RRF_HOST_HARNESS=$H/sbc-harness-usb0 RRF_HOST_RULE=1 dotnet test src/UnitTests -
 
 - `RRF_HOST_POLL=1` belongs to usb1, the MB6HC variant, which polls while not connected.
 - `RRF_HOST_RULE=1` means the RRF has the rule of Meltingplot/RepRapFirmware#41, which `3.7.0+1.mp.8` has.
-- On 2026-11-08 both passed, 6 of 6 each, against DSF `v3.7-dev` 9e6449d1. On 2026-11-16 they passed again with the RRF of the Duet3D sync, against DSF `v3.7-dev` 52f9602b.
+- On 2026-11-08 both passed, 6 of 6 each, against DSF `v3.7-dev` 9e6449d1. On 2026-11-16 they passed again with the RRF of the Duet3D sync, against DSF `v3.7-dev` 52f9602b. On 2026-11-21 they passed with the RRF of the sync of that day, against DSF `v3.7-dev` 677ccfaa.
 
 ### In CI
 
