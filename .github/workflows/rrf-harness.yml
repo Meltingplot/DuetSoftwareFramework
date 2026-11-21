@@ -4,7 +4,8 @@ name: RRF harness
 # replays the census of the unit tests through the SBC link host harness of the RepRapFirmware submodule and compares every
 # exchange, against both harness variants. The harness is built here with g++ and gcov, and the step summary shows how many
 # lines and branches of DataTransfer.cpp, CRC32.cpp and SbcInterface::TaskLoop the comparison reached. There is no coverage
-# goal yet
+# goal yet. The job also runs RRF's host tests of the string heap (Tools/heap-test) and of Move::SetKinematics
+# (Tools/kinematics-test), which read only RepRapFirmware/src as well
 on:
   pull_request:
     branches: [v3.7-dev]
@@ -152,6 +153,18 @@ jobs:
         # After the report, so that their counts stay out of it
         if: ${{ !cancelled() && steps.harness.outcome == 'success' }}
         run: make -C "$HARNESS" CXX="g++-13 --coverage" CXXFLAGS="-O0 -g" check
+
+      - name: Run RRF's heap test
+        # The real Heap.cpp, StringHandle.cpp and ArrayHandle.cpp with another task hooked into Heap::DeleteSlot, plain and with
+        # AddressSanitizer and UBSan (Meltingplot/RepRapFirmware#50)
+        if: ${{ !cancelled() }}
+        run: make -C firmware/RepRapFirmware/Tools/heap-test CXX=g++-13 check
+
+      - name: Run RRF's kinematics test
+        # The real Move::SetKinematics with the object model reading move.kinematics during the change, plain and with
+        # AddressSanitizer and UBSan (Meltingplot/RepRapFirmware#51)
+        if: ${{ !cancelled() }}
+        run: make -C firmware/RepRapFirmware/Tools/kinematics-test CXX=g++-13 check
 
       - name: Upload the test results and the coverage report
         if: always()

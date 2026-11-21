@@ -25,6 +25,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 - `--plain-link` creates `/var/tmp/lab-tests/spi-plain-link` before DCS starts. The fault injection build then keeps the plain link: it supports no link capabilities, so it neither queries nor activates them, as with an RRF that offers none. The RRF on the printer offers them, and the production build always activates them. The file goes with the side-load directory at the end.
 - Examples: `--filter "TestCategory!=Restart"` skips the restarts. `--filter "FullyQualifiedName~LinkSoak"` runs the 30-minute soak.
 - `LAB_WATCHDOG_RESTARTS` sets the number of watchdog resets of `FirmwareRestart.LinkRecoversAfterWatchdogReset` (default 5), e.g. 40 to look for a reboot race that hits about one restart in 40.
+- `LAB_MACRO_CLOSE_MINUTES` sets the duration of `MacroCloseStress` (default 60), e.g. 3 to check its rate. Run it with `--filter "FullyQualifiedName~MacroCloseStress"`.
 - Without `LAB_PRINTER_URL` and `LAB_PRINTER_SHELL`, which the script sets, every test is skipped.
 
 ## What the tests may do
@@ -35,7 +36,8 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 - Category `Trigger`: a temporary trigger 30 with `sys/trigger30.g`. These tests are skipped if the machine uses either.
 - Category `FaultInjection` (explicit): single corrupted SPI exchanges. A fault that breaks the link costs a DCS restart and M999, and on the fork the lost link also triggers an E-stop and switches ATX off.
 - Category `Approval` (explicit): `IntrusiveCodes`, codes that change the state of the machine, such as M112, M929 or a test file in `0:/gcodes`. Tim decides on each run, see `design/lab-test-plan.md`. Run one with `--filter "FullyQualifiedName~IntrusiveCodes.M112StaysHaltedUntilM999"`.
-- Explicit only: the 30-minute soak.
+- Explicit only: the 30-minute soak and the 60-minute `MacroCloseStress` (category `Trigger`).
+- `MacroCloseStress` runs trigger 30 up to five times a second, and its macro nests four more. DCS logs two lines for each macro on the trigger channel, so the journal gets about 50 lines a second for an hour. The machine's own triggers keep priority (see the test).
 - `AbortsCrossingMacroRequests` (explicit, `Restart`) runs a Python IPC client as root on the SBC, which aborts Telnet with the IPC command `InvalidateChannel`, and sets the DCS log level to debug for about a minute (`M111 P-1 S"debug"`, set back afterwards). `LAB_ABORT_ITERATIONS` sets the number of aborts (default 600).
 - `PluginPermissions.WebServerPassesPermissionCheckOfSystemPackages` sends `DELETE /machine/systemPackage` for `labtest_no_such_package`, a name no Debian package can have. With root plugin support, DPS runs `dpkg -r` with it.
 - `CodeBufferReserve` keeps Telnet and Aux2 waiting for 12 s with RRF's code buffer full. Without the fix, no trigger macro, including those of the doors and the E-stop input, gets a code to RRF in that time.
@@ -67,6 +69,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 | `LineChecksums.*` | No bug: a wrong CRC, a missing CRC or a wrong line number ends a macro | New in the line checksums |
 | `CodeReplies.M36MissingFileIsValidJson` | M36 replied with invalid JSON for a missing file | DSF #72 |
 | `CodeReplies.M39ReportsSizesAndClusterSize` | M39 reported sizes in "Gb" and no cluster size | DSF #82 |
+| `MacroCloseStress.NoResetWhileMacrosCloseOnTheTriggerChannel` (explicit) | RRF reset while idle with a MemoryProtectionFault in `Heap::DeleteSlot` just after a trigger macro closed, about once per 40,000 closes (RRF 3.7.0+1.mp.9 and older, upstream code) | RRF fork PR #50 (test build 3.7.0+1.mp.10-dev.1) |
 | `LinkSoak.NoLostConnectionWhileIdle` (explicit) | TfrRdy timeouts every 15 to 30 minutes (DSF 3.7.0-rc.1) | Upstream 46886f5d |
 | `SpiFaultRestarts.StuckLinkRestartsDcs` (explicit) | A stuck link needed a manual restart of DCS | DSF #102 |
 | `SpiFaultRestarts.DcsStartsWhileTfrRdyIsLow` (explicit) | A new DCS failed its first start when a recovered fault left TfrRdy low | DSF #99 |
