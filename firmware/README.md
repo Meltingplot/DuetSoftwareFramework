@@ -91,7 +91,7 @@ RRF_HOST_HARNESS=$H/sbc-harness-usb0 RRF_HOST_RULE=1 dotnet test src/UnitTests -
 - **Tests:** the two `dotnet test` commands above. The job fails when a test fails, and also when one does not run: without `RRF_HOST_HARNESS` the tests are ignored, and `dotnet test` still exits with 0.
 - **Coverage:** gcovr 8.6 reads the counts of both variants. It and its dependencies are pinned by version and wheel hash in `.github/workflows/rrf-harness-requirements.txt`, which says where each hash comes from. The step summary lists the lines and branches of `DataTransfer.cpp`, `CRC32.cpp` and `SbcInterface::TaskLoop` that the comparison reached, for both builds together and for each alone. There is no coverage goal yet.
 - **Own tests:** the harness's `make check` runs last, so that its counts stay out of the report.
-- **RRF host tests:** after that the job runs `make check` of `Tools/heap-test` (string heap, Meltingplot/RepRapFirmware#50) and `Tools/kinematics-test` (`Move::SetKinematics`, #51) with g++ 13, each plain and with AddressSanitizer and UBSan. Like the harness they read only `RepRapFirmware/src`.
+- **RRF host tests:** after that the job runs `make check` of `Tools/heap-test` (string heap, Meltingplot/RepRapFirmware#50) and `Tools/kinematics-test` (`Move::SetKinematics`, #51) with g++ 13, each plain and with AddressSanitizer and UBSan, and of `Tools/driver-data-test` (driver data of `ExpansionManager`, #54). Like the harness they read only `RepRapFirmware/src`.
 - **Artifact:** `rrf-harness-results` holds the TRX files and the gcovr reports (HTML, Cobertura, JSON).
 
 ## Raw pointers that can be reseated
