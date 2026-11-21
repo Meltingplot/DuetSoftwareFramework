@@ -25,6 +25,7 @@ The projects are git submodules of the Meltingplot forks. They were first pinned
   - Duet3Expansion merged Duet3D `3.7-dev` up to 02000a7c and `3.7-ch` up to 8cfc9949.
   - CoreN2G merged Duet3D `3.7-dev` up to 45ae60a, which contains its `3.7-ch`.
   - CANlib and RRFLibraries are at their Duet3D heads 7b5866c and 08746c8.
+  - All fork PRs of the sync were merged on 2026-11-21, and the submodules point at their merge commits, whose trees equal the tested branch heads.
   - The version strings read `3.7.0+1.mp.10` and `3.7.0+1.mp.4` until the next fork release, so a build from these pins is not the released firmware of that name.
 
 | Submodule | Branch | Used by |
