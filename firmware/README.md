@@ -21,7 +21,7 @@ The projects are git submodules of the Meltingplot forks. They were first pinned
   - CoreN2G merged Duet3D `3.7-dev` up to 0e34cea and keeps the fork's SAMC21 and SAME70 fixes (Meltingplot/CoreN2G#3).
   - CANlib, RRFLibraries and WiFiSocketServerRTOS are at their Duet3D heads (Meltingplot/CANlib#1, Meltingplot/RRFLibraries#1, Meltingplot/WiFiSocketServerRTOS#11).
 - **Duet3D sync of 2026-11-21:**
-  - RRF merged the fork's `3.7-dev` up to #54, then Duet3D `3.7-dev` up to a507cb8f0 and Duet3D `3.7-ch` up to eed7cf1fc (Duet3D/RepRapFirmware#1335).
+  - RRF merged the fork's `3.7-dev` up to #54, then Duet3D `3.7-dev` up to a507cb8f0 and Duet3D `3.7-ch` up to eed7cf1fc (Duet3D/RepRapFirmware#1335), merged as Meltingplot/RepRapFirmware#49 (3593e30fe).
   - Duet3Expansion merged Duet3D `3.7-dev` up to 02000a7c and `3.7-ch` up to 8cfc9949.
   - CoreN2G merged Duet3D `3.7-dev` up to 45ae60a, which contains its `3.7-ch`.
   - CANlib and RRFLibraries are at their Duet3D heads 7b5866c and 08746c8.
