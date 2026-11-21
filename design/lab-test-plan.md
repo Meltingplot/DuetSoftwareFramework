@@ -58,12 +58,13 @@ Regeln für jeden Lauf:
 | Anlass | Umfang |
 |---|---|
 | PR im Link-, Code- oder Trigger-Pfad | Block 0, E, RG mit `--side-load`, dazu die betroffenen A- und F-Prüfungen |
-| Neues DSF-Release oder Image | Block 0, E, RG ohne Side-Load, RG-17, F-1, F-2 |
+| Neues DSF-Release oder Image | Block 0, E, RG ohne Side-Load, F-1, F-2 |
 | Neues RRF-Release | Wie neues Release, dazu `PortMatchesRealFirmware` durch die RRF-Sitzung (`LinkRecovery.cs:838`) |
+| Änderung am Warten auf TfrRdy in DSF (`Link/Adapter/SPI.cs`), Feldbericht eines Verbindungsverlusts im Leerlauf | RG-17 |
 | Änderung an `Heap`, String- oder Array-Handles oder am Schließen von Makros, Feldbericht eines Resets in `Heap::DeleteSlot` | RG-18 |
 | Erstdurchlauf des aktuellen Stands | Alle Blöcke unten |
 
-RG-18 läuft nur auf Abruf und gehört nicht zum Release-Umfang (Tim, 2026-11-21). Der Test findet den Fehler nur statistisch: 60 min erkennen die Rate von mp.9 mit etwa 90 %. Den Fix selbst prüft `Tools/heap-test` in RepRapFirmware deterministisch.
+RG-17 und RG-18 laufen nur auf Abruf und gehören nicht zum Release-Umfang (Tim, 2026-11-21). Beide warten im Leerlauf und finden seltene Fehler nur statistisch. RG-18 erkennt in 60 min die Rate von mp.9 mit etwa 90 %, den Fix selbst prüft `Tools/heap-test` in RepRapFirmware deterministisch.
 
 ### Blöcke
 
@@ -71,7 +72,7 @@ RG-18 läuft nur auf Abruf und gehört nicht zum Release-Umfang (Tim, 2026-11-21
 |---|---|---|---|---|
 | 0 | Offline-Gate | keine | keine | 1 min |
 | 1 | E, RG-1 bis RG-16, Auswertung Self-Test | 2 | keine | 10 min |
-| 2 | RG-17 Dauerlauf, RG-18 nur auf Abruf | 1 (RG-17), 2 (RG-18, Testtrigger 30) | keine | 30 min, RG-18 60 min |
+| 2 | RG-17 und RG-18 Dauerläufe, nur auf Abruf | 1 (RG-17), 2 (RG-18, Testtrigger 30) | keine | 30 min und 60 min |
 | 3 | F-1, F-2 | 2 | keine | 45 min |
 | 4 | A-1 bis A-7, A-10 | 1 und 2 | Tests aus `feature/lab-tests-for-changes` | Suite 11,2 min, A-1 und A-2 etwa 5 min |
 | 5 | A-8, A-9, A-11 bis A-13 | 3 | Tests aus `feature/lab-tests-for-changes`, Einzelfreigabe | offen |
