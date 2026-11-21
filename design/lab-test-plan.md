@@ -353,7 +353,7 @@ Nach jedem Lauf das Journal ab dem Cursor des Laufs lesen und auch auf fehlgesch
 
 **Erwartet in bestimmten Testfällen:**
 - RG-3: 20 x `Failed to find corresponding state for code M291 P"never" S3` (`PipelineBase.cs:243`). Das `M291` steht im Testmakro hinter einem `M99` und wird absichtlich nie erreicht (`MacroReturns.cs:20`, `:54`, `:65`).
-- RG-7 und jeder andere DCS-Neustart, auch beim Side-Load: `Machine is halted`, bis `M999` folgt (`Lab.cs:218-220`).
+- RG-7 und jeder andere DCS-Neustart, auch beim Side-Load: `Machine is halted`, bis `M999` folgt (`Lab.cs:280-290`).
 - `RefusedMacroPaths` (G2, #132): je verweigertem Pfad `Failed to start macro file 99:/macros/lab-tests/refused/...` oder `... 0:/../lab-tests-refused-...` und `Macro file ... not found`. `run-lab-tests.py` zählt diese Zeilen hier und nicht als Fehlerbefund (`REFUSED_PATH_TESTS`).
 - Fehlerinjektion: `Restarting full transfer because ...`, `Bad header CRC32`, `Bad data CRC32`, `Sending transfer #... again` und ähnliche Meldungen, sofern der Fall als `Retry` endet.
 
@@ -744,3 +744,29 @@ Bewertung:
 - Der Test findet den Fehler. Die Signatur gleicht dem Feld-Reset von 05:28 (`M122` vor der Gegenprobe): gleicher Grund, Code, CFSR, ICSR, SP und Task, PC `00481fb4` (`Heap::DeleteSlot`+0x54) mit LR `00481f69`, und dieselben Rücksprungadressen `0048af45`, `00420cd9`, `0041c613`, `004283d3`. Es ist derselbe Fehler, nicht ein anderer Reset.
 - 46.496 Schließvorgänge bis zum Reset passen zur Feldrate von etwa einem Reset je 40.000. Ein einzelner Treffer ist keine Rate.
 - Mit RRF #50 lief derselbe Test vorher 3 min ohne Befund (Eintrag oben). Ein bestandener 60-min-Lauf auf mp.10-dev.1 steht noch aus.
+
+### 2026-11-21: Release-Prüfung RRF 3.7.0+1.mp.10, bestanden
+
+```
+Datum, Zeit (UTC): 2026-11-21, 13:23 Firmware-Side-Load, 13:25 bis 13:28 Block 0, 13:28:56 bis 13:39:33 Block 1, 13:40:01 bis 13:42:53 RG-17 (abgebrochen), 13:44:24 bis 13:47:36 F-1, 13:47:36 bis 14:21:28 F-2
+Anlass, PR, Commit: Release RRF 3.7.0+1.mp.10 von 3.7-dev e5b7878a1 (RRF #50, #51, #52, ohne den Upstream-Merge #49), Umfang "Neues RRF-Release"
+DSF: 3.7.0+mp.14 im Image. Block 0 auf 0436289c, F-1 und F-2 mit Side-Load von 9ed2e721 mit Fehlerinjektion (gleicher Code, dazwischen änderte sich nur dieser Plan)
+RRF: 3.7.0+1.mp.10-dev.2 (Baum von e5b7878a1, sha256 8ae386d9468029ec...), Firmware-Side-Load, Erweiterungen unverändert mp.4
+Stufen und Freigabe durch: 2, Tim ("1 und 2 go, release vom heutigen 3.7-dev", Side-Load von dev.2 freigegeben)
+Block 0: 2506 bestanden, 0 fehlgeschlagen, 6 übersprungen. Die Liste enthält 51 Lab-Testfälle
+Block 1 (E, RG-1 bis RG-16): 37 bestanden, 0 fehlgeschlagen, 2 übersprungen, 12 explizit nicht gelaufen. Watchdog-Neustarts 5 x, wieder da nach 12,0 bis 12,5 s (Median 12,1 s)
+RG-17: nach 2,9 min abgebrochen, weil Tim RG-17 aus dem Release-Umfang genommen hat (9ed2e721). Rückbau von Hand geprüft (idle, Heizungen aus, Erweiterungen laufen, kein neuer Reset)
+F-1: 15 von 15 ESD-Fällen, 15 x Retry, 0 nicht injiziert, 0 Abweichungen vom Census
+F-2: 672 von 3234 Fällen auf dem erweiterten Link, 672 x Retry, 0 nicht injiziert, 0 Abweichungen, 32 min 29 s
+PortMatchesRealFirmware: lokal wie in rrf-harness.yml, Harness aus RRF 8004517c1 (e5b7878a1 und der Versions-Commit) mit g++ 13, Unit-Tests von DSF 5d49b5a5. usb1 (RRF_HOST_POLL=1, RRF_HOST_RULE=1) 6 von 6, usb0 (RRF_HOST_RULE=1) 6 von 6, je 0 Fälle mit Abweichung
+M122: RRF-Link-Zähler in allen Blöcken 0. DSF in Block 1: Full transfer restarts, extended left und connection resets je 0 -> 1, lost connections 0. Nach F-1 und F-2 Last reset 18 s vor dem Ende, cause software: das M999 nach dem DCS-Neustart beim Entfernen des Side-Loads (Abschnitt 9)
+Self-Test im Laufzeitraum: Block 1 2 Läufe, F-1 1 Lauf, F-2 1 Lauf, alle passed
+Journalbefunde: in keinem Block ein Fehlerbefund aus Abschnitt 9. Block 1: 1 x "Failed to find query for object model response", 7 x "Aborting orphaned macro file daemon.g" (bekannt). F-1: 15 x injiziert, 5 x Bad header CRC, 10 x Bad data CRC, 4 x Machine is halted. F-2: 672 x injiziert, 118 x Restarting full transfer, 22 x Bad header CRC, 8 x Bad data CRC, 26 x Sending transfer # again, 2 x Machine is halted
+Rückbau geprüft: ja, nach jedem Block (kein DSF-Side-Load, /var/tmp/lab-tests weg, OTA-Timer aktiv, sys/trigger30.g und 0:/macros/lab-tests weg, idle, kein Job, Erweiterungen laufen, Versionen wie vorher). Der Firmware-Side-Load von dev.2 bleibt nach dem Lauf drauf
+```
+
+Bewertung:
+- Der Release-Umfang für RRF ist ohne Befund durchgelaufen: Block 0, E, RG ohne RG-17 und RG-18, F-1, F-2 und `PortMatchesRealFirmware`.
+- Der Link verhält sich wie mit mp.9: F-2 gleicht dem Lauf vom 2026-11-10 (672 x Retry, 0 Abweichungen), F-1 ebenso.
+- #50 und #51 prüft dieser Lauf nur indirekt: Jeder Boot und jedes `M999` führt `config.g` und damit `M669 K5` aus, also `SetKinematics` (RRF #51). Geprüft sind beide Fixes deterministisch durch `Tools/heap-test` und `Tools/kinematics-test` in RepRapFirmware. Ein bestandener 60-min-Lauf von RG-18 auf mp.10 steht weiter aus und gehört nicht zum Release-Umfang.
+- Nicht geprüft: Beide Fixes schützen nur Leser mit höherer Priorität als der Main-Task, also den SBC-Task. Ohne SBC liest der Netzwerk-Task das Objektmodell mit derselben Priorität wie der Main-Task (`TaskPriorities.h:15`, `Tasks.cpp:283`, `Network.cpp:519`), dort bleibt das Fenster offen. Die CHX läuft mit SBC und aktiviert das Netzwerk der RRF nicht (`RepRap.cpp:637-645`).
