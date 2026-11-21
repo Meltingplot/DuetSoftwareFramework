@@ -59,7 +59,7 @@ Regeln für jeden Lauf:
 |---|---|
 | PR im Link-, Code- oder Trigger-Pfad | Block 0, E, RG mit `--side-load`, dazu die betroffenen A- und F-Prüfungen |
 | Neues DSF-Release oder Image | Block 0, E, RG ohne Side-Load, RG-17, F-1, F-2 |
-| Neues RRF-Release | Wie neues Release, dazu `PortMatchesRealFirmware` durch die RRF-Sitzung (`LinkRecovery.cs:838`) |
+| Neues RRF-Release | Wie neues Release, dazu RG-18 und `PortMatchesRealFirmware` durch die RRF-Sitzung (`LinkRecovery.cs:838`) |
 | Erstdurchlauf des aktuellen Stands | Alle Blöcke unten |
 
 ### Blöcke
@@ -68,7 +68,7 @@ Regeln für jeden Lauf:
 |---|---|---|---|---|
 | 0 | Offline-Gate | keine | keine | 1 min |
 | 1 | E, RG-1 bis RG-16, Auswertung Self-Test | 2 | keine | 10 min |
-| 2 | RG-17 Dauerlauf | 1 | keine | 30 min |
+| 2 | RG-17 und RG-18 Dauerläufe | 1 (RG-17), 2 (RG-18, Testtrigger 30) | keine | 30 min und 60 min |
 | 3 | F-1, F-2 | 2 | keine | 45 min |
 | 4 | A-1 bis A-7, A-10 | 1 und 2 | Tests aus `feature/lab-tests-for-changes` | Suite 11,2 min, A-1 und A-2 etwa 5 min |
 | 5 | A-8, A-9, A-11 bis A-13 | 3 | Tests aus `feature/lab-tests-for-changes`, Einzelfreigabe | offen |
@@ -135,6 +135,7 @@ Messung vom 2026-11-06, ein Lauf:
 src/LabPrinterTests/run-lab-tests.sh                                          # RG-1 bis RG-16, Image
 src/LabPrinterTests/run-lab-tests.sh --side-load                              # dasselbe mit dem Stand dieses Baums
 src/LabPrinterTests/run-lab-tests.sh --filter "FullyQualifiedName~LinkSoak"   # RG-17
+src/LabPrinterTests/run-lab-tests.sh --filter "FullyQualifiedName~MacroCloseStress"   # RG-18, Dauer mit LAB_MACRO_CLOSE_MINUTES
 ```
 
 | ID | Test | Altes Fehlerbild | Soll |
@@ -152,6 +153,7 @@ src/LabPrinterTests/run-lab-tests.sh --filter "FullyQualifiedName~LinkSoak"   # 
 | RG-12 | `TriggerMacros.ReportSbcTriggerWithM581` | Bericht löscht SBC-Trigger (#63) | Trigger bleibt erhalten, `P-1` löscht ihn |
 | RG-13 bis RG-16 | `MacrosOnOtherChannels.TriggerKeepsFiringWhileMacroRuns` für `M98.2`, `.3`, `.4`, `.5` | Neue Funktion #108 | Kriterien in `MacrosOnOtherChannels.cs:133-150`, unter anderem richtiger Kanal, Parameter `5,2,5,true`, Trigger feuert weiter |
 | RG-17 | `LinkSoak.NoLostConnectionWhileIdle` | TfrRdy-Timeouts alle 15 bis 30 min | 30 min ohne `Lost connection to Duet`, kein RRF-Neustart |
+| RG-18 | `MacroCloseStress.NoResetWhileMacrosCloseOnTheTriggerChannel` | RRF-Reset im Leerlauf, `MemoryProtectionFault` in `Heap::DeleteSlot` kurz nach dem Schließen eines Trigger-Makros, etwa einmal je 40.000 Schließvorgänge (RRF mp.9, Upstream-Code) | 60 min mit mindestens 10 Schließvorgängen je Sekunde: `state.upTime` fällt nie, `Last software reset` in `M122` unverändert, `Heap OK`, keine Neustartzeile aus `PER_REBOOT` im Journal |
 
 Zusatzauswertung für RG-6, weil der Test selbst erst nach 90 s fehlschlägt:
 - **Erholzeit je Reboot:** Referenz 11,8 bis 12,2 s (RRF #36, 15 Reboots; Abnahme vom 2026-11-03: 11,8 bis 12,2 s). Mehr als das ist eine Abweichung und wird analysiert, auch wenn der Test besteht. Der Wert wird auf dem Client über den Tunnel gestoppt.
@@ -186,6 +188,7 @@ Zusatzauswertung für RG-6, weil der Test selbst erst nach 90 s fehlschlägt:
 | Zeilenprüfsummen und Zeilenfolge | Nur der Gutfall, die Konfiguration trägt `N` und CRC | A-5 |
 | RRF #36 Boot-Verzögerung | A/B mit 15 Reboots (RRF #36) | RG-6 |
 | RRF mp.7 (Duet3D-Sync, RRF #39) | Regression, Dauerlauf und Injektion am 2026-11-06 | RG, F-2 |
+| RRF #50 Freigabe von String- und Array-Handles | Side-Load von 3.7.0+1.mp.10-dev.1 am 2026-11-21, Host-Test `Tools/heap-test` | RG-18 |
 | Upstream 30ea08be | Laufende Suite seit der Übernahme | RG-4, RG-5 |
 | Upstream 9acd058f | Keiner (README `:66`) | M-2 |
 | DWC mp.6 und mp.7 | USB-Stick als Side-Load am 2026-11-04, #25 nicht belegt | M-4 |
@@ -693,3 +696,23 @@ Bewertung:
 - `StringLiteralInExpression` besteht (RRF 59a04159b) und ist seit #175 ein regulärer Test.
 - Der Debug-Text "Dropped ... of an older connection" wurde nicht gesehen, weil das Journal auf info steht. Der Beleg für D16 ist die Zählung.
 - Nicht geprüft: die Zeile "Channel epochs" im `M122` der RRF, EP-9, EP-18 bis EP-20 und EP-22 als eigene Prüfungen, alles mit Bewegung (EP-15 bis EP-17), kein Druck, das neue DSF gegen die RRF des Images (mp.8) allein.
+
+### 2026-11-21: RG-18, Kalibrierung mit 3 min, bestanden
+
+```
+Datum, Zeit (UTC): 2026-11-21, 10:09:29 bis 10:12:51
+Anlass, PR, Commit: neuer Test MacroCloseStress (RG-18) für RRF #50, Branch feature/lab-test-macro-close-stress, vor dem Commit
+DSF: 3.7.0+mp.14 aus dem Image, kein Side-Load
+RRF: 3.7.0+1.mp.10-dev.1 (RRF #50, Firmware-Side-Load seit 09:47), Erweiterungen unverändert mp.4
+Stufen und Freigabe durch: 2 (Testtrigger 30). Auftrag von Tim, den Test zu schreiben; kein eigenes Go für diesen Lauf
+IDs: RG-18 mit LAB_MACRO_CLOSE_MINUTES=3 bestanden (3 min 6 s)
+Rate: 901 Trigger-Läufe, 4505 Schließvorgänge in 3,0 min, 25,0 je Sekunde, also 5 Läufe je Sekunde wie vom Ausdruck begrenzt
+M122 DSF und RRF vorher und nachher: alle Link-Zähler 0. Last reset 00:25:33 vor dem Ende, das ist der Side-Load um 09:47
+Self-Test im Laufzeitraum: kein Lauf
+Journalbefunde: kein Fehlerbefund aus Abschnitt 9, keine Neustartzeile. 9150 Zeilen in 3,4 min (etwa 45 je Sekunde), journald unterdrückte nichts
+Rückbau geprüft: ja (kein Side-Load, /var/tmp/lab-tests weg, OTA-Timer aktiv, sys/trigger30.g und Testmakros weg, idle, Erweiterungen laufen, Versionen wie vorher)
+```
+
+Bewertung:
+- Die Rate reicht: 60 min sind etwa 90.000 Schließvorgänge. Bei der Feldrate von etwa einem Reset je 40.000 wären auf mp.9 rund zwei Resets zu erwarten, die Wahrscheinlichkeit für keinen läge bei etwa 10 %. Das ist eine Hochrechnung, kein Messwert.
+- Nicht geprüft: dass der Test den Fehler auf mp.9 findet. Dafür müsste die alte Firmware zurück (`fw-sideload.sh remove`), das entscheidet Tim.
