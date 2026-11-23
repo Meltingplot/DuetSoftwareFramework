@@ -48,11 +48,13 @@ public class VariableCopies : LabTest
         await using DuetHttpSession session = await Lab.ConnectAsync();
 
         // Variable::Assign rejects an array that holds an object (Variable.cpp MakeStorable), so the global is never created. The number of heaters
-        // still works, it is not an object. Nothing may follow the assignment: DSF runs up to BufferedMacroCodes codes of a macro at once
-        // (MacroFile.RunAsync), so a code after a failing one can still run (design/open-findings.md)
+        // still works, it is not an object. The line after the assignment must not run once RRF has refused it. Before DSF #204, DSF still ran
+        // the codes of a macro that it had read ahead (design/open-findings.md, L7)
         await Lab.UploadAsync(session, ObjectArrayMacro,
             Global("labTestHeaterCount", "#heat.heaters") +
-            "global labTestHeaterObjects = heat.heaters\n");
+            Global("labTestAfterRefusal", "false") +
+            "global labTestHeaterObjects = heat.heaters\n" +
+            "set global.labTestAfterRefusal = true\n");
 
         // state.messageBox.message is a CString (MessageBox.cpp:24). Closing the box deletes the MessageBox that holds it, and the second box
         // may reuse its memory. Non-blocking boxes without a timeout (S1 T0), so no channel waits for them. The global keeps null if another
@@ -100,6 +102,7 @@ public class VariableCopies : LabTest
         string journal = await Lab.ReadJournalAsync(cursor);
 
         JsonElement count = await QueryAsync("global.labTestHeaterCount"), stored = await QueryAsync("global.labTestHeaterObjects");
+        JsonElement after = await QueryAsync("global.labTestAfterRefusal");
         Assert.That(count.ValueKind, Is.EqualTo(JsonValueKind.Number), "The macro did not count the heaters");
         Assume.That(count.GetInt32(), Is.GreaterThan(0), "The machine has no heater, so heat.heaters holds no object");
         Assert.Multiple(() =>
@@ -107,6 +110,7 @@ public class VariableCopies : LabTest
             Assert.That(stored.ValueKind, Is.EqualTo(JsonValueKind.Null),
                 $"global labTestHeaterObjects = heat.heaters was accepted, so a variable holds pointers to the {count.GetInt32()} heater objects");
             Assert.That(journal, Does.Contain("Cannot assign a value of type 'object' to a variable"), "The journal shows no refusal by RRF");
+            Assert.That(after.ValueKind, Is.EqualTo(JsonValueKind.False), "The line after the refused assignment ran (design/open-findings.md, L7)");
         });
     }
 
