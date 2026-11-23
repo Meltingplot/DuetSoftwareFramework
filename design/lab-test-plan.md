@@ -101,13 +101,13 @@ Soll: 0 fehlgeschlagen. Die Liste enthält 19 Lab-Testfälle, davon 16 im Standa
 Die Kurzstufe des Self-Tests startet nach jedem RRF-Boot bei `state.upTime` von etwa 60 s:
 - `sys/meltingplot/globals.g:573` setzt `self_test_done` bei jedem Boot auf -1, und `globals.g:584` setzt die erste Prüfung auf 60 s.
 - `self-test/store.g` speichert die Kurzstufe bewusst nicht.
-- `self-test/tick.g:47` startet den Flow mit `M98.3` auf dem HTTP-Kanal, wenn der Drucker idle ist.
+- `self-test/tick.g:47` startet den Flow mit `M98.1 S0` auf dem HTTP-Kanal (vor der Umstellung `M98.3`), wenn der Drucker idle ist.
 - Im Journal lief der Autostart am 2026-11-06 von 18:16:03 bis 18:16:04 UTC.
 
 Die Suite löst selbst Boots aus und nutzt denselben Kanal. Mögliche Folgen:
 - `LabTest.cs:65-68` überspringt einen Test, wenn der Drucker 30 s lang nicht idle wird.
 - `MessageBoxes.cs:29-36` schließt und zählt jede Box. Der Flow enthält `M291`-Boxen (`maintenance/self-test:94`, `:100`), die der Test mitzählen könnte.
-- Im `M98.3`-Fall (RG-14) wird der Aufruf abgelehnt, solange der Flow den HTTP-Kanal belegt.
+- Im HTTP-Fall (RG-14, `M98.1 S0`) sieht der Trigger den Kanal in `inputs[]` belegt und lässt den Aufruf aus, solange der Flow den HTTP-Kanal belegt.
 
 Vorgehen (Tim, 2026-11-06):
 1. Den ersten Lauf von Block 1 unverändert als Messung fahren und Testzeiten mit den Self-Test-Zeilen im Journal vergleichen.
@@ -155,7 +155,7 @@ src/LabPrinterTests/run-lab-tests.sh --filter "FullyQualifiedName~MacroCloseStre
 | RG-10 | `TriggerMacros.DeleteFirmwareTriggerWithM581Point1` | `P-1` löscht nicht (#61) | Danach `is not configured` |
 | RG-11 | `TriggerMacros.ReportFirmwareTriggerWithM581Point1` | Bericht ohne `P` abgelehnt (#63) | Bericht und `R-1` kommen bei RRF an |
 | RG-12 | `TriggerMacros.ReportSbcTriggerWithM581` | Bericht löscht SBC-Trigger (#63) | Trigger bleibt erhalten, `P-1` löscht ihn |
-| RG-13 bis RG-16 | `MacrosOnOtherChannels.TriggerKeepsFiringWhileMacroRuns` für `M98.2`, `.3`, `.4`, `.5` | Neue Funktion #108 | Kriterien in `MacrosOnOtherChannels.cs:133-150`, unter anderem richtiger Kanal, Parameter `5,2,5,true`, Trigger feuert weiter |
+| RG-13 bis RG-16 | `MacrosOnOtherChannels.TriggerKeepsFiringWhileMacroRuns` für `M98.1 S4`, `S0`, `S1`, `S10` | Neue Funktion #108, `M98.1 S` | Kriterien in `MacrosOnOtherChannels.cs`, unter anderem richtiger Kanal, Parameter `5,2,5,true,false` (ohne `S`), Trigger feuert weiter |
 | RG-17 | `LinkSoak.NoLostConnectionWhileIdle` | TfrRdy-Timeouts alle 15 bis 30 min | 30 min ohne `Lost connection to Duet`, kein RRF-Neustart |
 | RG-18 | `MacroCloseStress.NoResetWhileMacrosCloseOnTheTriggerChannel` | RRF-Reset im Leerlauf, `MemoryProtectionFault` in `Heap::DeleteSlot` kurz nach dem Schließen eines Trigger-Makros, etwa einmal je 40.000 Schließvorgänge (RRF mp.9, Upstream-Code) | 60 min mit mindestens 10 Schließvorgängen je Sekunde: `state.upTime` fällt nie, `Last software reset` in `M122` unverändert, `Heap OK`, keine Neustartzeile aus `PER_REBOOT` im Journal |
 
@@ -264,7 +264,7 @@ A-1 bis A-7 und A-10 liefen am 2026-11-07 auf Hardware ([Abschnitt 14](#14-durch
 | A-1 | #102 | 2 | Fehler `Activation DataResponse ToRrf word 0x00000006` scharf schalten, `M122 P1001` senden. DCS verbindet neu und aktiviert den Link, dabei trifft der Fehler | `SPI fault injected: ...`, 55 bis 70 s danach `Deactivated successfully` von systemd (`SPI.cs:309-311`, `duetcontrolserver.service:9-10`), neue DCS-Instanz, `Link capabilities All are active`, nach `M999` idle |
 | A-2 | #99 | 2 | Fehler injizieren, DCS stoppen, `gpioget --numeric -c gpiochip0 25` lesen, DCS sofort starten | Pin liest 0, sonst ist der Fall ungültig. Verbunden nach höchstens 4,5 s (`SPI.cs:1709`), kein `timeout while waiting for TfrRdy pin` (`SPI.cs:1747`) |
 | A-3 | #108 | 2 | Nach einem Boot den Autostart abwarten, `M409` senden, sobald der Flow sichtbar ist | `Starting macro file ... on channel HTTP`, `Self-test: quick check passed`, `M409` antwortet, Maschinen-Tick läuft weiter, `inputs[0]` wieder Tiefe 0, kein `Out-of-order reply` |
-| A-4 | #108 | 1 | `M98.1`, `M98.7`, `M98.6`; `M98.3` über HTTP; `M98.2` mit fehlender Datei | `Invalid code channel number n` (`MCodeHandler.cs:613`), `Use M98 to start a macro on the same code channel` (`:617`), `Macro file ... not found` (`:648`) |
+| A-4 | #108, `M98.1 S` | 1 | `M98.1` mit `S3`, `S14`, `S5`; `S0` über HTTP; `S4` mit fehlender Datei; ohne `S` | `Invalid code channel number n` (`MCodeHandler.cs:669`), `Use M98 to start a macro on the same code channel` (`:673`), `Macro file ... not found` (`:687`), `Missing S parameter` |
 | A-5 | Zeilenprüfsummen | 1 | Drei Testmakros mit falschem CRC, Sprung in der Zeilenfolge und fehlendem CRC, jedes setzt je Zeile ein Global | Makro stoppt vor der fehlerhaften Zeile. Journal: `CRC error on line` (`ParserChecksum.cs:370`), `Expected line number` (`ParserAsync.cs:227`), `Missing CRC on line` (`ParserAsync.cs:116`) |
 | A-6 | #67 | 2 | SBC-Trigger T30 mit laufendem Zähler, dann `M581.1 T30` mit nie wahrem RRF-Ausdruck | Bericht zeigt den neuen Ausdruck, der Zähler bleibt stehen (Wiki `Gcodes.md:7266`) |
 | A-7 | #63 | 2 | SBC-Trigger T30 mit wahrem Ausdruck und `R-1` | Trigger feuert nicht, Gegenprobe mit `R0` feuert |
@@ -287,8 +287,8 @@ Hinweise:
 - **A-2, Fehlerfall:** #99 nutzte `RrfData Data ToDsf flip 0`. Laut Census lässt dieser Fall den Pin seit #105 nicht mehr auf LOW. Der Test nutzt `RrfData HeaderResponse ToDsf zero 0 4` und zwei weitere Fälle (`LabFaultLeavesTfrRdyLow`). Am DUT entscheidet die Pinmessung, ohne LOW-Pin ist der Lauf ohne Aussage. Mit dem Fix ist die Prüfung bisher nur auf RRF mp.5 gelaufen, nie auf dem erweiterten Link.
 - **A-3, Journal:** Der Autostart endet mit `Aborted macro file`, ein Lauf ohne `A1` mit `Finished macro file`. Das ist kein Fehler: Der automatische Pfad endet mit `M99` (`maintenance/self-test:99-101`). `M99` erscheint im Journal als Abbruch der letzten Datei (`MacroFile.cs:241`), genauso bei den Testmakros von RG-3.
 - **A-3, Abdeckung:** Der Lauf vom 2026-11-06 zeigt bereits Start, `quick check passed` und kein `Out-of-order reply`. Offen ist der Fall mit `M409` während des Flows.
-- **A-3, `M409`:** Der Test sendet vorher keinen Code auf HTTP, weil `M98.3` sonst abgelehnt würde und der Flow erst eine Minute später käme. Der Flow dauert etwa 1 s, `M409` kann also auch danach ankommen. Sicher abgedeckt ist `M409` während eines Makros durch RG-4 und RG-5.
-- **A-4:** `M98.n` steht nicht im Wiki. Das Soll stammt nur aus dem Code und #108.
+- **A-3, `M409`:** Der Test sendet vorher keinen Code auf HTTP, weil der Trigger `M98.1` sonst auslassen würde und der Flow erst eine Minute später käme. Der Flow dauert etwa 1 s, `M409` kann also auch danach ankommen. Sicher abgedeckt ist `M409` während eines Makros durch RG-4 und RG-5.
+- **A-4:** `M98.1` steht nicht im Wiki. Das Soll stammt nur aus dem Code und #108.
 - **A-5, Makrozeilen:** Ausgaben eines Makros erreichen die `M98`-Antwort nicht (`LabTest.cs:103`). Der Test wertet daher Globals und Journal aus.
 - **A-14 bis A-16, RRF #57:** Vor dem Fix hielt eine Variable einen rohen Zeiger ins Objektmodell. Auf dem CHX betraf das `sys/daemon.g:37` (`var fil_prev = move.extruders[0].filament`): Der Vergleich sah einen Filamentwechsel nie. Die Tests nutzen Werte, die sie ohne Eingriff in die Maschine ändern können, statt eines Filamentwechsels. `Tools/variable-test` in RepRapFirmware prüft jede Art von Wert offline. Eine Gegenprobe auf alter Firmware gibt es nicht, weil für einen Test keine andere RRF-Version geflasht wird.
 
@@ -332,7 +332,7 @@ Bestehensregel für E2 aus den Anforderungen (Abschnitt 7.2): 2000 Abbrüche mit
 |---|---|---|---|
 | M-1 | Link im Druck, RRF mp.7 | Kurzer Testdruck, `M122` und `M409` in festem Takt, `M122` vorher und nachher | Job endet normal, `lost connections` und `connection resets` +0. `Full transfers per second` als Ausgangswert für R4 notieren (`design/sbc-link-requirements.md:117`) |
 | M-2 | 9acd058f | Job bis zum Ende laufen lassen, danach zweiter Job mit `M32` aus einer Jobdatei | `stop.g` läuft, kein `Out-of-order reply`, zweiter Job startet |
-| M-3 | #108 | Makro mit `M98.3` starten, dann `M32` senden | `M32` wartet hinter dem Makro, das ist so gewollt (Tim, 2026-11-06) |
+| M-3 | #108 | Makro mit `M98.1 S0` starten, dann `M32` senden | `M32` wartet hinter dem Makro, das ist so gewollt (Tim, 2026-11-06) |
 | M-4 | DWC mp.6, mp.7 | Am Panel: CHX-Oberfläche, Lüfterdialog (#20), USB-Stick mit Kopieren und Starten (#23), Flow-Panel mit passender Box (#25) | Funktionen wie in den DWC-PRs beschrieben. Starten vom Stick öffnet nur die Jobprüfung, Job nicht freigeben außer in M-1 oder M-2 |
 
 Ein fälliger Wochentest läuft vor dem Job und kann ihn bis zu 2 h für das Abkühlen und bis zu 4 min für den Test verzögern (rpi-image-gen #144). Vor dem Termin `global.self_test_due` lesen.

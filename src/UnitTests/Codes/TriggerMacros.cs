@@ -432,7 +432,7 @@ public class TriggerMacros
 
     /// <summary>
     /// Keep the other channels busy: a running job on File, a long code on HTTP, daemon.g on Daemon, a macro on SBC and a macro that
-    /// trigger5.g started on Telnet with M98.4. Each of them waits in M400 until it is released
+    /// trigger5.g started on Telnet with M98.1 S1. Each of them waits in M400 until it is released
     /// </summary>
     private async Task StartLoadAsync()
     {
@@ -446,7 +446,7 @@ public class TriggerMacros
         _host.WriteMacro("sbc-macro.g", "M400\n");
         _sbcCode = _host.StartCode("M98 P\"sbc-macro.g\"", CodeChannel.SBC);
         _host.WriteMacro("telnet-macro.g", "M400\n");
-        _host.WriteMacro("trigger5.g", Numbered("M98.4 P\"telnet-macro.g\""));
+        _host.WriteMacro("trigger5.g", Numbered("M98.1 S1 P\"telnet-macro.g\""));
         _host.Firmware.FireTrigger(5);
 
         AssertWaitUntil(firmware => BusyChannels.All(channel => firmware.GetExecutedCodes(channel).Any(code => code.Text == "M400")), "Not all channels are busy");

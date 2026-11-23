@@ -14,6 +14,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -64,6 +65,11 @@ public class MCodeHandler(
     IHostApplicationLifetime lifetime,
     IOptions<Settings> settings) : ICodeHandler
 {
+    /// <summary>
+    /// How long M98.1 waits for a busy code channel before it gives up
+    /// </summary>
+    private static readonly TimeSpan MacroChannelWaitTime = TimeSpan.FromMilliseconds(500);
+
     private MessageLoggerProvider? _messageLoggerProvider;
     /// <summary>
     /// Process an M-code that should be interpreted by the control server
@@ -626,44 +632,22 @@ public class MCodeHandler(
                 throw new OperationCanceledException();
 
             // Flag current macro file as (not) pausable or start a macro on another code channel.
-            // M98.n has the same parameters as M98 and n is the channel number of M118 P
+            // M98.1 S<n> starts it on the code channel with index n in inputs[], all other parameters are the same as for M98
             case 98:
                 {
-                    if (code.MinorNumber > 0)
+                    if (code.MinorNumber == 1)
                     {
                         if (await codeProcessor.FlushAsync(code, evaluateExpressions: false, cancellationToken: cancellationToken))
                         {
-                            // USB and USB2 are left out because a macro does not start there unless a USB host is connected, and the channel remains busy
-                            CodeChannel? channel = code.MinorNumber switch
-                            {
-                                2 => CodeChannel.Aux,
-                                3 => CodeChannel.HTTP,
-                                4 => CodeChannel.Telnet,
-                                5 => CodeChannel.Aux2,
-                                _ => null
-                            };
-                            if (channel is null)
-                            {
-                                return new Message(MessageType.Error, $"Invalid code channel number {code.MinorNumber}");
-                            }
-                            if (channel == code.Channel)
-                            {
-                                return new Message(MessageType.Error, "Use M98 to start a macro on the same code channel");
-                            }
-
-                            using (await model.AccessReadOnlyAsync(cancellationToken))
-                            {
-                                if (model.Inputs[channel.Value] is null)
-                                {
-                                    return new Message(MessageType.Error, "Requested code channel has been disabled");
-                                }
-                            }
-
                             // Expressions may use local variables, which exist only on this channel, so they must be evaluated here.
                             // Their values remain expressions so that the macro gets them with the same types as from M98
                             List<CodeParameter> parameters = [];
                             foreach (CodeParameter parameter in code.Parameters)
                             {
+                                if (parameter.Letter == 'S')
+                                {
+                                    continue;
+                                }
                                 if (parameter.IsExpression)
                                 {
                                     string value = await expressions.EvaluateExpressionToStringAsync(code, ((string)parameter).Trim(), false, true, cancellationToken);
@@ -676,6 +660,27 @@ public class MCodeHandler(
                             }
 
                             await expressions.EvaluateAsync(code, true, cancellationToken);
+
+                            // USB and USB2 are left out because a macro does not start there unless a USB host is connected, and the channel remains busy
+                            int channelIndex = code.GetInt('S');
+                            CodeChannel channel = (CodeChannel)channelIndex;
+                            if (channel is not CodeChannel.HTTP and not CodeChannel.Telnet and not CodeChannel.Aux and not CodeChannel.Aux2)
+                            {
+                                return new Message(MessageType.Error, $"Invalid code channel number {channelIndex}");
+                            }
+                            if (channel == code.Channel)
+                            {
+                                return new Message(MessageType.Error, "Use M98 to start a macro on the same code channel");
+                            }
+
+                            using (await model.AccessReadOnlyAsync(cancellationToken))
+                            {
+                                if (model.Inputs[channel] is null)
+                                {
+                                    return new Message(MessageType.Error, "Requested code channel has been disabled");
+                                }
+                            }
+
                             string fileName = code.GetString('P');
                             if (!File.Exists(await filePathResolver.ToPhysicalAsync(fileName, FileDirectory.System, cancellationToken)))
                             {
@@ -685,17 +690,21 @@ public class MCodeHandler(
                             // This is a regular M98 for the other channel
                             Commands.Code macroCode = codeFactory.Create();
                             macroCode.Flags = CodeFlags.Asynchronous;
-                            macroCode.Channel = channel.Value;
+                            macroCode.Channel = channel;
                             macroCode.Type = CodeType.MCode;
                             macroCode.MajorNumber = 98;
                             macroCode.Parameters = parameters;
 
-                            // Don't queue it if the channel is busy, the caller may check 'result' and try again.
+                            // The caller checks inputs[] before, so wait only for a code that arrived in the meantime.
                             // IsIdle alone does not do because a message box waiting for acknowledgement is on a stack level without a file
-                            if (channelManager.IsWaitingForAcknowledgment(channel.Value) || !codeProcessor.Processors.Value[(int)channel.Value].IsIdle(macroCode))
+                            long waitStart = Stopwatch.GetTimestamp();
+                            while (channelManager.IsWaitingForAcknowledgment(channel) || !codeProcessor.Processors.Value[(int)channel].IsIdle(macroCode))
                             {
-                                logger.LogDebug("Not starting macro file {File} because channel {Channel} is busy", fileName, channel);
-                                return new Message(MessageType.Warning, string.Empty);
+                                if (Stopwatch.GetElapsedTime(waitStart) >= MacroChannelWaitTime)
+                                {
+                                    return new Message(MessageType.Warning, $"Macro file {fileName} not started because code channel {channel} is busy");
+                                }
+                                await Task.Delay(10, cancellationToken);
                             }
 
                             await macroCode.ExecuteAsync();

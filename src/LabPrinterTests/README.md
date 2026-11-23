@@ -61,9 +61,9 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 | `TriggerMacros.ReportFirmwareTriggerWithM581Point1` | `M581.1 T#` and `M581.1 T# R<n>` were refused without P | DSF #63 (upstream still has it) |
 | `TriggerMacros.ReportSbcTriggerWithM581` | A plain `M581 T#` report deleted a trigger that DSF evaluates | DSF #63 (upstream still has it) |
 | `TriggerMacros.StringLiteralInExpression` | M581.1 with a string literal in its expression hung RRF 3.7 until its watchdog reset it | RRF 59a04159b (upstream, in 3.7.0+1.mp.1 and later) |
-| `MacrosOnOtherChannels.TriggerKeepsFiringWhileMacroRuns` | No bug: M98.n starts a macro on Aux, HTTP, Telnet or Aux2 from a trigger macro and the trigger keeps firing | New in M98.n |
-| `MacrosOnOtherChannels.CallIsRefused` | No bug: calls M98.n refuses, including USB and USB2 | New in M98.n |
-| `SelfTestAutostart.FlowStartsAfterBootAndCodesGetAnswers` | No bug: the machine starts its self-test with M98.3 after a boot, and M409 from a client gets answers meanwhile | New in M98.n |
+| `MacrosOnOtherChannels.TriggerKeepsFiringWhileMacroRuns` | No bug: M98.1 starts a macro on Aux, HTTP, Telnet or Aux2 from a trigger macro that checks `inputs[]` first, and the trigger keeps firing | New in M98.n (#108), M98.1 S |
+| `MacrosOnOtherChannels.CallIsRefused` | No bug: calls M98.1 refuses, including USB and USB2 | New in M98.n (#108), M98.1 S |
+| `SelfTestAutostart.FlowStartsAfterBootAndCodesGetAnswers` | No bug: the machine starts its self-test with M98.1 S0 (formerly M98.3) after a boot, and M409 from a client gets answers meanwhile | New in M98.n |
 | `TriggerMacros.RrfExpressionReplacesSbcTrigger` | An M581.1 expression that RRF evaluates left the old trigger running in DSF | DSF #67 (upstream still has it) |
 | `TriggerMacros.DisabledSbcTriggerDoesNotFire` | A trigger that DSF evaluates fired with `R-1` while not printing | DSF #63 (upstream still has it) |
 | `LineChecksums.*` | No bug: a wrong CRC, a missing CRC or a wrong line number ends a macro | New in the line checksums |

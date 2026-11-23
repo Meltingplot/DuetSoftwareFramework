@@ -141,7 +141,7 @@ public class TriggerFuzz
             }
             else if (isTrigger && choice < 20)
             {
-                lines.Add("M98.4 P\"telnet-macro.g\"");
+                lines.Add("M98.1 S1 P\"telnet-macro.g\"");
             }
             else if (choice >= 20 && choice < 24)
             {
@@ -222,7 +222,7 @@ public class TriggerFuzz
 
     #region Expected codes
     /// <summary>
-    /// Codes that a run of a trigger macro sends to the firmware on the trigger channel, in order. M98.4 starts the macro on Telnet and sends
+    /// Codes that a run of a trigger macro sends to the firmware on the trigger channel, in order. M98.1 S1 starts the macro on Telnet and sends
     /// nothing on the trigger channel (MacrosOnOtherChannels), abort ends every macro of the channel (wiki, KeywordHandler.cs:168-171),
     /// M99 ends the called macro (wiki M99, GCodes::FileMacroCyclesReturn)
     /// </summary>
@@ -235,7 +235,7 @@ public class TriggerFuzz
             {
                 return codes;
             }
-            if (line.StartsWith("M98.4"))
+            if (line.StartsWith("M98.1"))
             {
                 continue;
             }
