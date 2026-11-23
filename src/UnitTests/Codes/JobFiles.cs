@@ -151,6 +151,44 @@ public class JobFiles
     }
 
     [Test]
+    public async Task CodesBeforeLineThatCannotBeReadStillRun()
+    {
+        // CodeFile throws for an unexpected else while it reads the line (CodeFile.cs, "unexpected else"). RRF has executed the lines before it by then,
+        // so DSF must not cancel those that it has read ahead and not finished yet. Codes keep the job's token since upstream d108e9767, so aborting
+        // the job at once would cancel them. RRF holds M400 until the error is reported, so echo waits in its flush and the G-codes after it wait
+        // behind echo while DSF reads the else
+        await StartAsync();
+        using ManualResetEventSlim release = new();
+        Host.Firmware.OnCode("M400", _ => release.IsSet ? FakeReply.Ok() : FakeReply.NotFinished);
+        WriteJob("job.g", "M400\necho \"before\"\nG4 P1\nG4 P2\nelse\nG4 P99\n");
+        Assert.That(await Host.ExecuteAsync("M32 \"job.g\""), Is.EqualTo("\n"));
+
+        using (CancellationTokenSource cts = new(FakeFirmwareHost.DefaultTimeout))
+        {
+            while (!(await ErrorMessagesAsync()).Any(message => message.EndsWith(": unexpected else")))
+            {
+                await Task.Delay(10, cts.Token);
+            }
+        }
+        release.Set();
+        await WaitForJobEndAsync();
+
+        // The firmware runs M400 again when the job ends only if it completes normally (JobProcessor.cs, waitForMoves)
+        Assert.That(JobCodes(), Is.EqualTo(new[] { "M400", "G4 P1", "G4 P2" }));
+        Assert.That((await LastFileAsync()).aborted, Is.True);
+        Assert.That(StopReasons(), Is.EqualTo(new[] { PrintStoppedReason.Abort }));
+        Assert.That(await ErrorMessagesAsync(), Has.Length.EqualTo(1));
+    }
+
+    private async Task<string[]> ErrorMessagesAsync()
+    {
+        using (await Host.Model.AccessReadOnlyAsync())
+        {
+            return [.. Host.Model.Messages.Where(message => message.Type == MessageType.Error).Select(message => message.Content)];
+        }
+    }
+
+    [Test]
     public async Task StatusWhileRunning()
     {
         await StartAsync();
@@ -320,11 +358,12 @@ public class JobFiles
         Assert.That(codes.SkipWhile(code => code != "G1 Y1"), Is.EqualTo(new[] { "G1 Y1", "M400" }));
     }
 
-    [Test, Explicit("JobProcessor.Cancel closes the first job when it selects the next file (JobProcessor.cs:315-326), but the codes it has read ahead still reach the firmware")]
+    [Test]
     public async Task SelectFileFromJobStopsFirstJob()
     {
         // RRF chains to the new file (GCodes2.cpp:1106 "We now allow a file that is being printed to chain to another file"),
-        // so the lines after M32 in the first file are not executed
+        // so the lines after M32 in the first file are not executed. JobProcessor.Cancel cancels the job's token (JobProcessor.cs:315-326),
+        // which the codes read ahead keep since upstream d108e9767 (design/open-findings.md G9)
         await StartAsync();
         WriteJob("second.g", "G1 Y1\n");
         WriteJob("job.g", "G1 X1\nM32 \"second.g\"\nG1 X2\n");

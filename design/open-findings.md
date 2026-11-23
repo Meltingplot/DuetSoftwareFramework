@@ -154,6 +154,8 @@ Open questions:
 ### G-code, macros and jobs (#124)
 
 - **Fixed and removed from this list (2026-11-13):** G1 (upstream 61df011e, merged 2026-11-13; `M122 P{0}` got no reply and blocked its channel). Test: `Codes.ExecutedHandlerErrors.DiagnosticsWithExpressionParameter`, no longer explicit.
+- **Fixed and removed from this list (2026-11-23):** G9 (upstream d108e9767, merged 2026-11-23 with cacdcaf3d; M32 inside a job still ran the codes that were read ahead). `Code.ExecuteAsync` keeps the job's token now, so `JobProcessor.Cancel` cancels them. Test: `Codes.JobFiles.SelectFileFromJobStopsFirstJob`, no longer explicit.
+  - The entry had warned that the job's token would also cancel the codes before a line that cannot be read, because the read catch of `DoFilePrint` aborted the job at once. The merge showed it: a job with `else` in line 5 ran only `M400` of lines 1-4 (3 of 3 runs; 3 of 3 passed before the merge). Fixed in the same PR as for macros in #204: `DoFilePrint` stops reading and aborts the job once the codes before that line are done. Test: `Codes.JobFiles.CodesBeforeLineThatCannotBeReadStillRun`.
 - **G3. Drive numbers map to every mounted file system** (open question, upstream design).
   - `PeriodicUpdateService` lists every mount as a volume (`PeriodicUpdateService.cs:526-583`), and `n:/` resolves to `volumes[n].path` (`FilePathResolver.cs:80-119`).
   - On the CHX that gives 25 volumes, e.g. `0:` = `/`, `4:` = `/home`, `5:` = `/var`, `6:` = `/etc/ssh`.
@@ -171,10 +173,6 @@ Open questions:
 - **G7. The M37 simulation overwrites files shorter than 64 bytes.** The seek to the end is skipped (`FileInfoParser.cs:931-944`). Test: `Codes.JobFiles.SimulationOfShortFile`.
 - **G8. A read error in a job names the next line.** `readCode` is null, so `file.LineNumber` is used (`JobProcessor.cs:507`). Test: `ErrorInJobNamesTheFailingLine`.
   - The same happens in a macro: the read catch of `MacroFile.RunAsync` also reports the file's `LineNumber` (`MacroFile.cs:418-419` at 3db68bd7). An `else` in line 11 is reported as line 12 (seen in `Codes.MacroCodeAfterError`, 2026-11-23).
-- **G9. M32 inside a job still runs the codes that were read ahead.** `JobProcessor.Cancel` (`JobProcessor.cs:315-326`). RRF chains to the new file directly (`GCodes2.cpp:1106`). Test: `SelectFileFromJobStopsFirstJob`.
-  - Cause (2026-11-23), the same as the first defect of L7. `DoFilePrint` gives each code the job's token (`JobProcessor.cs:498` at 3db68bd7). Since upstream 2cbc04ae, `Code.ExecuteAsync()` replaces it with the channel's token (`:508`), so `Cancel` does not reach the codes read ahead.
-  - With the token passed to `ExecuteAsync`, `SelectFileFromJobStopsFirstJob` passed in 2 of 2 runs.
-  - Not fixed with L7. The read catch of `DoFilePrint` aborts the job at once (`:525`). With the token, that abort would probably also cancel the codes before a line that cannot be read, as #204 had to avoid for macros (not tested). Pause and resume would need a check too.
 - **G10. `fileread` differs from RRF's `ReadArrayFromFile`.** RRF: `ExpressionParser.cpp:1192-1358`, `Configuration.h:281`.
   - It allows 50 elements instead of 40.
   - It refuses length 0.
