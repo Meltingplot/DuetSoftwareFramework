@@ -334,7 +334,21 @@ public sealed class Code : DuetAPI.Commands.Code, IConnectionCommand
     /// Set an exception for this code
     /// </summary>
     /// <param name="e">Exception to set</param>
-    public void SetException(Exception e) => _tcs.TrySetException(e);
+    /// <remarks>
+    /// A failed code aborts its macro file. This happens here and not when the macro file gets to the failed code,
+    /// because the pipeline would process the codes that the macro file has read ahead in the meantime
+    /// </remarks>
+    public void SetException(Exception e)
+    {
+        if (e is not OperationCanceledException && File is Files.MacroFile macro)
+        {
+            using (macro.Lock(CancellationToken.None))
+            {
+                macro.Abort();
+            }
+        }
+        _tcs.TrySetException(e);
+    }
 
     /// <summary>
     /// Internal TCS representing the lifecycle of a code

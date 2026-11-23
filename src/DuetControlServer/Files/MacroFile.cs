@@ -388,6 +388,7 @@ public sealed class MacroFile : CodeFile, IDisposable
 
             // Start processing codes
             Queue<Code> codes = new();
+            bool readFailed = false;
             do
             {
                 // Fill up the macro code buffer
@@ -403,7 +404,7 @@ public sealed class MacroFile : CodeFile, IDisposable
                         }
 
                         codes.Enqueue(readCode);
-                        await readCode.ExecuteAsync();       // actual execution happens in the background
+                        await readCode.ExecuteAsync(CancellationToken);       // actual execution happens in the background
                     }
                     catch (Exception e)
                     {
@@ -419,10 +420,10 @@ public sealed class MacroFile : CodeFile, IDisposable
                             _logger.LogError(e, "Error while reading code from macro file {File}", FilePath.Virtual);
                         }
 
-                        using (await LockAsync(_lifetime.ApplicationStopping))
-                        {
-                            Abort();
-                        }
+                        // Stop reading, but let the codes before the failing line finish, as RRF executes them before it reads that line.
+                        // Aborting the macro now would cancel them, so it is aborted when they are done
+                        Close();
+                        readFailed = true;
                     }
                 }
 
@@ -460,6 +461,14 @@ public sealed class MacroFile : CodeFile, IDisposable
                 }
                 else
                 {
+                    if (readFailed)
+                    {
+                        using (await LockAsync(_lifetime.ApplicationStopping))
+                        {
+                            Abort();
+                        }
+                    }
+
                     // No more codes to process, macro file has finished
                     _logger.LogDebug("{Channel}: Finished codes from macro file {File}", Channel, FilePath.Virtual);
                     break;
