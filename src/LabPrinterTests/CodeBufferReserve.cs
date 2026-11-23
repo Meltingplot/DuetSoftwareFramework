@@ -17,7 +17,7 @@ namespace LabPrinterTests;
 /// takes the code (SbcInterface.cpp:1924-1948), so codes that DSF reads ahead behind a waiting code stay in it. Before #133 every channel could buffer
 /// (4096 - 2 * 384) bytes (LinkInterface.cs:46), so two channels that wait filled the buffer and a trigger macro got no code out (T3). With the fix, codes
 /// read ahead leave 2 * (4 + 384) bytes free, which only the next code of a channel without buffered codes may use (LinkInterface.SendCode).
-/// Uses trigger 30 with sys/trigger30.g like TriggerMacros, and a macro that only waits on Telnet and on Aux2 (M98.4 and M98.5)
+/// Uses trigger 30 with sys/trigger30.g like TriggerMacros, and a macro that only waits on Telnet and on Aux2 (M98.1 S1 and S10)
 /// </remarks>
 [TestFixture, Category("Trigger")]
 public partial class CodeBufferReserve : LabTest
@@ -29,9 +29,9 @@ public partial class CodeBufferReserve : LabTest
     private const string LoadMacro = $"{Directory}/load.g";
 
     /// <summary>
-    /// Channels that wait while the codes they have read ahead fill RRF's code buffer, with the number of M98.n (MCodeHandler.cs:603-610)
+    /// Channels that wait while the codes they have read ahead fill RRF's code buffer, started with M98.1 S and their index in inputs[]
     /// </summary>
-    private static readonly (CodeChannel Channel, int Number)[] LoadChannels = [(CodeChannel.Telnet, 4), (CodeChannel.Aux2, 5)];
+    private static readonly CodeChannel[] LoadChannels = [CodeChannel.Telnet, CodeChannel.Aux2];
 
     /// <summary>
     /// How long each load channel waits. Without the fix trigger macros cannot get a code to RRF for this long, which includes the macros
@@ -137,7 +137,7 @@ public partial class CodeBufferReserve : LabTest
         return (int.Parse(space.Groups[1].Value), buffered);
     }
 
-    private static int LoadBytes(Dictionary<CodeChannel, int> buffered) => LoadChannels.Sum(item => buffered.GetValueOrDefault(item.Channel));
+    private static int LoadBytes(Dictionary<CodeChannel, int> buffered) => LoadChannels.Sum(channel => buffered.GetValueOrDefault(channel));
 
     private static string Describe((int Space, Dictionary<CodeChannel, int>? Buffered) buffer) => (buffer.Buffered is null) ? "not read" :
         $"code buffer space {buffer.Space} bytes, buffered {string.Join(", ", buffer.Buffered.Select(item => $"{item.Key} {item.Value}"))}";
@@ -151,7 +151,7 @@ public partial class CodeBufferReserve : LabTest
     public async Task TriggerMacroGetsRoomWhileOtherChannelsReadAhead()
     {
         Assert.That(await SendCodeAsync($"M581 T{TriggerNumber}"), Does.Contain("is not configured"), $"Trigger {TriggerNumber} is in use");
-        Assert.That(Lab.Read(Session, model => LoadChannels.All(item => model.Inputs[item.Channel] is not null)), Is.True, "Telnet or Aux2 is disabled");
+        Assert.That(Lab.Read(Session, model => LoadChannels.All(channel => model.Inputs[channel] is not null)), Is.True, "Telnet or Aux2 is disabled");
         await SendCodeAsync($"M98 P\"{ResetMacro}\"");
 
         // Turns true twice per second. No string literals, they hang RRF 3.7 in M581.1 (TriggerMacros.StringLiteralInExpression)
@@ -161,10 +161,10 @@ public partial class CodeBufferReserve : LabTest
         bool loadInPlace = false, holdLasted = false;
         try
         {
-            // M581.1 and M98 go through RRF's code buffer, so they are sent before the load. The macros that the M98.n start only wait
-            foreach ((_, int number) in LoadChannels)
+            // M581.1 and M98 go through RRF's code buffer, so they are sent before the load. The macros that the M98.1 start only wait
+            foreach (CodeChannel channel in LoadChannels)
             {
-                Assert.That(await SendCodeAsync($"M98.{number} P\"{LoadMacro}\""), Does.Not.Contain("Error"), $"M98.{number}");
+                Assert.That(await SendCodeAsync($"M98.1 S{(int)channel} P\"{LoadMacro}\""), Does.Not.Contain("Error"), $"M98.1 S{(int)channel}");
             }
 
             for (int i = 0; i < 20 && !loadInPlace; i++)
@@ -187,7 +187,7 @@ public partial class CodeBufferReserve : LabTest
         finally
         {
             // The load channels go on after their G4, then the trigger can be deleted without waiting for room
-            bool finished = await Lab.TryWaitForModelAsync(Session, model => LoadChannels.All(item => model.Inputs[item.Channel]?.StackDepth == 0),
+            bool finished = await Lab.TryWaitForModelAsync(Session, model => LoadChannels.All(channel => model.Inputs[channel]?.StackDepth == 0),
                 TimeSpan.FromSeconds(HoldSeconds + 20));
             if (finished)
             {

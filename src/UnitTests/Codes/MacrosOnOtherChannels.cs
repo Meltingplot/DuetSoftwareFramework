@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,13 +17,16 @@ using SbcRequest = DuetControlServer.Link.Protocol.SbcRequests.Request;
 namespace UnitTests.Codes;
 
 /// <summary>
-/// Tests for M98.n, which starts a macro on another code channel and returns once it is queued.
-/// n is the channel number of M118 P (wiki: Gcodes.md, M118) except for USB and USB2, and all other parameters are the same as for M98
+/// Tests for M98.1, which starts a macro on the code channel with index S in inputs[] and returns once it is queued.
+/// USB and USB2 are left out, and all other parameters are the same as for M98. The caller checks inputs[] before,
+/// so M98.1 waits only up to 500 ms for a code that took the channel in the meantime and else returns a warning
 /// </summary>
 [TestFixture]
 public class MacrosOnOtherChannels
 {
     private static readonly TimeSpan HoldTime = TimeSpan.FromMilliseconds(200);
+
+    private static readonly TimeSpan WaitTime = TimeSpan.FromMilliseconds(500);
 
     private FakeFirmwareHost _host = null!;
     private ManualResetEventSlim _release = null!;
@@ -70,7 +74,7 @@ public class MacrosOnOtherChannels
 
     private void StartTargetMacro()
     {
-        RunTriggerMacro("M98.3 P\"target.g\"\n", "G4 P11");
+        RunTriggerMacro("M98.1 S0 P\"target.g\"\n", "G4 P11");
         AssertWaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.HTTP).Any(code => code.Text == "M400"), "The macro did not start on the other channel");
     }
 
@@ -85,11 +89,11 @@ public class MacrosOnOtherChannels
     {
         StartTargetMacro();
 
-        // The purpose of M98.n: the macro is still running and further trigger macros can start
+        // The purpose of M98.1: the macro is still running and further trigger macros can start
         Assert.That(_host.Firmware.GetStackDepth(CodeChannel.HTTP), Is.EqualTo(1));
         RunTriggerMacro(string.Empty, "G4 P12");
 
-        // DSF has made a regular M98 of it for the other channel, RRF never gets to see M98.n
+        // DSF has made a regular M98 of it for the other channel, RRF never gets to see M98.1
         Assert.That(Executed(CodeChannel.HTTP), Is.EqualTo(new[] { "M98 P\"target.g\"", "M400" }));
         Assert.That(_host.Firmware.GetReceivedCodes().Any(code => code.Text.StartsWith("M98.")), Is.False);
         Assert.That(LastCodeResults(CodeChannel.Trigger), Is.EqualTo(new[] { CodeResult.Ok }));
@@ -97,13 +101,13 @@ public class MacrosOnOtherChannels
         FinishTargetMacro();
     }
 
-    [TestCase(2, CodeChannel.Aux)]
-    [TestCase(3, CodeChannel.HTTP)]
-    [TestCase(4, CodeChannel.Telnet)]
-    [TestCase(5, CodeChannel.Aux2)]
-    public void ChannelNumbersOfM118(int number, CodeChannel channel)
+    [TestCase(0, CodeChannel.HTTP)]
+    [TestCase(1, CodeChannel.Telnet)]
+    [TestCase(4, CodeChannel.Aux)]
+    [TestCase(10, CodeChannel.Aux2)]
+    public void ChannelNumbersOfInputs(int number, CodeChannel channel)
     {
-        RunTriggerMacro($"M98.{number} P\"target.g\"\n", "G4 P11");
+        RunTriggerMacro($"M98.1 S{number} P\"target.g\"\n", "G4 P11");
         AssertWaitUntil(firmware => firmware.GetExecutedCodes(channel).Any(code => code.Text == "M400"), "The macro did not start on the expected channel");
         Assert.That(_host.Firmware.GetStackDepth(channel), Is.EqualTo(1));
 
@@ -112,13 +116,23 @@ public class MacrosOnOtherChannels
     }
 
     [Test]
+    public void ChannelNumberFromExpression()
+    {
+        RunTriggerMacro("var channel = 1\nM98.1 S{var.channel} P\"target.g\"\n", "G4 P11");
+        AssertWaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.Telnet).Any(code => code.Text == "M400"), "The macro did not start on Telnet");
+
+        _release.Set();
+        AssertWaitUntil(firmware => firmware.GetStackDepth(CodeChannel.Telnet) == 0, "The macro did not finish");
+    }
+
+    [Test]
     public void SameParametersAsM98()
     {
-        // No letter is reserved, the macro gets every parameter except for P. Expressions refer to the variables of the macro calling M98.n
-        RunTriggerMacro("var x = 5\nM98.3 P\"target.g\" S{var.x} C\"yellow\" K1 A1.5\n", "G4 P11");
+        // S selects the channel and is left out, every other parameter goes to the M98. Expressions refer to the variables of the macro calling M98.1
+        RunTriggerMacro("var x = 5\nM98.1 P\"target.g\" A{var.x} S0 C\"yellow\" K1 B1.5\n", "G4 P11");
         AssertWaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.HTTP).Any(code => code.Text == "M400"), "The macro did not start");
 
-        Assert.That(Received(CodeChannel.HTTP)[0], Is.EqualTo("M98 P\"target.g\" S{5} C\"yellow\" K1 A1.5"));
+        Assert.That(Received(CodeChannel.HTTP)[0], Is.EqualTo("M98 P\"target.g\" A{5} C\"yellow\" K1 B1.5"));
 
         FinishTargetMacro();
     }
@@ -128,8 +142,8 @@ public class MacrosOnOtherChannels
     {
         // The macro must not see a difference, e.g. the string "5" must not become a number and true must not become a string.
         // Arrays are left to LabPrinterTests.MacrosOnOtherChannels because the fake firmware does not parse them in parameters of M98
-        const string parameters = "S{var.x} B{\"5\"} C{\"yellow\"} D{true} E{1.5} F\"plain\" I7 H{var.x + 1}";
-        string[] letters = ["S", "B", "C", "D", "E", "F", "I", "H"];
+        const string parameters = "A{var.x} B{\"5\"} C{\"yellow\"} D{true} E{1.5} F\"plain\" I7 H{var.x + 1}";
+        string[] letters = ["A", "B", "C", "D", "E", "F", "I", "H"];
         _host.WriteMacro("values.g", string.Concat(letters.Select(letter => $"var v{letter} = param.{letter}\n")) + "M400\n");
 
         // M98 from the trigger channel, which then waits behind M400 in the macro
@@ -141,8 +155,8 @@ public class MacrosOnOtherChannels
         AssertWaitUntil(firmware => firmware.GetStackDepth(CodeChannel.Trigger) == 0, "M98 did not finish");
         _release.Reset();
 
-        RunTriggerMacro($"var x = 5\nM98.3 P\"values.g\" {parameters}\n", "G4 P11");
-        AssertWaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.HTTP).Any(code => code.Text == "M400"), "M98.3 did not start the macro");
+        RunTriggerMacro($"var x = 5\nM98.1 S0 P\"values.g\" {parameters}\n", "G4 P11");
+        AssertWaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.HTTP).Any(code => code.Text == "M400"), "M98.1 did not start the macro");
         object?[] actual = [.. letters.Select(letter => _host.Firmware.TryGetLocalVariable(CodeChannel.HTTP, "v" + letter, out object? value) ? value : "missing")];
 
         Assert.That(expected, Does.Not.Contain("missing"));
@@ -158,7 +172,7 @@ public class MacrosOnOtherChannels
     {
         // M98 R marks the running macro as pausable, but with P it is a parameter for the new macro (GCodes2.cpp, M98)
         _host.WriteMacro("second.g", "G4 P21\n");
-        _host.WriteMacro("trigger5.g", "M98.3 P\"second.g\" R1\nM400\n");
+        _host.WriteMacro("trigger5.g", "M98.1 S0 P\"second.g\" R1\nM400\n");
         _host.Firmware.RequestMacro(CodeChannel.Trigger, "trigger5.g", true);
         AssertWaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.Trigger).Any(code => code.Text == "M400"), "The trigger macro did not reach M400");
 
@@ -174,7 +188,7 @@ public class MacrosOnOtherChannels
     [Test]
     public void FileNameFromExpression()
     {
-        RunTriggerMacro("var x = \"target\"\nM98.3 P{var.x ^ \".g\"}\n", "G4 P11");
+        RunTriggerMacro("var x = \"target\"\nM98.1 S0 P{var.x ^ \".g\"}\n", "G4 P11");
         AssertWaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.HTTP).Any(code => code.Text == "M400"), "The macro did not start");
 
         Assert.That(LastCodeResults(CodeChannel.Trigger), Is.EqualTo(new[] { CodeResult.Ok }));
@@ -183,24 +197,66 @@ public class MacrosOnOtherChannels
     }
 
     [Test]
+    public async Task WaitsForCodeThatTookTheChannel()
+    {
+        // The race M98.1 waits for: the caller saw the channel idle in inputs[], then a code from a client took it before M98.1
+        _host.WriteMacro("second.g", "G4 P21\n");
+        Task<string> m400 = _host.StartCode("M400");
+        AssertWaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.HTTP).Any(code => code.Text == "M400"), "M400 did not start");
+
+        _host.WriteMacro("trigger5.g", "G4 P10\nM98.1 S0 P\"second.g\"\nG4 P11\n");
+        _host.Firmware.RequestMacro(CodeChannel.Trigger, "trigger5.g", true);
+        AssertWaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.Trigger).Any(code => code.Text == "G4 P10"), "The trigger macro did not start");
+        await Task.Delay(WaitTime / 5);
+        Assert.That(Received(CodeChannel.HTTP), Does.Not.Contain("M98 P\"second.g\""));
+
+        // The code finishes well within the wait time, so the macro starts after it
+        _release.Set();
+        await m400.WaitAsync(FakeFirmwareHost.DefaultTimeout);
+        AssertWaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.HTTP).Any(code => code.Text == "G4 P21") && firmware.GetStackDepth(CodeChannel.HTTP) == 0, "The macro did not start");
+        AssertWaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.Trigger).Any(code => code.Text == "G4 P11"), "The trigger macro did not finish");
+
+        Assert.That(Received(CodeChannel.HTTP).Take(2), Is.EqualTo(new[] { "M400", "M98 P\"second.g\"" }));
+        Assert.That(LastCodeResults(CodeChannel.Trigger), Is.EqualTo(new[] { CodeResult.Ok }));
+    }
+
+    [Test]
+    public async Task BusyChannelGivesWarning()
+    {
+        // As every RRF code with a warning, M98.1 says why ('result' 1)
+        Task<string> m400 = _host.StartCode("M400", CodeChannel.Telnet);
+        AssertWaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.Telnet).Any(code => code.Text == "M400"), "M400 did not start");
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        Message? result = await _host.ExecuteCodeAsync("M98.1 S1 P\"target.g\"");
+        stopwatch.Stop();
+
+        Assert.That(result?.Type, Is.EqualTo(MessageType.Warning));
+        Assert.That(result?.Content.TrimEnd(), Is.EqualTo("Macro file target.g not started because code channel Telnet is busy"));
+        Assert.That(stopwatch.Elapsed, Is.GreaterThanOrEqualTo(WaitTime));
+        Assert.That(stopwatch.Elapsed, Is.LessThan(WaitTime + HoldTime * 5), "M98.1 waited much longer than the wait time");
+        Assert.That(LastCodeResults(CodeChannel.HTTP), Is.EqualTo(new[] { CodeResult.Warning }));
+        Assert.That(Received(CodeChannel.Telnet), Does.Not.Contain("M98 P\"target.g\""));
+
+        _release.Set();
+        await m400.WaitAsync(FakeFirmwareHost.DefaultTimeout);
+    }
+
+    [Test]
     public void BusyWithMacro()
     {
         StartTargetMacro();
         _host.WriteMacro("second.g", "G4 P21\n");
 
-        RunTriggerMacro("M98.3 P\"second.g\"\n", "G4 P12");
+        RunTriggerMacro("M98.1 S0 P\"second.g\"\n", "G4 P12");
 
-        // It is not queued and 'result' tells the caller. No message, the machine tick tries this every minute
+        // The macro outlasts the wait time, so it is not queued and 'result' tells the caller
         Assert.That(Received(CodeChannel.HTTP), Does.Not.Contain("M98 P\"second.g\""));
         Assert.That(LastCodeResults(CodeChannel.Trigger), Is.EqualTo(new[] { CodeResult.Ok, CodeResult.Warning }));
-        using (_host.Model.AccessReadOnly())
-        {
-            Assert.That(_host.Model.Messages, Is.Empty);
-        }
 
         // Once the channel is free the same call works
         FinishTargetMacro();
-        RunTriggerMacro("M98.3 P\"second.g\"\n", "G4 P13");
+        RunTriggerMacro("M98.1 S0 P\"second.g\"\n", "G4 P13");
         AssertWaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.HTTP).Any(code => code.Text == "G4 P21"), "The second macro did not start");
         Assert.That(LastCodeResults(CodeChannel.Trigger), Is.EqualTo(new[] { CodeResult.Ok, CodeResult.Warning, CodeResult.Ok }));
     }
@@ -212,7 +268,7 @@ public class MacrosOnOtherChannels
         Task<string> m291 = _host.StartCode("M291 P\"x\" S2");
         AssertWaitUntil(firmware => firmware.GetSentPackets().Any(packet => packet.Request == Request.WaitForAcknowledgement), "The message box did not open");
 
-        RunTriggerMacro("M98.3 P\"target.g\"\n", "G4 P11");
+        RunTriggerMacro("M98.1 S0 P\"target.g\"\n", "G4 P11");
 
         Assert.That(Received(CodeChannel.HTTP), Does.Not.Contain("M98 P\"target.g\""));
         Assert.That(LastCodeResults(CodeChannel.Trigger), Is.EqualTo(new[] { CodeResult.Warning }));
@@ -226,10 +282,10 @@ public class MacrosOnOtherChannels
     {
         // Same as above with the macro below the message box, e.g. the final S2 box that shows the result of a flow
         _host.WriteMacro("ask.g", "M291 P\"x\" S2\n");
-        RunTriggerMacro("M98.3 P\"ask.g\"\n", "G4 P11");
+        RunTriggerMacro("M98.1 S0 P\"ask.g\"\n", "G4 P11");
         AssertWaitUntil(firmware => firmware.GetSentPackets().Any(packet => packet.Request == Request.WaitForAcknowledgement), "The message box did not open");
 
-        RunTriggerMacro("M98.3 P\"target.g\"\n", "G4 P12");
+        RunTriggerMacro("M98.1 S0 P\"target.g\"\n", "G4 P12");
 
         Assert.That(Received(CodeChannel.HTTP), Does.Not.Contain("M98 P\"target.g\""));
         Assert.That(LastCodeResults(CodeChannel.Trigger), Is.EqualTo(new[] { CodeResult.Ok, CodeResult.Warning }));
@@ -244,7 +300,7 @@ public class MacrosOnOtherChannels
         Task<string> m400 = _host.StartCode("M400");
         AssertWaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.HTTP).Any(code => code.Text == "M400"), "M400 did not start");
 
-        RunTriggerMacro("M98.3 P\"target.g\"\n", "G4 P11");
+        RunTriggerMacro("M98.1 S0 P\"target.g\"\n", "G4 P11");
 
         Assert.That(Received(CodeChannel.HTTP), Does.Not.Contain("M98 P\"target.g\""));
         Assert.That(LastCodeResults(CodeChannel.Trigger), Is.EqualTo(new[] { CodeResult.Warning }));
@@ -256,10 +312,10 @@ public class MacrosOnOtherChannels
     [Test]
     public void BusyRightAfterStart()
     {
-        // The channel must be busy as soon as M98.n returns, or two calls in a row would queue the second macro
+        // The channel must be busy as soon as M98.1 returns, or two calls in a row would queue the second macro
         _host.WriteMacro("second.g", "G4 P21\n");
 
-        RunTriggerMacro("M98.3 P\"target.g\"\nM98.3 P\"second.g\"\n", "G4 P11");
+        RunTriggerMacro("M98.1 S0 P\"target.g\"\nM98.1 S0 P\"second.g\"\n", "G4 P11");
         AssertWaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.HTTP).Any(code => code.Text == "M400"), "The macro did not start");
 
         Assert.That(LastCodeResults(CodeChannel.Trigger), Is.EqualTo(new[] { CodeResult.Ok, CodeResult.Warning }));
@@ -298,7 +354,7 @@ public class MacrosOnOtherChannels
     {
         _host.WriteMacro("ask.g", "M291 P\"x\" S2\nG4 P21\n");
 
-        RunTriggerMacro("M98.3 P\"ask.g\"\n", "G4 P11");
+        RunTriggerMacro("M98.1 S0 P\"ask.g\"\n", "G4 P11");
         AssertWaitUntil(firmware => firmware.GetSentPackets().Any(packet => packet.Request == Request.WaitForAcknowledgement), "The message box did not open");
 
         // DWC sends M292 on the HTTP channel
@@ -323,7 +379,7 @@ public class MacrosOnOtherChannels
         // The UI gets the completion line of a flow this way, see also the remarks in LabTest.QueryAsync
         _host.WriteMacro("echo.g", "echo \"output of the macro\"\n");
 
-        RunTriggerMacro("M98.3 P\"echo.g\"\n", "G4 P11");
+        RunTriggerMacro("M98.1 S0 P\"echo.g\"\n", "G4 P11");
 
         using CancellationTokenSource cts = new(FakeFirmwareHost.DefaultTimeout);
         while (true)
@@ -339,13 +395,16 @@ public class MacrosOnOtherChannels
         }
     }
 
-    [TestCase("M98.1 P\"target.g\"", "Invalid code channel number 1", TestName = "USB does not run macros without a USB host")]
-    [TestCase("M98.7 P\"target.g\"", "Invalid code channel number 7", TestName = "USB2 does not run macros without a USB host")]
-    [TestCase("M98.6 P\"target.g\"", "Invalid code channel number 6", TestName = "MQTT is no code channel")]
-    [TestCase("M98.8 P\"target.g\"", "Invalid code channel number 8", TestName = "Channel number out of range")]
-    [TestCase("M98.3 P\"target.g\"", "same code channel", TestName = "Own channel")]
-    [TestCase("M98.4 P\"missing.g\"", "Macro file missing.g not found", TestName = "Missing macro")]
-    [TestCase("M98.4 S1", "P", TestName = "Missing P parameter")]
+    [TestCase("M98.1 S3 P\"target.g\"", "Invalid code channel number 3", TestName = "USB does not run macros without a USB host")]
+    [TestCase("M98.1 S14 P\"target.g\"", "Invalid code channel number 14", TestName = "USB2 does not run macros without a USB host")]
+    [TestCase("M98.1 S5 P\"target.g\"", "Invalid code channel number 5", TestName = "Trigger channel is not open to M98.1")]
+    [TestCase("M98.1 S2 P\"target.g\"", "Invalid code channel number 2", TestName = "File channel is not open to M98.1")]
+    [TestCase("M98.1 S15 P\"target.g\"", "Invalid code channel number 15", TestName = "Channel number out of range")]
+    [TestCase("M98.1 S-1 P\"target.g\"", "Invalid code channel number -1", TestName = "Negative channel number")]
+    [TestCase("M98.1 S0 P\"target.g\"", "same code channel", TestName = "Own channel")]
+    [TestCase("M98.1 S1 P\"missing.g\"", "Macro file missing.g not found", TestName = "Missing macro")]
+    [TestCase("M98.1 S1", "Missing P parameter", TestName = "Missing P parameter")]
+    [TestCase("M98.1 P\"target.g\"", "Missing S parameter", TestName = "Missing S parameter")]
     public async Task Errors(string code, string expectedText)
     {
         Message? result = await _host.ExecuteCodeAsync(code);
@@ -364,7 +423,7 @@ public class MacrosOnOtherChannels
             _host.Model.Inputs[(int)CodeChannel.Telnet] = null;
         }
 
-        Message? result = await _host.ExecuteCodeAsync("M98.4 P\"target.g\"");
+        Message? result = await _host.ExecuteCodeAsync("M98.1 S1 P\"target.g\"");
 
         Assert.That(result?.Type, Is.EqualTo(MessageType.Error));
         Assert.That(result?.Content, Does.Contain("disabled"));

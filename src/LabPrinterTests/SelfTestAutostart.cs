@@ -10,7 +10,7 @@ using NUnit.Framework;
 namespace LabPrinterTests;
 
 /// <summary>
-/// The machine configuration starts its self-test from the Trigger channel with M98.3, the first real user of M98.n (#108)
+/// The machine configuration starts its self-test from the Trigger channel with M98.1 S0, the first real user of M98.1 (formerly M98.3, #108)
 /// </summary>
 /// <remarks>
 /// The short tier runs after every boot: chx350-config sys/meltingplot/self-test/tick.g. It reads the object model and neither moves nor heats
@@ -51,7 +51,7 @@ public class SelfTestAutostart : LabTest
         await Lab.WaitForModelAsync(Session, model => Lab.IsIdle(model) && model.State.UpTime <= restart.Elapsed.TotalSeconds + 5, TimeSpan.FromSeconds(90), "the printer to become idle after the reset");
         string cursor = await Lab.GetJournalCursorAsync();
 
-        // M98.3 refuses to start the flow while a code runs on HTTP, so send no code before the flow is seen. It lasts about a second,
+        // The machine skips M98.1 while a code runs on HTTP, so send no code before the flow is seen. It lasts about a second,
         // so the queries may come after its end. UnbufferedCodes covers M409 during a macro for certain
         Stopwatch waiting = Stopwatch.StartNew();
         Assert.That(await Lab.TryWaitForModelAsync(Session, model => model.Inputs[CodeChannel.HTTP]?.StackDepth > 0 || QuickOutcome(model) != 0, TimeSpan.FromSeconds(120)), Is.True, "The self-test did not start within 2 minutes");

@@ -128,7 +128,7 @@ public class GCodeExecutionFuzz
         "M122", "M122 \"DSF\"", "M260 A1 B2", "M261 A1 B2 V\"x\"", "M292", "M400", "M408 S0", "M409 K\"move.axes[0].letter\"", "M409 K\"state\" F\"v\"",
         "M409 R1", "M500", "M503", "M550 P\"test\"", "M551 P\"pw\"", "M552", "M555 P2", "M563 P0 S\"Tool\" D0 H1", "M569 P0.1 S1", "M584 X0.1 Y0.2",
         "M596 P0", "M598", "M606", "M606 S1", "M906 X800", "M915 P0.1 S5", "M929 S1 P\"fuzz-log.txt\"", "M929", "M929 S0",
-        "M98 P\"ok.g\"", "M98 P\"missing.g\"", "M98 R1", "M98.3 P\"ok.g\"", "M98.2 P\"ok.g\"", "M98.9 P\"ok.g\"",
+        "M98 P\"ok.g\"", "M98 P\"missing.g\"", "M98 R1", "M98.1 S1 P\"ok.g\"", "M98.1 S4 P\"ok.g\"", "M98.1 S9 P\"ok.g\"",
         "M20", "M20 S2 P\"0:/gcodes\"", "M20 S3 P\"0:/macros\"", "M21", "M21 P1", "M22", "M23 \"small.g\"", "M24", "M25", "M26 S0", "M27",
         "M28 \"fuzz-written.g\"", "M29", "M30 \"fuzz-written.g\"", "M32 \"small.g\"", "M36", "M36 \"small.g\"", "M36.1 P\"small.g\" S0", "M36.2 P\"small.g\" S0",
         "M36.3 P\"small.g\"", "M37 P\"small.g\"", "M38 \"small.g\"", "M39", "M39 P0 S2", "M39 P5", "M470 P\"/sys/fuzzdir\"", "M471 S\"/sys/fuzzdir\" T\"/sys/fuzzdir2\"",

@@ -23,9 +23,9 @@ So `M98 P"x.g" G7` passes no `param.G`, and the `G7` becomes a code of its own, 
 | `M98 P"t.g" G{7}` | error: Dynamic command numbers are only supported for T-codes |
 | `M98 P"t.g" T7` | one code, `T` is a parameter |
 | `M98 P"t.g" T7 T8` | `M98 P"t.g" T7`, then `T8` |
-| `M98.3 P"t.g" G7` in a trigger macro | `M98 P"t.g"` on HTTP, `G7` on Trigger |
+| `M98.1 S0 P"t.g" G7` in a trigger macro | `M98 P"t.g"` on HTTP, `G7` on Trigger |
 
-The separated code runs after the macro has finished (`M98 P"t.g"`, the codes of the macro, then `G7`). `M98.n` splits the same way; the separated code runs on the calling channel while the macro starts on the other one.
+The separated code runs after the macro has finished (`M98 P"t.g"`, the codes of the macro, then `G7`). `M98.1` splits the same way; the separated code runs on the calling channel while the macro starts on the other one.
 
 **Code and documentation:**
 - DSF: `StartsNextCode` ends a code at G, M or a second T (`src/DuetAPI/Commands/Code/Parser.cs:727-730`). The same rule is in upstream `v3.7-dev`. For `'G` it keeps the uppercase letter, so that escape does not prevent the split.
@@ -45,9 +45,9 @@ The separated code runs after the macro has finished (`M98 P"t.g"`, the codes of
 
 ## Macros do not start on the USB channels without a USB host
 
-**Problem:** with no USB host connected, a macro sent to the USB or USB2 channel never starts and the channel stays busy. DSF reported success for the call. That is why `M98.n` leaves out USB and USB2 (#108).
+**Problem:** with no USB host connected, a macro sent to the USB or USB2 channel never starts and the channel stays busy. DSF reported success for the call. That is why `M98.1` leaves out USB and USB2 (#108).
 
-**Observed** on the lab printer (MB6HC, RRF 3.7.0+1.mp.7, DSF side-loaded from 5ffadeca) with the former `M98.1` and `M98.7`, during about 10 s per channel:
+**Observed** on the lab printer (MB6HC, RRF 3.7.0+1.mp.7, DSF side-loaded from 5ffadeca) with the former `M98.1` and `M98.7` (USB and USB2 as numbered by `M118 P`, before `M98.1 S`), during about 10 s per channel:
 - The trigger macro ran 19 times on USB and 20 times on USB2.
 - The first call returned `result` 0, all later ones `result` 1. The macro never ran, and `inputs[3]` and `inputs[14]` never showed a stack depth above 0.
 - Aux, HTTP, Telnet and Aux2 worked in the same run.
@@ -62,7 +62,7 @@ The separated code runs after the macro has finished (`M98 P"t.g"`, the codes of
 
 **Possible wider effect, not observed:** any code DSF sends on these channels may hang, not only M98. DSF moves a priority code to any idle channel if none with the same compatibility is idle (`CodeProcessor.cs:223-236`), which can include USB.
 
-**Wanted (Tim, 2026-11-06):** with a USB host connected, the USB channels should be usable with `M98.n`.
+**Wanted (Tim, 2026-11-06):** with a USB host connected, the USB channels should be usable with `M98.1`.
 
 - By the code above this should already work while the host has the port open, because the reset only runs while `IsConnected()` is false. Not tested: the lab printer has no USB cable to the SBC.
 - `inputs[]` does not say whether a host is connected. Only the text reply of `M575 P0` and `M575 P1` does (`Platform.cpp:2412-2425`), so DSF would have to send that code and parse its reply before every `M98.1` or `M98.7`.
@@ -73,11 +73,11 @@ The separated code runs after the macro has finished (`M98 P"t.g"`, the codes of
 IF_NOT_BINARY(stringParser.DiscardPartialLine());
 ```
 
-A partial line can only be a text line, because `GCodeBuffer::Put` clears `isBinaryBuffer` (`GCodeBuffer.cpp:295`). The USB channels would then run codes from DSF with or without a host, so `M98.n` would not have to depend on that.
+A partial line can only be a text line, because `GCodeBuffer::Put` clears `isBinaryBuffer` (`GCodeBuffer.cpp:295`). The USB channels would then run codes from DSF with or without a host, so `M98.1` would not have to depend on that.
 
 **Next steps:**
 1. Build the fix and repeat the lab test on USB and USB2 without a host. Repeat it with a host that has the port open, which needs a USB cable.
-2. Add `1 => USB` and `7 => USB2` back to the `M98.n` table in `MCodeHandler.cs`. Do this only together with an RRF release that has the fix, otherwise a call without a host returns success and the channel stays busy.
+2. Add `CodeChannel.USB` and `CodeChannel.USB2` (`S3` and `S14`) back to the channels `M98.1` accepts in `MCodeHandler.cs`. Do this only together with an RRF release that has the fix, otherwise a call without a host returns success and the channel stays busy.
 3. Report it to Duet3D with the versions above, as the files are unchanged against upstream.
 
 ## Findings of the fuzz and coverage tests (2026-11-07)
