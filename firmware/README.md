@@ -27,6 +27,12 @@ The projects are git submodules of the Meltingplot forks. They were first pinned
   - CANlib and RRFLibraries are at their Duet3D heads 7b5866c and 08746c8.
   - All fork PRs of the sync were merged on 2026-11-21, and the submodules point at their merge commits, whose trees equal the tested branch heads.
   - The version strings read `3.7.0+1.mp.10` and `3.7.0+1.mp.4` until the next fork release, so a build from these pins is not the released firmware of that name.
+- **Fork branches of 2026-11-23:**
+  - RRF 2f2a8af5b: the fork PRs Meltingplot/RepRapFirmware#55 to #88 on top of the sync (`git log --first-parent 3593e30fe..2f2a8af5b`).
+  - Duet3Expansion 169c8280: Meltingplot/Duet3Expansion#18 to #26, among them #20 (permanent allocation and malloc in another task) and #24 (step interrupt enabled by a step error inside `Move::AddLinearSegments`), and the pointer and alloc checks.
+  - FreeRTOS d3ce7a3: Meltingplot/FreeRTOS#1. The end of a critical section restores the interrupt mask that its caller had, and a task that blocks with a mask or a critical section of its own stops in `vAssertCalled`.
+  - RRFLibraries 888b479: Meltingplot/RRFLibraries#2 (a new ReadWriteLock lock record while another task is inside malloc).
+  - The version strings still read `3.7.0+1.mp.10` and `3.7.0+1.mp.4`.
 
 | Submodule | Branch | Used by |
 |---|---|---|
