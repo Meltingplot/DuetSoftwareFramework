@@ -98,20 +98,19 @@ public class SystemMacros
             ContinueLoop = true,
             Iterations = 4,
             HasLocalVariables = true,
-            EndPosition = 99,
-            AllowVariableRedeclaration = true
+            EndPosition = 99
         };
-        original.LocalVariables.Add("x");
+        original.LocalVariables.Add(("x", 20));
 
         CodeBlock copy = original with { };
         Assert.That(copy, Is.Not.SameAs(original));
         Assert.That((copy.Indent, copy.FilePosition, copy.LineNumber, copy.Keyword, copy.ProcessBlock), Is.EqualTo((2, (long?)12, (long?)3, KeywordType.While, true)));
         Assert.That((copy.LineNumbersStarted, copy.SeenCodes, copy.ExpectingElse, copy.ContinueLoop, copy.Iterations), Is.EqualTo((true, true, true, true, 4)));
-        Assert.That((copy.HasLocalVariables, copy.EndPosition, copy.AllowVariableRedeclaration), Is.EqualTo((true, 99L, true)));
-        Assert.That(copy.LocalVariables, Is.EqualTo(new[] { "x" }));
+        Assert.That((copy.HasLocalVariables, copy.EndPosition), Is.EqualTo((true, 99L)));
+        Assert.That(copy.LocalVariables, Is.EqualTo(new[] { ("x", 20L) }));
 
         copy.LocalVariables.Clear();
-        Assert.That(original.LocalVariables, Is.EqualTo(new[] { "x" }));
+        Assert.That(original.LocalVariables, Is.EqualTo(new[] { ("x", 20L) }));
 
         // A while block ends at the same indentation, a var block only at a smaller one (CodeBlock.cs:79)
         Assert.That(original.IsFinished(2), Is.True);

@@ -3524,8 +3524,10 @@
         </member>
         <member name="T:DuetAPI.Connection.InitMessages.CodeStreamInitMessage">
             <summary>
-            Enter code streaming connection mode
-            In this connection mode G/M/T-codes are processed asynchronously (up to <see cref="P:DuetAPI.Connection.InitMessages.CodeStreamInitMessage.BufferSize"/>)
+            Enter code streaming connection mode.
+            In this connection mode G/M/T-codes are sent as text lines and processed asynchronously (up to <see cref="P:DuetAPI.Connection.InitMessages.CodeStreamInitMessage.BufferSize"/>), and their replies are received as text.
+            To upload a file, send M559 or M560, wait for the "Writing to file" reply and then send the file content as raw bytes:
+            as many as the S parameter says, or up to the end-of-file string <c>&lt;!-- **EoF** --&gt;</c> if there is no S parameter.
             </summary>
         </member>
         <member name="P:DuetAPI.Connection.InitMessages.CodeStreamInitMessage.BufferSize">
@@ -3733,7 +3735,9 @@
         </member>
         <member name="F:DuetAPI.Connection.ConnectionMode.CodeStream">
             <summary>
-            Code stream mode. This mode lets users send and receive code replies asynchronously using a single socket connection
+            Code stream mode. This mode lets users send and receive code replies asynchronously using a single socket connection.
+            Codes are sent as text lines and replies are received as text, like on a serial port of the machine.
+            Files can be uploaded with M559 and M560, whose file content follows the code as raw bytes.
             </summary>
             <seealso cref="T:DuetAPI.Connection.InitMessages.CodeStreamInitMessage"/>
         </member>
@@ -5903,6 +5907,14 @@
             <summary>
             Information about an expansion board connected over CAN
             </summary>
+        </member>
+        <member name="P:DuetAPI.ObjectModel.ExpansionBoard.BootloaderVersion">
+            <summary>
+            Version of the bootloader or empty if unknown
+            </summary>
+            <remarks>
+            Boards report this only from firmware 3.7.1 on, main boards in expansion mode never report it
+            </remarks>
         </member>
         <member name="P:DuetAPI.ObjectModel.ExpansionBoard.ClosedLoop">
             <summary>

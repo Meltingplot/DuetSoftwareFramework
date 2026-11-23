@@ -412,6 +412,7 @@ public class MCodeHandler(
                             FileStream fileStream = new(physicalFile, FileMode.Create, FileAccess.Write, FileShare.Read, settings.Value.FileBufferSize);
                             StreamWriter writer = new(fileStream, new UTF8Encoding(false), settings.Value.FileBufferSize);
                             codeProcessor.FilesBeingWritten[numChannel] = writer;
+                            codeProcessor.FileWriterConnections[numChannel] = code.SourceConnection;
                             return new Message(MessageType.Success, prefix + $"Writing to file: {file}");
                         }
                         catch (Exception e)
@@ -837,16 +838,6 @@ public class MCodeHandler(
                 }
                 break;
 
-            // Send/receive data
-            case 260:
-            case 261:
-                // The firmware declares the result variable itself and rejects a name that still exists, so drop a leftover from a closed block first
-                if (code.File is not null && code.TryGetString('V', out string? varName))
-                {
-                    await code.File.DeleteStaleVariableAsync(varName, cancellationToken);
-                }
-                break;
-
             // Query object model
             case 409:
                 {
@@ -1148,6 +1139,15 @@ public class MCodeHandler(
                 if (await codeProcessor.FlushAsync(code, cancellationToken: cancellationToken))
                 {
                     return new Message(MessageType.Error, "M552 is reserved for SBC mode");
+                }
+                throw new OperationCanceledException();
+
+            // Binary file uploads are taken by code streams before they get here, nothing else can carry the file data
+            case 559:
+            case 560:
+                if (await codeProcessor.FlushAsync(code, cancellationToken: cancellationToken))
+                {
+                    return new Message(MessageType.Error, "file uploads via DSF need a code stream connection");
                 }
                 throw new OperationCanceledException();
 
