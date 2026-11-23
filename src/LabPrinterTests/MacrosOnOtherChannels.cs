@@ -81,7 +81,8 @@ public class MacrosOnOtherChannels : LabTest
 
     /// <summary>
     /// The trigger keeps firing while the macro it started blocks the other channel. Further runs see the channel busy in inputs[] and skip
-    /// the call, and the macro gets its parameters from the variables of the trigger macro with the same types as from M98, without S
+    /// the call, and the macro gets its parameters from the variables of the trigger macro with the same types as from M98, without S.
+    /// A channel that has had no code since the RRF boot reads "unused" instead of "idle" (GCodeBuffer::GetStateText), so that counts as free
     /// </summary>
     /// <param name="index">Index of the channel in inputs[]</param>
     /// <param name="channel">Expected code channel</param>
@@ -96,7 +97,7 @@ public class MacrosOnOtherChannels : LabTest
         await Lab.UploadAsync(Session, TriggerMacro, $$"""
             var x = 5
             set global.labTestChannelTriggerRuns = global.labTestChannelTriggerRuns + 1
-            if inputs[{{index}}].state != "idle" || inputs[{{index}}].inMacro
+            if (inputs[{{index}}].state != "idle" && inputs[{{index}}].state != "unused") || inputs[{{index}}].inMacro
               set global.labTestSkipped = global.labTestSkipped + 1
             else
               M98.1 S{{index}} P"{{BlockingMacro}}" C{var.x} A{1,2} B{"5"} D{true}
