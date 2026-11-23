@@ -257,7 +257,7 @@ src/LabPrinterTests/run-lab-tests.sh --side-load --fault-injection --filter "Ful
 
 ### Neue Tests
 
-A-1 bis A-7 und A-10 liefen am 2026-11-07 auf Hardware ([Abschnitt 14](#14-durchgeführte-läufe)), A-8, A-9 und A-11 bis A-13 noch nicht. `src/LabPrinterTests/README.md` nennt zu jedem Test die Klasse und den Aufruf.
+A-1 bis A-7 und A-10 liefen am 2026-11-07 auf Hardware ([Abschnitt 14](#14-durchgeführte-läufe)), A-8, A-9 und A-11 bis A-16 noch nicht. `src/LabPrinterTests/README.md` nennt zu jedem Test die Klasse und den Aufruf.
 
 | ID | Änderung | Stufe | Ablauf | Soll |
 |---|---|---|---|---|
@@ -274,6 +274,9 @@ A-1 bis A-7 und A-10 liefen am 2026-11-07 auf Hardware ([Abschnitt 14](#14-durch
 | A-11 | #74, #80 | 3 | Testdatei in `0:/gcodes`, `M30` mit relativem Namen, dann `M30` und `M472` mit fehlendem Ziel | Datei gelöscht, `Failed to delete file ...: file not found` (`MCodeHandler.cs:423`), `Failed to delete file or directory ...: file or directory not found` (`MCodeHandler.cs:911`) |
 | A-12 | #81 | 3 | `state.logLevel` und `state.logFile` lesen, `M929 S4`, `M929 S-1`, Zustand wiederherstellen | `parameter 'S' too high` (`MCodeHandler.cs:1195`), `expected non-negative integer after 'S'` (`MCodeHandler.cs:1191`), Protokollierung danach wie vorher |
 | A-13 | #76 | 3 | `M606 S1` über HTTP ohne Job | Warnung `this command is valid only when running a job from a stored file` (RRF `GCodes5.cpp:213-216`), `File2` bleibt unverändert, Stack-Tiefe 0 |
+| A-14 | RRF #57 | 1 | Testmakro: `#heat.heaters` in ein Global, dann `global labTestHeaterObjects = heat.heaters` als letzte Zeile | Das zweite Global entsteht nicht, im Journal steht `Cannot assign a value of type 'object' to a variable` (RRF `Variable.cpp:91`), die Zahl der Heizungen ist größer 0. Die Zuweisung steht am Ende, weil DSF die Zeilen danach trotz des Fehlers ausführen kann (`design/open-findings.md`, L7) |
+| A-15 | RRF #57 | 1 | Testmakro: eigene Box mit `M291 S1 T0`, `state.messageBox.message` in ein Global, Box mit `M292` schließen, zweite Box öffnen und schließen | Das Global hält danach den Text der ersten Box (RRF `MessageBox.cpp:24`, CString). Zeigt die Maschine eine eigene Box, wird der Fall übersprungen |
+| A-16 | RRF #57 | 1 | Testmakro: `port` des ersten Temperatursensors mit Port in ein Global, dann `#` darauf | Das Global hält den Pin-Namen, den `M409` für den Sensor meldet, und `#` liefert dessen Länge (RRF `SensorWithPort.cpp:21`) |
 
 Hinweise:
 - **A-1, Fehlerfall:** Auf dem erweiterten Link sagt der Census nach der Aktivierung keinen hängenden Fall voraus (`ExtendedLinkRecoversFromEverySingleFault`). Hängen kann es nur in der Übertragung, die den Link aktiviert (`LinkRecovery.cs:650-654`, 23 Fälle laut #102). Davon kann der Injektor nur `DataResponse ToRrf word 0x00000006` treffen. Dass dieser Fehler mit und ohne Polling zum DCS-Neustart führt, prüft `LabFaultInActivationRestartsDcs` offline.
@@ -287,6 +290,7 @@ Hinweise:
 - **A-3, `M409`:** Der Test sendet vorher keinen Code auf HTTP, weil `M98.3` sonst abgelehnt würde und der Flow erst eine Minute später käme. Der Flow dauert etwa 1 s, `M409` kann also auch danach ankommen. Sicher abgedeckt ist `M409` während eines Makros durch RG-4 und RG-5.
 - **A-4:** `M98.n` steht nicht im Wiki. Das Soll stammt nur aus dem Code und #108.
 - **A-5, Makrozeilen:** Ausgaben eines Makros erreichen die `M98`-Antwort nicht (`LabTest.cs:103`). Der Test wertet daher Globals und Journal aus.
+- **A-14 bis A-16, RRF #57:** Vor dem Fix hielt eine Variable einen rohen Zeiger ins Objektmodell. Auf dem CHX betraf das `sys/daemon.g:37` (`var fil_prev = move.extruders[0].filament`): Der Vergleich sah einen Filamentwechsel nie. Die Tests nutzen Werte, die sie ohne Eingriff in die Maschine ändern können, statt eines Filamentwechsels. `Tools/variable-test` in RepRapFirmware prüft jede Art von Wert offline. Eine Gegenprobe auf alter Firmware gibt es nicht, weil für einen Test keine andere RRF-Version geflasht wird.
 
 ### Kanal-Epoche (Meilensteine E1 und E2), geplant
 
@@ -415,6 +419,11 @@ Rückbau geprüft:
   - USB-Kanäle und G/M als Makroparameter stehen in `design/open-findings.md`.
   - Stall vom 2026-11-02 um 22:13 UTC, TfrRdy-Flanken-Census, 2 von 42 DCS-Neustarts mit Stock-RRF und Hänger nach Firmware-Update sind ungeklärt.
   - Zwei parallele `M122`-Schleifen lösten am 2026-11-04 eine `DivideByZeroException` aus. Die Division ist unverändert (`SPI.cs:218`) und steht noch nicht in `design/open-findings.md`.
+- **RRF-Fixes, die am CHX nicht erreichbar sind** (Stand RRF `3.7.0+1.mp.11-dev.1`):
+  - RRF #79 (Binärcode über 256 Bytes nach einem Text-Code): Text-Codes kommen im SBC-Modus nur von USB, Aux und von RRF selbst, am CHX nur aus Trigger-Aktionen (`M581.1 … U`, RRF `GCodes.cpp:1044-1054`). Der CHX hat keine, seine Trigger starten Makrodateien. Geprüft durch `Tools/sbc-code-length-test` in RepRapFirmware.
+  - RRF #58 (fehlgeschlagenes Makro, auf das kein Kanal wartet): Nur der Daemon-Kanal wartet nicht auf ein angefordertes Makro (RRF `GCodeBuffer.cpp:1334`), und DSF meldet einen Makrofehler nur für eine fehlende Datei (`Processor.cs:1730`). Der CHX hat eine `daemon.g`. Ein Test müsste sie entfernen, das wäre Stufe 3 und träfe den Fehler bei einem Versuch alle 10 s nur statistisch.
+  - Races mit `malloc` und dem Objektmodell (RRF #70, #72 bis #77, RRFLibraries #2, Duet3Expansion #20): Nur durch Host-Tests und alloc-check deterministisch geprüft, am DUT nur als "kein Reset".
+  - Bewegung, Feed Hold, Endstops, Z-Sonde und Emergency Pause (RRF #56, #63, #66, #83, #84, Duet3Expansion #24) brauchen Stufe 4.
 - **Andere Repos:** Inhalt des Self-Tests (chx350-config) und USB-Guard, OTA sowie Panel-Fehlerbilder (rpi-image-gen) brauchen eigene Prüfpläne. Hier wird nur die Schnittstelle geprüft.
 
 ## 13. Offene Entscheidungen
