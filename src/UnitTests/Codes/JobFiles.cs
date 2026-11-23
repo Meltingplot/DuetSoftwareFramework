@@ -358,11 +358,12 @@ public class JobFiles
         Assert.That(codes.SkipWhile(code => code != "G1 Y1"), Is.EqualTo(new[] { "G1 Y1", "M400" }));
     }
 
-    [Test, Explicit("JobProcessor.Cancel closes the first job when it selects the next file (JobProcessor.cs:315-326), but the codes it has read ahead still reach the firmware")]
+    [Test]
     public async Task SelectFileFromJobStopsFirstJob()
     {
         // RRF chains to the new file (GCodes2.cpp:1106 "We now allow a file that is being printed to chain to another file"),
-        // so the lines after M32 in the first file are not executed
+        // so the lines after M32 in the first file are not executed. JobProcessor.Cancel cancels the job's token (JobProcessor.cs:315-326),
+        // which the codes read ahead keep since upstream d108e9767 (design/open-findings.md G9)
         await StartAsync();
         WriteJob("second.g", "G1 Y1\n");
         WriteJob("job.g", "G1 X1\nM32 \"second.g\"\nG1 X2\n");
