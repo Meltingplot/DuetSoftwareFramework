@@ -222,7 +222,7 @@ Details:
 | Where | Value | Effect |
 |---|---|---|
 | RRF `SbcYieldTimeout` | 10 ms | Mutex wait before a request is refused and resent (`SbcInterface.cpp:45`) |
-| RRF `SbcMaxRequestTime` | 3 s | Macro and file request give up. A late answer is dropped by state (`GCodeBuffer.cpp:1266-1272`, `SbcInterface.cpp:1204-1207`, `:1221-1224`) |
+| RRF `SbcMaxRequestTime` | 3 s | Macro and file request give up. A late answer is dropped by state (`GCodeBuffer.cpp:1266-1272`, `SbcInterface.cpp:1204-1207`, `:1221-1224`). Not dropped (found 2026-11-21, `open-findings.md`): a late MacroCompleted with error pops the level of the caller (K16), and a late OpenFileResult overwrites `fileOffset` (K19) |
 | RRF transfer, connection | 500 ms, 4 s | Lost SBC → emergency stop (fork) (`SbcMessageFormats.h:43-45`) |
 | DSF M112, M999 | 4.5 s | DCS stops itself (`MCodeHandler.cs:757`, `:1369`) |
 | DSF `SbcRestartTimeout` | 60 s | DCS stops on a livelock (`SPI.cs:326-331`, #102) |
