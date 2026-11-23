@@ -76,7 +76,7 @@ RG-17 und RG-18 laufen nur auf Abruf und gehören nicht zum Release-Umfang (Tim,
 | 3 | F-1, F-2 | 2 | keine | 45 min |
 | 4 | A-1 bis A-7, A-10 | 1 und 2 | Tests aus `feature/lab-tests-for-changes` | Suite 11,2 min, A-1 und A-2 etwa 5 min |
 | 5 | A-8, A-9, A-11 bis A-13 | 3 | Tests aus `feature/lab-tests-for-changes`, Einzelfreigabe | offen |
-| 6 | M-1 bis M-4 | 4 | Termin mit Tim | offen |
+| 6 | M-1 bis M-4 | 4 | Termin mit Tim | M-1 75 min (Testdruck am 2026-11-23), M-2 bis M-4 offen |
 
 Gemessen am 2026-11-06: Suite in Block 1 8,3 min, Block 3 44 min einschließlich Side-Load (F-1 3 min, F-2 41 min).
 
@@ -832,3 +832,32 @@ Bewertung:
 - D3E #24 nur indirekt: 0 Step-Fehler auf den Erweiterungen.
 - Befund FH-1: Bei `M25.1` während der Referenzfahrt von `homey.g` kam das `M400` nach der unterbrochenen `G1 H1`-Fahrt schon im Hold zurück (Fehlermeldung 0,5 s nach `M25.1`, `M24` erst 5 s später). `homey.g` prüfte die Position, meldete den Fehler und verbrauchte einen seiner drei Versuche. Nach `M24` war Y korrekt referenziert. Nach dem Code soll GCodes auf den Rest der Fahrt warten (RRF `DDARing.cpp:919`, `:922`, `CutHomingMove`). Tim (2026-11-23): Ein Feed Hold muss während einer Referenzfahrt nicht weiterlaufen. Deshalb nicht weiter untersucht und nicht in `design/open-findings.md`.
 - Nicht geprüft: RRF #84, #56, #63 (Abschnitt 12) und M-1 bis M-4.
+
+### 2026-11-23 nachmittags: M-1 Testdruck mit Tim vor Ort, mit Feed Hold im Druck, bestanden mit Befund (Y-Treiberfehler beim Start)
+
+```
+Datum, Zeit (UTC): 2026-11-23, 12:38:17 Start, 12:45:44 Treiberfehler Y, 12:50:44 pausiert, 12:51:48 G28 Y, 12:52:01 M24, 13:48:34 FH-4, 13:51:19 Ende
+Anlass, PR, Commit: M-1 nach dem Stufe-4-Termin vom Mittag, vor dem Release von RRF 3.7.0+1.mp.11 und D3E 3.7.0+1.mp.5
+DSF: 3.7.0+mp.14 im Image, kein Side-Load. Codes einzeln über HTTP durch den Tunnel, ohne Lab-Runner
+RRF: 3.7.0+1.mp.11-dev.1, Erweiterungen 3.7.0+1.mp.5-dev.1 (Side-Load vom Vormittag, Quellen bis auf die Versionszeile gleich den Releases)
+Stufen und Freigabe durch: 4, Tim vor Ort. Freigabe "lass uns den druck ... als testdruck starten", nach dem Treiberfehler "Weiterlaufen lassen", nach der Pause "home die y achse mit G28 Y und reusme dann den druck", danach "wir können während des drucks einmal feedhold testen"
+Job: 0:/gcodes/M277_CHC_Linear_Rail_Adapter_L0.18mm_N0.4_PLA_Meltingplot CHX 350_50m44s.gcode, PLA, Bett 60 °C, Düse 220 °C, Druckzeit laut DSF 1h 11m
+Takt: Objektmodell über HTTP alle 30 s, M122 alle 5 min, M122 vorher und nachher
+Treiberfehler: 12:45:43 "Driver 52.0 warning: position tolerance exceeded", 12:45:44 "Driver 52.0 error: failed to maintain position" (Y), in der Startsequenz bei bed.g:34 auf dem Drucker (G1 X{max/2} Y{max/2} U{max} F60000). driver-error.g:20 auf dem Drucker schickt M25, die Pause griff erst um 12:50:32 nach dem Ende der Startmakros (Messung 840 Punkte bis 12:50:02), pause.g bis 12:50:44, pausiert bei Byte 19498
+Fortsetzen: G28 Y (homey.g 12:51:48 bis 12:51:50, ohne Fehler), M24 12:52:01, resume.g bis 12:52:19. Danach kein weiterer Treiberfehler
+FH-4: in Lage 206 bei 99,2 % M25.1 (ohne S) um 13:48:34.350. Erste Abfrage 13:48:35.556 held bei X 454,288 Y 194,959 Z 37,300, dann 5 Abfragen held mit gleicher Position und Dateiposition. M24 um 13:48:39.116, 13:48:40.009 wieder processing, Lage 207 um 13:48:41. Kein resume.g, keine Meldung. Die Trigger-Makros (trigger8.g) liefen im Hold weiter
+Tim hat im Druck zusätzlich selbst M25.1 und M24 gesendet, Halt und Weiterlaufen gesehen. Zeitpunkt und Eingang sind nicht erfasst, der 30-s-Takt hat den Hold nicht getroffen
+Ende: "Finished printing file", stop.g 13:51:19 bis 13:51:20, um 13:51:40 idle
+M122 Mainboard: kein Reset während des Drucks (Last reset 12:04, das M999 beim Rückbau von F-2), Heap OK, Scheduled moves 229699, completed 229699, lost connections 0, connection resets 0, failed transfers 0, checksum errors 0 in allen 17 Abfragen
+Full transfers per second: 1780,96 im Leerlauf vorher, 1478,69 bis 1572,71 im Druck (14 Abfragen), 1515,25 und 1564,32 im Leerlauf nachher
+M122 B50 bis B53 nach dem Druck: Last reset 12:04 (power up, wie nach jedem Reset des Mainboards), step errors 0, hiccups 0. B52 Driver 0 closed loop, "no error"
+Journalbefunde: außer den Meldungen von driver-warning.g und driver-error.g keine Fehler und Warnungen, kein "Out-of-order", 0 Treffer für "unexpected" und "invalid"
+Endzustand: idle, Heizungen aus durch stop.g
+```
+
+Bewertung:
+- M-1 bestanden: Der Job lief bis zum Ende, `lost connections` und `connection resets` blieben 0. Ausgangswert für R4 (`design/sbc-link-requirements.md:117`): 1480 bis 1570 Full Transfers/s im Druck, 1515 bis 1780 im Leerlauf.
+- Die Pause griff knapp fünf Minuten nach dem `M25` von `driver-error.g`, weil der Job gerade Makros ausführte. Das ist dokumentiert: "If a pause is commanded while a macro is being executed, the pause will be deferred until the macro has completed" (wiki Gcodes.md:1876).
+- Befund Y-Treiber 52.0: Tim vermutet, dass die Feed-Hold-Tests vom Mittag (FH-1 bis FH-3) Y in einem falschen Zustand hinterlassen hatten. Nach G28 Y lief der Druck ohne weiteren Treiberfehler. Die Ursache ist nicht untersucht.
+- Feed Hold im Druck (FH-4): Hold spätestens 1,2 s nach `M25.1`, Position stabil, Freigabe mit `M24` ohne `resume.g`, wie wiki Gcodes.md:1898 und :1850 und RRF `GCodes2.cpp:1207-1216` es beschreiben.
+- M-2 nur teilweise: `stop.g` lief und kein "Out-of-order". Der zweite Job mit `M32` wurde nicht gestartet. M-3 und M-4 nicht geprüft.
