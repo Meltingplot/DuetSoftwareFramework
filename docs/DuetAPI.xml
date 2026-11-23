@@ -5914,6 +5914,14 @@
             Information about an inductive sensor or null if not present
             </summary>
         </member>
+        <member name="P:DuetAPI.ObjectModel.ExpansionBoard.Interface">
+            <summary>
+            Number of the CAN interface this board is connected to as printed on the main board, or null if it is not known
+            </summary>
+            <remarks>
+            This is null as long as the board address is in use on more than one CAN bus
+            </remarks>
+        </member>
         <member name="P:DuetAPI.ObjectModel.ExpansionBoard.State">
             <summary>
             State of this board
@@ -6041,15 +6049,6 @@
             <summary>
             Information about the mainboard, which is always the first item of the boards array
             </summary>
-        </member>
-        <member name="P:DuetAPI.ObjectModel.MainBoard.CanSplitAddress">
-            <summary>
-            Lowest CAN address served by CAN0 or null if CAN0 has no expansion boards assigned
-            </summary>
-            <remarks>
-            Lower addresses and the firmware update address 126 stay on CAN1.
-            Only boards with two CAN buses (6HC and 6XD) support this
-            </remarks>
         </member>
         <member name="P:DuetAPI.ObjectModel.MainBoard.DirectDisplay">
             <summary>
@@ -8619,7 +8618,8 @@
         </member>
         <member name="P:DuetAPI.ObjectModel.Axis.Current">
             <summary>
-            Motor current (in mA)
+            Configured motor current (in mA) as set by M906.
+            The actual current may be lower because the driver quantises it and caps it at its own maximum
             </summary>
         </member>
         <member name="P:DuetAPI.ObjectModel.Axis.Drivers">
@@ -8682,7 +8682,8 @@
         </member>
         <member name="P:DuetAPI.ObjectModel.Axis.PercentStstCurrent">
             <summary>
-            Percentage applied to the motor current during standstill (0..100 or null if not supported)
+            Configured percentage applied to the motor current during standstill as set by M917 (0..100 or null if not supported).
+            The actual standstill current is subject to the same driver limits as the motor current
             </summary>
         </member>
         <member name="P:DuetAPI.ObjectModel.Axis.PhaseStep">
@@ -8703,6 +8704,11 @@
         <member name="P:DuetAPI.ObjectModel.Axis.Speed">
             <summary>
             Maximum speed (in mm/min)
+            </summary>
+        </member>
+        <member name="P:DuetAPI.ObjectModel.Axis.State">
+            <summary>
+            State of the drivers of this axis
             </summary>
         </member>
         <member name="P:DuetAPI.ObjectModel.Axis.StepsPerMm">
@@ -8891,6 +8897,26 @@
             <exception cref="T:System.ArgumentOutOfRangeException">Property index is invalid</exception>
             <remarks>This method is auto-generated</remarks>
         </member>
+        <member name="T:DuetAPI.ObjectModel.DriverState">
+            <summary>
+            Enumeration of possible states of the drivers of an axis or extruder
+            </summary>
+        </member>
+        <member name="F:DuetAPI.ObjectModel.DriverState.Disabled">
+            <summary>
+            Drivers are disabled
+            </summary>
+        </member>
+        <member name="F:DuetAPI.ObjectModel.DriverState.Idle">
+            <summary>
+            Drivers are enabled at idle current
+            </summary>
+        </member>
+        <member name="F:DuetAPI.ObjectModel.DriverState.Enabled">
+            <summary>
+            Drivers are enabled
+            </summary>
+        </member>
         <member name="T:DuetAPI.ObjectModel.Extruder">
             <summary>
             Information about an extruder drive
@@ -8903,7 +8929,8 @@
         </member>
         <member name="P:DuetAPI.ObjectModel.Extruder.Current">
             <summary>
-            Motor current (in mA)
+            Configured motor current (in mA) as set by M906.
+            The actual current may be lower because the driver quantises it and caps it at its own maximum
             </summary>
         </member>
         <member name="P:DuetAPI.ObjectModel.Extruder.Driver">
@@ -8953,7 +8980,8 @@
         </member>
         <member name="P:DuetAPI.ObjectModel.Extruder.PercentStstCurrent">
             <summary>
-            Percentage applied to the motor current during standstill (0..100 or null if not supported)
+            Configured percentage applied to the motor current during standstill as set by M917 (0..100 or null if not supported).
+            The actual standstill current is subject to the same driver limits as the motor current
             </summary>
         </member>
         <member name="P:DuetAPI.ObjectModel.Extruder.PhaseStep">
@@ -8984,6 +9012,11 @@
         <member name="P:DuetAPI.ObjectModel.Extruder.Speed">
             <summary>
             Maximum speed (in mm/min)
+            </summary>
+        </member>
+        <member name="P:DuetAPI.ObjectModel.Extruder.State">
+            <summary>
+            State of the drivers of this extruder
             </summary>
         </member>
         <member name="P:DuetAPI.ObjectModel.Extruder.StepsPerMm">
@@ -12343,6 +12376,11 @@
             </summary>
         </member>
         <member name="P:DuetAPI.ObjectModel.ObjectModelContext.NullableDriverMode">
+            <summary>
+            Defines the source generated JSON serialization contract metadata for a given type.
+            </summary>
+        </member>
+        <member name="P:DuetAPI.ObjectModel.ObjectModelContext.DriverState">
             <summary>
             Defines the source generated JSON serialization contract metadata for a given type.
             </summary>
