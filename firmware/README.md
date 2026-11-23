@@ -4,7 +4,35 @@ This folder builds the Duet firmware of the CHX 350 next to DSF, so that a DSF c
 
 ## Contents
 
-The projects are git submodules of the Meltingplot forks. Each one was pinned to the commit that the firmware of the lab printer was built from: RRF `3.7.0+1.mp.8` and Duet3Expansion `3.7.0+1.mp.4`, with the library commits listed in their release notes. RRF has moved on since to the release tag `3.7.0+1.mp.10` (803315451). `3.7.0+1.mp.9` added Meltingplot/RepRapFirmware#43 (macro request after InvalidateChannel), #44 (root check before the SBC hand-off), #45 (macro closal after InvalidateChannel), #46 (reply of a code that DSF dropped for InvalidateChannel) and #47 (channel epoch on the SBC link) to `3.7.0+1.mp.8`; `3.7.0+1.mp.10` adds #50 (order of releasing a string or array handle), #51 (order of changing the kinematics) and #52 (raw pointer check).
+The projects are git submodules of the Meltingplot forks. They were first pinned to the commits that the firmware of the lab printer was built from: RRF `3.7.0+1.mp.8` and Duet3Expansion `3.7.0+1.mp.4`, with the library commits listed in their release notes. Since then the pins have followed the fork branches:
+
+- **RRF release `3.7.0+1.mp.9`** (a7199f29f) added the following to `3.7.0+1.mp.8`:
+  - Meltingplot/RepRapFirmware#43: macro request after InvalidateChannel.
+  - #44: root check before the SBC hand-off.
+  - #45: macro closal after InvalidateChannel.
+  - #46: reply of a code that DSF dropped for InvalidateChannel.
+  - #47: channel epoch on the SBC link.
+- **RRF release `3.7.0+1.mp.10`** (803315451) added the following to `3.7.0+1.mp.9`:
+  - #50: order of releasing a string or array handle.
+  - #51: order of changing the kinematics.
+  - #52: raw pointer check.
+- **Duet3D sync of 2026-11-16:**
+  - RRF and Duet3Expansion merged Duet3D `3.7-dev` up to e6f2d19c9 and 34d0a513 (Meltingplot/RepRapFirmware#49, Meltingplot/Duet3Expansion#17).
+  - CoreN2G merged Duet3D `3.7-dev` up to 0e34cea and keeps the fork's SAMC21 and SAME70 fixes (Meltingplot/CoreN2G#3).
+  - CANlib, RRFLibraries and WiFiSocketServerRTOS are at their Duet3D heads (Meltingplot/CANlib#1, Meltingplot/RRFLibraries#1, Meltingplot/WiFiSocketServerRTOS#11).
+- **Duet3D sync of 2026-11-21:**
+  - RRF merged the fork's `3.7-dev` up to #54, then Duet3D `3.7-dev` up to a507cb8f0 and Duet3D `3.7-ch` up to eed7cf1fc (Duet3D/RepRapFirmware#1335), merged as Meltingplot/RepRapFirmware#49 (3593e30fe).
+  - Duet3Expansion merged Duet3D `3.7-dev` up to 02000a7c and `3.7-ch` up to 8cfc9949.
+  - CoreN2G merged Duet3D `3.7-dev` up to 45ae60a, which contains its `3.7-ch`.
+  - CANlib and RRFLibraries are at their Duet3D heads 7b5866c and 08746c8.
+  - All fork PRs of the sync were merged on 2026-11-21, and the submodules point at their merge commits, whose trees equal the tested branch heads.
+  - The version strings read `3.7.0+1.mp.10` and `3.7.0+1.mp.4` until the next fork release, so a build from these pins is not the released firmware of that name.
+- **Fork branches of 2026-11-23:**
+  - RRF 2f2a8af5b: the fork PRs Meltingplot/RepRapFirmware#55 to #88 on top of the sync (`git log --first-parent 3593e30fe..2f2a8af5b`).
+  - Duet3Expansion 169c8280: Meltingplot/Duet3Expansion#18 to #26, among them #20 (permanent allocation and malloc in another task) and #24 (step interrupt enabled by a step error inside `Move::AddLinearSegments`), and the pointer and alloc checks.
+  - FreeRTOS d3ce7a3: Meltingplot/FreeRTOS#1. The end of a critical section restores the interrupt mask that its caller had, and a task that blocks with a mask or a critical section of its own stops in `vAssertCalled`.
+  - RRFLibraries 888b479: Meltingplot/RRFLibraries#2 (a new ReadWriteLock lock record while another task is inside malloc).
+  - The version strings still read `3.7.0+1.mp.10` and `3.7.0+1.mp.4`.
 
 | Submodule | Branch | Used by |
 |---|---|---|
@@ -59,7 +87,7 @@ RRF_HOST_HARNESS=$H/sbc-harness-usb0 RRF_HOST_RULE=1 dotnet test src/UnitTests -
 
 - `RRF_HOST_POLL=1` belongs to usb1, the MB6HC variant, which polls while not connected.
 - `RRF_HOST_RULE=1` means the RRF has the rule of Meltingplot/RepRapFirmware#41, which `3.7.0+1.mp.8` has.
-- On 2026-11-08 both passed, 6 of 6 each, against DSF `v3.7-dev` 9e6449d1.
+- On 2026-11-08 both passed, 6 of 6 each, against DSF `v3.7-dev` 9e6449d1. On 2026-11-16 they passed again with the RRF of the Duet3D sync, against DSF `v3.7-dev` 52f9602b. On 2026-11-21 they passed with the RRF of the sync of that day, against DSF `v3.7-dev` 677ccfaa.
 
 ### In CI
 
@@ -70,7 +98,7 @@ RRF_HOST_HARNESS=$H/sbc-harness-usb0 RRF_HOST_RULE=1 dotnet test src/UnitTests -
 - **Tests:** the two `dotnet test` commands above. The job fails when a test fails, and also when one does not run: without `RRF_HOST_HARNESS` the tests are ignored, and `dotnet test` still exits with 0.
 - **Coverage:** gcovr 8.6 reads the counts of both variants. It and its dependencies are pinned by version and wheel hash in `.github/workflows/rrf-harness-requirements.txt`, which says where each hash comes from. The step summary lists the lines and branches of `DataTransfer.cpp`, `CRC32.cpp` and `SbcInterface::TaskLoop` that the comparison reached, for both builds together and for each alone. There is no coverage goal yet.
 - **Own tests:** the harness's `make check` runs last, so that its counts stay out of the report.
-- **RRF host tests:** after that the job runs `make check` of `Tools/heap-test` (string heap, Meltingplot/RepRapFirmware#50) and `Tools/kinematics-test` (`Move::SetKinematics`, #51) with g++ 13, each plain and with AddressSanitizer and UBSan. Like the harness they read only `RepRapFirmware/src`.
+- **RRF host tests:** after that the job runs `make check` of `Tools/heap-test` (string heap, Meltingplot/RepRapFirmware#50) and `Tools/kinematics-test` (`Move::SetKinematics`, #51) with g++ 13, each plain and with AddressSanitizer and UBSan, and of `Tools/driver-data-test` (driver data of `ExpansionManager`, #54). Like the harness they read only `RepRapFirmware/src`.
 - **Artifact:** `rrf-harness-results` holds the TRX files and the gcovr reports (HTML, Cobertura, JSON).
 
 ## Raw pointers that can be reseated
