@@ -170,7 +170,11 @@ Open questions:
   - Test: `File.InfoParserErrors.MalformedLine`.
 - **G7. The M37 simulation overwrites files shorter than 64 bytes.** The seek to the end is skipped (`FileInfoParser.cs:931-944`). Test: `Codes.JobFiles.SimulationOfShortFile`.
 - **G8. A read error in a job names the next line.** `readCode` is null, so `file.LineNumber` is used (`JobProcessor.cs:507`). Test: `ErrorInJobNamesTheFailingLine`.
+  - The same happens in a macro: the read catch of `MacroFile.RunAsync` also reports the file's `LineNumber` (`MacroFile.cs:418-419` at 3db68bd7). An `else` in line 11 is reported as line 12 (seen in `Codes.MacroCodeAfterError`, 2026-11-23).
 - **G9. M32 inside a job still runs the codes that were read ahead.** `JobProcessor.Cancel` (`JobProcessor.cs:315-326`). RRF chains to the new file directly (`GCodes2.cpp:1106`). Test: `SelectFileFromJobStopsFirstJob`.
+  - Cause (2026-11-23), the same as the first defect of L7. `DoFilePrint` gives each code the job's token (`JobProcessor.cs:498` at 3db68bd7). Since upstream 2cbc04ae, `Code.ExecuteAsync()` replaces it with the channel's token (`:508`), so `Cancel` does not reach the codes read ahead.
+  - With the token passed to `ExecuteAsync`, `SelectFileFromJobStopsFirstJob` passed in 2 of 2 runs.
+  - Not fixed with L7. The read catch of `DoFilePrint` aborts the job at once (`:525`). With the token, that abort would probably also cancel the codes before a line that cannot be read, as #204 had to avoid for macros (not tested). Pause and resume would need a check too.
 - **G10. `fileread` differs from RRF's `ReadArrayFromFile`.** RRF: `ExpressionParser.cpp:1192-1358`, `Configuration.h:281`.
   - It allows 50 elements instead of 40.
   - It refuses length 0.
@@ -504,12 +508,19 @@ Line numbers refer to RRF fork `3.7-dev` at 9a585f644. The census itself and its
 
 Line numbers refer to DSF `v3.7-dev` at 22a94eb6.
 
-- **L7. A code after a failing code of a macro still runs.**
-  - Seen on the lab printer on 2026-11-23 at 12:05:44 UTC (DSF 3.7.0+mp.14 of the image, RRF 3.7.0+1.mp.11-dev.1). A test macro had `var heaters = heat.heaters` in line 9 and `set global.labTestObjectArrayStored = true` in line 10. RRF refused line 9 ("Cannot assign a value of type 'object' to a variable"). DSF logged the error and "Aborted macro file". The global was `true` afterwards, so line 10 had run. RRF had been reset at 12:04:32, so the global was not left from before.
-  - From the code: `MacroFile.RunAsync` reads and starts up to `BufferedMacroCodes` codes (16, `Settings.cs:238`) before it waits for the first one (`MacroFile.cs:394-406`, "actual execution happens in the background"). It aborts the file only when it waits for the failing code (`:435`, `:457`), and the codes started meanwhile are not cancelled. This is upstream code (75eb65361, bffe4a002).
-  - Not fork code: `MacroFile.cs` is identical in the fork and in upstream `v3.7-dev` (6c2c5aee), and `BufferedMacroCodes` is 16 there too (upstream `Settings.cs:233`).
-  - For an upstream report the failing line must fail on upstream RRF as well. `var heaters = heat.heaters` fails only since RRF fork PR #57. A line that should fail on both is an unknown object model key, which RRF refuses with "unknown value" (`ObjectModel.cpp:1281` in the fork, not checked against upstream RRF).
-  - The wiki says of an error in a move or arc that it "aborts the job file or macro that contains the command, and any job file or macro that called it" (`Gcodes.md:385`, `:552`). It says nothing general about meta commands.
-  - On the CHX, a macro whose check fails can still run up to 15 more codes, e.g. set a global after a failed precondition.
-  - Not tested: other kinds of code after the failing one (moves, M-codes that go to RRF), and why the flush of `set global.*` (`KeywordHandler.cs:244`) did not stop it.
-  - Related: G9 (M32 inside a job still runs the codes that were read ahead).
+- **Fixed and removed from this list (2026-11-23):** L7 (#204; a code after a failing code of a macro still ran).
+  - Seen on the lab printer on 2026-11-23: RRF refused `var heaters = heat.heaters`, and the `set global` in the next line still ran.
+  - The cause was two upstream defects:
+    - Since upstream 2cbc04ae, `Code.ExecuteAsync()` gave the read-ahead codes the channel's token instead of the macro's, so "Aborted macro file" cancelled none of them.
+    - `MacroFile.RunAsync` aborted the macro only when it awaited the failed code. By then the pipeline had gone on with the next codes.
+  - `Code.SetException` now aborts the macro of a failed code. After a line that cannot be read, the lines before it still finish.
+  - Tests: `Codes.MacroCodeAfterError`. Lab test A-14 checks a line after the refused assignment again; not run on the printer yet.
+  - For an upstream report, use a line that upstream RRF refuses too, e.g. `set var.missing = 1` (`SbcInterface.cpp:1137-1143`).
+
+Line numbers below refer to DSF `v3.7-dev` at 3db68bd7 and RRF fork `3.7-dev` at 7bfe6ad81.
+
+- **L8. A failed code in a job does not stop the job.**
+  - `JobProcessor.DoFilePrint` only logs an exception of a code and goes on with the next one (`JobProcessor.cs:553-561`). It aborts the job only for a line that cannot be read (`:510-527`).
+  - RRF in standalone mode aborts the print when a meta command fails (`GCodes.cpp:875-882`, `AbortPrint`). In SBC mode RRF does not run meta commands; DSF does.
+  - So a `set` or `var` that fails in a job file stops a macro (L7) but not the job.
+  - Found from the code while fixing L7, not tested. No decision yet.
