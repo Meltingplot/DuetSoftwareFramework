@@ -33,6 +33,7 @@ The projects are git submodules of the Meltingplot forks. They were first pinned
   - FreeRTOS d3ce7a3: Meltingplot/FreeRTOS#1. The end of a critical section restores the interrupt mask that its caller had, and a task that blocks with a mask or a critical section of its own stops in `vAssertCalled`.
   - RRFLibraries 888b479: Meltingplot/RRFLibraries#2 (a new ReadWriteLock lock record while another task is inside malloc).
   - The version strings still read `3.7.0+1.mp.10` and `3.7.0+1.mp.4`.
+- **RRF release `3.7.0+1.mp.11`** (2e31913b0) and **Duet3Expansion release `3.7.0+1.mp.5`** (16c3abf3): the fork branches of 2026-11-23 with the version strings (Meltingplot/RepRapFirmware#89, Meltingplot/Duet3Expansion#27), nothing else. The libraries are unchanged.
 
 | Submodule | Branch | Used by |
 |---|---|---|
