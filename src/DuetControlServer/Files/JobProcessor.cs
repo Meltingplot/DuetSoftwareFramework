@@ -467,6 +467,7 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
         // Process the file being printed
         Queue<Code> codes = new();
         long currentFilePosition = 0L;
+        bool readFailed = false;
         do
         {
             // Fill up the code buffer
@@ -522,7 +523,11 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
                                 await _eventLogger.LogOutputAsync(MessageType.Error, $"in file {Path.GetFileName(file.FilePath.Physical)} line {readCode?.LineNumber ?? file.LineNumber}: {e.Message}");
                                 _logger.LogError(e, "Error in job file (channel {Channel}) line {LineNumber}: {Message}", file.Channel, readCode?.LineNumber ?? file.LineNumber, e.Message);
                             }
-                            Abort();
+
+                            // Stop reading, but let the codes before the failing line finish, as RRF executes them before it reads that line.
+                            // Aborting the job now would cancel them, so it is aborted when they are done
+                            file.Close();
+                            readFailed = true;
                         }
                     }
                 }
@@ -568,6 +573,15 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
             }
             else
             {
+                if (readFailed)
+                {
+                    readFailed = false;
+                    using (await LockAsync())
+                    {
+                        Abort();
+                    }
+                }
+
                 // Resolve pending sync requests waiting for this particular file channel
                 _codeProcessor.PurgeSyncRequestsFor(file);
 
