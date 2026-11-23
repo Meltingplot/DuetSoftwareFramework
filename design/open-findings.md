@@ -499,3 +499,17 @@ Line numbers refer to RRF fork `3.7-dev` at 9a585f644. The census itself and its
 - **K19. A late OpenFileResult overwrites `fileOffset`** in any state (`SbcInterface.cpp:1292`). Incoming packets are handled before the posted request is sent in the same transfer, so a seek or file list request posted after an open timed out can go out with the late file length as its offset or start index. It needs DSF to answer more than 3 s late. Found from the code, not tested. No decision yet.
 - **K18. The return value of `WriteLocked` is ignored** (`SbcInterface.cpp:689`). Without room in the transmit buffer the Lock packet still counts as processed, and the Locked answer is lost while the main task holds the movement lock. Upstream does the same. Found from the code, not tested. No decision yet.
 
+
+## Found by the lab tests of RRF #57 (2026-11-23)
+
+Line numbers refer to DSF `v3.7-dev` at 22a94eb6.
+
+- **L7. A code after a failing code of a macro still runs.**
+  - Seen on the lab printer on 2026-11-23 at 12:05:44 UTC (DSF 3.7.0+mp.14 of the image, RRF 3.7.0+1.mp.11-dev.1). A test macro had `var heaters = heat.heaters` in line 9 and `set global.labTestObjectArrayStored = true` in line 10. RRF refused line 9 ("Cannot assign a value of type 'object' to a variable"). DSF logged the error and "Aborted macro file". The global was `true` afterwards, so line 10 had run. RRF had been reset at 12:04:32, so the global was not left from before.
+  - From the code: `MacroFile.RunAsync` reads and starts up to `BufferedMacroCodes` codes (16, `Settings.cs:238`) before it waits for the first one (`MacroFile.cs:394-406`, "actual execution happens in the background"). It aborts the file only when it waits for the failing code (`:435`, `:457`), and the codes started meanwhile are not cancelled. This is upstream code (75eb65361, bffe4a002).
+  - Not fork code: `MacroFile.cs` is identical in the fork and in upstream `v3.7-dev` (6c2c5aee), and `BufferedMacroCodes` is 16 there too (upstream `Settings.cs:233`).
+  - For an upstream report the failing line must fail on upstream RRF as well. `var heaters = heat.heaters` fails only since RRF fork PR #57. A line that should fail on both is an unknown object model key, which RRF refuses with "unknown value" (`ObjectModel.cpp:1281` in the fork, not checked against upstream RRF).
+  - The wiki says of an error in a move or arc that it "aborts the job file or macro that contains the command, and any job file or macro that called it" (`Gcodes.md:385`, `:552`). It says nothing general about meta commands.
+  - On the CHX, a macro whose check fails can still run up to 15 more codes, e.g. set a global after a failed precondition.
+  - Not tested: other kinds of code after the failing one (moves, M-codes that go to RRF), and why the flush of `set global.*` (`KeywordHandler.cs:244`) did not stop it.
+  - Related: G9 (M32 inside a job still runs the codes that were read ahead).

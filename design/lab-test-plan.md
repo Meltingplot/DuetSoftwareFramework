@@ -779,3 +779,30 @@ Bewertung:
 - Der Link verhält sich wie mit mp.9: F-2 gleicht dem Lauf vom 2026-11-10 (672 x Retry, 0 Abweichungen), F-1 ebenso.
 - #50 und #51 prüft dieser Lauf nur indirekt: Jeder Boot und jedes `M999` führt `config.g` und damit `M669 K5` aus, also `SetKinematics` (RRF #51). Geprüft sind beide Fixes deterministisch durch `Tools/heap-test` und `Tools/kinematics-test` in RepRapFirmware. Ein bestandener 60-min-Lauf von RG-18 auf mp.10 steht weiter aus und gehört nicht zum Release-Umfang.
 - Nicht geprüft: Beide Fixes schützen nur Leser mit höherer Priorität als der Main-Task, also den SBC-Task. Ohne SBC liest der Netzwerk-Task das Objektmodell mit derselben Priorität wie der Main-Task (`TaskPriorities.h:15`, `Tasks.cpp:283`, `Network.cpp:519`), dort bleibt das Fenster offen. Die CHX läuft mit SBC und aktiviert das Netzwerk der RRF nicht (`RepRap.cpp:637-645`).
+
+### 2026-11-23: Fixes von RRF #55 bis #88, D3E #18 bis #26 und FreeRTOS #1 als Side-Load, bestanden mit neuem DSF-Befund
+
+```
+Datum, Zeit (UTC): 2026-11-23, 10:55 Side-Load D3E, 11:00 Side-Load RRF, 11:13:47 bis 11:17:23 Block 0, 11:17:57 bis 11:28:18 Block 1, 11:29:11 bis 11:31:53 F-1, 11:31:55 bis 12:04:50 F-2, 12:05 A-14 bis A-16 (erster Lauf), 12:10:33 A-14 bis A-16 (zweiter Lauf)
+Anlass, PR, Commit: gezielte Prüfung der gemergten Fork-Fixes vor dem Pin (DSF #198): RRF 3.7-dev 2f2a8af5b, D3E 169c8280, FreeRTOS d3ce7a3, RRFLibraries 888b479. Neue Tests A-14 bis A-16 für RRF #57 auf feature/lab-tests-rrf-fixes
+DSF: 3.7.0+mp.14 im Image. Block 0 und Block 1 auf 22a94eb6 (v3.7-dev), F-1 und F-2 mit Side-Load von 22a94eb6 mit Fehlerinjektion, A-14 bis A-16 ohne Side-Load
+RRF: 3.7.0+1.mp.11-dev.1 (sha256 8cdcfa0547331a14...), Firmware-Side-Load. Erweiterungen 3.7.0+1.mp.5-dev.1 (CAN 50 bis 53 EXP1HCL, 60 SZP), Firmware-Side-Load über den Bootloader
+Stufen und Freigabe durch: 2, Tim (Side-Load "starte mit D3E ... erst wenn D3E läuft, laden wir RRF nach", Lauf "1. und 2. umsetzten RG-18 nicht umsetzten ... RG-18 für den Release-Lauf")
+Block 0: 2506 bestanden, 0 fehlgeschlagen, 6 übersprungen. Die Liste enthält 51 Lab-Testfälle
+Block 1 (E, RG-1 bis RG-16): 37 bestanden, 0 fehlgeschlagen, 2 übersprungen, 12 explizit nicht gelaufen. Watchdog-Neustarts 5 x, wieder da nach 12,0 bis 12,4 s (Median 12,1 s). RG-17 und RG-18 nicht gelaufen (Tim: RG-18 im Release-Lauf)
+F-1: 15 von 15 ESD-Fällen, 15 x Retry, 0 nicht injiziert, 0 Abweichungen vom Census
+F-2: 672 von 3234 Fällen auf dem erweiterten Link, 672 x Retry, 0 nicht injiziert, 0 Abweichungen
+A-14 bis A-16: erster Lauf A-14 fehlgeschlagen, A-15 und A-16 bestanden. RRF lehnte die Zuweisung ab, aber die Zeile danach lief trotzdem (Befund L7 in design/open-findings.md). Test umgebaut, zweiter Lauf 3 von 3 bestanden
+PortMatchesRealFirmware: CI von DSF #198 (Pins wie oben), usb1 und usb0 je 6 von 6, 0 Fälle mit Abweichung. Host-Tests von RRF 2f2a8af5b lokal 22 von 22 bestanden
+M122: RRF-Link-Zähler in allen Blöcken 0. DSF in Block 1: Full transfer restarts, extended left und connection resets je 0 -> 1, lost connections 0. Nach F-1 und F-2 Last reset 18 s vor dem Ende, cause software: das M999 nach dem DCS-Neustart beim Entfernen des Side-Loads (Abschnitt 9)
+Self-Test im Laufzeitraum: Block 1 2 Läufe, F-1 1 Lauf, F-2 1 Lauf, alle passed
+Journalbefunde: in keinem Block ein Fehlerbefund aus Abschnitt 9. Block 1: 1 x "Failed to find query for object model response", 7 x "Aborting orphaned macro file daemon.g" (bekannt). F-1: 15 x injiziert, 5 x Bad header CRC, 10 x Bad data CRC, 6 x Machine is halted. F-2: 672 x injiziert, 118 x Restarting full transfer, 22 x Bad header CRC, 8 x Bad data CRC, 26 x Sending transfer # again, 2 x Machine is halted. A-14 bis A-16: keiner
+Rückbau geprüft: ja, nach jedem Block (kein DSF-Side-Load, /var/tmp/lab-tests weg, OTA-Timer aktiv, sys/trigger30.g und 0:/macros/lab-tests weg, idle, kein Job, Erweiterungen laufen, Versionen wie vorher). Der Firmware-Side-Load von RRF mp.11-dev.1 und D3E mp.5-dev.1 bleibt bis zum nächsten Neustart des SBC drauf
+```
+
+Bewertung:
+- Mit den gemergten Fixes ist Block 0, E, RG-1 bis RG-16, F-1 und F-2 ohne Befund durchgelaufen. F-2 gleicht den Läufen vom 2026-11-10 und 2026-11-21 (672 x Retry, 0 Abweichungen).
+- FreeRTOS #1 lässt eine Task, die mit einer eigenen Interrupt-Maske blockiert, in `vAssertCalled` laufen, also in einen Software-Reset. In Block 1 gehen alle RRF-Neustarts auf Testaktionen zurück (5 x RG-6, 1 x Self-Test-Autostart). In F-1 und F-2 zeigt `M122` am Ende das `M999` des Rückbaus als letzten Reset, die Gründe der Resets nach den DCS-Neustarts davor (`Lab.cs:280-290`) sind nicht einzeln geprüft. Das zeigt nur, dass die Pfade dieser Blöcke keine Maske über einen blockierenden Aufruf halten, nicht, dass es keinen solchen Pfad gibt.
+- RRF #57 ist end to end geprüft (A-14 bis A-16). Die übrigen Fixes sind am CHX nicht erreichbar oder brauchen Bewegung (Abschnitt 12). Sie sind offline durch die Host-Tests geprüft.
+- Neuer DSF-Befund L7: Eine Zeile nach einem fehlgeschlagenen Code eines Makros läuft noch, obwohl DSF das Makro abbricht. Der Code ist upstream, siehe design/open-findings.md.
+- Offen: Stufe 4 vor Ort, RG-18 im Release-Lauf.
