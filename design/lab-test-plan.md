@@ -423,7 +423,7 @@ Rückbau geprüft:
   - RRF #79 (Binärcode über 256 Bytes nach einem Text-Code): Text-Codes kommen im SBC-Modus nur von USB, Aux und von RRF selbst, am CHX nur aus Trigger-Aktionen (`M581.1 … U`, RRF `GCodes.cpp:1044-1054`). Der CHX hat keine, seine Trigger starten Makrodateien. Geprüft durch `Tools/sbc-code-length-test` in RepRapFirmware.
   - RRF #58 (fehlgeschlagenes Makro, auf das kein Kanal wartet): Nur der Daemon-Kanal wartet nicht auf ein angefordertes Makro (RRF `GCodeBuffer.cpp:1334`), und DSF meldet einen Makrofehler nur für eine fehlende Datei (`Processor.cs:1730`). Der CHX hat eine `daemon.g`. Ein Test müsste sie entfernen, das wäre Stufe 3 und träfe den Fehler bei einem Versuch alle 10 s nur statistisch.
   - Races mit `malloc` und dem Objektmodell (RRF #70, #72 bis #77, RRFLibraries #2, Duet3Expansion #20): Nur durch Host-Tests und alloc-check deterministisch geprüft, am DUT nur als "kein Reset".
-  - Bewegung, Feed Hold, Endstops, Z-Sonde und Emergency Pause (RRF #56, #63, #66, #83, #84, Duet3Expansion #24) brauchen Stufe 4.
+  - Bewegung, Feed Hold, Endstops, Z-Sonde und Emergency Pause (RRF #56, #63, #66, #83, #84, Duet3Expansion #24) brauchen Stufe 4. Am 2026-11-23 liefen davon #66 (als Regressionsprüfung) und #83 (Abschnitt 14). #84 braucht Power-Fail oder Stall-Pause, #56 eine Antastfahrt ohne Auslösung mit `M558 P` und einer Änderung eines CAN-Eingangs, #63 `M672`, das der CHX nicht nutzt.
 - **Andere Repos:** Inhalt des Self-Tests (chx350-config) und USB-Guard, OTA sowie Panel-Fehlerbilder (rpi-image-gen) brauchen eigene Prüfpläne. Hier wird nur die Schnittstelle geprüft.
 
 ## 13. Offene Entscheidungen
@@ -806,3 +806,29 @@ Bewertung:
 - RRF #57 ist end to end geprüft (A-14 bis A-16). Die übrigen Fixes sind am CHX nicht erreichbar oder brauchen Bewegung (Abschnitt 12). Sie sind offline durch die Host-Tests geprüft.
 - Neuer DSF-Befund L7: Eine Zeile nach einem fehlgeschlagenen Code eines Makros läuft noch, obwohl DSF das Makro abbricht. Der Code ist upstream, siehe design/open-findings.md.
 - Offen: Stufe 4 vor Ort, RG-18 im Release-Lauf.
+
+### 2026-11-23 mittags: Stufe 4 mit Tim vor Ort, Referenzfahrt und Feed Hold, bestanden mit Befund (nicht weiter verfolgt)
+
+```
+Datum, Zeit (UTC): 2026-11-23, 12:22:42 Ausgangszustand, 12:23:32 bis 12:26:06 G28, 12:28:36 FH-1, 12:29:18 FH-2, 12:30:10 G28 Y, 12:30:29 FH-3, 12:30:52 FH-1 wiederholt, 12:31:28 Endzustand
+Anlass, PR, Commit: Stufe-4-Teil der gezielten Prüfung der Fork-Fixes (RRF #66, #83, FreeRTOS #1, D3E #24), Firmware wie im Lauf davor
+DSF: 3.7.0+mp.14 im Image, kein Side-Load. Codes einzeln über HTTP durch den Tunnel, ohne Lab-Runner
+RRF: 3.7.0+1.mp.11-dev.1, Erweiterungen 3.7.0+1.mp.5-dev.1 (Firmware-Side-Load vom Vormittag)
+Stufen und Freigabe durch: 4, Tim vor Ort am Not-Aus, Türen zu und geprüft. Freigabe "1. G28 komplett, 2. Feed Hold bei Referenzfahrt, 3. Feed Hold bei G1-Fahrt", M-1 bis M-4 nicht
+Ausgangszustand: idle, keine Achse referenziert, Heizungen aus, B50 bis B53 0 Step-Fehler, Link 0 Fehler
+G28: homeall.g in 2:34 min, alle Achsen referenziert (X 440, Y 211, Z 200, U 422), global.result 0. X, Y und U referenzieren über Treiber auf den EXP1HCL mit Encoder-Endstops (config.g:108-111 auf dem Drucker), Z über die SZP
+FH-1: G28 Y von Y 211, nach 1,3 s M25.1. Status held, Y steht bei 102,188. M24 nach 5,8 s: G28 Y endet, Y 0 referenziert, result 0. Wiederholung 12:30:52: Y steht bei 94,903, sonst gleich
+FH-2: wie FH-1, aber M25.1 S1 und kein M24. G28 Y endet sofort, Y steht bei 100,434 und ist nicht referenziert, X, Z und U bleiben referenziert, Status idle. Journal "Aborted macro file homey.g", "Failed to home axes". Danach G28 Y ohne Hold in 4 s, ohne Fehler
+FH-3: G1 Y20 F3000 von Y 211, nach 1,3 s M25.1. Status held bei Y 140,631. M24: die Fahrt endet auf Y 20
+Y blieb unter 211, weil U auf 422 steht und Y und U in derselben Richtung fahren. homez.g:39 auf dem Drucker stellt Y auf max/2, während U auf max steht
+M122: kein Reset auf dem Mainboard und den Erweiterungen während des Termins (Mainboard Last reset 12:04, das M999 beim Rückbau von F-2), Heap OK, B20 und B50 bis B53 0 Step-Fehler, lost connections und connection resets 0
+Journalbefunde: in beiden FH-1-Läufen "Error: Y endstop did not trigger" und "Warning: Y homing - retry" von homey.g (12:28:38, 12:30:54), sonst keine Fehler
+Endzustand: idle, alle Achsen referenziert (X 440, Y 0, Z 200, U 422), Motoren bestromt, Heizungen aus
+```
+
+Bewertung:
+- RRF #66: Die Referenzfahrten von X, Y und U laufen nur über Treiber auf den Erweiterungen und hielten an ihren Endstops wie vorher. Das ist die Regressionsprüfung für "Moves executed only by remote drivers are still stopped". Den veralteten Eintrag in `activeEndstops`, den #66 behebt, hat der Termin nicht gezielt erzeugt. Das prüft `Tools/endstop-check-test` in RepRapFirmware.
+- RRF #83 und FreeRTOS #1: Hold und Stopp mit einer Referenzfahrt in Bewegung (FH-1, FH-2) und ohne (FH-3) liefen ohne Reset. Ob der Bereich vorher mit freigegebenem Schrittinterrupt lief, zeigt der Termin nicht, das zeigt `make scan-unmask`.
+- D3E #24 nur indirekt: 0 Step-Fehler auf den Erweiterungen.
+- Befund FH-1: Bei `M25.1` während der Referenzfahrt von `homey.g` kam das `M400` nach der unterbrochenen `G1 H1`-Fahrt schon im Hold zurück (Fehlermeldung 0,5 s nach `M25.1`, `M24` erst 5 s später). `homey.g` prüfte die Position, meldete den Fehler und verbrauchte einen seiner drei Versuche. Nach `M24` war Y korrekt referenziert. Nach dem Code soll GCodes auf den Rest der Fahrt warten (RRF `DDARing.cpp:919`, `:922`, `CutHomingMove`). Tim (2026-11-23): Ein Feed Hold muss während einer Referenzfahrt nicht weiterlaufen. Deshalb nicht weiter untersucht und nicht in `design/open-findings.md`.
+- Nicht geprüft: RRF #84, #56, #63 (Abschnitt 12) und M-1 bis M-4.
