@@ -70,6 +70,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 | `CodeReplies.M36MissingFileIsValidJson` | M36 replied with invalid JSON for a missing file | DSF #72 |
 | `CodeReplies.M39ReportsSizesAndClusterSize` | M39 reported sizes in "Gb" and no cluster size | DSF #82 |
 | `MacroCloseStress.NoResetWhileMacrosCloseOnTheTriggerChannel` (explicit) | RRF reset while idle with a MemoryProtectionFault in `Heap::DeleteSlot` just after a trigger macro closed, about once per 40,000 closes (RRF 3.7.0+1.mp.9 and older, upstream code) | RRF fork PR #50 (test build 3.7.0+1.mp.10-dev.1) |
+| `VariableCopies.*` | A variable kept a raw pointer into the object model for an array of objects, a string or a port. On the CHX, `sys/daemon.g:37` keeps the filament name of extruder 0 and never saw a change. The tests use the text of a box of their own, the heaters and the port of a temperature sensor instead | RRF fork PR #57 (test build 3.7.0+1.mp.11-dev.1) |
 | `LinkSoak.NoLostConnectionWhileIdle` (explicit) | TfrRdy timeouts every 15 to 30 minutes (DSF 3.7.0-rc.1) | Upstream 46886f5d |
 | `SpiFaultRestarts.StuckLinkRestartsDcs` (explicit) | A stuck link needed a manual restart of DCS | DSF #102 |
 | `SpiFaultRestarts.DcsStartsWhileTfrRdyIsLow` (explicit) | A new DCS failed its first start when a recovered fault left TfrRdy low | DSF #99 |

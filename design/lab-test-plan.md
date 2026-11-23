@@ -257,7 +257,7 @@ src/LabPrinterTests/run-lab-tests.sh --side-load --fault-injection --filter "Ful
 
 ### Neue Tests
 
-A-1 bis A-7 und A-10 liefen am 2026-11-07 auf Hardware ([Abschnitt 14](#14-durchgeführte-läufe)), A-8, A-9 und A-11 bis A-13 noch nicht. `src/LabPrinterTests/README.md` nennt zu jedem Test die Klasse und den Aufruf.
+A-1 bis A-7 und A-10 liefen am 2026-11-07 auf Hardware ([Abschnitt 14](#14-durchgeführte-läufe)), A-8, A-9 und A-11 bis A-16 noch nicht. `src/LabPrinterTests/README.md` nennt zu jedem Test die Klasse und den Aufruf.
 
 | ID | Änderung | Stufe | Ablauf | Soll |
 |---|---|---|---|---|
@@ -274,6 +274,9 @@ A-1 bis A-7 und A-10 liefen am 2026-11-07 auf Hardware ([Abschnitt 14](#14-durch
 | A-11 | #74, #80 | 3 | Testdatei in `0:/gcodes`, `M30` mit relativem Namen, dann `M30` und `M472` mit fehlendem Ziel | Datei gelöscht, `Failed to delete file ...: file not found` (`MCodeHandler.cs:423`), `Failed to delete file or directory ...: file or directory not found` (`MCodeHandler.cs:911`) |
 | A-12 | #81 | 3 | `state.logLevel` und `state.logFile` lesen, `M929 S4`, `M929 S-1`, Zustand wiederherstellen | `parameter 'S' too high` (`MCodeHandler.cs:1195`), `expected non-negative integer after 'S'` (`MCodeHandler.cs:1191`), Protokollierung danach wie vorher |
 | A-13 | #76 | 3 | `M606 S1` über HTTP ohne Job | Warnung `this command is valid only when running a job from a stored file` (RRF `GCodes5.cpp:213-216`), `File2` bleibt unverändert, Stack-Tiefe 0 |
+| A-14 | RRF #57 | 1 | Testmakro: `#heat.heaters` in ein Global, dann `global labTestHeaterObjects = heat.heaters` als letzte Zeile | Das zweite Global entsteht nicht, im Journal steht `Cannot assign a value of type 'object' to a variable` (RRF `Variable.cpp:91`), die Zahl der Heizungen ist größer 0. Die Zuweisung steht am Ende, weil DSF die Zeilen danach trotz des Fehlers ausführen kann (`design/open-findings.md`, L7) |
+| A-15 | RRF #57 | 1 | Testmakro: eigene Box mit `M291 S1 T0`, `state.messageBox.message` in ein Global, Box mit `M292` schließen, zweite Box öffnen und schließen | Das Global hält danach den Text der ersten Box (RRF `MessageBox.cpp:24`, CString). Zeigt die Maschine eine eigene Box, wird der Fall übersprungen |
+| A-16 | RRF #57 | 1 | Testmakro: `port` des ersten Temperatursensors mit Port in ein Global, dann `#` darauf | Das Global hält den Pin-Namen, den `M409` für den Sensor meldet, und `#` liefert dessen Länge (RRF `SensorWithPort.cpp:21`) |
 
 Hinweise:
 - **A-1, Fehlerfall:** Auf dem erweiterten Link sagt der Census nach der Aktivierung keinen hängenden Fall voraus (`ExtendedLinkRecoversFromEverySingleFault`). Hängen kann es nur in der Übertragung, die den Link aktiviert (`LinkRecovery.cs:650-654`, 23 Fälle laut #102). Davon kann der Injektor nur `DataResponse ToRrf word 0x00000006` treffen. Dass dieser Fehler mit und ohne Polling zum DCS-Neustart führt, prüft `LabFaultInActivationRestartsDcs` offline.
@@ -287,6 +290,7 @@ Hinweise:
 - **A-3, `M409`:** Der Test sendet vorher keinen Code auf HTTP, weil `M98.3` sonst abgelehnt würde und der Flow erst eine Minute später käme. Der Flow dauert etwa 1 s, `M409` kann also auch danach ankommen. Sicher abgedeckt ist `M409` während eines Makros durch RG-4 und RG-5.
 - **A-4:** `M98.n` steht nicht im Wiki. Das Soll stammt nur aus dem Code und #108.
 - **A-5, Makrozeilen:** Ausgaben eines Makros erreichen die `M98`-Antwort nicht (`LabTest.cs:103`). Der Test wertet daher Globals und Journal aus.
+- **A-14 bis A-16, RRF #57:** Vor dem Fix hielt eine Variable einen rohen Zeiger ins Objektmodell. Auf dem CHX betraf das `sys/daemon.g:37` (`var fil_prev = move.extruders[0].filament`): Der Vergleich sah einen Filamentwechsel nie. Die Tests nutzen Werte, die sie ohne Eingriff in die Maschine ändern können, statt eines Filamentwechsels. `Tools/variable-test` in RepRapFirmware prüft jede Art von Wert offline. Eine Gegenprobe auf alter Firmware gibt es nicht, weil für einen Test keine andere RRF-Version geflasht wird.
 
 ### Kanal-Epoche (Meilensteine E1 und E2), geplant
 
@@ -415,6 +419,11 @@ Rückbau geprüft:
   - USB-Kanäle und G/M als Makroparameter stehen in `design/open-findings.md`.
   - Stall vom 2026-11-02 um 22:13 UTC, TfrRdy-Flanken-Census, 2 von 42 DCS-Neustarts mit Stock-RRF und Hänger nach Firmware-Update sind ungeklärt.
   - Zwei parallele `M122`-Schleifen lösten am 2026-11-04 eine `DivideByZeroException` aus. Die Division ist unverändert (`SPI.cs:218`) und steht noch nicht in `design/open-findings.md`.
+- **RRF-Fixes, die am CHX nicht erreichbar sind** (Stand RRF `3.7.0+1.mp.11-dev.1`):
+  - RRF #79 (Binärcode über 256 Bytes nach einem Text-Code): Text-Codes kommen im SBC-Modus nur von USB, Aux und von RRF selbst, am CHX nur aus Trigger-Aktionen (`M581.1 … U`, RRF `GCodes.cpp:1044-1054`). Der CHX hat keine, seine Trigger starten Makrodateien. Geprüft durch `Tools/sbc-code-length-test` in RepRapFirmware.
+  - RRF #58 (fehlgeschlagenes Makro, auf das kein Kanal wartet): Nur der Daemon-Kanal wartet nicht auf ein angefordertes Makro (RRF `GCodeBuffer.cpp:1334`), und DSF meldet einen Makrofehler nur für eine fehlende Datei (`Processor.cs:1730`). Der CHX hat eine `daemon.g`. Ein Test müsste sie entfernen, das wäre Stufe 3 und träfe den Fehler bei einem Versuch alle 10 s nur statistisch.
+  - Races mit `malloc` und dem Objektmodell (RRF #70, #72 bis #77, RRFLibraries #2, Duet3Expansion #20): Nur durch Host-Tests und alloc-check deterministisch geprüft, am DUT nur als "kein Reset".
+  - Bewegung, Feed Hold, Endstops, Z-Sonde und Emergency Pause (RRF #56, #63, #66, #83, #84, Duet3Expansion #24) brauchen Stufe 4. Am 2026-11-23 liefen davon #66 (als Regressionsprüfung) und #83 (Abschnitt 14). #84 braucht Power-Fail oder Stall-Pause, #56 eine Antastfahrt ohne Auslösung mit `M558 P` und einer Änderung eines CAN-Eingangs, #63 `M672`, das der CHX nicht nutzt.
 - **Andere Repos:** Inhalt des Self-Tests (chx350-config) und USB-Guard, OTA sowie Panel-Fehlerbilder (rpi-image-gen) brauchen eigene Prüfpläne. Hier wird nur die Schnittstelle geprüft.
 
 ## 13. Offene Entscheidungen
@@ -770,3 +779,56 @@ Bewertung:
 - Der Link verhält sich wie mit mp.9: F-2 gleicht dem Lauf vom 2026-11-10 (672 x Retry, 0 Abweichungen), F-1 ebenso.
 - #50 und #51 prüft dieser Lauf nur indirekt: Jeder Boot und jedes `M999` führt `config.g` und damit `M669 K5` aus, also `SetKinematics` (RRF #51). Geprüft sind beide Fixes deterministisch durch `Tools/heap-test` und `Tools/kinematics-test` in RepRapFirmware. Ein bestandener 60-min-Lauf von RG-18 auf mp.10 steht weiter aus und gehört nicht zum Release-Umfang.
 - Nicht geprüft: Beide Fixes schützen nur Leser mit höherer Priorität als der Main-Task, also den SBC-Task. Ohne SBC liest der Netzwerk-Task das Objektmodell mit derselben Priorität wie der Main-Task (`TaskPriorities.h:15`, `Tasks.cpp:283`, `Network.cpp:519`), dort bleibt das Fenster offen. Die CHX läuft mit SBC und aktiviert das Netzwerk der RRF nicht (`RepRap.cpp:637-645`).
+
+### 2026-11-23: Fixes von RRF #55 bis #88, D3E #18 bis #26 und FreeRTOS #1 als Side-Load, bestanden mit neuem DSF-Befund
+
+```
+Datum, Zeit (UTC): 2026-11-23, 10:55 Side-Load D3E, 11:00 Side-Load RRF, 11:13:47 bis 11:17:23 Block 0, 11:17:57 bis 11:28:18 Block 1, 11:29:11 bis 11:31:53 F-1, 11:31:55 bis 12:04:50 F-2, 12:05 A-14 bis A-16 (erster Lauf), 12:10:33 A-14 bis A-16 (zweiter Lauf)
+Anlass, PR, Commit: gezielte Prüfung der gemergten Fork-Fixes vor dem Pin (DSF #198): RRF 3.7-dev 2f2a8af5b, D3E 169c8280, FreeRTOS d3ce7a3, RRFLibraries 888b479. Neue Tests A-14 bis A-16 für RRF #57 auf feature/lab-tests-rrf-fixes
+DSF: 3.7.0+mp.14 im Image. Block 0 und Block 1 auf 22a94eb6 (v3.7-dev), F-1 und F-2 mit Side-Load von 22a94eb6 mit Fehlerinjektion, A-14 bis A-16 ohne Side-Load
+RRF: 3.7.0+1.mp.11-dev.1 (sha256 8cdcfa0547331a14...), Firmware-Side-Load. Erweiterungen 3.7.0+1.mp.5-dev.1 (CAN 50 bis 53 EXP1HCL, 60 SZP), Firmware-Side-Load über den Bootloader
+Stufen und Freigabe durch: 2, Tim (Side-Load "starte mit D3E ... erst wenn D3E läuft, laden wir RRF nach", Lauf "1. und 2. umsetzten RG-18 nicht umsetzten ... RG-18 für den Release-Lauf")
+Block 0: 2506 bestanden, 0 fehlgeschlagen, 6 übersprungen. Die Liste enthält 51 Lab-Testfälle
+Block 1 (E, RG-1 bis RG-16): 37 bestanden, 0 fehlgeschlagen, 2 übersprungen, 12 explizit nicht gelaufen. Watchdog-Neustarts 5 x, wieder da nach 12,0 bis 12,4 s (Median 12,1 s). RG-17 und RG-18 nicht gelaufen (Tim: RG-18 im Release-Lauf)
+F-1: 15 von 15 ESD-Fällen, 15 x Retry, 0 nicht injiziert, 0 Abweichungen vom Census
+F-2: 672 von 3234 Fällen auf dem erweiterten Link, 672 x Retry, 0 nicht injiziert, 0 Abweichungen
+A-14 bis A-16: erster Lauf A-14 fehlgeschlagen, A-15 und A-16 bestanden. RRF lehnte die Zuweisung ab, aber die Zeile danach lief trotzdem (Befund L7 in design/open-findings.md). Test umgebaut, zweiter Lauf 3 von 3 bestanden
+PortMatchesRealFirmware: CI von DSF #198 (Pins wie oben), usb1 und usb0 je 6 von 6, 0 Fälle mit Abweichung. Host-Tests von RRF 2f2a8af5b lokal 22 von 22 bestanden
+M122: RRF-Link-Zähler in allen Blöcken 0. DSF in Block 1: Full transfer restarts, extended left und connection resets je 0 -> 1, lost connections 0. Nach F-1 und F-2 Last reset 18 s vor dem Ende, cause software: das M999 nach dem DCS-Neustart beim Entfernen des Side-Loads (Abschnitt 9)
+Self-Test im Laufzeitraum: Block 1 2 Läufe, F-1 1 Lauf, F-2 1 Lauf, alle passed
+Journalbefunde: in keinem Block ein Fehlerbefund aus Abschnitt 9. Block 1: 1 x "Failed to find query for object model response", 7 x "Aborting orphaned macro file daemon.g" (bekannt). F-1: 15 x injiziert, 5 x Bad header CRC, 10 x Bad data CRC, 6 x Machine is halted. F-2: 672 x injiziert, 118 x Restarting full transfer, 22 x Bad header CRC, 8 x Bad data CRC, 26 x Sending transfer # again, 2 x Machine is halted. A-14 bis A-16: keiner
+Rückbau geprüft: ja, nach jedem Block (kein DSF-Side-Load, /var/tmp/lab-tests weg, OTA-Timer aktiv, sys/trigger30.g und 0:/macros/lab-tests weg, idle, kein Job, Erweiterungen laufen, Versionen wie vorher). Der Firmware-Side-Load von RRF mp.11-dev.1 und D3E mp.5-dev.1 bleibt bis zum nächsten Neustart des SBC drauf
+```
+
+Bewertung:
+- Mit den gemergten Fixes ist Block 0, E, RG-1 bis RG-16, F-1 und F-2 ohne Befund durchgelaufen. F-2 gleicht den Läufen vom 2026-11-10 und 2026-11-21 (672 x Retry, 0 Abweichungen).
+- FreeRTOS #1 lässt eine Task, die mit einer eigenen Interrupt-Maske blockiert, in `vAssertCalled` laufen, also in einen Software-Reset. In Block 1 gehen alle RRF-Neustarts auf Testaktionen zurück (5 x RG-6, 1 x Self-Test-Autostart). In F-1 und F-2 zeigt `M122` am Ende das `M999` des Rückbaus als letzten Reset, die Gründe der Resets nach den DCS-Neustarts davor (`Lab.cs:280-290`) sind nicht einzeln geprüft. Das zeigt nur, dass die Pfade dieser Blöcke keine Maske über einen blockierenden Aufruf halten, nicht, dass es keinen solchen Pfad gibt.
+- RRF #57 ist end to end geprüft (A-14 bis A-16). Die übrigen Fixes sind am CHX nicht erreichbar oder brauchen Bewegung (Abschnitt 12). Sie sind offline durch die Host-Tests geprüft.
+- Neuer DSF-Befund L7: Eine Zeile nach einem fehlgeschlagenen Code eines Makros läuft noch, obwohl DSF das Makro abbricht. Der Code ist upstream, siehe design/open-findings.md.
+- Offen: Stufe 4 vor Ort, RG-18 im Release-Lauf.
+
+### 2026-11-23 mittags: Stufe 4 mit Tim vor Ort, Referenzfahrt und Feed Hold, bestanden mit Befund (nicht weiter verfolgt)
+
+```
+Datum, Zeit (UTC): 2026-11-23, 12:22:42 Ausgangszustand, 12:23:32 bis 12:26:06 G28, 12:28:36 FH-1, 12:29:18 FH-2, 12:30:10 G28 Y, 12:30:29 FH-3, 12:30:52 FH-1 wiederholt, 12:31:28 Endzustand
+Anlass, PR, Commit: Stufe-4-Teil der gezielten Prüfung der Fork-Fixes (RRF #66, #83, FreeRTOS #1, D3E #24), Firmware wie im Lauf davor
+DSF: 3.7.0+mp.14 im Image, kein Side-Load. Codes einzeln über HTTP durch den Tunnel, ohne Lab-Runner
+RRF: 3.7.0+1.mp.11-dev.1, Erweiterungen 3.7.0+1.mp.5-dev.1 (Firmware-Side-Load vom Vormittag)
+Stufen und Freigabe durch: 4, Tim vor Ort am Not-Aus, Türen zu und geprüft. Freigabe "1. G28 komplett, 2. Feed Hold bei Referenzfahrt, 3. Feed Hold bei G1-Fahrt", M-1 bis M-4 nicht
+Ausgangszustand: idle, keine Achse referenziert, Heizungen aus, B50 bis B53 0 Step-Fehler, Link 0 Fehler
+G28: homeall.g in 2:34 min, alle Achsen referenziert (X 440, Y 211, Z 200, U 422), global.result 0. X, Y und U referenzieren über Treiber auf den EXP1HCL mit Encoder-Endstops (config.g:108-111 auf dem Drucker), Z über die SZP
+FH-1: G28 Y von Y 211, nach 1,3 s M25.1. Status held, Y steht bei 102,188. M24 nach 5,8 s: G28 Y endet, Y 0 referenziert, result 0. Wiederholung 12:30:52: Y steht bei 94,903, sonst gleich
+FH-2: wie FH-1, aber M25.1 S1 und kein M24. G28 Y endet sofort, Y steht bei 100,434 und ist nicht referenziert, X, Z und U bleiben referenziert, Status idle. Journal "Aborted macro file homey.g", "Failed to home axes". Danach G28 Y ohne Hold in 4 s, ohne Fehler
+FH-3: G1 Y20 F3000 von Y 211, nach 1,3 s M25.1. Status held bei Y 140,631. M24: die Fahrt endet auf Y 20
+Y blieb unter 211, weil U auf 422 steht und Y und U in derselben Richtung fahren. homez.g:39 auf dem Drucker stellt Y auf max/2, während U auf max steht
+M122: kein Reset auf dem Mainboard und den Erweiterungen während des Termins (Mainboard Last reset 12:04, das M999 beim Rückbau von F-2), Heap OK, B20 und B50 bis B53 0 Step-Fehler, lost connections und connection resets 0
+Journalbefunde: in beiden FH-1-Läufen "Error: Y endstop did not trigger" und "Warning: Y homing - retry" von homey.g (12:28:38, 12:30:54), sonst keine Fehler
+Endzustand: idle, alle Achsen referenziert (X 440, Y 0, Z 200, U 422), Motoren bestromt, Heizungen aus
+```
+
+Bewertung:
+- RRF #66: Die Referenzfahrten von X, Y und U laufen nur über Treiber auf den Erweiterungen und hielten an ihren Endstops wie vorher. Das ist die Regressionsprüfung für "Moves executed only by remote drivers are still stopped". Den veralteten Eintrag in `activeEndstops`, den #66 behebt, hat der Termin nicht gezielt erzeugt. Das prüft `Tools/endstop-check-test` in RepRapFirmware.
+- RRF #83 und FreeRTOS #1: Hold und Stopp mit einer Referenzfahrt in Bewegung (FH-1, FH-2) und ohne (FH-3) liefen ohne Reset. Ob der Bereich vorher mit freigegebenem Schrittinterrupt lief, zeigt der Termin nicht, das zeigt `make scan-unmask`.
+- D3E #24 nur indirekt: 0 Step-Fehler auf den Erweiterungen.
+- Befund FH-1: Bei `M25.1` während der Referenzfahrt von `homey.g` kam das `M400` nach der unterbrochenen `G1 H1`-Fahrt schon im Hold zurück (Fehlermeldung 0,5 s nach `M25.1`, `M24` erst 5 s später). `homey.g` prüfte die Position, meldete den Fehler und verbrauchte einen seiner drei Versuche. Nach `M24` war Y korrekt referenziert. Nach dem Code soll GCodes auf den Rest der Fahrt warten (RRF `DDARing.cpp:919`, `:922`, `CutHomingMove`). Tim (2026-11-23): Ein Feed Hold muss während einer Referenzfahrt nicht weiterlaufen. Deshalb nicht weiter untersucht und nicht in `design/open-findings.md`.
+- Nicht geprüft: RRF #84, #56, #63 (Abschnitt 12) und M-1 bis M-4.
