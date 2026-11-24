@@ -5,17 +5,16 @@ using System.Threading.Tasks;
 using DuetAPI;
 using DuetAPI.Commands;
 using DuetControlServer.Link.Protocol.Shared;
-using Microsoft.Extensions.Logging;
 using NUnit.Framework;
 using UnitTests.FakeFirmware;
-using UnitTests.IPC;
 using SbcRequest = DuetControlServer.Link.Protocol.SbcRequests.Request;
 
 namespace UnitTests.Codes;
 
 /// <summary>
-/// Text codes with fileexists() or fileread() that RRF passes on to DSF as a DoCode request, as it will do for the codes and meta commands it
-/// gets on USB, PanelDue (Aux) or from a trigger action in SBC mode, so that it never waits for the SBC while a handler holds its locks.
+/// Text codes with fileexists() or fileread() that RRF passes on to DSF as a DoCode request. In SBC mode RRF does this for the G/M/T-codes and the
+/// global and set global commands it gets on USB, PanelDue (Aux) or from a trigger action, so that it never waits for the SBC while it holds a write lock.
+/// The other meta commands are covered as well because DWC can send them in the same way.
 /// DSF runs such a code as a prioritized code of its channel (Processor.DoFirmwareCode, Processor.cs:1253-1264; SimpleCode.cs:111-115) and
 /// evaluates the functions itself, they are custom functions of DSF (Functions.cs:26-28):
 /// <list type="bullet">
@@ -25,29 +24,20 @@ namespace UnitTests.Codes;
 /// <item>global, var and set substitute the functions and send RRF a SetVariable request (KeywordHandler.cs:261, :273)</item>
 /// <item>echo evaluates everything (KeywordHandler.cs:166), so RRF gets EvaluateExpression requests with the substituted rest</item>
 /// </list>
-/// The result goes back to RRF as a message to the channel alone, which finishes the DoCode (Executed.cs:172-207, SbcInterface.cpp:774-793 of RRF).
-/// Tests marked "CONTRACT GAP" pin the current behaviour where the contract does not hold
+/// The result goes back to RRF as a message to the channel alone, which finishes the DoCode (Executed.cs, SbcInterface.cpp:774-793 of RRF).
+/// A code that fails in DSF is answered with its error, else RRF's channel stays busy until it is aborted or the connection ends
 /// </summary>
 [TestFixture]
 public class FirmwareCodeFileFunctions
 {
     private static readonly TimeSpan Timeout = FakeFirmwareHost.DefaultTimeout;
 
-    /// <summary>
-    /// Number of transfers and time that must pass without a result before a DoCode counts as left without one. DSF sends the result in the
-    /// transfer after the code has completed, so this leaves a wide margin
-    /// </summary>
-    private const int TransfersWithoutResult = 30;
-    private static readonly TimeSpan TimeWithoutResult = TimeSpan.FromMilliseconds(500);
-
     private FakeFirmwareHost _host = null!;
-    private IpcLog _log = null!;
 
     [SetUp]
     public async Task SetUp()
     {
         _host = await FakeFirmwareHost.StartAsync();
-        _log = IpcLog.Attach(_host);
         _host.WriteMacro("present.g", "G4 P1\n");
         _host.WriteMacro("data.csv", "1,2,3\n");
     }
@@ -265,66 +255,58 @@ public class FirmwareCodeFileFunctions
         AssertNoFileFunctionSent(requestsBefore);
     }
 
-    [Test, Description("Current behaviour, not a requirement: a conditional code is not run when it comes from the firmware")]
-    public void IfIsNotRun()
+    [Test]
+    public void IfIsAnsweredWithAnError()
     {
-        // Code.ProcessInternally throws for if/elif/else/while (Code.cs:208-218, it is not one of the keywords listed there). The ProcessInternally stage logs the exception and cancels the code
-        // (ProcessInternally.cs:32-39), so it never gets to the Executed stage that sends the result to RRF (Executed.cs:172-207). See LeftWithoutResult
+        // Code.ProcessInternally throws for if/elif/else/while outside a file (Code.cs:208-218). RRF does not pass them on, but DWC can send them
         const string code = "if fileexists(\"0:/sys/present.g\")";
         int requestsBefore = PassCodeToSbc(CodeChannel.USB, code);
-        AssertLeftWithoutResult(CodeChannel.USB, code, typeof(InvalidOperationException), "Conditional codes must not be executed");
-        Assert.That(RequestsSince(requestsBefore), Is.Empty);
+        AssertFinishedWithError(CodeChannel.USB, code, "Conditional codes must not be executed");
+        Assert.That(RequestsSince(requestsBefore).Where(request => request.Request != SbcRequest.Message), Is.Empty);
     }
     #endregion
 
     #region Errors
-    [TestCase("M118 S{fileexists(1)}", typeof(ArgumentException), "fileexists requires a string argument")]
-    [TestCase("M118 S{#fileread(\"0:/sys/missing.csv\", 0, 1, ',')}", typeof(System.IO.FileNotFoundException), "Could not find file")]
-    [TestCase("global y = fileread(\"0:/sys/data.csv\", 0, \",\")", typeof(ArgumentException), "fileread requires 4 arguments")]
-    [TestCase("global y = fileread(\"0:/sys/data.csv\", 0, 3, \",\")", typeof(ArgumentException), "fileread requires a delimiter character")]
-    [Description("CONTRACT GAP: a code from the firmware whose file function fails gets no result, so RRF's channel waits for it")]
-    public void ErrorOfFileFunctionLeavesDoCodeWithoutResult(string code, Type exceptionType, string message)
+    [TestCase("M118 S{fileexists(1)}", "fileexists requires a string argument")]
+    [TestCase("M118 S{#fileread(\"0:/sys/missing.csv\", 0, 1, ',')}", "Could not find file")]
+    [TestCase("global y = fileread(\"0:/sys/data.csv\", 0, \",\")", "fileread requires 4 arguments")]
+    [TestCase("global y = fileread(\"0:/sys/data.csv\", 0, 3, \",\")", "fileread requires a delimiter character")]
+    public void ErrorOfFileFunctionFinishesTheDoCode(string code, string message)
     {
-        // RRF aborts the command containing a fileread call that fails (wiki Gcode_meta_commands.md:499), i.e. it finishes it with an error.
-        // In DSF the functions throw (Functions.cs:72, :86, :105, :111), the ProcessInternally stage cancels the code (ProcessInternally.cs:32-39,
-        // CodeProcessor.cs:298-306) and the Executed stage, the only one that sends the result of a code from the firmware (Executed.cs:172-207),
-        // never sees it. The exception does not reach SimpleCode either: codes from the firmware are asynchronous (Code.cs:136-141) and
-        // Processor.DoFirmwareCode drops the task (Processor.cs:1263)
+        // RRF aborts a command whose fileread call fails (wiki Gcode_meta_commands.md:499), i.e. it finishes it with an error. In DSF the functions
+        // throw (Functions.cs:72, :86, :105, :111) and the ProcessInternally stage cancels the code with the exception (ProcessInternally.cs:32-39,
+        // CodeProcessor.CancelCode). The exception does not reach SimpleCode: codes from the firmware are asynchronous (Code.cs:136-141) and
+        // Processor.DoFirmwareCode drops the task (Processor.cs:1263). So the Executed stage answers RRF with the error
         int requestsBefore = PassCodeToSbc(CodeChannel.USB, code);
-        AssertLeftWithoutResult(CodeChannel.USB, code, exceptionType, message);
-        Assert.That(RequestsSince(requestsBefore), Is.Empty, "DSF told RRF something about the code");
+        AssertFinishedWithError(CodeChannel.USB, code, message);
+        Assert.That(RequestsSince(requestsBefore).Where(request => request.Request != SbcRequest.Message), Is.Empty, "DSF asked RRF something about the code");
     }
 
-    [Test, Description("CONTRACT GAP: a variable from the firmware that RRF refuses gets no result, so RRF's channel waits for it")]
-    public async Task ErrorOfRrfLeavesDoCodeWithoutResult()
+    [Test]
+    public async Task ErrorOfRrfFinishesTheDoCode()
     {
-        // The SetVariable request fails in RRF because the variable exists. LinkInterface.SetVariableAsync throws the error of RRF and the code ends
-        // like in ErrorOfFileFunctionLeavesDoCodeWithoutResult
+        // The SetVariable request fails in RRF because the variable exists. LinkInterface.SetVariableAsync throws the error of RRF, and the code ends
+        // as in ErrorOfFileFunctionFinishesTheDoCode
         Assert.That(await _host.ExecuteAsync("global x = 5"), Is.EqualTo("\n"));
         const string code = "global x = fileexists(\"0:/sys/present.g\")";
         int requestsBefore = PassCodeToSbc(CodeChannel.USB, code);
-        AssertLeftWithoutResult(CodeChannel.USB, code, typeof(CodeParserException), "variable 'global.x' already exists");
+        AssertFinishedWithError(CodeChannel.USB, code, "variable 'global.x' already exists");
 
-        FakeSbcRequest setVariable = RequestsSince(requestsBefore).Single();
+        FakeSbcRequest setVariable = RequestsSince(requestsBefore).First(request => request.Request != SbcRequest.Message);
         Assert.That(setVariable.Request, Is.EqualTo(SbcRequest.SetVariable));
         Assert.That(setVariable.Argument, Is.EqualTo("true"));
     }
 
     /// <summary>
-    /// Wait until DSF has logged the failure of a code from the firmware (ProcessInternally.cs:36), let some transfers and time pass and check that
-    /// DSF sent no result to the channel, so the channel is still busy with the code
+    /// Wait until DSF has finished the DoCode with an error message to its channel alone and the channel is free again
     /// </summary>
-    private void AssertLeftWithoutResult(CodeChannel channel, string code, Type exceptionType, string message)
+    private void AssertFinishedWithError(CodeChannel channel, string code, string message)
     {
-        Assert.That(_host.Firmware.WaitUntil(_ => _log.Entries.Any(entry => entry.Level == LogLevel.Error && entry.Message.Contains(code) &&
-            entry.Exception?.GetType() == exceptionType && entry.Exception.Message.Contains(message)), Timeout), Is.True, "DSF did not log the failure of the code");
-
-        int transfer = _host.Firmware.TransferCount;
-        DateTime end = DateTime.UtcNow + TimeWithoutResult;
-        Assert.That(_host.Firmware.WaitUntil(firmware => firmware.TransferCount >= transfer + TransfersWithoutResult && DateTime.UtcNow >= end, Timeout), Is.True);
-        Assert.That(_host.Firmware.GetFinishedSbcCodes(), Is.Empty);
-        Assert.That(_host.Firmware.GetReceivedMessages().Where(item => (item.MessageFlags & Destination(channel)) != 0), Is.Empty, "DSF sent a message to the channel of the code");
-        Assert.That(_host.Firmware.IsIdle(channel), Is.False);
+        Assert.That(_host.Firmware.WaitUntil(firmware => firmware.GetFinishedSbcCodes().Count == 1 && firmware.IsIdle(channel), Timeout), Is.True,
+            "DSF did not finish the code that RRF passed on");
+        Assert.That(_host.Firmware.GetFinishedSbcCodes()[0].Code, Is.EqualTo(code));
+        Assert.That(_host.Firmware.GetFinishedSbcCodes()[0].Result, Does.Contain(message));
+        Assert.That(_host.Firmware.GetReceivedMessages().Select(item => item.MessageFlags), Has.Some.EqualTo(Destination(channel) | MessageTypeFlags.ErrorMessageFlag));
     }
     #endregion
 }
