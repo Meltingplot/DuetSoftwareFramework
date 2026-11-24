@@ -265,14 +265,19 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
     /// <param name="filePosition">New file position</param>
     /// <param name="lastGCode">Modal G0/G1/G2/G3 command in effect at the new file position, or -1 if unknown</param>
     /// <param name="cancellationToken">Optional cancellation token</param>
-    /// <returns>File position</returns>
-    public async Task SetFilePositionAsync(int motionSystem, long filePosition, int lastGCode = -1, CancellationToken cancellationToken = default)
+    /// <returns>Task that completes when the firmware has processed the variable requests of the rewind, to be awaited after releasing the lock</returns>
+    /// <remarks>
+    /// The returned task must not be awaited while this class is locked, because the link task needs that lock to abort or pause a job
+    /// before it gets to send the variable requests
+    /// </remarks>
+    public async Task<Task> SetFilePositionAsync(int motionSystem, long filePosition, int lastGCode = -1, CancellationToken cancellationToken = default)
     {
+        Task variablesRewound = Task.CompletedTask;
         if (_file is not null && motionSystem == 0)
         {
             using (await _file.LockAsync(cancellationToken))
             {
-                await _file.RewindAsync(filePosition, cancellationToken);
+                variablesRewound = _file.Rewind(filePosition, cancellationToken);
                 _file.LastGCode = lastGCode;
             }
         }
@@ -281,11 +286,12 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
         {
             using (await _file2.LockAsync(cancellationToken))
             {
-                await _file2.RewindAsync(filePosition, cancellationToken);
+                variablesRewound = _file2.Rewind(filePosition, cancellationToken);
                 _file2.LastGCode = lastGCode;
             }
         }
         _codeProcessor.ResolveSyncRequestsAfter(filePosition);
+        return variablesRewound;
     }
 
     /// <summary>
@@ -655,6 +661,7 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
                     }
                 }
 
+                Task variablesRewound;
                 using (await LockAsync())
                 {
                     // The pending flag catches a task that is still draining when a resume already cleared IsPaused,
@@ -666,7 +673,7 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
                         // for this channel (falling back to the last code we executed if RRF didn't supply one)
                         long? msPausePosition = (file.Channel == CodeChannel.File) ? _pausePosition : _pausePosition2;
                         long newFilePosition = msPausePosition ?? currentFilePosition;
-                        await SetFilePositionAsync(file.Channel == CodeChannel.File ? 0 : 1, newFilePosition, pauseGCommandNumber);
+                        variablesRewound = await SetFilePositionAsync(file.Channel == CodeChannel.File ? 0 : 1, newFilePosition, pauseGCommandNumber);
                         _logger.LogInformation("Job on {Channel} has been paused at byte {Offset}, reason {PauseReason}", file.Channel, (msPausePosition == null) ? $"{newFilePosition} (no fpos from firmware)" : newFilePosition.ToString(), _pauseReason);
 
                         // Wait for the print to be resumed unless that already happened while we were still draining
@@ -703,6 +710,10 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
                         break;
                     }
                 }
+
+                // Codes read after the rewind must not reach the firmware before its variable requests. Wait for them outside the lock,
+                // because the link task takes it to report a pause or an abort before it gets to send them
+                await variablesRewound;
             }
         } while (!_lifetime.ApplicationStopping.IsCancellationRequested);
 

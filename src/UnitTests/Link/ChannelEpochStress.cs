@@ -839,7 +839,7 @@ public class ChannelEpochStress
                         StepRandom(3);
                         Interlocked.Exchange(ref _doCodeGate, null)?.TrySetResult();
 
-                        // M929 flushes its channel in DSF (MCodeHandler.cs:1150), so a probe buffered on that channel would wait for M929 while RRF holds
+                        // M929 flushes its channel in DSF (MCodeHandler.cs:1152), so a probe buffered on that channel would wait for M929 while RRF holds
                         // the probe until M929 has its result. The probe goes out once RRF has nothing of the channel left, a channel that never gets
                         // there is blocked (K13)
                         DateTime idleTime = DateTime.UtcNow + BlockTime;

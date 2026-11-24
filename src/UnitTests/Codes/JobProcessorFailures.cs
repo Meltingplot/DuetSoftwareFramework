@@ -1,0 +1,238 @@
+using System;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using DuetAPI;
+using DuetAPI.ObjectModel;
+using DuetControlServer.Files;
+using DuetControlServer.Link;
+using DuetControlServer.Link.Protocol.FirmwareRequests;
+using Microsoft.Extensions.DependencyInjection;
+using NUnit.Framework;
+using UnitTests.FakeFirmware;
+using SbcRequest = DuetControlServer.Link.Protocol.SbcRequests.Request;
+
+namespace UnitTests.Codes;
+
+/// <summary>
+/// Failures around a job that must neither stop the link nor end the job loop of <see cref="JobProcessor"/>: the variable requests of the rewind
+/// after a pause
+/// </summary>
+[TestFixture]
+public class JobProcessorFailures
+{
+    private FakeFirmwareHost? _host;
+
+    private FakeFirmwareHost Host => _host!;
+
+    /// <summary>
+    /// Start the host. One buffered print code makes JobProcessor read a code only after the previous one finished,
+    /// so that a held code stops the job at a known position
+    /// </summary>
+    private async Task StartAsync(int bufferedPrintCodes = 32) =>
+        _host = await FakeFirmwareHost.StartAsync(configureSettings: settings => settings.BufferedPrintCodes = bufferedPrintCodes);
+
+    [TearDown]
+    public async Task TearDown()
+    {
+        if (_host is not null)
+        {
+            await _host.DisposeAsync();
+            _host = null;
+        }
+    }
+
+    private JobProcessor Jobs => Host.Services.GetRequiredService<JobProcessor>();
+
+    private string WriteJob(string fileName, string content)
+    {
+        string path = System.IO.Path.Combine(Host.BaseDirectory, "gcodes", fileName);
+        System.IO.File.WriteAllText(path, content);
+        return path;
+    }
+
+    private string[] JobCodes() => [.. Host.Firmware.GetExecutedCodes(CodeChannel.File).Select(code => code.Text)];
+
+    private bool WaitUntilExecuted(string code) =>
+        Host.Firmware.WaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.File).Any(item => item.Text == code), FakeFirmwareHost.DefaultTimeout);
+
+    private static async Task WaitForAsync(Func<bool> condition)
+    {
+        using CancellationTokenSource cts = new(FakeFirmwareHost.DefaultTimeout);
+        while (!condition())
+        {
+            await Task.Delay(10, cts.Token);
+        }
+    }
+
+    /// <summary>
+    /// Wait for the job loop to finish the job and dispose its files
+    /// </summary>
+    private Task WaitForJobEndAsync() => WaitForAsync(() => !Jobs.IsFileSelected);
+
+    private async Task<string[]> ErrorMessagesAsync()
+    {
+        using (await Host.Model.AccessReadOnlyAsync())
+        {
+            return [.. Host.Model.Messages.Where(message => message.Type == MessageType.Error).Select(message => message.Content)];
+        }
+    }
+
+    /// <summary>
+    /// Pause the job like LinkService.HandlePrintPaused does when RRF reports a pause (LinkService.cs:1037-1043).
+    /// The fake firmware does not pause prints itself (FakeFirmware.ReadPrintPaused)
+    /// </summary>
+    private void Pause(long filePosition)
+    {
+        using (Jobs.Lock())
+        {
+            Jobs.Pause(filePosition, null, PrintPausedReason.User);
+        }
+    }
+
+    /// <summary>
+    /// Hold the link before its next transfer
+    /// </summary>
+    private void HoldLink()
+    {
+        Host.Firmware.HoldTransfers();
+        Assert.That(Host.Firmware.WaitUntil(firmware => firmware.IsTransferHeld, FakeFirmwareHost.DefaultTimeout), Is.True, "The link did not stop");
+    }
+
+    /// <summary>
+    /// Let the link perform one transfer and process it, then hold it again
+    /// </summary>
+    private void Step()
+    {
+        int transfer = Host.Firmware.TransferCount;
+        Host.Firmware.HoldTransfers(1);
+        Assert.That(Host.Firmware.WaitUntil(firmware => firmware.TransferCount > transfer && firmware.IsTransferHeld, FakeFirmwareHost.DefaultTimeout), Is.True, "No transfer");
+    }
+
+    /// <summary>
+    /// Job whose read-ahead leaves a block with a local variable before the job stops at the held dwell, so that the block is closed and its
+    /// variable lives on under a hidden name (CodeFile.cs, EndCodeBlockAsync and HideLocalVariables)
+    /// </summary>
+    private const string BlockJob = "if true\n  var a = 1\n  echo var.a\nG4 P2\nG1 Z0\n";
+
+    /// <summary>
+    /// Name under which RRF keeps the variable of the closed block. The var line opens a block of its own (CodeFile.cs, ExpectLocalVariable),
+    /// which is named after its file position (CodeFile.cs, GetHiddenVariableName)
+    /// </summary>
+    private static readonly string HiddenVariable = $"dsfClosedBlock{BlockJob.IndexOf("  var a", StringComparison.Ordinal)}x0";
+
+    /// <summary>
+    /// Position inside the closed block of <see cref="BlockJob"/>
+    /// </summary>
+    private static readonly long InsideBlock = BlockJob.IndexOf("  echo var.a", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Run <see cref="BlockJob"/> up to its held dwell and pause it, by default inside the closed block as RRF reports the position of a move it still
+    /// had queued. Then the rewind gives the variable of the block its name back with a SetVariable request (CodeFile.cs, RestoreLocalVariables)
+    /// </summary>
+    /// <param name="release">Event that releases the held dwell</param>
+    /// <param name="beforePause">Action to perform when the job is held, before the pause</param>
+    /// <param name="pausePosition">File position of the pause, or null for <see cref="InsideBlock"/></param>
+    private async Task RunBlockJobAndPauseAsync(ManualResetEventSlim release, Action? beforePause = null, long? pausePosition = null)
+    {
+        Host.Firmware.OnCode("G4", code => (code.Text == "G4 P2" && !release.IsSet) ? FakeReply.NotFinished : null);
+        WriteJob("job.g", BlockJob);
+
+        Assert.That(await Host.ExecuteAsync("M32 \"job.g\""), Is.EqualTo("\n"));
+        Assert.That(Host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.File)?.Text == "G4 P2", FakeFirmwareHost.DefaultTimeout), Is.True);
+        Assert.That(Host.Firmware.TryGetLocalVariable(CodeChannel.File, "a", out _), Is.False, "The block was not left");
+        Assert.That(Host.Firmware.TryGetLocalVariable(CodeChannel.File, HiddenVariable, out object? hidden) ? hidden : null, Is.EqualTo(1), "The variable of the block was not hidden");
+
+        beforePause?.Invoke();
+        Pause(pausePosition ?? InsideBlock);
+        release.Set();
+    }
+
+    /// <summary>
+    /// Whether a request gives the variable of the closed block its name back (CodeFile.cs, RestoreLocalVariables)
+    /// </summary>
+    private static bool IsRestoreRequest(FakeSbcRequest request) =>
+        request.Request == SbcRequest.SetVariable && request.Channel == CodeChannel.File && request.Flag && request.Text == "var.a" && request.Argument == "var." + HiddenVariable;
+
+    /// <summary>
+    /// Step the held link until DSF has written the SetVariable request of the rewind and RRF has yet to answer it
+    /// </summary>
+    private void StepUntilRestoreIsWritten()
+    {
+        for (int i = 0; i < 200 && !Host.Firmware.GetPendingRequests().Any(IsRestoreRequest); i++)
+        {
+            Step();
+        }
+        Assert.That(Host.Firmware.GetPendingRequests().Any(IsRestoreRequest), Is.True, "DSF did not write the variable request of the rewind");
+    }
+
+    [Test]
+    public async Task RewindDoesNotHoldTheJobLockWhileItsVariableRequestsAreAnswered()
+    {
+        // The link task takes the job lock in its packet handling (Processor.FilesAborted, Processor.cs:904 and :943; LinkService.HandlePrintPaused,
+        // LinkService.cs:1038) before it writes the variable requests and reads their answers (LinkService.cs:436-447, :585-612). A rewind that waits
+        // for its variable requests while it holds the job lock stops the link for good when RRF reports an abort or a pause meanwhile. Here the link
+        // is held while RRF has yet to answer the request, and the test takes the job lock the way the link task does
+        await StartAsync(bufferedPrintCodes: 1);
+        using ManualResetEventSlim release = new();
+        await RunBlockJobAndPauseAsync(release, HoldLink);
+        StepUntilRestoreIsWritten();
+
+        Task jobLock = Task.Run(() =>
+        {
+            using (Jobs.Lock())
+            {
+                // The link task would abort or pause the job here
+            }
+        });
+        Assert.That(await Task.WhenAny(jobLock, Task.Delay(FakeFirmwareHost.DefaultTimeout)), Is.SameAs(jobLock), "The rewind holds the job lock while it waits for RRF");
+
+        // Resume before RRF has answered. The codes read after the rewind must not reach RRF before the variable they use exists again: DSF writes
+        // the codes and evaluations of a transfer before its variable requests (LinkService.cs:487 and :585), so the job reads on only when they are done
+        using (Jobs.Lock())
+        {
+            Jobs.Resume();
+        }
+        Host.Firmware.ReleaseTransfers();
+        await WaitForJobEndAsync();
+
+        FakeSbcRequest[] requests = [.. Host.Firmware.GetReceivedRequests()];
+        int restore = Array.FindIndex(requests, IsRestoreRequest);
+        int echoAfterRestore = Array.FindLastIndex(requests, request => request.Request == SbcRequest.EvaluateExpression && request.Channel == CodeChannel.File && request.Text.Contains("var.a"));
+        Assert.That(echoAfterRestore, Is.GreaterThan(restore), "echo var.a went to RRF before var.a existed again");
+        Assert.That(await ErrorMessagesAsync(), Is.Empty);
+        Assert.That(JobCodes(), Is.EqualTo(new[] { "G4 P2", "G4 P2", "G1 Z0", "M400" }));
+    }
+
+    [Test]
+    public async Task M26DoesNotHoldTheJobLockWhileItsVariableRequestsAreAnswered()
+    {
+        // M26 S rewinds the paused job under the job lock as well (MCodeHandler.cs, case 26). The pause is after the block here, so the pause itself
+        // restores nothing and M26 into the block does
+        await StartAsync(bufferedPrintCodes: 1);
+        using ManualResetEventSlim release = new();
+        await RunBlockJobAndPauseAsync(release, pausePosition: BlockJob.IndexOf("G1 Z0", StringComparison.Ordinal));
+        await WaitForAsync(() => Jobs.IsPaused && !Jobs.IsProcessing);
+        Assert.That(Host.Firmware.GetReceivedRequests().Any(IsRestoreRequest), Is.False);
+
+        HoldLink();
+        Task<string> m26 = Host.StartCode($"M26 S{InsideBlock}");
+        StepUntilRestoreIsWritten();
+
+        Task jobLock = Task.Run(() =>
+        {
+            using (Jobs.Lock())
+            {
+                // The link task would abort or pause the job here
+            }
+        });
+        Assert.That(await Task.WhenAny(jobLock, Task.Delay(FakeFirmwareHost.DefaultTimeout)), Is.SameAs(jobLock), "M26 holds the job lock while it waits for RRF");
+
+        Host.Firmware.ReleaseTransfers();
+        Assert.That(await m26.WaitAsync(FakeFirmwareHost.DefaultTimeout), Is.EqualTo("\n"));
+        Assert.That(await Host.ExecuteAsync("M24"), Is.EqualTo("\n"));
+        await WaitForJobEndAsync();
+        Assert.That(await ErrorMessagesAsync(), Is.Empty);
+        Assert.That(JobCodes(), Is.EqualTo(new[] { "G4 P2", "G4 P2", "G1 Z0", "M400" }));
+    }
+}
