@@ -2,7 +2,9 @@
 using DuetAPI.Commands;
 using DuetAPI.ObjectModel;
 using DuetControlServer.Codes;
+using DuetControlServer.Files;
 using DuetControlServer.Link;
+using DuetControlServer.Utility;
 using DuetSharedLibrary;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -27,11 +29,14 @@ namespace DuetControlServer.Model;
 /// Static class that updates the machine model in certain intervals
 /// </summary>
 /// <param name="codeFactory">Code factory to create codes</param>
+/// <param name="eventLogger">Event logger</param>
+/// <param name="filePathResolver">File path resolver</param>
 /// <param name="linkInterface">Link interface to the machine</param>
 /// <param name="model">Object model</param>
 /// <param name="logger">Logger instance</param>
 /// <param name="settings">Settings of the application</param>
-public partial class PeriodicUpdateService(CodeFactory codeFactory, LinkInterface linkInterface, ObjectModel model, ILogger<PeriodicUpdateService> logger, IOptions<Settings> settings) : BackgroundService
+public partial class PeriodicUpdateService(CodeFactory codeFactory, EventLogger eventLogger, FilePathResolver filePathResolver, LinkInterface linkInterface, ObjectModel model,
+    ILogger<PeriodicUpdateService> logger, IOptions<Settings> settings) : BackgroundService
 {
     /// <summary>
     /// List of enabled protocols
@@ -134,6 +139,8 @@ public partial class PeriodicUpdateService(CodeFactory codeFactory, LinkInterfac
     /// <returns>Asynchronous task</returns>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // runonce.g runs alongside the updates, which must not wait for config.g
+        Task runOnceFile = RunOnceFileAsync(stoppingToken);
         try
         {
             TimeSpan measuredDelay = TimeSpan.Zero;
@@ -248,6 +255,79 @@ public partial class PeriodicUpdateService(CodeFactory codeFactory, LinkInterfac
         catch (OperationCanceledException)
         {
             // expected on shutdown
+        }
+        await runOnceFile;
+    }
+
+    /// <summary>
+    /// Run runonce.g after config.g and delete it. RRF does that itself only when it runs from SD card; in SBC mode it leaves runonce.g
+    /// to the SBC, which runs it once RRF has started config.g (RepRap.cpp:639, :647-651 of RRF 3.7)
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>Asynchronous task</returns>
+    private async Task RunOnceFileAsync(CancellationToken cancellationToken)
+    {
+        if (settings.Value.UpdateOnly)
+        {
+            return;
+        }
+
+        try
+        {
+            string runOnceFile = await filePathResolver.ToPhysicalAsync(FilePathResolver.RunOnceFile, FileDirectory.System, cancellationToken);
+            if (!File.Exists(runOnceFile))
+            {
+                return;
+            }
+
+            // RRF reports "starting" until it has started config.g (RepRap::GetStatusIndex), and so does the model until it has been read
+            while (true)
+            {
+                using (await model.AccessReadOnlyAsync(cancellationToken))
+                {
+                    if (model.State.Status != MachineStatus.Starting)
+                    {
+                        break;
+                    }
+                }
+                await Task.Delay(250, cancellationToken);
+            }
+
+            // Run it on the trigger channel like config.g, so that it runs when config.g has finished
+            Code code = codeFactory.Create();
+            code.Channel = CodeChannel.Trigger;
+            code.Type = CodeType.MCode;
+            code.MajorNumber = 98;
+            code.Parameters =
+            [
+                new('P', FilePathResolver.RunOnceFile)
+            ];
+            try
+            {
+                await code.ExecuteAsync().WaitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // The macro has been aborted. It is deleted all the same, as RRF deletes it once it has started it.
+                // If DCS stops meanwhile, the file is kept and runs at the next start
+            }
+
+            try
+            {
+                File.Delete(runOnceFile);
+            }
+            catch (Exception e)
+            {
+                await eventLogger.LogOutputAsync(MessageType.Error, $"Failed to delete {FilePathResolver.RunOnceFile}: {e.Message}");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // expected on shutdown
+        }
+        catch (Exception e)
+        {
+            logger.LogError(e, "Failed to run {File}", FilePathResolver.RunOnceFile);
         }
     }
 

@@ -595,6 +595,30 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <summary>
+    /// Whether RRF is still processing its configuration, which it reports as state.status "starting" (RepRap::GetStatusIndex, RepRap.cpp:1964 of
+    /// RRF 3.7). In SBC mode RRF clears it as soon as it has started config.g (RepRap.cpp:623-654). False by default, as after the start of config.g
+    /// </summary>
+    public bool ProcessingConfig
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _processingConfig;
+            }
+        }
+        set
+        {
+            lock (_lock)
+            {
+                _processingConfig = value;
+                UpdateStatus();
+            }
+        }
+    }
+    private bool _processingConfig;
+
+    /// <summary>
     /// Get the codes that DSF sent, including those RRF discarded
     /// </summary>
     /// <param name="channel">Optional channel to filter by</param>
@@ -958,7 +982,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
     /// </summary>
     private void UpdateStatus()
     {
-        string status = _repRapStopped ? "halted" : (_gcodes.DoingFileMacro || _gcodes.WaitingForAcknowledgement) ? "busy" : "idle";
+        string status = _processingConfig ? "starting" : _repRapStopped ? "halted" : (_gcodes.DoingFileMacro || _gcodes.WaitingForAcknowledgement) ? "busy" : "idle";
         ObjectModel.SetComputedStatus(status);
     }
     #endregion
