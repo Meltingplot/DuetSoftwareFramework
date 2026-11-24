@@ -12,7 +12,7 @@ namespace UnitTests.File;
 /// <summary>
 /// G-code files with a line that the code parser rejects, found by GCodeFileFuzz.ParseFileInfo. FileInfoParser parses the header and the
 /// footer with the code parser (FileInfoParser.cs:155 and 211) and passes on its CodeParserException, which fails M36 and also M32,
-/// because JobProcessor.SelectFileAsync needs the file information (JobProcessor.cs:312). The same goes for the InvalidParameterTypeException
+/// because JobProcessor.SelectFileAsync needs the file information (JobProcessor.cs:318). The same goes for the InvalidParameterTypeException
 /// of a G0/G1 Z parameter without a number in the footer (FileInfoParser.cs:227, Code.TryGetFloat)
 /// </summary>
 [TestFixture]

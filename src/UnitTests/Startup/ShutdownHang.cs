@@ -40,7 +40,7 @@ namespace UnitTests.Startup;
 /// the IPC server and the JobProcessor, so the codes they cancel are completed. In v3.6 the link was shut down before the token of the pipelines was cancelled
 /// as well (Program.ShutdownAsync there)</item>
 /// <item>After M999 the transfer thread has ended (LinkService.cs:351), so a code that a client sends in the second before DCS stops
-/// (MCodeHandler.cs:1363-1368) waits in the Firmware stage until LinkService.StopAsync cancels it (Channel/Processor.cs:1459-1463), and hung the same way.
+/// (MCodeHandler.cs:1365-1370) waits in the Firmware stage until LinkService.StopAsync cancels it (Channel/Processor.cs:1459-1463), and hung the same way.
 /// This fits "after the boot-time M999", when clients are busy. Fixed with case 1</item>
 /// <item>A transfer that does not complete keeps the transfer thread inside PerformFullTransfer until its token is cancelled (SPI.cs:324). It got
 /// ApplicationStopped, which the host signals only after all services have stopped, so LinkService.StopAsync waited for the stop token (BackgroundService.cs:73

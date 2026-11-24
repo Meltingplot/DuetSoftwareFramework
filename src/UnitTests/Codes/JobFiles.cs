@@ -91,11 +91,11 @@ public class JobFiles
         await StartAsync();
         WriteJob("job.g", "G1 X1\n; comment\nG1 X2 F100\nM400\n");
 
-        // M32 selects the file and lets RRF start it, the job starts when its reply comes back (MCodeHandler.cs:227-264, 1401-1411)
+        // M32 selects the file and lets RRF start it, the job starts when its reply comes back (MCodeHandler.cs:227-264, 1403-1413)
         Assert.That(await Host.ExecuteAsync("M32 \"job.g\""), Is.EqualTo("\n"));
         await WaitForJobEndAsync();
 
-        // JobProcessor waits for the moves of the job with a final M400 before it reports the end (JobProcessor.cs:580-606)
+        // JobProcessor waits for the moves of the job with a final M400 before it reports the end (JobProcessor.cs:586-612)
         Assert.That(JobCodes(), Is.EqualTo(new[] { "G1 X1", "G1 X2 F100", "M400", "M400" }));
         Assert.That(StopReasons(), Is.EqualTo(new[] { PrintStoppedReason.NormalCompletion }));
         Assert.That(await LastFileAsync(), Is.EqualTo((false, false, false)));
@@ -108,7 +108,7 @@ public class JobFiles
     [Test]
     public async Task AbortFromJob()
     {
-        // abort terminates the print (wiki, Abort command). JobProcessor reports it as aborted to RRF (JobProcessor.cs:773-777)
+        // abort terminates the print (wiki, Abort command). JobProcessor reports it as aborted to RRF (JobProcessor.cs:803-807)
         await StartAsync();
         WriteJob("job.g", "G1 X1\nabort \"stop\"\nG1 X2\n");
         Assert.That(await Host.ExecuteAsync("M32 \"job.g\""), Is.EqualTo("\n"));
@@ -121,7 +121,7 @@ public class JobFiles
     [Test]
     public async Task ErrorInJob()
     {
-        // A read error aborts the job (JobProcessor.cs:505-522) and is reported with the file and line
+        // A read error aborts the job (JobProcessor.cs:511-528) and is reported with the file and line
         await StartAsync();
         WriteJob("job.g", "G1 X1\nelse\nG1 X2\n");
         Assert.That(await Host.ExecuteAsync("M32 \"job.g\""), Is.EqualTo("\n"));
@@ -136,7 +136,7 @@ public class JobFiles
         }
     }
 
-    [Test, Explicit("A read error is reported with the line after the failing one: JobProcessor.cs:517 takes file.LineNumber, the line the parser has advanced to, because readCode is null")]
+    [Test, Explicit("A read error is reported with the line after the failing one: JobProcessor.cs:523 takes file.LineNumber, the line the parser has advanced to, because readCode is null")]
     public async Task ErrorInJobNamesTheFailingLine()
     {
         // The CodeParserException carries the code with its line number (CodeFile.cs:525)
@@ -200,7 +200,7 @@ public class JobFiles
         Assert.That(await Host.ExecuteAsync("M32 \"job.g\""), Is.EqualTo("\n"));
         Assert.That(WaitUntilExecuted("G4 P1"), Is.True);
 
-        // M27 reports the read position and the length (MCodeHandler.cs:324-345)
+        // M27 reports the read position and the length (MCodeHandler.cs:324-346)
         Assert.That(await Host.ExecuteAsync("M27"), Does.Match($"^SD printing byte [0-9]+/{content.Length}\n$"));
 
         // M26 checks the position against the file length (MCodeHandler.cs:306-312)
@@ -255,7 +255,7 @@ public class JobFiles
         Assert.That(WaitUntilExecuted("G4 P1"), Is.True);
 
         // RRF reports the position of the next code to execute. A pause requested by a code of the job comes without one,
-        // then JobProcessor resumes after the last code it executed (LinkService.cs:901-903, JobProcessor.cs:646-651)
+        // then JobProcessor resumes after the last code it executed (LinkService.cs:901-903, JobProcessor.cs:652-657)
         long afterDwell = content.IndexOf("G1 X2", StringComparison.Ordinal);
         Pause(withPosition ? afterDwell : null, withPosition ? PrintPausedReason.User : PrintPausedReason.GCode);
         release.Set();
@@ -264,7 +264,7 @@ public class JobFiles
         Assert.That(await Host.ExecuteAsync("M27"), Is.EqualTo($"SD printing byte {afterDwell}/{content.Length}\n"));
         Assert.That(JobCodes(), Is.EqualTo(new[] { "G1 X1", "G4 P1" }));
 
-        // M24 resumes when RRF has processed it (MCodeHandler.cs:267-284 and 1401-1411)
+        // M24 resumes when RRF has processed it (MCodeHandler.cs:267-284 and 1403-1413)
         Assert.That(await Host.ExecuteAsync("M24"), Is.EqualTo("\n"));
         await WaitForJobEndAsync();
         Assert.That(JobCodes(), Is.EqualTo(new[] { "G1 X1", "G4 P1", "G1 X2", "G1 X3", "M400" }));
@@ -274,7 +274,7 @@ public class JobFiles
     [Test]
     public async Task ResumeWhileDraining()
     {
-        // A resume that arrives before the job task has reached the pause must not be lost (JobProcessor.cs:228-232, 653-658, 901-905)
+        // A resume that arrives before the job task has reached the pause must not be lost (JobProcessor.cs:228-232, 659-664, 953-957)
         await StartAsync(bufferedPrintCodes: 1);
         using ManualResetEventSlim release = new();
         Host.Firmware.OnCode("G4", _ => release.IsSet ? FakeReply.Ok() : FakeReply.NotFinished);
@@ -309,7 +309,7 @@ public class JobFiles
         release.Set();
         await WaitForPausedAsync();
 
-        // M0 cancels a paused print, which is then reported as cancelled and not aborted (MCodeHandler.cs:87-118, JobProcessor.cs:768-772, 918-933)
+        // M0 cancels a paused print, which is then reported as cancelled and not aborted (MCodeHandler.cs:87-118, JobProcessor.cs:798-802, 970-985)
         Assert.That(await Host.ExecuteAsync("M0"), Is.EqualTo("\n"));
         await WaitForJobEndAsync();
         Assert.That(JobCodes(), Is.EqualTo(new[] { "G1 X1", "G4 P1" }));
@@ -321,7 +321,7 @@ public class JobFiles
     public async Task RewindIntoLoop()
     {
         // M26 inside a loop restores the loop of the read-ahead: the rewound lines run again with the iteration of that position,
-        // and the loop goes on afterwards (CodeFile.RewindAsync, CodeFile.cs:142-200)
+        // and the loop goes on afterwards (CodeFile.Rewind, CodeFile.cs:142-200)
         await StartAsync(bufferedPrintCodes: 1);
         using ManualResetEventSlim release = new();
         Host.Firmware.OnCode("G4", _ => release.IsSet ? FakeReply.Ok() : FakeReply.NotFinished);
@@ -344,7 +344,7 @@ public class JobFiles
     [Test]
     public async Task SelectFileFromJob()
     {
-        // A job may start another file with M32, which JobProcessor starts when the first one has ended (JobProcessor.cs:325-336, 849-855)
+        // A job may start another file with M32, which JobProcessor starts when the first one has ended (JobProcessor.cs:331-342, 879-893)
         await StartAsync();
         WriteJob("second.g", "G1 Y1\n");
         WriteJob("job.g", "G1 X1\nM32 \"second.g\"\nG1 X2\n");
@@ -362,7 +362,7 @@ public class JobFiles
     public async Task SelectFileFromJobStopsFirstJob()
     {
         // RRF chains to the new file (GCodes2.cpp:1106 "We now allow a file that is being printed to chain to another file"),
-        // so the lines after M32 in the first file are not executed. JobProcessor.Cancel cancels the job's token (JobProcessor.cs:325-336),
+        // so the lines after M32 in the first file are not executed. JobProcessor.Cancel cancels the job's token (JobProcessor.cs:331-342),
         // which the codes read ahead keep since upstream d108e9767 (design/open-findings.md G9)
         await StartAsync();
         WriteJob("second.g", "G1 Y1\n");
@@ -382,7 +382,7 @@ public class JobFiles
         string content = "G1 X1\nM106 S1\nG1 X2\n" + new string(';', 64) + "\n";
         string path = WriteJob("job.g", content);
 
-        // The simulated time is taken from job.lastDuration once the firmware reports it (JobProcessor.cs:799-828)
+        // The simulated time is taken from job.lastDuration once the firmware reports it (JobProcessor.cs:829-858)
         Host.Firmware.ObjectModel.Set("job.lastDuration", 42);
         Assert.That(await Host.ExecuteAsync($"M37 P\"job.g\"{(updateSimulatedTime ? string.Empty : " F0")}"), Is.EqualTo("\n"));
         await WaitForJobEndAsync();
@@ -391,7 +391,7 @@ public class JobFiles
         Assert.That(JobCodes(), Is.EqualTo(new[] { "G1 X1", "M106 S1", "G1 X2", "M400" }));
         Assert.That((await LastFileAsync()).simulated, Is.True);
 
-        // M37 F0 does not write the simulated time back to the file (MCodeHandler.cs:516-517)
+        // M37 F0 does not write the simulated time back to the file (MCodeHandler.cs:518-519)
         string expected = updateSimulatedTime ? content + "\n; Simulated print time: 42\n" : content;
         Assert.That(await System.IO.File.ReadAllTextAsync(path), Is.EqualTo(expected));
     }

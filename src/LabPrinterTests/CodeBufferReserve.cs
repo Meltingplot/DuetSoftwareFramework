@@ -113,7 +113,7 @@ public partial class CodeBufferReserve : LabTest
 
     /// <summary>
     /// Read the room DSF sees in RRF's code buffer (LinkInterface.cs:86-89) and the bytes each channel has buffered (Processor.cs:459-462, 489-493)
-    /// from M122 "DSF", which DSF answers itself (MCodeHandler.cs:789-795)
+    /// from M122 "DSF", which DSF answers itself (MCodeHandler.cs:791-797)
     /// </summary>
     private async Task<(int Space, Dictionary<CodeChannel, int> Buffered)> ReadCodeBufferAsync()
     {
@@ -176,7 +176,7 @@ public partial class CodeBufferReserve : LabTest
 
             if (loadInPlace)
             {
-                // M122 "DSF" and M409 of a global do not use RRF's code buffer (MCodeHandler.cs:789-795, 808-843)
+                // M122 "DSF" and M409 of a global do not use RRF's code buffer (MCodeHandler.cs:791-797, 810-845)
                 runsBefore = (await QueryAsync("global.labTestReserveRuns")).GetInt32();
                 await Task.Delay(TimeSpan.FromSeconds(WindowSeconds));
                 runsAfter = (await QueryAsync("global.labTestReserveRuns")).GetInt32();

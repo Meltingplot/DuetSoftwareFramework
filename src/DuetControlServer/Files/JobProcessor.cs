@@ -265,14 +265,19 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
     /// <param name="filePosition">New file position</param>
     /// <param name="lastGCode">Modal G0/G1/G2/G3 command in effect at the new file position, or -1 if unknown</param>
     /// <param name="cancellationToken">Optional cancellation token</param>
-    /// <returns>File position</returns>
-    public async Task SetFilePositionAsync(int motionSystem, long filePosition, int lastGCode = -1, CancellationToken cancellationToken = default)
+    /// <returns>Task that completes when the firmware has processed the variable requests of the rewind, to be awaited after releasing the lock</returns>
+    /// <remarks>
+    /// The returned task must not be awaited while this class is locked, because the link task needs that lock to abort or pause a job
+    /// before it gets to send the variable requests
+    /// </remarks>
+    public async Task<Task> SetFilePositionAsync(int motionSystem, long filePosition, int lastGCode = -1, CancellationToken cancellationToken = default)
     {
+        Task variablesRewound = Task.CompletedTask;
         if (_file is not null && motionSystem == 0)
         {
             using (await _file.LockAsync(cancellationToken))
             {
-                await _file.RewindAsync(filePosition, cancellationToken);
+                variablesRewound = _file.Rewind(filePosition, cancellationToken);
                 _file.LastGCode = lastGCode;
             }
         }
@@ -281,11 +286,12 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
         {
             using (await _file2.LockAsync(cancellationToken))
             {
-                await _file2.RewindAsync(filePosition, cancellationToken);
+                variablesRewound = _file2.Rewind(filePosition, cancellationToken);
                 _file2.LastGCode = lastGCode;
             }
         }
         _codeProcessor.ResolveSyncRequestsAfter(filePosition);
+        return variablesRewound;
     }
 
     /// <summary>
@@ -665,6 +671,7 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
                     }
                 }
 
+                Task variablesRewound;
                 using (await LockAsync())
                 {
                     // The pending flag catches a task that is still draining when a resume already cleared IsPaused,
@@ -676,7 +683,7 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
                         // for this channel (falling back to the last code we executed if RRF didn't supply one)
                         long? msPausePosition = (file.Channel == CodeChannel.File) ? _pausePosition : _pausePosition2;
                         long newFilePosition = msPausePosition ?? currentFilePosition;
-                        await SetFilePositionAsync(file.Channel == CodeChannel.File ? 0 : 1, newFilePosition, pauseGCommandNumber);
+                        variablesRewound = await SetFilePositionAsync(file.Channel == CodeChannel.File ? 0 : 1, newFilePosition, pauseGCommandNumber);
                         _logger.LogInformation("Job on {Channel} has been paused at byte {Offset}, reason {PauseReason}", file.Channel, (msPausePosition == null) ? $"{newFilePosition} (no fpos from firmware)" : newFilePosition.ToString(), _pauseReason);
 
                         // Wait for the print to be resumed unless that already happened while we were still draining
@@ -711,6 +718,29 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
                     {
                         // No more codes available - print must have finished
                         break;
+                    }
+                }
+
+                // Codes read after the rewind must not reach the firmware before its variable requests. Wait for them outside the lock,
+                // because the link task takes it to report a pause or an abort before it gets to send them. A request that fails leaves
+                // the local variables out of step with the file, so it ends the job as a read error does unless the file is closed already
+                try
+                {
+                    await variablesRewound;
+                }
+                catch (Exception e)
+                {
+                    using (await LockAsync())
+                    {
+                        if (!file.IsClosed)
+                        {
+                            if (e is not OperationCanceledException)
+                            {
+                                await _eventLogger.LogOutputAsync(MessageType.Error, $"in file {Path.GetFileName(file.FilePath.Physical)}: {e.Message}");
+                                _logger.LogError(e, "Failed to rewind the local variables of the job file (channel {Channel}): {Message}", file.Channel, e.Message);
+                            }
+                            Abort();
+                        }
                     }
                 }
             }
@@ -850,7 +880,15 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
                         // Try to update the last simulated time
                         if (lastDuration > 0)
                         {
-                            await _fileInfoParser.UpdateSimulatedTimeAsync(physicalFileName, lastDuration.Value, stoppingToken);
+                            try
+                            {
+                                await _fileInfoParser.UpdateSimulatedTimeAsync(physicalFileName, lastDuration.Value, stoppingToken);
+                            }
+                            catch (Exception e) when (e is not OperationCanceledException)
+                            {
+                                // The file may have been deleted or may not be writable
+                                _logger.LogWarning(e, "Failed to update simulation time of {File}", physicalFileName);
+                            }
                         }
                         else
                         {
@@ -886,7 +924,21 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
                         _pendingFileInfo = null;
                     }
                 }
-                await fileInfoSent;
+
+                try
+                {
+                    await fileInfoSent;
+                }
+                catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+                {
+                    // RRF did not get the file because the link was reset or lost meanwhile, which aborts the job. When a client selects a file,
+                    // that abort wakes this loop up to deselect it. Here the loop was not waiting yet, so it goes on without waiting instead
+                    using (await LockAsync(stoppingToken))
+                    {
+                        Abort();
+                        _startPendingFile = true;
+                    }
+                }
             } while (!stoppingToken.IsCancellationRequested);
         }
         catch (OperationCanceledException)
@@ -982,8 +1034,13 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
             _file2?.Close();
 
             IsAborted = true;
-            _pendingFile = null;
-            _pendingFileInfo = null;
+            if (_pendingFile is not null)
+            {
+                // The next file goes with the job that selected it, and so does the request to start it
+                _pendingFile = null;
+                _pendingFileInfo = null;
+                _startPendingFile = false;
+            }
             Resume();
         }
     }
