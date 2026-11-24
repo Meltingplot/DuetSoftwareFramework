@@ -13,7 +13,7 @@ using HttpClient = System.Net.Http.HttpClient;
 
 /// <summary>
 /// Session expiry in real time: the SessionExpiry service removes sessions that were idle for longer than Settings.SessionTimeout once per
-/// second (SessionExpiry.cs:21-37), from DWS and from DCS (SessionStorage.cs:390-428)
+/// second (SessionExpiry.cs:21-37), from DWS and from DCS (SessionStorage.cs:396-434)
 /// </summary>
 [TestFixture]
 public class SessionExpiryTests : WebServerFixture
@@ -33,7 +33,7 @@ public class SessionExpiryTests : WebServerFixture
             string idleKey = await ConnectAsync(idle, "expiry");
             Stopwatch stopwatch = Stopwatch.StartNew();
 
-            // The active client keeps its session alive with requests (SessionStorage.cs:177, 256, 277)
+            // The active client keeps its session alive with requests (SessionStorage.cs:183, 262, 283)
             while (stopwatch.ElapsedMilliseconds < SessionTimeout + 1500)
             {
                 using HttpResponseMessage response = await SendAsync(active, HttpMethod.Get, "machine/noop", activeKey);

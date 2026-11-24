@@ -36,7 +36,7 @@ public class SystemMacros
     [Test]
     public async Task ConfigFile()
     {
-        // Before config.g DSF sends the host name and the date and time (MacroFile.cs:299-331)
+        // Before config.g DSF sends the host name and the date and time (MacroFile.cs:299-332)
         _host.WriteMacro("config.g", "G1 X1\nM400\n");
         RunSystemMacro(CodeChannel.Trigger, "config.g", "M400");
 
@@ -54,7 +54,7 @@ public class SystemMacros
     [Test]
     public async Task ErrorInConfigFile()
     {
-        // An error while config.g runs becomes the startup error (MacroFile.cs:417, ObjectModel.HandleMacroErrorAsync)
+        // An error while config.g runs becomes the startup error (MacroFile.cs:418, ObjectModel.HandleMacroErrorAsync)
         _host.WriteMacro("config.g", "M400\nelse\nG1 X1\n");
         RunSystemMacro(CodeChannel.Trigger, "config.g", "M400");
         Assert.That(_host.Firmware.WaitUntil(firmware => firmware.GetStackDepth(CodeChannel.Trigger) == 0, FakeFirmwareHost.DefaultTimeout), Is.True);
@@ -70,7 +70,7 @@ public class SystemMacros
     [Test]
     public void Daemon()
     {
-        // daemon.g runs like any other macro, DSF only logs its start and end at a lower level (MacroFile.cs:239-246, 485-492)
+        // daemon.g runs like any other macro, DSF only logs its start and end at a lower level (MacroFile.cs:239-246, 486-493)
         _host.WriteMacro("daemon.g", "G1 X1\nM400\n");
         RunSystemMacro(CodeChannel.Daemon, "daemon.g", "M400");
         Assert.That(Executed(CodeChannel.Daemon), Is.EqualTo(new[] { "G1 X1", "M400" }));

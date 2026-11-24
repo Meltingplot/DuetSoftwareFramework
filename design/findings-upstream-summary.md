@@ -422,7 +422,7 @@ Neither: O6, O2 (rest), O2, O7, [O4 side bug].
 
 | ID | Function / file:line | What goes wrong | Seen as | Reached by | Eff | Reach | Evidence | Fork fix | Detail |
 |---|---|---|---|---|---|---|---|---|---|
-| <a id="h3"></a>H3 | `RepRapFirmwareEndpoints.cs:261-285` | rr_upload writes into the target; RRF and DWS's own PUT use a `.part` file. | a failed upload deletes the file it was meant to replace | rr_upload with a wrong crc32 | E3 | R3 | printer | open | OF HTTP |
+| <a id="h3"></a>H3 | `RepRapFirmwareEndpoints.cs:261-285` | rr_upload writes into the target; RRF and DWS's own PUT use a `.part` file. | a failed upload deletes the file it was meant to replace | rr_upload with a wrong crc32 | E3 | R3 | printer | PR #222 | OF HTTP (text in OF at 8507c98c) |
 | <a id="h2"></a>H2 | `SessionStorage.cs:404`, `:420-422`; DCS `Settings.cs:116` | Each expiry opens its own IPC connection; the DCS backlog is 4 and there is no retry. | expired sessions stay in DCS ("Failed to unregister … (11) Resource temporarily unavailable") | many sessions expiring at once (40 logins left 4) | E4 | R2 | printer | open | OF HTTP |
 | <a id="h5"></a>H5 | `MachineEndpoints.cs:294`, `:504` | `UrlPathEncode` stops at `?`, so the Location header throws. | unhandled 500, the item is created anyway | PUT /machine/directory or /machine/file with `?` and a non-ASCII character | E4 | R2 | printer | open | OF HTTP |
 | <a id="h6"></a>H6 | `WebSocketEndpoint.cs:283-287`; `CustomEndpointMiddleware.cs:156-160` | DWS never answers a WebSocket close frame. | clients see 1006 | client closes the WebSocket | E4 | R2 | printer | open | OF HTTP |

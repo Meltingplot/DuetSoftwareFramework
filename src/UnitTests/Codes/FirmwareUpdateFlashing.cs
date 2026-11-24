@@ -279,7 +279,7 @@ public class FirmwareUpdateFlashing
     }
 
     /// <summary>
-    /// A second update while the first one waits for the LinkService fails without stopping DCS (MCodeHandler.cs:1299-1303, LinkInterface.cs:523-526).
+    /// A second update while the first one waits for the LinkService fails without stopping DCS (MCodeHandler.cs:1299-1303, LinkInterface.cs:526-529).
     /// The transfers are held so that the LinkService cannot take the first update, and the second M997 gets through its flush because its channel is
     /// idle (Channel/Processor.cs:521-528)
     /// </summary>
