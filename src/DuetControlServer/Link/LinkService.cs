@@ -403,7 +403,7 @@ public sealed class LinkService(
             using (linkInterface.PrintStateLock.Lock(stoppingToken))
             {
                 ushort tag = _connection.Tag();
-                if (linkInterface.SetPrintInfoRequest is not null && linkAdapter.WritePrintFileInfo(model.Job.File, tag))
+                if (linkInterface.SetPrintInfoRequest is not null && linkAdapter.WritePrintFileInfo(linkInterface.PrintFileInfo!, tag))
                 {
                     // The packet providing file info has be sent first because it includes a time_t value that must reside on a 64-bit boundary!
                     _connection.Written(tag);

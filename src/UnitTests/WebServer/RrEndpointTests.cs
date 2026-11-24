@@ -109,7 +109,7 @@ public class RrEndpointTests : WebServerFixture
         string replies = string.Empty;
         await WaitUntilAsync(async () => (replies += await _client.GetStringAsync("rr_reply")).Contains("hello from rr_gcode"), "rr_reply did not return the reply");
 
-        // seqs.reply counts the messages DWS has seen (ModelObserver.cs:145-151, patched into rr_model at RepRapFirmwareEndpoints.cs:489-501)
+        // seqs.reply counts the messages DWS has seen (ModelObserver.cs:145-151, patched into rr_model at RepRapFirmwareEndpoints.cs:493-505)
         Assert.That((await GetJsonAsync("rr_model?flags=d99fn")).GetProperty("result").GetProperty("seqs").GetProperty("reply").GetInt32(), Is.GreaterThan(replySeq));
     }
 
@@ -120,7 +120,7 @@ public class RrEndpointTests : WebServerFixture
         Assert.That(json.GetProperty("key").GetString(), Is.EqualTo("state.status"));
         Assert.That(json.GetProperty("result").GetString(), Is.Not.Empty);
 
-        // Only letters, digits, '.', '[' and ']' are allowed in the key and only letters and digits in the flags (RepRapFirmwareEndpoints.cs:458-480)
+        // Only letters, digits, '.', '[' and ']' are allowed in the key and only letters and digits in the flags (RepRapFirmwareEndpoints.cs:462-484)
         Assert.That((await GetJsonAsync("rr_model?key=state%2Fstatus")).GetProperty("err").GetInt32(), Is.EqualTo(1));
         Assert.That((await GetJsonAsync("rr_model?key=state&flags=d-1")).GetProperty("err").GetInt32(), Is.EqualTo(1));
 
@@ -134,7 +134,7 @@ public class RrEndpointTests : WebServerFixture
         byte[] content = Encoding.UTF8.GetBytes("G1 X1 Y2\n");
         using (HttpResponseMessage response = await _client.PostAsync("rr_upload?name=" + Uri.EscapeDataString("0:/gcodes/rr/new dir/file.g") + "&time=2024-01-02T03:04:05", new ByteArrayContent(content)))
         {
-            // Missing directories are created (RepRapFirmwareEndpoints.cs:252-256) and the time is applied (line 291-294)
+            // Missing directories are created (RepRapFirmwareEndpoints.cs:252-256) and the time is applied (line 288-291)
             Assert.That(await response.Content.ReadAsStringAsync(), Is.EqualTo("{\"err\":0}"));
         }
         string file = Path.Combine(Dcs.BaseDirectory, "gcodes", "rr", "new dir", "file.g");
@@ -223,7 +223,7 @@ public class RrEndpointTests : WebServerFixture
         Assert.That(info.TryGetProperty("generatedBy", out _), Is.True);
 
         // The thumbnails of the file info are fetched with rr_thumbnail from their offset; DWS returns the whole base64 data from there on
-        // with next 0 (RepRapFirmwareEndpoints.cs:785-808)
+        // with next 0 (RepRapFirmwareEndpoints.cs:789-812)
         JsonElement[] thumbnails = [.. info.GetProperty("thumbnails").EnumerateArray()];
         Assert.That(thumbnails, Has.Length.EqualTo(2));
         foreach (JsonElement thumbnail in thumbnails)
@@ -237,11 +237,11 @@ public class RrEndpointTests : WebServerFixture
             Assert.That(Convert.FromBase64String(chunk.GetProperty("data").GetString()!), Is.Not.Empty);
         }
 
-        // JPEG thumbnails are reported as such (RepRapFirmwareEndpoints.cs:711-717)
+        // JPEG thumbnails are reported as such (RepRapFirmwareEndpoints.cs:715-721)
         JsonElement jpeg = await GetJsonAsync("rr_fileinfo?name=0:/gcodes/jpg.gcode");
         Assert.That(jpeg.GetProperty("thumbnails").EnumerateArray().Select(t => t.GetProperty("format").GetString()), Is.EqualTo(new[] { "jpeg" }));
 
-        // The file info of another file is parsed again for rr_thumbnail (RepRapFirmwareEndpoints.cs:773-781)
+        // The file info of another file is parsed again for rr_thumbnail (RepRapFirmwareEndpoints.cs:777-785)
         Assert.That((await GetJsonAsync("rr_fileinfo?name=0:/gcodes/circle.gcode")).GetProperty("err").GetInt32(), Is.Zero);
         Assert.That((await GetJsonAsync($"rr_thumbnail?name=0:/gcodes/qoi.gcode&offset={thumbnails[0].GetProperty("offset").GetInt64()}")).GetProperty("err").GetInt32(), Is.Zero);
 
@@ -256,7 +256,7 @@ public class RrEndpointTests : WebServerFixture
     [Test]
     public async Task FileInfoOfTheJobFile()
     {
-        // Without a name, rr_fileinfo reports the file being printed plus the print duration (RepRapFirmwareEndpoints.cs:641-651, RRF HTTP request docs)
+        // Without a name, rr_fileinfo reports the file being printed plus the print duration (RepRapFirmwareEndpoints.cs:645-655, RRF HTTP request docs)
         using (await Dcs.Model.AccessReadWriteAsync())
         {
             Dcs.Model.Job.File.FileName = "0:/gcodes/circle.gcode";

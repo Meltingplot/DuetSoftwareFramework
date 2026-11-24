@@ -23,7 +23,7 @@ namespace UnitTests.Utility;
 /// connects to RRF itself and updates them once it has the object model (FirmwareUpdater.UpdateFirmwareAsync, UpdateService.cs:339-357).
 /// Both compare boards[].firmwareVersion with the version in boards[].firmwareFileName, update the outdated expansion boards with M997 B, which RRF
 /// carries out, and then the main board with M997, which DCS carries out. When only expansion boards were updated, the main board is reset with M999.
-/// The tests run without a console, so FirmwareUpdater updates every outdated board without asking (FirmwareUpdater.cs:134-138), the questions are tested with scripted keys
+/// The tests run without a console, so FirmwareUpdater updates every outdated board without asking (FirmwareUpdater.cs:141-145), the questions are tested with scripted keys
 /// </summary>
 [TestFixture]
 public class UpdateOnlyMode
@@ -114,8 +114,10 @@ public class UpdateOnlyMode
     /// <param name="configure">Optional callback to set up the fake firmware</param>
     /// <param name="directory">Directory of the firmware files</param>
     /// <param name="editBoards">Optional callback to change the boards RRF reports</param>
+    /// <param name="configureServices">Optional callback to change the services of DCS</param>
     private async Task<FakeFirmwareHost> StartAsync(string? mainVersion, string? expansionVersion, bool ipc = false, bool updateOnly = false,
-        Action<FakeFirmware.FakeFirmware>? configure = null, string directory = "firmware", Action<JsonArray>? editBoards = null)
+        Action<FakeFirmware.FakeFirmware>? configure = null, string directory = "firmware", Action<JsonArray>? editBoards = null,
+        Action<IServiceCollection>? configureServices = null)
     {
         _host = await FakeFirmwareHost.StartAsync(
             firmware =>
@@ -131,7 +133,8 @@ public class UpdateOnlyMode
                 settings.UpdateOnly = updateOnly;
                 WriteFirmware(settings.BaseDirectory, mainVersion, expansionVersion, directory);
             },
-            ipc);
+            ipc,
+            configureServices: configureServices);
         return _host;
     }
 
@@ -185,7 +188,7 @@ public class UpdateOnlyMode
 
     /// <summary>
     /// Firmware files that are not in directories.firmware are looked for in directories.system, where they were kept before RRF 3.3
-    /// (FirmwareUpdater.cs:84-88 and 305-309, the wiki: Gcodes.md, M997 notes)
+    /// (FirmwareUpdater.cs:91-95 and 312-316, the wiki: Gcodes.md, M997 notes)
     /// </summary>
     [TestCase(false)]
     [TestCase(true)]
@@ -201,7 +204,7 @@ public class UpdateOnlyMode
 
     /// <summary>
     /// A board without firmwareFileName, e.g. the main board when RRF did not report its verbose fields (see VerboseFieldsAfterReset), is
-    /// left alone with a warning (FirmwareUpdater.cs:109-113 and 328-332)
+    /// left alone with a warning (FirmwareUpdater.cs:116-120 and 335-339)
     /// </summary>
     [TestCase(false)]
     [TestCase(true)]
@@ -235,8 +238,8 @@ public class UpdateOnlyMode
     }
 
     /// <summary>
-    /// FirmwareUpdater waits for the board to report the new version, polling every 2 s (FirmwareUpdater.cs:189-212), then resets the main board
-    /// because it was not updated itself (FirmwareUpdater.cs:243-262)
+    /// FirmwareUpdater waits for the board to report the new version, polling every 2 s (FirmwareUpdater.cs:196-219), then resets the main board
+    /// because it was not updated itself (FirmwareUpdater.cs:250-269)
     /// </summary>
     [Test]
     public async Task OutdatedExpansionBoard()
@@ -254,7 +257,7 @@ public class UpdateOnlyMode
     }
 
     /// <summary>
-    /// Expansion boards come first, because updating the main board restarts it and ends DCS (FirmwareUpdater.cs:160-242)
+    /// Expansion boards come first, because updating the main board restarts it and ends DCS (FirmwareUpdater.cs:167-249)
     /// </summary>
     [Test]
     public async Task OutdatedMainAndExpansionBoards()
@@ -278,8 +281,8 @@ public class UpdateOnlyMode
     }
 
     /// <summary>
-    /// A board whose firmware file is missing gets no version in the table of versions (FirmwareUpdater.cs:68-94), so it is left alone with the
-    /// warning for a board without a firmware version (FirmwareUpdater.cs:102-113 and 321-332), like a board without a file name. Updating it would
+    /// A board whose firmware file is missing gets no version in the table of versions (FirmwareUpdater.cs:75-101), so it is left alone with the
+    /// warning for a board without a firmware version (FirmwareUpdater.cs:109-120 and 328-339), like a board without a file name. Updating it would
     /// send M997 B121, which RRF refuses ("Firmware file ... not found", ExpansionManager.cpp:484-489), and then wait for a version that never
     /// comes. The same holds for a firmware file whose version cannot be read, e.g. one without the version text at 0x20 (Firmware.cs:141-171)
     /// </summary>
@@ -397,7 +400,7 @@ public class UpdateOnlyMode
 
     /// <summary>
     /// Stopping DCS -u while it waits for a tool board ends the wait, and the reset of the main board that follows is cancelled as well, because
-    /// both codes get the token of the update (FirmwareUpdater.cs:176-218 and 243-262)
+    /// both codes get the token of the update (FirmwareUpdater.cs:183-225 and 250-269)
     /// </summary>
     [Test]
     public async Task CancelledWhileWaitingForExpansionBoard()
@@ -459,7 +462,7 @@ public class UpdateOnlyMode
     }
 
     /// <summary>
-    /// The running DCS carries out the M997 it gets over IPC, the firmware file is resolved through it as well (FirmwareUpdater.cs:302-315, 438-460)
+    /// The running DCS carries out the M997 it gets over IPC, the firmware file is resolved through it as well (FirmwareUpdater.cs:309-322, 445-467)
     /// </summary>
     [Test]
     public async Task RemoteOutdatedMainBoard()
@@ -474,7 +477,7 @@ public class UpdateOnlyMode
     }
 
     /// <summary>
-    /// The new version of the tool board comes in through the object model subscription (FirmwareUpdater.cs:406-419), then the main board is reset
+    /// The new version of the tool board comes in through the object model subscription (FirmwareUpdater.cs:413-426), then the main board is reset
     /// </summary>
     [Test]
     public async Task RemoteOutdatedExpansionBoard()
@@ -515,7 +518,7 @@ public class UpdateOnlyMode
 
     /// <summary>
     /// With a console FirmwareUpdater asks whether to update all outdated boards. Enter and Y in either case mean yes, every key but Enter is
-    /// followed by a line break. Keys pressed before the question are discarded in the local update only (FirmwareUpdater.cs:132-158 and 349-374,
+    /// followed by a line break. Keys pressed before the question are discarded in the local update only (FirmwareUpdater.cs:139-165 and 356-381,
     /// FirmwareUpdatePrompt.cs)
     /// </summary>
     [TestCase(false, '\r'), TestCase(false, 'y'), TestCase(false, 'Y')]
@@ -561,7 +564,7 @@ public class UpdateOnlyMode
     }
 
     /// <summary>
-    /// Without a console, as when the reprapfirmware package runs DCS -u, nothing is asked (FirmwareUpdater.cs:134-138)
+    /// Without a console, as when the reprapfirmware package runs DCS -u, nothing is asked (FirmwareUpdater.cs:141-145)
     /// </summary>
     [Test]
     public async Task NoQuestionWithoutConsole()
@@ -577,7 +580,7 @@ public class UpdateOnlyMode
 
     #region Timeout
     /// <summary>
-    /// FirmwareUpdater waits 3 minutes for an expansion board to report the new version (FirmwareUpdater.cs:34)
+    /// FirmwareUpdater waits 3 minutes for an expansion board to report the new version (FirmwareUpdater.cs:41)
     /// </summary>
     [Test]
     public async Task ExpansionUpdateTimeoutIsThreeMinutes()
@@ -588,8 +591,8 @@ public class UpdateOnlyMode
 
     /// <summary>
     /// A tool board that does not report the new version in time is reported, polled every 2 s, and the main board is still reset because RRF has
-    /// started the update (FirmwareUpdater.cs:189-262). Only the local update is tested: the remote one waits for an object model patch in every
-    /// poll (FirmwareUpdater.cs:412-418), which comes only when something under boards/**, directories/** or state/status changes, and the values of
+    /// started the update (FirmwareUpdater.cs:196-269). Only the local update is tested: the remote one waits for an object model patch in every
+    /// poll (FirmwareUpdater.cs:419-425), which comes only when something under boards/**, directories/** or state/status changes, and the values of
     /// the fake firmware stay the same
     /// </summary>
     [Test]
@@ -602,6 +605,35 @@ public class UpdateOnlyMode
         Assert.That(Output, Does.Contain($"Updating firmware on board #121... Timed out waiting for board #121 to report version {NewVersion}" + Environment.NewLine));
         Assert.That(Output, Does.Contain("Resetting mainboard... Done!"));
         Assert.That(ReceivedCodes(), Is.EqualTo(new[] { "M997 B121" }));
+        Assert.That(MainBoardWasReset(), Is.True);
+    }
+
+    /// <summary>
+    /// The system time moving forward while FirmwareUpdater waits for a tool board, for example when NTP sets it after a boot without a
+    /// real-time clock, does not end the wait: the timeout runs on the monotonic clock (FirmwareUpdater.cs:200-202). The time moves 0.5 s after
+    /// M997, before the first poll at 2 s, and the board reports the new version after 3 s, which the second poll sees
+    /// </summary>
+    [Test]
+    public async Task ExpansionUpdateWaitIgnoresSystemTimeChange()
+    {
+        ShiftableClock clock = new();
+        await StartAsync(MainVersion, NewVersion,
+            configure: firmware => firmware.OnCode("M997", code =>
+            {
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(500);
+                    clock.Offset = TimeSpan.FromHours(1);
+                    await Task.Delay(2500);
+                    firmware.ObjectModel.Set("boards[1].firmwareVersion", NewVersion);
+                });
+                return FakeReply.Ok();
+            }),
+            configureServices: services => services.AddSingleton<TimeProvider>(clock));
+        await Updater.UpdateFirmwareAsync().WaitAsync(UpdateTimeout);
+
+        Assert.That(Output, Does.Contain("Updating firmware on board #121... Done!" + Environment.NewLine));
+        Assert.That(Output, Does.Not.Contain("Timed out"));
         Assert.That(MainBoardWasReset(), Is.True);
     }
     #endregion

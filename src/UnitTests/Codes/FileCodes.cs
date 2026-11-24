@@ -480,7 +480,7 @@ public class FileCodes
     {
         string config = WriteFile("M550 P\"test\"\n", "sys", "config.g");
 
-        // M30 deletes files only (MCodeHandler.cs:428), and File.Delete does not remove a directory
+        // M30 deletes files only (MCodeHandler.cs:430), and File.Delete does not remove a directory
         Message? result = await _host.ExecuteCodeAsync("M30 \"0:/\"");
         Assert.That(result?.Type, Is.EqualTo(MessageType.Error));
         Assert.That(System.IO.File.Exists(config), Is.True);

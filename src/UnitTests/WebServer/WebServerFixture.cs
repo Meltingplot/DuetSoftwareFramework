@@ -126,7 +126,7 @@ public abstract class WebServerFixture
         int before = (await GetUserSessionsAsync()).Length, logStart = Dws.Log.Count;
         ExpireIdleSessions();
 
-        // Every expired session is removed from DCS by a connection of its own (SessionStorage.cs:404). When more sessions expire at once
+        // Every expired session is removed from DCS by a connection of its own (SessionStorage.cs:410). When more sessions expire at once
         // than the DCS IPC backlog takes, some of these connections fail and the user sessions stay in DCS (see
         // WebServerFindings.ExpiredSessionsAreRemovedFromDcs), so wait for all of them to finish and remove the rest directly
         string category = typeof(DuetWebServer.Singletons.SessionStorage).FullName!;
@@ -158,7 +158,7 @@ public abstract class WebServerFixture
     /// <summary>
     /// Let every session expire that has no WebSocket and no running request, as if all clients had been idle for longer than the session
     /// timeout. This calls the maintenance that the SessionExpiry service runs once per second (SessionExpiry.cs:28), with a negative timeout
-    /// so that the age of a session does not matter (SessionStorage.cs:397). Expired sessions are removed from DCS in the background
+    /// so that the age of a session does not matter (SessionStorage.cs:403). Expired sessions are removed from DCS in the background
     /// </summary>
     protected void ExpireIdleSessions() => SessionStorage.MaintainSessions(TimeSpan.FromTicks(-1), Dcs.SocketPath!);
 

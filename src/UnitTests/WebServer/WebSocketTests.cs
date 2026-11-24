@@ -192,7 +192,7 @@ public class WebSocketTests : WebServerFixture
             {
                 await ReceiveTextAsync(webSocket!);
 
-                // An open socket keeps its session from expiring (SessionStorage.cs:397)
+                // An open socket keeps its session from expiring (SessionStorage.cs:403)
                 ExpireIdleSessions();
                 Assert.That(SessionStorage.CheckSessionKey(key, false), Is.True);
 

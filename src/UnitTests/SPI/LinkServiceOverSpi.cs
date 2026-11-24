@@ -948,16 +948,15 @@ public partial class LinkServiceOverSpi
     public async Task PrintStartedAndStopped()
     {
         await using Host host = await Host.StartAsync();
-        using (await host.Model.AccessReadWriteAsync())
+        GCodeFileInfo file = new()
         {
-            GCodeFileInfo file = host.Model.Job.File;
-            file.FileName = "0:/gcodes/print.gcode";
-            file.GeneratedBy = "fuzz slicer";
-            file.Size = 123456;
-            file.NumLayers = 7;
-            file.Filament.Add(1.5F);
-        }
-        await host.Link.SetPrintFileInfo().Unwrap().WaitAsync(Timeout);
+            FileName = "0:/gcodes/print.gcode",
+            GeneratedBy = "fuzz slicer",
+            Size = 123456,
+            NumLayers = 7
+        };
+        file.Filament.Add(1.5F);
+        await host.Link.SetPrintFileInfo(file).Unwrap().WaitAsync(Timeout);
         byte[] info = host.WaitFor(SbcRequest.SetPrintFileInfo);
         const int headerSize = 40;
         int fileNameLength = BitConverter.ToUInt16(info, 0), generatedByLength = BitConverter.ToUInt16(info, 2), numFilaments = (int)BitConverter.ToUInt32(info, 4);

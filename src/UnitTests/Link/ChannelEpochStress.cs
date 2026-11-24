@@ -545,7 +545,7 @@ public class ChannelEpochStress
 
         /// <summary>
         /// Start a single code like a client does, but keep a cancellation visible: SimpleCode returns an empty reply for a cancelled code
-        /// (SimpleCode.cs:181-184), the code itself throws OperationCanceledException
+        /// (SimpleCode.cs:207-210), the code itself throws OperationCanceledException
         /// </summary>
         private Task<Message?> StartCode(string text, CodeChannel channel)
         {
@@ -839,7 +839,7 @@ public class ChannelEpochStress
                         StepRandom(3);
                         Interlocked.Exchange(ref _doCodeGate, null)?.TrySetResult();
 
-                        // M929 flushes its channel in DSF (MCodeHandler.cs:1150), so a probe buffered on that channel would wait for M929 while RRF holds
+                        // M929 flushes its channel in DSF (MCodeHandler.cs:1152), so a probe buffered on that channel would wait for M929 while RRF holds
                         // the probe until M929 has its result. The probe goes out once RRF has nothing of the channel left, a channel that never gets
                         // there is blocked (K13)
                         DateTime idleTime = DateTime.UtcNow + BlockTime;

@@ -155,8 +155,8 @@ public class CodeFile(
     /// </summary>
     /// <param name="position">New file position</param>
     /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>Asynchronous task</returns>
-    public async Task RewindAsync(long position, CancellationToken cancellationToken = default)
+    /// <returns>Task that completes when the firmware has processed the variable requests, to be awaited after releasing the locks</returns>
+    public Task Rewind(long position, CancellationToken cancellationToken = default)
     {
         Position = position;
 
@@ -209,7 +209,7 @@ public class CodeFile(
                 logger.LogDebug("Restored {Keyword} block starting at byte {FilePosition} after seeking to byte {Position}", codeBlock.Keyword, codeBlock.FilePosition, position);
             }
         }
-        await Task.WhenAll(varTasks);
+        return Task.WhenAll(varTasks);
     }
 
     /// <summary>

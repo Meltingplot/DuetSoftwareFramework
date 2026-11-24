@@ -2,6 +2,8 @@
 using DuetAPI.Commands;
 using DuetAPI.ObjectModel;
 using DuetControlServer.IPC;
+using DuetControlServer.Link;
+using DuetControlServer.Link.Protocol.Shared;
 using DuetSharedLibrary;
 using Microsoft.Extensions.Hosting;
 using System;
@@ -20,7 +22,8 @@ namespace DuetControlServer.Commands;
 /// <param name="codeFactory">Code factory</param>
 /// <param name="model">Object model</param>
 /// <param name="lifetime">Host application lifetime</param>
-public sealed class SimpleCode(Codes.CodeFactory codeFactory, Model.ObjectModel model, IHostApplicationLifetime lifetime)
+/// <param name="linkInterface">Link interface</param>
+public sealed class SimpleCode(Codes.CodeFactory codeFactory, Model.ObjectModel model, IHostApplicationLifetime lifetime, LinkInterface linkInterface)
     : DuetAPI.Commands.SimpleCode, IConnectionCommand
 {
     /// <summary>
@@ -144,6 +147,12 @@ public sealed class SimpleCode(Codes.CodeFactory codeFactory, Model.ObjectModel 
                     result.AppendLine("ok");
                 }
             }
+
+            // No code reaches the Executed stage, which sends the result of a code from the firmware
+            if (IsFromFirmware)
+            {
+                SendErrorToFirmware(result);
+            }
             return result.ToString();
         }
 
@@ -163,6 +172,23 @@ public sealed class SimpleCode(Codes.CodeFactory codeFactory, Model.ObjectModel 
                 catch (OperationCanceledException)
                 {
                     // not logged
+                }
+            }
+
+            // Codes from the firmware are asynchronous, and the Executed stage sends their results. A code that fails gets no result there,
+            // so wait for them and send the error below. A cancelled code is not answered
+            if (IsFromFirmware)
+            {
+                foreach (Code priorityCode in priorityCodes)
+                {
+                    try
+                    {
+                        await priorityCode.Task;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // not answered
+                    }
                 }
             }
 
@@ -195,7 +221,7 @@ public sealed class SimpleCode(Codes.CodeFactory codeFactory, Model.ObjectModel 
                 }
             }
         }
-        catch (Exception e) when (e is CodeParserException or ArgumentException)
+        catch (Exception e) when (e is CodeParserException or ArgumentException || (IsFromFirmware && e is not OperationCanceledException))
         {
             result.Append(MessageType.Error, e.Message);
             using (await model.AccessReadOnlyAsync(lifetime.ApplicationStopping))
@@ -206,8 +232,25 @@ public sealed class SimpleCode(Codes.CodeFactory codeFactory, Model.ObjectModel 
                     result.AppendLine("ok");
                 }
             }
+
+            // The failed code has not reached the Executed stage with a result
+            if (IsFromFirmware)
+            {
+                SendErrorToFirmware(result);
+            }
         }
         return result.ToString();
+    }
+
+    /// <summary>
+    /// Send an error as the result of the DoCode request of a code from the firmware, as the Executed stage sends the result of a code that has one.
+    /// Else RRF's channel waits for it forever
+    /// </summary>
+    /// <param name="result">Error message</param>
+    private void SendErrorToFirmware(Message result)
+    {
+        result.AppendLine(string.Empty);
+        linkInterface.SendMessage((MessageTypeFlags)(1 << (int)Channel) | MessageTypeFlags.ErrorMessageFlag, result.ToString(), FirmwareTag);
     }
 
     /// <summary>

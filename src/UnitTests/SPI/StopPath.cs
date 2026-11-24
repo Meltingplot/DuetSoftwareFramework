@@ -26,8 +26,8 @@ namespace UnitTests.SPI;
 /// trigger macro that RRF requests, with the real LinkService on the real SPI adapter against the SPI port of RRF (<see cref="FakeRrfSpi"/>)
 /// </summary>
 /// <remarks>
-/// The emergency stop takes the path of M112: SimpleCode marks M112 as prioritized (SimpleCode.cs:110-116), MCodeHandler calls
-/// LinkInterface.EmergencyStopAsync (MCodeHandler.cs:749-772), which sets FirmwareHaltRequest (LinkInterface.cs:339-350), the transfer thread
+/// The emergency stop takes the path of M112: SimpleCode marks M112 as prioritized (SimpleCode.cs:113-119), MCodeHandler calls
+/// LinkInterface.EmergencyStopAsync (MCodeHandler.cs:751-774), which sets FirmwareHaltRequest (LinkInterface.cs:340-351), the transfer thread
 /// writes the EmergencyStop request into its next transfer (LinkService.cs:324-335) and completes the request once the transfer that carried it is
 /// done and the data RRF sent with it is processed (LinkService.cs:452-454, 597). RRF performs the emergency stop as soon as it reads the
 /// request (SbcInterface.cpp:336-338), and also whenever it loses an established connection (SbcInterface.cpp:194-230).
@@ -812,8 +812,8 @@ public partial class StopPath
             probe.StartRestarts = rrf.RestartTimes.Count;
         }
 
-        // Request the emergency stop like M112 does: SimpleCode makes M112 a prioritized code (SimpleCode.cs:110-116) and MCodeHandler waits for the stop
-        // (MCodeHandler.cs:749-772). DSF is held, so it writes the request into its next transfer
+        // Request the emergency stop like M112 does: SimpleCode makes M112 a prioritized code (SimpleCode.cs:113-119) and MCodeHandler waits for the stop
+        // (MCodeHandler.cs:751-774). DSF is held, so it writes the request into its next transfer
         Task<Message?>? m112 = null;
         void RequestStop()
         {
@@ -1092,7 +1092,7 @@ public partial class StopPath
     #region Tests
     /// <summary>
     /// On a clean link the emergency stop reaches RRF once, in the transfer after the one DSF had set up, and M112 replies only after RRF has processed it,
-    /// with the machine halted (MCodeHandler.cs:749-772, LinkService.cs:452-454 and 542)
+    /// with the machine halted (MCodeHandler.cs:751-774, LinkService.cs:452-454 and 542)
     /// </summary>
     /// <param name="capabilities">Extended or plain link</param>
     [TestCase(LinkCapabilities.All), TestCase(LinkCapabilities.None)]
