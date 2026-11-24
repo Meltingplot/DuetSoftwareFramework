@@ -640,14 +640,12 @@ CANlib cf53186). Every finding is upstream code, and Duet3D `3.7-dev` and `3.7-c
     stop-drivers stopped drives that are not local drivers (RRF #101, as Duet3Expansion 162803de).
   - CAN-E1: on the EXP1HCL, M23CL and TOOLINDX, `M915 P<address>.5 R1` and then `M915 P<address>.5` read `dms[]` beyond its end
     (Duet3Expansion #32, which refuses the request as the main board refuses its own drivers).
-  - Neither PR is merged yet.
-- **CAN-R2. RRF indexes the driver data of an expansion board with the G-code driver number, not checked against the count that the
-  board announced.**
-  - `ProcessAnnouncement` allocates `driverData` with `numDrivers` entries (`ExpansionManager.cpp:226-238`).
-  - `StoreDriverDirection`, `StoreDriverMode`, `GetDriverDirection` and `GetDriverMode` index it with `did.localDriver` (`:426-458`).
-  - A write needs a board whose M569 reply and announcement disagree, because Duet3Expansion refuses an unknown driver. A read only
-    needs a configuration mistake, for example `GetDirectionValue` of the Hangprinter for a remote driver (from the census, not traced
-    again).
+  - CAN-R2: the driver data accessors of `ExpansionManager` (`ExpansionManager.cpp:426-458`) indexed `driverData`, allocated with the
+    announced `numDrivers` (`:226-238`), with the G-code driver number unchecked. RRF #111 treats a driver at or beyond the count like
+    a board without driver data, as `SmartDrivers::GetDriverMode` does for local drivers. A write needs a board whose M569 reply and
+    announcement disagree; a read a configuration mistake, e.g. the Hangprinter's `GetDirectionValue` for a remote driver (from the
+    census, not traced again).
+  - None of these PRs is merged yet.
 - **CAN-R3. Accelerometer data with a resolution of 0 or 1 bits shift by more than 31.**
   - `GetBitsAfterPoint` returns `dataResolution - 2` as `unsigned int` (`Accelerometers.cpp:148-151`), and the receiver uses the
     resolution of the message in `1u << GetBitsAfterPoint(receivedResolution)` and `1u << (receivedResolution - 1)` (`:770-778`).
