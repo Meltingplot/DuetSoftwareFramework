@@ -18,7 +18,7 @@ using SbcRequest = DuetControlServer.Link.Protocol.SbcRequests.Request;
 namespace UnitTests.Utility;
 
 /// <summary>
-/// DCS -u (Settings.UpdateOnly), which the reprapfirmware package runs after it has installed new firmware files (pkg/deb/reprapfirmware/DEBIAN/postinst:11).
+/// DCS -u (Settings.UpdateOnly), which the reprapfirmware package runs after it has installed new firmware files (pkg/deb/reprapfirmware/DEBIAN/postinst:20).
 /// DCS first asks a running DCS to update the boards over IPC (FirmwareUpdater.TryRemoteFirmwareUpdateAsync, Program.cs:203-219), otherwise it
 /// connects to RRF itself and updates them once it has the object model (FirmwareUpdater.UpdateFirmwareAsync, UpdateService.cs:339-357).
 /// Both compare boards[].firmwareVersion with the version in boards[].firmwareFileName, update the outdated expansion boards with M997 B, which RRF
