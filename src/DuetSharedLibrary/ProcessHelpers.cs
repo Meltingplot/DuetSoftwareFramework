@@ -134,15 +134,71 @@ public static class ProcessHelpers
     }
 
     /// <summary>
+    /// Raises capabilities of the permitted set into the effective set of the calling thread until it is disposed.
+    /// DCS has CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH as permitted file capabilities only, so that it opens files with the
+    /// rights of its user and only the reads of another process's /proc entries below use them. Capabilities belong to a
+    /// thread, which is why this is a ref struct: the code in between cannot await. Capabilities that are not permitted are
+    /// left out, so a process without them runs that code unprivileged
+    /// </summary>
+    private readonly ref struct EffectiveCapabilities
+    {
+        /// <summary>
+        /// Capability sets of the thread before they were raised
+        /// </summary>
+        private readonly cap_user_data _previous;
+
+        /// <summary>
+        /// Whether the effective set was changed
+        /// </summary>
+        private readonly bool _raised;
+
+        /// <summary>
+        /// Raise capabilities
+        /// </summary>
+        /// <param name="capabilities">Bit mask of the capabilities 0-31 to raise</param>
+        public EffectiveCapabilities(uint capabilities)
+        {
+            if (OperatingSystem.IsLinux())
+            {
+                cap_user_header header = new() { version = Interop._LINUX_CAPABILITY_VERSION_3 };
+                if (Interop.capget(ref header, ref _previous) == 0)
+                {
+                    cap_user_data raised = _previous;
+                    raised.effective |= capabilities & raised.permitted;
+                    _raised = raised.effective != _previous.effective && Interop.capset(ref header, ref raised) == 0;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Restore the effective set
+        /// </summary>
+        public void Dispose()
+        {
+            if (_raised)
+            {
+                cap_user_header header = new() { version = Interop._LINUX_CAPABILITY_VERSION_3 };
+                cap_user_data previous = _previous;
+                Interop.capset(ref header, ref previous);
+            }
+        }
+    }
+
+    /// <summary>
     /// Get the executable path of a process by resolving /proc/{pid}/exe. Unlike Process.MainModule this does not
     /// parse the full module list from /proc/{pid}/maps, which allocates hundreds of kilobytes per call
     /// </summary>
     /// <param name="pid">Process ID to look up</param>
     /// <returns>Absolute executable path, or null if it could not be resolved</returns>
+    /// <remarks>
+    /// The link of a process that is not dumpable, e.g. one started from a file with capabilities, can only be read with
+    /// CAP_SYS_PTRACE (proc_pid_exe(5), "Ptrace access mode checking" in ptrace(2))
+    /// </remarks>
     public static string? GetExecutablePath(int pid)
     {
         try
         {
+            using EffectiveCapabilities capabilities = new(1u << Interop.CAP_SYS_PTRACE);
             return File.ResolveLinkTarget($"/proc/{pid}/exe", returnFinalTarget: false)?.FullName;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
@@ -159,11 +215,21 @@ public static class ProcessHelpers
     /// </summary>
     /// <param name="pid">Process ID to look up</param>
     /// <returns>True if the process's exec was secure-mode</returns>
+    /// <remarks>
+    /// The files below /proc/{pid} of a process that is not dumpable belong to root (proc_pid(5)), so reading the auxv of
+    /// a process started from a file with capabilities needs CAP_DAC_READ_SEARCH as well as CAP_SYS_PTRACE
+    /// </remarks>
     public static bool IsExecSecure(int pid)
     {
         try
         {
-            ReadOnlySpan<byte> auxv = File.ReadAllBytes($"/proc/{pid}/auxv");
+            byte[] auxvData;
+            using (EffectiveCapabilities capabilities = new((1u << Interop.CAP_SYS_PTRACE) | (1u << Interop.CAP_DAC_READ_SEARCH)))
+            {
+                auxvData = File.ReadAllBytes($"/proc/{pid}/auxv");
+            }
+
+            ReadOnlySpan<byte> auxv = auxvData;
             int wordSize = IntPtr.Size;
             for (int offset = 0; offset + 2 * wordSize <= auxv.Length; offset += 2 * wordSize)
             {

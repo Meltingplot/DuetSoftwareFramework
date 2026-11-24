@@ -40,6 +40,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 - `MacroCloseStress` runs trigger 30 up to five times a second, and its macro nests four more. DCS logs two lines for each macro on the trigger channel, so the journal gets about 50 lines a second for an hour. The machine's own triggers keep priority (see the test).
 - `AbortsCrossingMacroRequests` (explicit, `Restart`) runs a Python IPC client as root on the SBC, which aborts Telnet with the IPC command `InvalidateChannel`, and sets the DCS log level to debug for about a minute (`M111 P-1 S"debug"`, set back afterwards). `LAB_ABORT_ITERATIONS` sets the number of aborts (default 600).
 - `PluginPermissions.WebServerPassesPermissionCheckOfSystemPackages` sends `DELETE /machine/systemPackage` for `labtest_no_such_package`, a name no Debian package can have. With root plugin support, DPS runs `dpkg -r` with it.
+- `ControlServerCapabilities.FileReadsHaveTheRightsOfTheDsfUser` creates `/var/tmp/lab-capabilities` as root with two small files, one of them readable only by root, reads both with M36.2 and removes the directory again.
 - `CodeBufferReserve` keeps Telnet and Aux2 waiting for 12 s with RRF's code buffer full. Without the fix, no trigger macro, including those of the doors and the E-stop input, gets a code to RRF in that time.
 - Never: print jobs, motion or heaters.
 - A test that leaves a channel stuck restarts DCS and sends M999 before it fails.
@@ -69,6 +70,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 | `LineChecksums.*` | No bug: a wrong CRC, a missing CRC or a wrong line number ends a macro | New in the line checksums |
 | `CodeReplies.M36MissingFileIsValidJson` | M36 replied with invalid JSON for a missing file | DSF #72 |
 | `CodeReplies.M39ReportsSizesAndClusterSize` | M39 reported sizes in "Gb" and no cluster size | DSF #82 |
+| `ControlServerCapabilities.*` | DCS had CAP_DAC_READ_SEARCH in its effective set, so M36.2 returned files only root may read from any volume, e.g. the SSH host keys of the `/etc/ssh` mount. Needs the DSF package with the fix: a side-load keeps the file capabilities of the installed one | DSF fix/dcs-file-capability |
 | `MacroCloseStress.NoResetWhileMacrosCloseOnTheTriggerChannel` (explicit) | RRF reset while idle with a MemoryProtectionFault in `Heap::DeleteSlot` just after a trigger macro closed, about once per 40,000 closes (RRF 3.7.0+1.mp.9 and older, upstream code) | RRF fork PR #50 (test build 3.7.0+1.mp.10-dev.1) |
 | `VariableCopies.*` | A variable kept a raw pointer into the object model for an array of objects, a string or a port. On the CHX, `sys/daemon.g:37` keeps the filament name of extruder 0 and never saw a change. The tests use the text of a box of their own, the heaters and the port of a temperature sensor instead | RRF fork PR #57 (test build 3.7.0+1.mp.11-dev.1) |
 | `LinkSoak.NoLostConnectionWhileIdle` (explicit) | TfrRdy timeouts every 15 to 30 minutes (DSF 3.7.0-rc.1) | Upstream 46886f5d |
