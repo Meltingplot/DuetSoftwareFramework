@@ -27,6 +27,7 @@ public sealed class UninstallSystemPackage(ServicePrivileges privileges, IOption
         {
             throw new ArgumentException("Unable to manage system packages without root privileges");
         }
+        privileges.CheckSettings();
 
         string args = _settings.UninstallLocalPackageArguments.Replace("{package}", Package);
         using Process process = Process.Start(_settings.UninstallLocalPackageCommand, args);

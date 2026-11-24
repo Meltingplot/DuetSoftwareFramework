@@ -36,6 +36,9 @@ rootCommand.SetAction((parserResult) =>
 
     Settings? capturedSettings = null;
 
+    // The root service runs commands from its settings file as root, so it decides before it reads the file whether it may (ServicePrivileges.SettingsError)
+    ServicePrivileges privileges = new ServicePrivileges().ForSettingsFile(configValue);
+
     IHost host = Host.CreateDefaultBuilder()
         .ConfigureLogging((context, logging) =>
         {
@@ -91,7 +94,7 @@ rootCommand.SetAction((parserResult) =>
             services
                 .Configure<Settings>(filteredConfig)
                 .AddSingleton<CommandFactory>()
-                .AddSingleton<ServicePrivileges>()
+                .AddSingleton(privileges)
                 .AddSingleton<IPermissionManager, AppArmorPermissionManager>()
                 .AddSingleton<PluginStore>()
                 .AddHostedService<PluginService>()

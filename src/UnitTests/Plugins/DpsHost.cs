@@ -27,12 +27,14 @@ using File = System.IO.File;
 using Settings = DuetPluginService.Settings;
 
 /// <summary>
-/// DuetPluginService (DPS) in-process, with the services wired like DuetPluginService/Program.cs:91-99 and started in the order of the generic host
+/// DuetPluginService (DPS) in-process, with the services wired like DuetPluginService/Program.cs:94-102 and started in the order of the generic host
 /// (PluginService, then CommandService). DPS reaches DCS through a <see cref="DcsBridge"/> for both its plugin service connection and the command
 /// connections it opens itself (ResolvePath, SetPluginProcess, WriteMessage, SetUpdateStatus).
 /// The settings point to a temporary directory: AppArmor profiles go to a directory of their own, apparmor_parser, the Python package installer and the
-/// package managers are replaced by <see cref="FakeTool"/> scripts that record their arguments, and the profile template is the one that DSF ships
-/// (pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf), systemd-run is a <see cref="FakeTool"/> as well. The tests run as a regular user. By default DPS is
+/// package managers are replaced by <see cref="FakeTool"/> scripts that record their arguments, and the profile template is a copy of the one that DSF ships
+/// (pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf), systemd-run is a <see cref="FakeTool"/> as well. The template and a settings file are in a
+/// directory conf like the packages install them in /opt/dsf/conf, so that nobody but the user of the test may change them, which the root service checks
+/// (<see cref="ServicePrivileges.ForSettingsFile"/>, <see cref="RootSettingsFiles"/>). The tests run as a regular user. By default DPS is
 /// the service that runs as dsf user (duetpluginservice.service); with privileged set, <see cref="ServicePrivileges"/> makes it take the code paths of the
 /// root service (duetpluginservice-root.service), which then run as the user of the test, with the fake tools
 /// </summary>
@@ -51,7 +53,7 @@ public sealed class DpsHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// Temporary directory of this instance (tools and AppArmor profiles)
+    /// Temporary directory of this instance (tools, settings and AppArmor profiles)
     /// </summary>
     public string Directory { get; }
 
@@ -59,6 +61,16 @@ public sealed class DpsHost : IAsyncDisposable
     /// Settings of DPS
     /// </summary>
     public Settings Settings { get; }
+
+    /// <summary>
+    /// Settings file that the root service checks at start like /opt/dsf/conf/plugins.json. DPS takes its settings from <see cref="Settings"/>
+    /// </summary>
+    public string SettingsFile => Path.Combine(Directory, "conf", "plugins.json");
+
+    /// <summary>
+    /// Privileges of DPS
+    /// </summary>
+    public ServicePrivileges Privileges => _provider.GetRequiredService<ServicePrivileges>();
 
     /// <summary>
     /// Bridge to DCS or null if DPS runs without DCS
@@ -102,13 +114,26 @@ public sealed class DpsHost : IAsyncDisposable
     /// <param name="asRoot">Whether DCS treats the connections of DPS as the ones of the root plugin service (DPS itself still runs as regular user)</param>
     /// <param name="privileged">Whether DPS takes the code paths of the root plugin service (<see cref="ServicePrivileges.IsPrivileged"/>)</param>
     /// <param name="userId">User ID that DPS assumes to run as (<see cref="ServicePrivileges.UserId"/>) or null for the one of the test</param>
+    /// <param name="changeSettingsFile">Optional callback to change the settings file (<see cref="SettingsFile"/>) before DPS checks it</param>
     /// <returns>Started DPS</returns>
     public static async Task<DpsHost> StartAsync(FakeFirmwareHost? dcs, string pluginDirectory, Action<Settings>? configure = null, bool register = true, bool asRoot = false,
-        bool privileged = false, int? userId = null)
+        bool privileged = false, int? userId = null, Action<string>? changeSettingsFile = null)
     {
         string directory = Path.Combine(Path.GetTempPath(), "dsf-dps-" + Guid.NewGuid().ToString("N"));
         System.IO.Directory.CreateDirectory(Path.Combine(directory, "apparmor.d"));
         System.IO.Directory.CreateDirectory(pluginDirectory);
+
+        // Like the packages install /opt/dsf/conf/plugins.json and apparmor.conf: nobody else may write them or their directory, whatever the umask is
+        const UnixFileMode SettingsMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
+        string confDirectory = Path.Combine(directory, "conf");
+        System.IO.Directory.CreateDirectory(confDirectory);
+        File.SetUnixFileMode(confDirectory, SettingsMode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+        string settingsFile = Path.Combine(confDirectory, "plugins.json");
+        File.WriteAllText(settingsFile, "{}");
+        File.SetUnixFileMode(settingsFile, SettingsMode);
+        string template = Path.Combine(confDirectory, "apparmor.conf");
+        File.Copy(ShippedFile("pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf"), template);
+        File.SetUnixFileMode(template, SettingsMode);
 
         DcsBridge? bridge = (dcs is not null) ? DcsBridge.Start(dcs, asRoot) : null;
         Settings settings = new()
@@ -117,7 +142,7 @@ public sealed class DpsHost : IAsyncDisposable
             SocketPath = bridge?.SocketPath ?? Path.Combine(directory, "missing.sock"),
             PluginDirectory = pluginDirectory,
             AppArmorParser = FakeTool.Create(directory, "apparmor_parser"),
-            AppArmorTemplate = ShippedFile("pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf"),
+            AppArmorTemplate = template,
             AppArmorProfileDirectory = Path.Combine(directory, "apparmor.d"),
             PreinstallPackageCommand = FakeTool.Create(directory, "apt-update"),
             InstallPackageCommand = FakeTool.Create(directory, "apt-install"),
@@ -127,6 +152,11 @@ public sealed class DpsHost : IAsyncDisposable
             SystemdRunCommand = FakeTool.Create(directory, "systemd-run")
         };
         configure?.Invoke(settings);
+        changeSettingsFile?.Invoke(settingsFile);
+
+        // Program.cs checks the settings file before it reads it
+        ServicePrivileges privileges = ((userId is null) ? new ServicePrivileges { IsPrivileged = privileged } : new ServicePrivileges { IsPrivileged = privileged, UserId = userId.Value })
+            .ForSettingsFile(settingsFile);
 
         DpsLog log = new();
         ServiceCollection services = new();
@@ -134,9 +164,9 @@ public sealed class DpsHost : IAsyncDisposable
             .AddLogging(builder => builder.SetMinimumLevel(LogLevel.Trace).AddProvider(log))
             .AddSingleton(Options.Create(settings))
             .AddSingleton<IHostApplicationLifetime, ApplicationLifetime>()
-            // Program.cs:91-99
+            // Program.cs:94-102
             .AddSingleton<CommandFactory>()
-            .AddSingleton((userId is null) ? new ServicePrivileges { IsPrivileged = privileged } : new ServicePrivileges { IsPrivileged = privileged, UserId = userId.Value })
+            .AddSingleton(privileges)
             .AddSingleton<IPermissionManager, AppArmorPermissionManager>()
             .AddSingleton<PluginStore>()
             .AddHostedService<PluginService>()

@@ -54,7 +54,7 @@ public abstract class DpsTestBase
     protected DuetControlServer.Settings DcsSettings => Dcs.Services.GetRequiredService<IOptions<DuetControlServer.Settings>>().Value;
 
     /// <summary>
-    /// Architecture directory that InstallPlugin.cs:112-119 and StartPlugin.cs:75-82 look for first
+    /// Architecture directory that InstallPlugin.cs:118-125 and StartPlugin.cs:75-82 look for first
     /// </summary>
     protected static string Architecture => RuntimeInformation.OSArchitecture switch
     {
@@ -148,10 +148,12 @@ public abstract class DpsTestBase
     /// <param name="asRoot">Whether DCS treats DPS as root plugin service</param>
     /// <param name="privileged">Whether DPS takes the code paths of the root plugin service</param>
     /// <param name="userId">User ID that DPS assumes to run as or null for the one of the test</param>
+    /// <param name="changeSettingsFile">Optional callback to change the settings file before DPS checks it</param>
     /// <returns>Started DPS</returns>
-    protected async Task<DpsHost> StartDpsAsync(Action<Settings>? configure = null, bool register = true, bool asRoot = false, bool privileged = false, int? userId = null)
+    protected async Task<DpsHost> StartDpsAsync(Action<Settings>? configure = null, bool register = true, bool asRoot = false, bool privileged = false, int? userId = null,
+        Action<string>? changeSettingsFile = null)
     {
-        Dps = await DpsHost.StartAsync(Dcs, PluginDirectory, configure, register, asRoot, privileged, userId);
+        Dps = await DpsHost.StartAsync(Dcs, PluginDirectory, configure, register, asRoot, privileged, userId, changeSettingsFile);
         return Dps;
     }
 

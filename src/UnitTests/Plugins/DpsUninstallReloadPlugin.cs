@@ -13,9 +13,9 @@ using File = System.IO.File;
 
 /// <summary>
 /// UninstallPlugin (DuetPluginService/Commands/UninstallPlugin.cs) and ReloadPlugin (Commands/ReloadPlugin.cs) of the DuetPluginService instance that runs as
-/// dsf user, and the manifests that PluginService.StartAsync loads (PluginService.cs:34-59). The plugins are installed with the InstallPlugin command of DPS
+/// dsf user, and the manifests that PluginService.StartAsync loads (PluginService.cs:34-64). The plugins are installed with the InstallPlugin command of DPS
 /// first, so the file lists in their manifests are the ones DPS wrote. The part of the root service, the removal of the AppArmor profile
-/// (UninstallPlugin.cs:167-171) and the regeneration of missing profiles at start (PluginService.cs:62-112), is covered by <see cref="DpsRootService"/>
+/// (UninstallPlugin.cs:172-176) and the regeneration of missing profiles at start (PluginService.cs:67-117), is covered by <see cref="DpsRootService"/>
 /// </summary>
 [TestFixture]
 public class DpsUninstallReloadPlugin : DpsTestBase
@@ -54,7 +54,7 @@ public class DpsUninstallReloadPlugin : DpsTestBase
         await InstallAsync("Gone", null, ("dsf/gone", "x"), ("dwc/Gone.js", "js"), ("dwc/gone/style.css", "css"), ("sd/macros/gone.g", "M117"), ("sd/sys/daemon.g", "M400"));
         await UninstallAsync("Gone");
 
-        // Manifest, web files and their directory if empty, SD files and the plugin directory are removed (UninstallPlugin.cs:88-164)
+        // Manifest, web files and their directory if empty, SD files and the plugin directory are removed (UninstallPlugin.cs:93-169)
         Assert.That(File.Exists(Path.Combine(PluginDirectory, "Gone.json")), Is.False);
         Assert.That(Directory.Exists(Path.Combine(PluginDirectory, "Gone")), Is.False);
         Assert.That(Path.Exists(Sd("www/Gone.js")), Is.False);
@@ -62,7 +62,7 @@ public class DpsUninstallReloadPlugin : DpsTestBase
         Assert.That(Directory.Exists(Sd("www")), Is.True, "0:/www is not empty");
         Assert.That(File.Exists(Sd("macros/gone.g")), Is.False);
 
-        // daemon.g may still be open, so it is renamed (UninstallPlugin.cs:118-123)
+        // daemon.g may still be open, so it is renamed (UninstallPlugin.cs:123-128)
         Assert.That(File.Exists(Sd("sys/daemon.g")), Is.False);
         Assert.That(File.ReadAllText(Sd("sys/daemon.g.bak")), Is.EqualTo("M400"));
 
@@ -80,7 +80,7 @@ public class DpsUninstallReloadPlugin : DpsTestBase
         File.WriteAllText(custom, "written by the plugin");
         await UninstallAsync("Kept", forUpgrade: true);
 
-        // Only the installed files go, config files and files the plugin made itself stay (UninstallPlugin.cs:112-154)
+        // Only the installed files go, config files and files the plugin made itself stay (UninstallPlugin.cs:117-159)
         Assert.That(File.Exists(Path.Combine(PluginDirectory, "Kept.json")), Is.False);
         Assert.That(File.Exists(Path.Combine(PluginDirectory, "Kept/dsf/kept")), Is.False);
         Assert.That(File.Exists(Path.Combine(PluginDirectory, "Kept/dwc/Kept.js")), Is.False);
@@ -193,7 +193,7 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     /// <summary>
     /// InstallPlugin keeps every installed file inside its directory (zip-slip guard), UninstallPlugin deletes the files that the manifest lists with the same
     /// check (Path.IsInside, DuetSharedLibrary/PathExtensions.cs). The manifest is a file of the dsf user that plugins with ManagePlugins or FileSystemAccess
-    /// may write (AppArmorPermissionManager.cs:55-64). For a plugin with SuperUser the root service runs this code, so it would delete as root whatever such a
+    /// may write (AppArmorPermissionManager.cs:64-73). For a plugin with SuperUser the root service runs this code, so it would delete as root whatever such a
     /// manifest lists. A listed file outside its directory is skipped with a warning, the rest of the plugin is uninstalled
     /// </summary>
     [TestCase(false)]
@@ -250,7 +250,7 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     [Test]
     public async Task InstalledPluginsAreLoadedAtStart()
     {
-        // PluginService.StartAsync loads every *.json file of the plugin directory and skips the ones that cannot be read (PluginService.cs:37-59)
+        // PluginService.StartAsync loads every *.json file of the plugin directory and skips the ones that cannot be read (PluginService.cs:37-64)
         File.WriteAllText(Path.Combine(PluginDirectory, "First.json"), "{\"id\":\"First\",\"name\":\"First\",\"pid\":1234}");
         File.WriteAllText(Path.Combine(PluginDirectory, "Second.json"), "{\"id\":\"Second\",\"name\":\"Second\",\"sbcPermissions\":[\"superUser\"]}");
         File.WriteAllText(Path.Combine(PluginDirectory, "Broken.json"), "{\"id\":");
@@ -269,8 +269,8 @@ public class DpsUninstallReloadPlugin : DpsTestBase
 
     /// <summary>
     /// DCS skips manifests without id or name at start (DuetControlServer/Model/PeriodicUpdateService.cs), DPS does the same with the same check
-    /// (DuetSharedLibrary/PluginManifestCheck.cs). Otherwise the root service would regenerate the missing profile "dsf." for it (PluginService.cs:62-112),
-    /// whose attachment is the whole plugin directory, Path.Combine(pluginDirectory, "") (AppArmorPermissionManager.cs:34)
+    /// (DuetSharedLibrary/PluginManifestCheck.cs). Otherwise the root service would regenerate the missing profile "dsf." for it (PluginService.cs:67-117),
+    /// whose attachment is the whole plugin directory, Path.Combine(pluginDirectory, "") (AppArmorPermissionManager.cs:43)
     /// </summary>
     [Test]
     public async Task ManifestWithoutIdIsNotLoadedAtStart()
@@ -308,7 +308,7 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     /// manifests on disk again, all of them make that check of the installation (DuetSharedLibrary/PluginManifestCheck.cs).
     /// DCS grants a plugin connection the permissions of its manifest (DuetControlServer/IPC/Connection.cs:121-124, 136-140), and ServicePlugins is enough for
     /// Install/UninstallSystemPackage (RequiredPermissions SuperUser | ServicePlugins, any of them). A plugin with ManagePlugins or FileSystemAccess may write the
-    /// manifests (AppArmorPermissionManager.cs:55-64)
+    /// manifests (AppArmorPermissionManager.cs:64-73)
     /// </summary>
     [Test]
     public async Task ReloadRefusesTheReservedPermission()
@@ -321,7 +321,7 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     }
 
     /// <summary>
-    /// Same as <see cref="ReloadRefusesTheReservedPermission"/> for the manifests that PluginService.StartAsync loads (PluginService.cs:43-54)
+    /// Same as <see cref="ReloadRefusesTheReservedPermission"/> for the manifests that PluginService.StartAsync loads (PluginService.cs:48-59)
     /// </summary>
     [Test]
     public async Task ReservedPermissionIsNotLoadedAtStart()

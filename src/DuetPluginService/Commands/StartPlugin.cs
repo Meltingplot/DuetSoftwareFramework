@@ -124,10 +124,12 @@ public sealed class StartPlugin(PluginStore pluginStore, ServicePrivileges privi
             throw new ArgumentException($"Refusing to launch plugin {plugin.Id}: executable {sbcExecutable} is outside of its directory");
         }
 
-        // The root service starts a plugin only from files that nobody else may change
+        // The root service starts a plugin only from files that nobody else may change, from the plugin directory and with the PythonLaunchCommand
+        // of its settings
         if (plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser))
         {
             RootPluginFiles.CheckStart(plugin, settings.Value.PluginDirectory, sbcExecutable, privileges);
+            privileges.CheckSettings();
         }
 
         // Python plugins get their executable as one argument of PythonLaunchArguments, so the executable path must not be able

@@ -77,6 +77,7 @@ public sealed class InstallSystemPackage(ServicePrivileges privileges, ILoggerFa
         {
             throw new ArgumentException("Unable to manage system packages without root privileges");
         }
+        privileges.CheckSettings();
         ILogger logger = loggerFactory.CreateLogger($"Package {Path.GetFileName(PackageFile)}");
 
         async Task ReportUpdateStatusAsync(string message, float progress)
