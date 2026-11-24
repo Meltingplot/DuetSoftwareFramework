@@ -83,7 +83,7 @@ public class ShutdownHang
     /// <summary>
     /// The pipeline part of case 1 without the generic host: a blocking message box from a client is pending when DCS stops, as with a dialog that waits
     /// for the user (M291 S2). The fake firmware host stops the services like the generic host, ApplicationStopping first, then in reverse order.
-    /// SimpleCode answers a cancelled code with an empty reply (SimpleCode.cs:183-186)
+    /// SimpleCode answers a cancelled code with an empty reply (SimpleCode.cs:194-197)
     /// </summary>
     [Test]
     public async Task PendingCodeIsCancelledWhenDcsStops()

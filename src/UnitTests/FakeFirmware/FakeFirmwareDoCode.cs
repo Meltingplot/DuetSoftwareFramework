@@ -1,6 +1,7 @@
 using System.Linq;
 using System.Threading.Tasks;
 using DuetAPI;
+using DuetControlServer.Link.Protocol.Shared;
 using NUnit.Framework;
 using FirmwareRequest = DuetControlServer.Link.Protocol.FirmwareRequests.Request;
 
@@ -53,4 +54,59 @@ public class FakeFirmwareDoCode
         Assert.That(host.Firmware.GetFinishedSbcCodes().Select(item => item.Code), Is.EqualTo(new[] { "M929", "M111 P-1" }));
         Assert.That(host.Firmware.GetFinishedSbcCodes()[1].Result, Does.StartWith("Current DCS log level"));
     }
+
+    [TestCase("M32 \"job.g", "Unterminated string")]
+    [TestCase("M30 \"a.g\" {1", "Unterminated curly brace")]
+    [TestCase("M30 (abc", "Unterminated encapsulated comment")]
+    public async Task CodeThatDsfCannotParseGetsTheErrorAsResult(string code, string error)
+    {
+        // RRF passes M30 and M32 from a text channel on to DSF before it reads their parameters (GCodes2.cpp:737-761 at RRF 6c45e07a7). StringParser ends
+        // the line at the newline whatever its quote or brace state, and keeps '(' as text outside CNC mode (StringParser.cpp:113-116, :227-237, :311),
+        // so the DoCode carries the line as typed (FindParameters, DataStart and DataLength, :1129-1276; SbcInterface.cpp:1797-1803). DSF's parser refuses
+        // it, so no code reaches the Executed stage that sends the result of a DoCode (Executed.cs:170-209). SimpleCode sends the error as the result
+        // instead, with the flags and the tag that stage uses (SimpleCode.cs:151-157). Without it RRF's channel stays "executing on SBC" and takes no
+        // further code (SbcInterface.cpp:884-903)
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        await host.ExecuteAsync("G4 P1", CodeChannel.USB);      // a code from DSF makes the epoch of the channel known, so RRF tags the DoCode
+        host.Firmware.PassCodeToSbc(CodeChannel.USB, code);
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetFinishedSbcCodes().Count == 1 && firmware.IsIdle(CodeChannel.USB), Timeout), Is.True,
+            "The code that DSF cannot parse did not finish");
+
+        FakePacket doCode = host.Firmware.GetSentPackets().Single(packet => packet.Request == FirmwareRequest.DoCode);
+        Assert.That(doCode.Text, Is.EqualTo(code));
+        Assert.That(FakeTag.IsTagged(doCode.Tag), Is.True);
+        FakeSbcRequest result = MessagesTo(host, CodeChannel.USB).Single();
+        Assert.That(result.MessageFlags, Is.EqualTo(MessageTypeFlags.UsbMessage | MessageTypeFlags.ErrorMessageFlag));
+        Assert.That(result.Tag, Is.EqualTo(doCode.Tag));
+        Assert.That(host.Firmware.GetFinishedSbcCodes()[0].Code, Is.EqualTo(code));
+        Assert.That(host.Firmware.GetFinishedSbcCodes()[0].Result, Does.Contain(error));
+
+        // The channel takes the next code, and each DoCode gets one result
+        host.Firmware.PassCodeToSbc(CodeChannel.USB, "M929");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetFinishedSbcCodes().Count == 2 && firmware.IsIdle(CodeChannel.USB), Timeout), Is.True,
+            "The next code did not finish");
+        Assert.That(host.Firmware.GetFinishedSbcCodes()[1], Is.EqualTo(("M929", "Event logging is disabled\n")));
+        Assert.That(MessagesTo(host, CodeChannel.USB), Has.Length.EqualTo(2));
+    }
+
+    [Test]
+    public async Task CodeOfAClientThatDsfCannotParseSendsNothingToTheFirmware()
+    {
+        // Only a code from the firmware has a DoCode to answer. The parse error of a client's code goes back to the client alone, because a message to
+        // the channel in RRF would finish a DoCode that the channel has passed on (SbcInterface.cpp:884-903)
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
+        Assert.That(await host.ExecuteAsync("M32 \"job.g", CodeChannel.USB), Is.EqualTo("Error: Unterminated string"));
+        int transfer = host.Firmware.TransferCount;
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.TransferCount > transfer + 2, Timeout), Is.True);
+        Assert.That(MessagesTo(host, CodeChannel.USB), Is.Empty);
+    }
+
+    /// <summary>
+    /// Messages that DSF sent to one channel alone, which are the results of the codes that channel passed on
+    /// </summary>
+    /// <param name="host">Host</param>
+    /// <param name="channel">Code channel</param>
+    /// <returns>Messages in order</returns>
+    private static FakeSbcRequest[] MessagesTo(FakeFirmwareHost host, CodeChannel channel) =>
+        [.. host.Firmware.GetReceivedMessages().Where(message => ((uint)message.MessageFlags & 0xFFFFu) == 1u << (int)channel)];
 }

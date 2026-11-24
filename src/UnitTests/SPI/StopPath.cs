@@ -26,7 +26,7 @@ namespace UnitTests.SPI;
 /// trigger macro that RRF requests, with the real LinkService on the real SPI adapter against the SPI port of RRF (<see cref="FakeRrfSpi"/>)
 /// </summary>
 /// <remarks>
-/// The emergency stop takes the path of M112: SimpleCode marks M112 as prioritized (SimpleCode.cs:110-116), MCodeHandler calls
+/// The emergency stop takes the path of M112: SimpleCode marks M112 as prioritized (SimpleCode.cs:113-119), MCodeHandler calls
 /// LinkInterface.EmergencyStopAsync (MCodeHandler.cs:749-772), which sets FirmwareHaltRequest (LinkInterface.cs:339-350), the transfer thread
 /// writes the EmergencyStop request into its next transfer (LinkService.cs:324-335) and completes the request once the transfer that carried it is
 /// done and the data RRF sent with it is processed (LinkService.cs:452-454, 597). RRF performs the emergency stop as soon as it reads the
@@ -812,7 +812,7 @@ public partial class StopPath
             probe.StartRestarts = rrf.RestartTimes.Count;
         }
 
-        // Request the emergency stop like M112 does: SimpleCode makes M112 a prioritized code (SimpleCode.cs:110-116) and MCodeHandler waits for the stop
+        // Request the emergency stop like M112 does: SimpleCode makes M112 a prioritized code (SimpleCode.cs:113-119) and MCodeHandler waits for the stop
         // (MCodeHandler.cs:749-772). DSF is held, so it writes the request into its next transfer
         Task<Message?>? m112 = null;
         void RequestStop()
