@@ -94,8 +94,7 @@ public sealed class InstallSystemPackage(ServicePrivileges privileges, ILoggerFa
             await ReportUpdateStatusAsync("Unpacking package", 0f);
 
             // Unpack the ZIP file first
-            packageDirectory = Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(PackageFile));
-            Directory.CreateDirectory(packageDirectory);
+            packageDirectory = Directory.CreateTempSubdirectory("dsf-package-").FullName;
             ZipFile.ExtractToDirectory(PackageFile, packageDirectory);
 
             // Assemble the arguments
