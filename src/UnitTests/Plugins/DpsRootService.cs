@@ -150,7 +150,7 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task ProfileThatCannotBeLoadedIsRemoved()
     {
-        // AppArmorPermissionManager.cs:155-163: StartPlugin checks only that the profile exists, so a profile that the kernel refused must not stay
+        // AppArmorPermissionManager.cs:160-168: StartPlugin checks only that the profile exists, so a profile that the kernel refused must not stay
         await StartRootDpsAsync();
         FakeTool.SetExitCode(Dps!.Settings.AppArmorParser, 1);
         ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(Manifest("Refused"), ("dsf/file", "x")))))!;

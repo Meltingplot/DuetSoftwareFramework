@@ -193,7 +193,7 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     /// <summary>
     /// InstallPlugin keeps every installed file inside its directory (zip-slip guard), UninstallPlugin deletes the files that the manifest lists with the same
     /// check (Path.IsInside, DuetSharedLibrary/PathExtensions.cs). The manifest is a file of the dsf user that plugins with ManagePlugins or FileSystemAccess
-    /// may write (AppArmorPermissionManager.cs:55-64). For a plugin with SuperUser the root service runs this code, so it would delete as root whatever such a
+    /// may write (AppArmorPermissionManager.cs:60-69). For a plugin with SuperUser the root service runs this code, so it would delete as root whatever such a
     /// manifest lists. A listed file outside its directory is skipped with a warning, the rest of the plugin is uninstalled
     /// </summary>
     [TestCase(false)]
@@ -308,7 +308,7 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     /// manifests on disk again, all of them make that check of the installation (DuetSharedLibrary/PluginManifestCheck.cs).
     /// DCS grants a plugin connection the permissions of its manifest (DuetControlServer/IPC/Connection.cs:121-124, 136-140), and ServicePlugins is enough for
     /// Install/UninstallSystemPackage (RequiredPermissions SuperUser | ServicePlugins, any of them). A plugin with ManagePlugins or FileSystemAccess may write the
-    /// manifests (AppArmorPermissionManager.cs:55-64)
+    /// manifests (AppArmorPermissionManager.cs:60-69)
     /// </summary>
     [Test]
     public async Task ReloadRefusesTheReservedPermission()

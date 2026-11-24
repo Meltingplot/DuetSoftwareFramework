@@ -2,13 +2,16 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.Versioning;
 using System.Threading;
 using System.Threading.Tasks;
 using DuetAPI.ObjectModel;
 using DuetAPI.Utility;
+using DuetAPIClient;
 using DuetPluginService.PermissionManagers;
 using Microsoft.Extensions.Options;
 using NUnit.Framework;
+using UnitTests.FakeFirmware;
 
 namespace UnitTests.Plugins;
 
@@ -17,7 +20,7 @@ using Settings = DuetPluginService.Settings;
 
 /// <summary>
 /// AppArmor profiles that DuetPluginService generates for plugins without SuperUser (DuetPluginService/PermissionManagers/AppArmorPermissionManager.cs).
-/// apparmor_parser is a <see cref="FakeTool"/>, so no profile reaches the kernel. Which rules each permission gives is listed in AppArmorPermissionManager.cs:42-144;
+/// apparmor_parser is a <see cref="FakeTool"/>, so no profile reaches the kernel. Which rules each permission gives is listed in AppArmorPermissionManager.cs:42-149;
 /// the expected rules below are taken from there, and PLUGINS.md:79-104 describes what the permissions are for
 /// </summary>
 [TestFixture]
@@ -62,18 +65,21 @@ public class DpsAppArmorProfiles
         $"dir={PluginDirectory}/Confined\nincludes:\n{string.Concat(includes.Select(line => line + Environment.NewLine))}rules:\n{string.Concat(rules.Select(line => line + Environment.NewLine))}end\n";
 
     /// <summary>
-    /// Rules of each permission, in the words of AppArmorPermissionManager.cs:44-143
+    /// Rules of each permission, in the words of AppArmorPermissionManager.cs:44-148
     /// </summary>
     private static IEnumerable<TestCaseData> PermissionRules()
     {
-        // Enforced by DCS, no rule (AppArmorPermissionManager.cs:44-53), and not applicable (140-143)
+        // Enforced by DCS, no rule (AppArmorPermissionManager.cs:44-52), and not applicable (145-148)
         foreach (SbcPermissions permission in new[] { SbcPermissions.CodeInterceptionRead, SbcPermissions.CodeInterceptionReadWrite, SbcPermissions.CommandExecution,
-            SbcPermissions.ManageUserSessions, SbcPermissions.ObjectModelRead, SbcPermissions.ObjectModelReadWrite, SbcPermissions.RegisterHttpEndpoints,
-            SbcPermissions.ServicePlugins, SbcPermissions.SuperUser, SbcPermissions.None })
+            SbcPermissions.ManageUserSessions, SbcPermissions.ObjectModelRead, SbcPermissions.ObjectModelReadWrite, SbcPermissions.ServicePlugins,
+            SbcPermissions.SuperUser, SbcPermissions.None })
         {
             yield return new TestCaseData(permission, Array.Empty<string>(), Array.Empty<string>()).SetName($"RulesOf{permission}");
         }
 
+        // The sockets that DCS reserves for HTTP endpoints (AppArmorPermissionManager.cs:54-58)
+        yield return new TestCaseData(SbcPermissions.RegisterHttpEndpoints, Array.Empty<string>(),
+            new[] { "  /{,var/}run/dsf/**-{GET,POST,PUT,PATCH,TRACE,DELETE,OPTIONS,WebSocket}.sock rw," }).SetName("RulesOfRegisterHttpEndpoints");
         yield return new TestCaseData(SbcPermissions.ManagePlugins, Array.Empty<string>(), new[] { $"  {PluginDirectory}/ r,", $"  {PluginDirectory}/** rw," }).SetName("RulesOfManagePlugins");
         yield return new TestCaseData(SbcPermissions.FileSystemAccess, Array.Empty<string>(), new[] { "  / rw,", "  /** rw," }).SetName("RulesOfFileSystemAccess");
         yield return new TestCaseData(SbcPermissions.GpioAccess, Array.Empty<string>(), new[] { "  /dev/gpio* rwmlk,", "  /dev/i2c* rwmlk,", "  /dev/spidev* rwmlk," }).SetName("RulesOfGpioAccess");
@@ -112,7 +118,7 @@ public class DpsAppArmorProfiles
     [Test]
     public void EveryPermissionIsCovered()
     {
-        // A new SbcPermissions value would fall through the switch of AppArmorPermissionManager.cs:42-144 without a rule; the cases above must list it
+        // A new SbcPermissions value would fall through the switch of AppArmorPermissionManager.cs:42-149 without a rule; the cases above must list it
         HashSet<string> tested = [.. PermissionRules().Select(data => data.TestName!)];
         foreach (SbcPermissions permission in Enum.GetValues<SbcPermissions>())
         {
@@ -135,7 +141,7 @@ public class DpsAppArmorProfiles
     [Test]
     public async Task DirectoriesWithTrailingSeparators()
     {
-        // ManagePlugins trims the separator of the plugin directory (AppArmorPermissionManager.cs:56-57), the SD paths go through Path.Combine
+        // ManagePlugins trims the separator of the plugin directory (AppArmorPermissionManager.cs:61-62), the SD paths go through Path.Combine
         string profile = await InstallAsync(SbcPermissions.ManagePlugins | SbcPermissions.ReadMacros, PluginDirectory + "/", SdDirectory + "/");
         Assert.That(profile, Does.Contain($"  {PluginDirectory}/ r,\n  {PluginDirectory}/** rw,\n"));
         Assert.That(profile, Does.Contain($"  {SdDirectory}/macros/ r,\n  {SdDirectory}/macros/** r,\n"));
@@ -177,6 +183,60 @@ public class DpsAppArmorProfiles
         string profile = await InstallAsync(SbcPermissions.None);
         Assert.That(PermissionsOf(profile, interpreter), Does.Contain("i").And.Contain("x"));
         Assert.That(PermissionsOf(profile, "/usr/bin/perl"), Does.Not.Contain("x"), "Other programs are not executed");
+    }
+
+    /// <summary>
+    /// In /run/dsf a plugin without permissions gets only the socket of DCS, which every plugin connects to (DSF_SOCKET_PATH, StartPlugin.cs:158-162). The rule
+    /// /{,var/}run/dsf/** rw gave it every file there, so that it could create, replace and delete the start error file of DCS, the endpoint sockets of other
+    /// plugins and anything else in the directory. dcs.sock keeps rw, which includes deleting it: a socket with a path is mediated by file rules (apparmor.d(5),
+    /// "Unix socket rules"), w is required to unlink a file ("Access Modes Details"), and file rules have no mode of their own for deleting (ACCESS of FILE RULE)
+    /// </summary>
+    [TestCase("/run/dsf/dcs.sock", "rw")]
+    [TestCase("/var/run/dsf/dcs.sock", "rw")]
+    [TestCase("/run/dsf/dcs.err", "")]
+    [TestCase("/run/dsf/dcs.sock.new", "")]
+    [TestCase("/run/dsf/other.sock", "")]
+    [TestCase("/run/dsf/Other/action-GET.sock", "")]
+    public async Task ShippedTemplateGivesOnlyTheSocketOfDcsInRunDsf(string path, string permissions)
+    {
+        _settings.AppArmorTemplate = DpsHost.ShippedFile("pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf");
+        Assert.That(PermissionsOf(await InstallAsync(SbcPermissions.None), path), Is.EqualTo(permissions));
+    }
+
+    /// <summary>
+    /// A plugin with RegisterHttpEndpoints deletes, binds and makes group-writable the socket that DCS reserved for its endpoint (HttpEndpointUnixSocket.cs:64-76),
+    /// which needs w on it. DCS names it &lt;socket directory&gt;/&lt;namespace&gt;/&lt;path&gt;-&lt;type&gt;.sock (DuetControlServer/Commands/HttpEndpoints/AddHttpEndpoint.cs:49-50),
+    /// so an endpoint of every type is registered with DCS here and its socket path is moved from the socket directory of the test to /run/dsf
+    /// </summary>
+    [Test, UnsupportedOSPlatform("windows")]
+    public async Task EndpointSocketsAreGivenOnlyWithRegisterHttpEndpoints()
+    {
+        _settings.AppArmorTemplate = DpsHost.ShippedFile("pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf");
+        string withEndpoints = await InstallAsync(SbcPermissions.RegisterHttpEndpoints), withoutEndpoints = await InstallAsync(SbcPermissions.None);
+
+        await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(ipc: true);
+        using CommandConnection connection = new();
+        await connection.ConnectAsync(host.SocketPath!);
+        string socketDirectory = Path.GetDirectoryName(host.SocketPath)!;
+        foreach (HttpEndpointType type in Enum.GetValues<HttpEndpointType>())
+        {
+            // An endpoint path may contain a slash, for which DCS creates a subdirectory (AddHttpEndpoint.cs:51)
+            foreach (string endpointPath in new[] { "action", "service/reset" })
+            {
+                using HttpEndpointUnixSocket endpoint = await connection.AddHttpEndpointAsync(type, "Endpoints", endpointPath);
+                Assert.That(endpoint.SocketPath, Does.StartWith(socketDirectory + "/"));
+                string path = "/run/dsf" + endpoint.SocketPath[socketDirectory.Length..];
+                Assert.That(PermissionsOf(withEndpoints, path), Is.EqualTo("rw"), path);
+                Assert.That(PermissionsOf(withoutEndpoints, path), Is.Empty, path);
+            }
+        }
+
+        // The rule gives no other file in /run/dsf
+        foreach (string path in new[] { "/run/dsf/dcs.err", "/run/dsf/other.sock", "/run/dsf/Endpoints/action.sock", "/run/dsf/Endpoints/action-HEAD.sock" })
+        {
+            Assert.That(PermissionsOf(withEndpoints, path), Is.Empty, path);
+        }
+        Assert.That(PermissionsOf(withEndpoints, "/run/dsf/dcs.sock"), Is.EqualTo("rw"));
     }
 
     /// <summary>
@@ -254,7 +314,7 @@ public class DpsAppArmorProfiles
         await InstallAsync(SbcPermissions.ReadGCodes);
         Assert.That(File.Exists(ProfilePath("Confined")), Is.True);
 
-        // apparmor_parser -r "<profile>" (AppArmorPermissionManager.cs:157) replaces a loaded profile or loads it
+        // apparmor_parser -r "<profile>" (AppArmorPermissionManager.cs:162) replaces a loaded profile or loads it
         Assert.That(FakeTool.Calls(_settings.AppArmorParser), Is.EqualTo(new[] { $"-r {ProfilePath("Confined")}" }));
     }
 
@@ -262,7 +322,7 @@ public class DpsAppArmorProfiles
     public async Task ProfileIsDeletedWhenTheParserFails()
     {
         // StartPlugin only checks that the profile file exists (StartPlugin.cs:63-72), so a profile the kernel did not load must not stay behind
-        // (AppArmorPermissionManager.cs:155-163)
+        // (AppArmorPermissionManager.cs:160-168)
         FakeTool.SetExitCode(_settings.AppArmorParser, 3);
         ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(SbcPermissions.ReadGCodes)))!;
         Assert.That(e.Message, Is.EqualTo("Failed to load AppArmor profile for plugin Confined (apparmor_parser exited with code 3)"));
@@ -284,7 +344,7 @@ public class DpsAppArmorProfiles
         await InstallAsync(SbcPermissions.ReadGCodes);
         await _manager.UninstallProfileAsync(new Plugin { Id = "Confined", Name = "Confined" }, CancellationToken.None);
 
-        // apparmor_parser -R "<profile>" unloads it (AppArmorPermissionManager.cs:179), then the file is deleted (183)
+        // apparmor_parser -R "<profile>" unloads it (AppArmorPermissionManager.cs:184), then the file is deleted (188)
         Assert.That(FakeTool.Calls(_settings.AppArmorParser), Is.EqualTo(new[] { $"-r {ProfilePath("Confined")}", $"-R {ProfilePath("Confined")}" }));
         Assert.That(File.Exists(ProfilePath("Confined")), Is.False);
     }
