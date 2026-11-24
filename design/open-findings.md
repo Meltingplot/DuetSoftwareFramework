@@ -656,26 +656,10 @@ A DSF that writes what `Writer.cs` writes reaches only B6, B8 and B9. The others
   - P1 to P5: lengths inside an SBC packet were not checked against the packet (RRF #99).
   - B1 to B5 and B7: `numParameters` and the value lengths of a binary code were not checked against the code (RRF #97).
   - B6: INT_MIN printed with `%d` (RRFLibraries #3, test in RRF #98).
-  - #97 and #99 contain the commits of #96. None of these PRs is merged yet.
-- **FZ-B8. `GetIPAddress` and `GetMacAddress` of a binary code parse beyond the string.**
-  - They call `StrToU32` or `StrHexToU32` first and check the end against `intValue` afterwards (`BinaryParser.cpp:388-392`, `:441-445`).
-  - A string value has no null after it when its length is a multiple of 4, because DSF pads with zeros only up to the next multiple of
-    4 (`Writer.cs` `AddPadding`).
-  - If such a string of digits runs up to the last byte of a code of 384 bytes (`MaxGCodeBinaryLength`, `SbcMessageFormats.h:31`), the
-    parse reads beyond the code buffer. ASan reports a heap-buffer-overflow. Shorter codes read the rest of the buffer and then fail
-    the end check.
-  - Reachable from a correct DSF with M540 P or an IP address parameter of the right length. The first input of B8 is refused since
-    RRF #97 (its parameter table does not fit); `findings/B8-macaddress-overread.hex` in #97 is one whose parameters fit.
-  - Found by the fuzz target. Not seen on a board.
-- **FZ-B9. `StringHandle::InternalAssign` reads one byte beyond the string it copies.**
-  - It copies with `SafeStrncpy(..., s, len + 1)` (`StringHandle.cpp:70`). If the first `len` bytes hold no null, `strncpy` reads
-    `s[len]` (RRFLibraries `StringFunctions.cpp:136-140`). The null then replaces that byte.
-  - `AddParameters` passes a string value of a binary code that has no null after it when its length is a multiple of 4
-    (`BinaryParser.cpp:995`). For a code of 384 bytes, the read is beyond the code buffer.
-  - The other callers pass parts of null-terminated strings with `len` at most `strlen` (take and drop, `ExpressionParser.cpp:1105-1106`,
-    `:1116-1117`, `:1182-1184`, `:1194-1196`).
-  - Reachable from a correct DSF with a macro call of the right length. One byte read, no effect on the value. Found by the fuzz
-    target. Not seen on a board.
+  - B8: `GetIPAddress` and `GetMacAddress` parsed beyond the string value; they parse a null-terminated copy now, as `StringParser` does
+    (RRF #100).
+  - B9: `StringHandle::InternalAssign` read one byte beyond a string that is not null-terminated (RRF #100).
+  - #97 and #99 contain the commits of #96, and #100 those of #97. None of these PRs is merged yet.
 - **FZ-P6. SBC packets that are shorter than what their reader reads.**
   - Most of these reads stay within the transfer buffer and get stale bytes of an earlier transfer. The fuzz target shows them with
     `FUZZ_POISON_STALE=1`:
