@@ -747,6 +747,10 @@ alone. The way from a G-code line to the parser was not part of the target, and 
   - FZ-E6: `SafeStrptime` indexed `_DAYS_BEFORE_MONTH[12]` with a `%m` outside 1 to 12 (`strptime.cpp:144`, `:237`, `:273`), reached by
     `datetime("2026-99-01T00:00:00")`, `M905 P` and the HTTP time in standalone mode. RRF #104 refuses such a month. The month only;
     FZ-E7 stays open.
+  - FZ-E3: the float to int32 range checks of `floor`, `ceil`, `round` (`ExpressionParser.cpp:2034-2036`) and `pow` (`:2293-2295`)
+    tested `<= (float)INT32_MAX`, which is 2^31, so 2^31 reached the conversion: INT_MIN on the host, 2147483647 on the MB6HC
+    (`vcvt.s32.f32` saturates; read from the disassembly). RRF #110 (stacked on #108) converts only below 2^31; `pow(-2, 31)` stays
+    INT_MIN. Behaviour change: the float 2147483648 instead of an int.
   - FZ-O3 and FZ-E7a: `first_day` (`strptime.cpp:76-84`) looped once per year since 1970, in the main task, for any year of `%Y`:
     about 2.1e9 times for 2147483647, 20 s on the host. On the MB6HC this loop has 15 instructions per year (300 MHz), so I estimate one
     to two minutes, more than the 20 s after which `RepRap::Tick` resets with `stuckInSpin` (`RepRap.h:211`); not measured. Every caller
@@ -764,14 +768,9 @@ alone. The way from a G-code line to the parser was not part of the target, and 
   (`:531`), `-` (`:567`) and `*` (`:581`), e.g. `{65536 * 65536}`. Undefined behaviour; that it wraps on the board was not checked.
   Low.
 - **FZ-E2. `mod(INT_MIN, -1)`.** The check before `rslt.iVal %= nextOperand.iVal` (`:2060`) only excludes 0. On x86 it traps. On the
-  MB6HC the `%` is `sdiv` + `mls` (`0x41a25c` in the MB6HC build of RRF #108; the addresses below are from the same build). Per the
-  SDIV pseudocode of the ARMv7-M ARM, the quotient keeps its low 32 bits (0x80000000), so the remainder is 0, the right value;
-  undefined behaviour in C++ only, not run on a board. Low.
-- **FZ-E3. Inclusive float to int32 range checks.** `floor`, `ceil` and `round` (`:2034-2036`) and `pow` (`:2293-2295`) test
-  `f <= (float)INT32_MAX`, which admits 2^31 (`(float)INT32_MAX` is 2^31). On the host, `pow(2, 31)` gives INT_MIN, which then reaches
-  B6 (RRFLibraries #3). On the MB6HC, `floor` and the others convert with `vcvt.s32.f32` (`0x41a6ae`), and newlib `lrintf` does the
-  same for an exponent above 30 (`0x4cdd84`, `0x4cddf4`). VCVT saturates, so the board gives 2147483647 instead of the float
-  2147483648; read from the disassembly, not run on a board. Wrong value by one. Low.
+  MB6HC the `%` is `sdiv` + `mls` (`0x41a25c` in the MB6HC build of RRF #108). Per the SDIV pseudocode of the ARMv7-M ARM, the
+  quotient keeps its low 32 bits (0x80000000), so the remainder is 0, the right value; undefined behaviour in C++ only, not run on a
+  board. Low.
 - **FZ-E7b. Signed overflow in `SafeStrptime`.** `%d` of INT_MAX (`strptime.cpp:285`). Wrong date. Low. (FZ-E7a, `%Y` of INT_MIN at
   `:186`, is fixed by RRF #109, see above.)
 - **Observations without a sanitizer report:**
