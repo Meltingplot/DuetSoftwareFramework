@@ -269,7 +269,7 @@ public class GCodeFileFuzz
         }
 
         // Pause like LinkService.HandlePrintPaused does (LinkService.cs:886-904). RRF reports the position of the next code to execute,
-        // and none for a pause from a code, then the job resumes after the last code it executed (JobProcessor.cs:646-651)
+        // and none for a pause from a code, then the job resumes after the last code it executed (JobProcessor.cs:652-657)
         long afterHeld = offsets[input.PauseAt] + held.Length + 1;
         using (await jobs.LockAsync())
         {

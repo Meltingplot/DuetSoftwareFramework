@@ -32,7 +32,7 @@ namespace UnitTests.Startup;
 /// Fixed: the AsyncLock takes a free lock even with a cancelled token (AsyncLock.cs:50, 65), so the reply is still logged and returned, and the loop of the stage
 /// completes a code whose stage throws, quietly for a cancellation while DCS stops (PipelineStackItem.cs:85-93).
 /// The window: the code is in the Executed stage when the shutdown begins. A code handler holds it there in these tests, as the handlers of DCS do when
-/// they wait, e.g. M122 for the diagnostics without a token (MCodeHandler.cs:1431-1436)
+/// they wait, e.g. M122 for the diagnostics without a token (MCodeHandler.cs:1433-1438)
 /// </summary>
 [TestFixture]
 public class ExecutedStageShutdown
@@ -104,7 +104,7 @@ public class ExecutedStageShutdown
     private static List<IpcLog.Entry> StageFailures(IpcLog log) => [.. log.Entries.Where(entry => entry.Message == "Failed to process code in stage Executed")];
 
     /// <summary>
-    /// Without a shutdown the held code goes on as usual: M111 P-1 is answered by DCS (MCodeHandler.cs:742)
+    /// Without a shutdown the held code goes on as usual: M111 P-1 is answered by DCS (MCodeHandler.cs:744)
     /// </summary>
     [Test]
     public async Task HeldCodeFinishesWhenReleased()
@@ -192,7 +192,7 @@ public class ExecutedStageShutdown
     /// which is linked to ApplicationStopping as well (MacroFile.cs:171, 346). Before TP3 it could already be cancelled when its file position was updated
     /// with that token under the file lock (Executed.cs:81, CodeFile.cs:64); that update takes neither now (CodeFile.cs:159-168).
     /// The held code is an M42 that RRF answers, so the G4 behind it is answered and queued meanwhile (an M111 P-1 would flush the channel first,
-    /// MCodeHandler.cs:695). Since upstream 61df011e the loop of the stage logs such a cancellation and completes the code with it (PipelineStackItem.cs:85-89),
+    /// MCodeHandler.cs:697). Since upstream 61df011e the loop of the stage logs such a cancellation and completes the code with it (PipelineStackItem.cs:85-89),
     /// depending on timing (UP6 in design/open-findings.md)
     /// </summary>
     [Test]

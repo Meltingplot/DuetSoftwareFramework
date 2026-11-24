@@ -12,7 +12,7 @@ namespace UnitTests.Utility;
 /// <summary>
 /// Reading the firmware version from a firmware file and unpacking UF2 files (Firmware.cs). DCS -u compares the version of each board with
 /// the version in its firmware file to decide which boards to update (FirmwareUpdater.cs:88-122), and M997 unpacks a .uf2 file before it
-/// flashes it (MCodeHandler.cs:1270-1286). The files are built by <see cref="FirmwareImage"/>
+/// flashes it (MCodeHandler.cs:1272-1288). The files are built by <see cref="FirmwareImage"/>
 /// </summary>
 [TestFixture]
 public class FirmwareFiles
