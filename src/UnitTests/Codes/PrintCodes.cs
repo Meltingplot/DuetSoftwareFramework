@@ -148,7 +148,7 @@ public class PrintCodes
         WarnAboutForkFromOtherChannel();
 
         // With a job file, MCodeHandler used to fork it although RRF ignores the code. JobProcessor then reported two job streams
-        // and started reading the second one together with the job (JobProcessor.cs:719-724)
+        // and started reading the second one together with the job (JobProcessor.cs:729-734)
         Assert.That(await _host.ExecuteAsync("M606 S1"), Is.EqualTo("Warning: M606: this command is valid only when running a job from a stored file\n"));
         Assert.That(Received(), Is.EqualTo(new[] { "M23 \"a.g\"", "M606 S1" }));
         Assert.That(_host.Services.GetRequiredService<JobProcessor>().NumJobStreams, Is.EqualTo(1));

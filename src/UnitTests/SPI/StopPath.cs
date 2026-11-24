@@ -27,7 +27,7 @@ namespace UnitTests.SPI;
 /// </summary>
 /// <remarks>
 /// The emergency stop takes the path of M112: SimpleCode marks M112 as prioritized (SimpleCode.cs:110-116), MCodeHandler calls
-/// LinkInterface.EmergencyStopAsync (MCodeHandler.cs:749-772), which sets FirmwareHaltRequest (LinkInterface.cs:339-350), the transfer thread
+/// LinkInterface.EmergencyStopAsync (MCodeHandler.cs:749-772), which sets FirmwareHaltRequest (LinkInterface.cs:340-351), the transfer thread
 /// writes the EmergencyStop request into its next transfer (LinkService.cs:324-335) and completes the request once the transfer that carried it is
 /// done and the data RRF sent with it is processed (LinkService.cs:452-454, 597). RRF performs the emergency stop as soon as it reads the
 /// request (SbcInterface.cpp:336-338), and also whenever it loses an established connection (SbcInterface.cpp:194-230).
