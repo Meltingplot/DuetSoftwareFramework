@@ -9,7 +9,7 @@ namespace UnitTests.Utility;
 /// DuetSharedLibrary.AsyncLock with a cancellation token that is cancelled already. It replaced Nito.AsyncEx.AsyncLock in most places (bb5edd5e), which takes
 /// a free lock in that case and cancels only a wait for the lock (Nito.AsyncEx.Coordination.xml of 5.1.2, AsyncLock.LockAsync(CancellationToken): "If this is
 /// already set, then this method will attempt to take the lock immediately (succeeding if the lock is currently available)"). The callers were written for
-/// that, e.g. the event log, which locks with ApplicationStopping (Logger.cs:224, 258), see <see cref="Startup.ExecutedStageShutdown"/>
+/// that, e.g. the event log, which locks with ApplicationStopping (Logger.cs:255, 289), see <see cref="Startup.ExecutedStageShutdown"/>
 /// </summary>
 [TestFixture]
 public class AsyncLockCancelledToken

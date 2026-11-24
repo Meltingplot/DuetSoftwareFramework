@@ -76,7 +76,7 @@ public class MoreMCodes
     [Test]
     public async Task EventLogFileIsKept()
     {
-        // M929 S2 without P while logging goes on with the current file (MCodeHandler.cs:1176-1185); stopping clears it (Logger.cs:174)
+        // M929 S2 without P while logging goes on with the current file (MCodeHandler.cs:1176-1185); stopping clears it (Logger.cs:190)
         Assert.That(await _host.ExecuteAsync("M929 P\"custom.log\" S1"), Is.EqualTo("\n"));
         Assert.That(await _host.ExecuteAsync("M929 S2"), Is.EqualTo("\n"));
         Assert.That(await _host.ExecuteAsync("M929"), Is.EqualTo("Event logging is enabled at log level info\n"));
