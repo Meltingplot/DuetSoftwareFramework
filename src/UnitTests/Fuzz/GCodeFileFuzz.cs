@@ -140,7 +140,7 @@ public class GCodeFileFuzz
             byte[] content = Apply(input);
             System.IO.File.WriteAllBytes(path, content);
 
-            // ParseAsync returns the information it could find, malformed thumbnails are skipped (FileInfoParser.cs:720-725)
+            // ParseAsync returns the information it could find, malformed thumbnails are skipped (FileInfoParser.cs:723-728)
             Task<GCodeFileInfo> parse = parser.ParseAsync(path, true);
             GCodeFileInfo info;
             try

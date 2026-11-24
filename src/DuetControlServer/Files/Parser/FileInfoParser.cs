@@ -218,7 +218,7 @@ public partial class FileInfoParser(CodeFactory codeFactory, Expressions express
                             inRelativeMode = (code.MajorNumber != 91);
                             gotNewInfo = true;
                         }
-                        else if ((code.MajorNumber == 0 || code.MajorNumber == 1) && code.TryGetFloat('Z', out float zParam) &&
+                        else if ((code.MajorNumber == 0 || code.MajorNumber == 1) && code.TryGetFloat('Z', out float zParam) && float.IsFinite(zParam) &&
                                     (code.Comment is null || !code.Comment.TrimStart().StartsWith("E", StringComparison.InvariantCultureIgnoreCase)))
                         {
                             // G0/G1 is an absolute move
@@ -487,7 +487,7 @@ public partial class FileInfoParser(CodeFactory codeFactory, Expressions express
                 if (match.Groups.TryGetValue("m", out Group? mGroup))
                 {
                     if (float.TryParse(mGroup.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out float filamentUsage) &&
-                        float.IsFinite(filamentUsage))
+                        float.IsFinite(filamentUsage * 1000F))
                     {
                         if (match.Groups.TryGetValue("index", out Group? indexGroup) && int.TryParse(indexGroup.Value, out int index))
                         {
@@ -502,7 +502,7 @@ public partial class FileInfoParser(CodeFactory codeFactory, Expressions express
                             foreach (Capture capture in mGroup.Captures.Cast<Capture>())
                             {
                                 if (float.TryParse(capture.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out filamentUsage) &&
-                                    float.IsFinite(filamentUsage))
+                                    float.IsFinite(filamentUsage * 1000F))
                                 {
                                     fileInfo.Filament.Add(filamentUsage * 1000F);
                                 }
@@ -514,10 +514,13 @@ public partial class FileInfoParser(CodeFactory codeFactory, Expressions express
 
                 if (match.Groups.TryGetValue("cm3", out Group? cm3Group))
                 {
-                    if (filamentDiameter > 0F && float.TryParse(cm3Group.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out float filamentVolume) &&
-                        float.IsFinite(filamentVolume))
+                    if (filamentDiameter > 0F && float.TryParse(cm3Group.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out float filamentVolume))
                     {
-                        fileInfo.Filament.Add(filamentVolume * 1000F / (MathF.PI * MathF.Pow(filamentDiameter / 2F, 2F)));
+                        float filamentUsage = filamentVolume * 1000F / (MathF.PI * MathF.Pow(filamentDiameter / 2F, 2F));
+                        if (float.IsFinite(filamentUsage))
+                        {
+                            fileInfo.Filament.Add(filamentUsage);
+                        }
                     }
                     return true;
                 }
