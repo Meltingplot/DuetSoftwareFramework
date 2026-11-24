@@ -143,13 +143,29 @@ public class EventLogger(FilePathResolver filePath, Model.ObjectModel model, IHo
     /// <summary>
     /// Stop logging internally
     /// </summary>
-    /// <returns>Asynchronous task</returns>
-    private void StopInternal()
+    /// <param name="writeFailed">Whether a write to the log file has failed. Nothing more is written to it then, as RRF closes its log file without writing
+    /// to it again when a write fails (Logger::InternalLogMessage), and closing it fails for the same reason because the data that could not be written is
+    /// still buffered</param>
+    private void StopInternal(bool writeFailed = false)
     {
         if (_writer is not null)
         {
-            _writer.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} Event logging stopped");
-            _writer.Close();
+            if (writeFailed)
+            {
+                try
+                {
+                    _writer.Close();
+                }
+                catch (IOException)
+                {
+                    // The cause is logged with the failed write
+                }
+            }
+            else
+            {
+                _writer.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} Event logging stopped");
+                _writer.Close();
+            }
             _writer = null;
 
             logger.LogInformation("Event logging stopped");
@@ -180,13 +196,28 @@ public class EventLogger(FilePathResolver filePath, Model.ObjectModel model, IHo
     /// <summary>
     /// Stop logging internally and asynchronously
     /// </summary>
+    /// <param name="writeFailed">Whether a write to the log file has failed, see <see cref="StopInternal"/></param>
     /// <returns>Asynchronous task</returns>
-    private async Task StopInternalAsync()
+    private async Task StopInternalAsync(bool writeFailed = false)
     {
         if (_writer is not null)
         {
-            await _writer.WriteLineAsync($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} Event logging stopped");
-            _writer.Close();
+            if (writeFailed)
+            {
+                try
+                {
+                    _writer.Close();
+                }
+                catch (IOException)
+                {
+                    // The cause is logged with the failed write
+                }
+            }
+            else
+            {
+                await _writer.WriteLineAsync($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} Event logging stopped");
+                _writer.Close();
+            }
             _writer = null;
 
             logger.LogInformation("Event logging stopped");
@@ -241,7 +272,7 @@ public class EventLogger(FilePathResolver filePath, Model.ObjectModel model, IHo
                 catch (Exception e)
                 {
                     logger.LogError(e, "Failed to write to log file");
-                    StopInternal();
+                    StopInternal(true);
                 }
             }
         }
@@ -275,7 +306,7 @@ public class EventLogger(FilePathResolver filePath, Model.ObjectModel model, IHo
                 catch (Exception e)
                 {
                     logger.LogError(e, "Failed to write to log file");
-                    await StopInternalAsync();
+                    await StopInternalAsync(true);
                 }
             }
         }

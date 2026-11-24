@@ -23,7 +23,7 @@ namespace UnitTests.Startup;
 /// <item>Once ApplicationStopping is cancelled, the tokens of the codes are cancelled as well, because their sources are linked to it (CodeProcessor.cs:310)</item>
 /// <item>The DSF AsyncLock waited on a SemaphoreSlim, which gives up at once on a cancelled token even when the lock is free (SemaphoreSlim.cs:687-689 of
 /// System.Private.CoreLib). Nito.AsyncEx.AsyncLock, which it replaced in bb5edd5e, takes a free lock in that case, see <see cref="Utility.AsyncLockCancelledToken"/></item>
-/// <item>The Executed stage writes the reply to the event log with that token (Executed.cs:110-121 and 126-129, Logger.cs:258) and updates the file
+/// <item>The Executed stage writes the reply to the event log with that token (Executed.cs:110-121 and 126-129, Logger.cs:289) and updates the file
 /// position of a macro code with the token of the code (Executed.cs:81, Code.cs:181-185), both outside the try block of Executed.cs:164-240, which keeps
 /// a cancellation during the shutdown quiet (Executed.cs:235)</item>
 /// <item>The exception reaches the loop of the stage, which logged "Failed to process code in stage Executed" and left the code neither finished nor
@@ -121,7 +121,7 @@ public class ExecutedStageShutdown
     }
 
     /// <summary>
-    /// A reply of a code DSF answered itself goes to the event log (Executed.cs:119) with ApplicationStopping (Logger.cs:258), which is cancelled. The log
+    /// A reply of a code DSF answered itself goes to the event log (Executed.cs:119) with ApplicationStopping (Logger.cs:289), which is cancelled. The log
     /// write failed before the event log was even checked for being open, so this happened without M929 as well. The lock is free, so the reply is logged
     /// and returned as without the stop
     /// </summary>

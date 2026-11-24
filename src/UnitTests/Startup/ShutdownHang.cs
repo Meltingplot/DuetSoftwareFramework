@@ -192,7 +192,7 @@ public class ShutdownHang
     /// <summary>
     /// The other order than <see cref="LinkServiceStopsWhileRrfDoesNotAnswer"/>: RRF hangs just before DCS is stopped, so the lost connection is reported
     /// after ApplicationStopping. The transfer thread ends with the stop token as well. Before that was passed, it ended here only by chance: the "Lost
-    /// connection" message (SPI.cs:469-475) takes the lock of the event log with ApplicationStopping (Logger.cs:224), and the cancellation left the transfer loop
+    /// connection" message (SPI.cs:469-475) takes the lock of the event log with ApplicationStopping (Logger.cs:255), and the cancellation left the transfer loop
     /// </summary>
     [Test]
     public async Task LostConnectionAfterTheStopEndsTheThread()
