@@ -37,6 +37,16 @@ public static class Consts
     public const int MaxCommentLength = 100;
 
     /// <summary>
+    /// Maximum length of the file name in a SetPrintFileInfo request (in bytes)
+    /// </summary>
+    public const int MaxFilenameLength = 254;
+
+    /// <summary>
+    /// Maximum length of the slicer in a SetPrintFileInfo request (in bytes)
+    /// </summary>
+    public const int MaxGeneratedByLength = 254;
+
+    /// <summary>
     /// Maximum length of an expression
     /// </summary>
     public const int MaxExpressionLength = 256;

@@ -15,8 +15,8 @@ namespace UnitTests.Codes;
 
 /// <summary>
 /// The information about a selected job file that DSF sends to RRF with SetPrintFileInfo. JobProcessor.SelectFileAsync parses the file
-/// (JobProcessor.cs:311), ApplyFileSelectionAsync copies the information into the object model and asks the link task to send it
-/// (JobProcessor.cs:350-357, LinkInterface.SetPrintFileInfo), and the link task writes it into its next transfer (LinkService.cs:404-411)
+/// (JobProcessor.cs:312), ApplyFileSelectionAsync copies the information into the object model and asks the link task to send it
+/// (JobProcessor.cs:355-362, LinkInterface.SetPrintFileInfo), and the link task writes it into its next transfer (LinkService.cs:404-411)
 /// </summary>
 [TestFixture]
 public class PrintFileInfo
@@ -125,5 +125,31 @@ public class PrintFileInfo
         string lines = string.Concat(Enumerable.Range(1, 30).Select(i => $";Estimated Build Volume: {i}.0\n"));
         info = await ParseAsync(WriteJob("job.g", lines + "G1 X1\n"));
         Assert.That(info.Filament, Has.Count.EqualTo(20));
+    }
+
+    /// <summary>
+    /// The SetPrintFileInfo request takes a file name of 254 UTF-8 bytes (Writer.WritePrintFileInfo). M32 of a file with a longer virtual path
+    /// made the Writer throw on the link task, so DCS stopped and the caller got no reply. Now M32 replies with an error and selects nothing
+    /// </summary>
+    [TestCase(244, false), TestCase(245, true)]
+    public async Task LongFileNameIsRefused(int nameLength, bool refused)
+    {
+        _host = await FakeFirmwareHost.StartAsync();
+        string name = new string('a', nameLength - 2) + ".g";
+        WriteJob(name, "G1 X1\n");
+
+        string reply = await Host.ExecuteAsync($"M32 \"{name}\"");
+        if (refused)
+        {
+            Assert.That(reply, Does.StartWith("Error: Filename too long"));
+            Assert.That(Jobs.IsFileSelected, Is.False);
+            Assert.That(SentFileInfos(), Is.Empty);
+        }
+        else
+        {
+            Assert.That(reply, Is.EqualTo("\n"));
+            await WaitForJobEndAsync();
+            Assert.That(SentFileInfos(), Is.EqualTo(new[] { "0:/gcodes/" + name }));
+        }
     }
 }

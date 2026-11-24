@@ -303,7 +303,7 @@ public class GCodeExecutionFuzz
         _host = await FakeFirmwareHost.StartAsync();
 
         // RRF reports job.lastDuration while it is not printing (PrintMonitor.cpp:75, set by StopPrint in GCodes.cpp:4953-5002).
-        // The fake firmware does not, and JobProcessor waits for it after a simulation with M37 (JobProcessor.cs:789-807)
+        // The fake firmware does not, and JobProcessor waits for it after a simulation with M37 (JobProcessor.cs:794-812)
         _host.Firmware.ObjectModel.Set("job.lastDuration", 1);
     }
 

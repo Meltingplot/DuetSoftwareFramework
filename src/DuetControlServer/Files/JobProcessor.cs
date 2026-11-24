@@ -302,13 +302,18 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
     /// <param name="fromJobFile">Whether the job file being printed is selecting this file</param>
     /// <param name="cancellationToken">Optional cancellation token</param>
     /// <returns>Task that completes when the firmware has been told about the file, to be awaited after releasing the lock</returns>
+    /// <exception cref="ArgumentException">The name of the file is too long</exception>
     /// <remarks>
     /// This class has to be locked when this method is called
     /// </remarks>
     public async Task<Task> SelectFileAsync(string virtualFile, string physicalFile, bool simulating = false, bool fromJobFile = false, CancellationToken cancellationToken = default)
     {
-        // Analyze and open the file
+        // Analyze and open the file. RRF is told about it in a single request, which cannot take a longer name
         GCodeFileInfo info = await _fileInfoParser.ParseAsync(physicalFile, true);
+        if (Encoding.UTF8.GetByteCount(info.FileName) > Consts.MaxFilenameLength)
+        {
+            throw new ArgumentException($"Filename too long (max {Consts.MaxFilenameLength} bytes)");
+        }
         CodeFile file = _fileFactory.Create(virtualFile, physicalFile, CodeChannel.File);
 
         // A file being printed may start another file print
