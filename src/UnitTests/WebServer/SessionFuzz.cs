@@ -586,7 +586,7 @@ public class SessionFuzz : WebServerFixture
     private async Task CloseSocketAsync(OpenSocket socket)
     {
         // DWS logs this when its Process method returns (WebSocketEndpoint.cs:264), then WebSocketEndpoint.Get unregisters the key (line 139),
-        // which SessionStorage logs if the session still exists (SessionStorage.cs:349)
+        // which SessionStorage logs if the session still exists (SessionStorage.cs:355)
         int disconnected = Dws.Log.Entries.Count(e => e.Message.Contains("WebSocket disconnected from"));
         string unregistered = $"Session {socket.Key} unregistered a WebSocket connection";
         int unregisteredCount = Dws.Log.Entries.Count(e => e.Message == unregistered);
