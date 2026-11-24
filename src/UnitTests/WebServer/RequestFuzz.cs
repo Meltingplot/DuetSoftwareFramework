@@ -32,7 +32,7 @@ using HttpClient = System.Net.Http.HttpClient;
 /// contains a file from 0:/sys</item>
 /// <item>No 5xx status except where the source returns one on purpose: 500 from EndpointHelper.HandleDcsExceptionAsync for errors that
 /// DCS reports (EndpointHelper.cs:145-146, the "500: Generic error" of the DSF REST API wiki page), which DWS logs as warning with the
-/// exception, and 503 from rr_model (RepRapFirmwareEndpoints.cs:518, which the RRF HTTP request docs give for a lack of memory)</item>
+/// exception, and 503 from rr_model (RepRapFirmwareEndpoints.cs:522, which the RRF HTTP request docs give for a lack of memory)</item>
 /// <item>No unhandled exception in the DWS log</item>
 /// </list>
 /// Codes (rr_gcode, /machine/code) are left out, the G-code parsers have fuzz tests of their own and random codes would reset or stop
@@ -368,7 +368,7 @@ public class RequestFuzz : WebServerFixture
     /// <summary>
     /// POST rr_upload with and without crc32: the file is stored if and only if no crc32 is given or it matches, and GET rr_upload reports the
     /// result (RRF HTTP request docs: crc32 is the "CRC32 checksum of the file content as hex string without leading 0x", err 1 e.g. on a
-    /// CRC mismatch; RepRapFirmwareEndpoints.cs:258-297)
+    /// CRC mismatch; RepRapFirmwareEndpoints.cs:258-301)
     /// </summary>
     [Test]
     public void Uploads()
@@ -394,7 +394,7 @@ public class RequestFuzz : WebServerFixture
             CrcChoice.Prefixed => "0x" + checksum.ToString("x8"),
             _ => "nothex"
         };
-        // DWS compares the hex strings ignoring the case (RepRapFirmwareEndpoints.cs:281), RRF parses the value as hex number
+        // DWS compares the hex strings ignoring the case (RepRapFirmwareEndpoints.cs:276), RRF parses the value as hex number
         bool accepted = crc is CrcChoice.None or CrcChoice.Correct or CrcChoice.CorrectUpperCase;
 
         string file = Path.Combine(Sandbox, "upload.bin");
@@ -414,6 +414,10 @@ public class RequestFuzz : WebServerFixture
         if (accepted != File.Exists(file) || (accepted && !File.ReadAllBytes(file).SequenceEqual(body)))
         {
             throw new FuzzFailure("upload content", accepted ? "the file was not stored as sent" : "a file with a CRC mismatch was kept");
+        }
+        if (File.Exists(file + ".part"))
+        {
+            throw new FuzzFailure("upload part file", "the partial file was left behind");
         }
         if (accepted && time is not null && File.GetLastWriteTime(file) != DateTime.Parse(time))
         {
