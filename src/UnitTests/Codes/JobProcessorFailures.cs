@@ -16,7 +16,7 @@ namespace UnitTests.Codes;
 
 /// <summary>
 /// Failures around a job that must neither stop the link nor end the job loop of <see cref="JobProcessor"/>: the variable requests of the rewind
-/// after a pause that wait for RRF, are cancelled or are refused
+/// after a pause that wait for RRF, are cancelled or are refused, and the file that a job selects for the next one when the link is reset
 /// </summary>
 [TestFixture]
 public class JobProcessorFailures
@@ -304,5 +304,74 @@ public class JobProcessorFailures
         Assert.That(JobCodes(), Is.EqualTo(new[] { "G4 P2" }), "The job read on after its rewind failed");
 
         await NextJobRunsAsync();
+    }
+
+    /// <summary>
+    /// Job that selects the next file with M32, as RRF chains to it (GCodes2.cpp:1106 "We now allow a file that is being printed to chain to another file").
+    /// JobProcessor starts that file once the job has ended (JobProcessor.SelectFileAsync with fromJobFile)
+    /// </summary>
+    private const string ChainingJob = "G1 X1\nM32 \"second.g\"\n";
+
+    /// <summary>
+    /// Run <see cref="ChainingJob"/> up to its M32, which the fake firmware holds, then hold the link and let it carry the reply of the M32 only.
+    /// The job then ends without the link until it asks the link to tell RRF that it has stopped
+    /// </summary>
+    private async Task RunChainingJobUntilItStopsAsync()
+    {
+        using ManualResetEventSlim release = new();
+        Host.Firmware.OnCode("M32", code => (code.Text == "M32 \"second.g\"" && !release.IsSet) ? FakeReply.NotFinished : null);
+        WriteJob("second.g", "G1 Y1\n");
+        WriteJob("job.g", ChainingJob);
+
+        Assert.That(await Host.ExecuteAsync("M32 \"job.g\""), Is.EqualTo("\n"));
+        Assert.That(Host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.File)?.Text == "M32 \"second.g\"", FakeFirmwareHost.DefaultTimeout), Is.True);
+
+        HoldLink();
+        release.Set();
+        for (int i = 0; i < 20 && !Host.Firmware.GetSentPackets().Any(packet => packet.RelatedCode?.Text == "M32 \"second.g\""); i++)
+        {
+            Step();
+        }
+        Assert.That(Host.Firmware.GetSentPackets().Any(packet => packet.RelatedCode?.Text == "M32 \"second.g\""), Is.True, "RRF did not reply to the M32");
+        await WaitForAsync(() => IsPending(link => link.StopPrintRequest));
+    }
+
+    /// <summary>
+    /// Whether a request of the print state is waiting for the link to write it (LinkService.cs, print status in Execute)
+    /// </summary>
+    private bool IsPending(Func<LinkInterface, TaskCompletionSource?> request)
+    {
+        LinkInterface link = Host.Services.GetRequiredService<LinkInterface>();
+        using (link.PrintStateLock.Lock())
+        {
+            return request(link) is not null;
+        }
+    }
+
+    [Test]
+    public async Task ResetBeforeRrfGetsTheChainedFileDeselectsIt()
+    {
+        // After the job, JobProcessor selects the file that the job asked for and waits for the link to tell RRF about it (SetPrintFileInfo). A reset
+        // of the link cancels that (LinkInterface.InvalidateCodes) and aborts the job (LinkService.InvalidateCodes), and the cancellation must not end
+        // the job loop, else no job can start until DCS restarts. The link is held here while the file waits for the link
+        await StartAsync();
+        await RunChainingJobUntilItStopsAsync();
+        for (int i = 0; i < 20 && !Host.Firmware.GetPendingRequests().Any(request => request.Request == SbcRequest.PrintStopped); i++)
+        {
+            Step();
+        }
+        await WaitForAsync(() => IsPending(link => link.SetPrintInfoRequest));
+
+        Host.Firmware.SimulateReset();
+        Host.Firmware.ReleaseTransfers();
+        await WaitForJobEndAsync();
+        Assert.That(Host.Firmware.GetReceivedRequests().Count(request => request.Request == SbcRequest.SetPrintFileInfo), Is.EqualTo(1), "RRF got the chained file");
+        Assert.That(JobCodes(), Does.Not.Contain("G1 Y1"), "The file that RRF did not get was printed");
+
+        // The machine is halted here as in the reset test above, so only the reply of M32 is checked
+        Assert.That(Host.Firmware.IsEmergencyStopped, Is.True);
+        WriteJob("third.g", "G1 Z1\n");
+        Task<string> m32 = Host.StartCode("M32 \"third.g\"");
+        Assert.That(await Task.WhenAny(m32, Task.Delay(FakeFirmwareHost.DefaultTimeout)), Is.SameAs(m32), "M32 waits for the job loop");
     }
 }

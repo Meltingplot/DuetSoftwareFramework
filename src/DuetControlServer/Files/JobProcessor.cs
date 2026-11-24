@@ -906,7 +906,21 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
                         _pendingFileInfo = null;
                     }
                 }
-                await fileInfoSent;
+
+                try
+                {
+                    await fileInfoSent;
+                }
+                catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+                {
+                    // RRF did not get the file because the link was reset or lost meanwhile, which aborts the job. When a client selects a file,
+                    // that abort wakes this loop up to deselect it. Here the loop was not waiting yet, so it goes on without waiting instead
+                    using (await LockAsync(stoppingToken))
+                    {
+                        Abort();
+                        _startPendingFile = true;
+                    }
+                }
             } while (!stoppingToken.IsCancellationRequested);
         }
         catch (OperationCanceledException)
