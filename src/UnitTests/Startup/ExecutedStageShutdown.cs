@@ -150,7 +150,7 @@ public class ExecutedStageShutdown
     /// <summary>
     /// A code handler that is cancelled while DCS stops, e.g. because it waits with the cancelled token of the code for a lock that is held: the loop of the
     /// stage logs the cancellation and completes the code with it (PipelineStackItem.cs:85-89, upstream 61df011e). SimpleCode answers a cancelled code with
-    /// an empty reply (SimpleCode.cs:183-186)
+    /// an empty reply (SimpleCode.cs:209-212)
     /// </summary>
     [Test]
     public async Task CodeWhoseHandlerIsCancelledWhileDcsStopsIsCompleted()
@@ -189,7 +189,7 @@ public class ExecutedStageShutdown
 
     /// <summary>
     /// Codes behind the held one in the Executed queue are read after the cancellation as well. A macro code then reaches the code handlers with its token,
-    /// which is linked to ApplicationStopping as well (MacroFile.cs:166, 340). Before TP3 it could already be cancelled when its file position was updated
+    /// which is linked to ApplicationStopping as well (MacroFile.cs:171, 346). Before TP3 it could already be cancelled when its file position was updated
     /// with that token under the file lock (Executed.cs:81, CodeFile.cs:64); that update takes neither now (CodeFile.cs:159-168).
     /// The held code is an M42 that RRF answers, so the G4 behind it is answered and queued meanwhile (an M111 P-1 would flush the channel first,
     /// MCodeHandler.cs:695). Since upstream 61df011e the loop of the stage logs such a cancellation and completes the code with it (PipelineStackItem.cs:85-89),

@@ -302,13 +302,23 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
     /// <param name="fromJobFile">Whether the job file being printed is selecting this file</param>
     /// <param name="cancellationToken">Optional cancellation token</param>
     /// <returns>Task that completes when the firmware has been told about the file, to be awaited after releasing the lock</returns>
+    /// <exception cref="ArgumentException">The name of the file is too long or the file is too big</exception>
     /// <remarks>
     /// This class has to be locked when this method is called
     /// </remarks>
     public async Task<Task> SelectFileAsync(string virtualFile, string physicalFile, bool simulating = false, bool fromJobFile = false, CancellationToken cancellationToken = default)
     {
-        // Analyze and open the file
+        // Analyze and open the file. RRF keeps its path for the object model and resurrect.g and cannot hold a longer one
         GCodeFileInfo info = await _fileInfoParser.ParseAsync(physicalFile, true);
+        if (Encoding.UTF8.GetByteCount(info.FileName) > Consts.MaxFilePathLength)
+        {
+            throw new ArgumentException($"Filename too long (max {Consts.MaxFilePathLength} bytes)");
+        }
+        if (info.Size > uint.MaxValue)
+        {
+            // RepRapFirmware has 32-bit file positions, which it reports back when the job is paused, and does not take larger files either
+            throw new ArgumentException($"File too big (max {uint.MaxValue} bytes)");
+        }
         CodeFile file = _fileFactory.Create(virtualFile, physicalFile, CodeChannel.File);
 
         // A file being printed may start another file print
@@ -354,7 +364,7 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
 
         // Notify RepRapFirmware and start processing the file in the background
         _logger.LogInformation("Selected file {File}", file.FilePath.Virtual);
-        return await _linkInterface.SetPrintFileInfo(cancellationToken);
+        return await _linkInterface.SetPrintFileInfo(info, cancellationToken);
     }
 
     /// <summary>

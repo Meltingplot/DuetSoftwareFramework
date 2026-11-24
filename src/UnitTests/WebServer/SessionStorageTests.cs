@@ -9,6 +9,7 @@ using DuetWebServer.Singletons;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Logging;
 using NUnit.Framework;
+using UnitTests.Utility;
 
 namespace UnitTests.WebServer;
 
@@ -34,7 +35,7 @@ public class SessionStorageTests
         string readWrite = _storage.MakeSessionKey(1, string.Empty, true);
         string readOnly = _storage.MakeSessionKey(2, string.Empty, false);
 
-        // SessionStorage.cs:175: readWrite grants both policies, readOnly only the read-only one
+        // SessionStorage.cs:181: readWrite grants both policies, readOnly only the read-only one
         Assert.That(_storage.CheckSessionKey(readWrite, true), Is.True);
         Assert.That(_storage.CheckSessionKey(readWrite, false), Is.True);
         Assert.That(_storage.CheckSessionKey(readOnly, true), Is.False);
@@ -54,7 +55,7 @@ public class SessionStorageTests
     [Test]
     public void SessionsWithoutValidIdAreNotRegistered()
     {
-        // SessionStorage.cs:206 and 234 register a session only for a positive DCS session ID
+        // SessionStorage.cs:212 and 240 register a session only for a positive DCS session ID
         string key = _storage.MakeSessionKey(0, "127.0.0.1", true);
         AuthenticationTicket ticket = _storage.MakeSessionTicket(-1, "127.0.0.1", true);
 
@@ -89,7 +90,7 @@ public class SessionStorageTests
         _storage.CacheMessage("first\n");
         _storage.CacheMessage("second  ");
 
-        // SessionStorage.cs:134-139: trailing whitespace is trimmed and each message ends with a new line
+        // SessionStorage.cs:140-145: trailing whitespace is trimmed and each message ends with a new line
         Assert.That(_storage.GetCachedMessages(ipSession.Principal), Is.EqualTo("first" + Environment.NewLine + "second" + Environment.NewLine));
         Assert.That(_storage.GetCachedMessages(ipSession.Principal), Is.Empty, "Fetching the messages clears them");
         Assert.That(_storage.GetCachedMessages(keySession.Principal), Is.Empty);
@@ -109,13 +110,13 @@ public class SessionStorageTests
         _storage.SetWebSocketState("unknown", true);
         _storage.SetLongRunningHttpRequest(new ClaimsPrincipal(), true);
 
-        // A negative timeout counts every session as idle for longer than the timeout (SessionStorage.cs:397)
+        // A negative timeout counts every session as idle for longer than the timeout (SessionStorage.cs:403)
         _storage.MaintainSessions(TimeSpan.FromTicks(-1), socketPath);
         Assert.That(_storage.CheckSessionKey(idle, false), Is.False);
         Assert.That(_storage.CheckSessionKey(webSocket, false), Is.True);
         Assert.That(_storage.GetSessionId(request.Principal.FindFirstValue("key")!), Is.EqualTo(3));
 
-        // The expired session is removed from DCS in the background, which fails without DCS and is logged (SessionStorage.cs:424-427)
+        // The expired session is removed from DCS in the background, which fails without DCS and is logged (SessionStorage.cs:430-433)
         await WaitForAsync(() => _logger.Entries.Any(e => e.Level == LogLevel.Warning && e.Message == "Failed to unregister expired user session"));
 
         // A long timeout keeps the sessions
@@ -130,6 +131,40 @@ public class SessionStorageTests
         Assert.That(_storage.CheckSessionKey(webSocket, false), Is.False);
         Assert.That(_storage.GetTicketFromKey(request.Principal.FindFirstValue("key")!), Is.Null);
         Assert.That(_logger.Entries.Count(e => e.Message.EndsWith(" expired")), Is.EqualTo(3));
+    }
+
+    /// <summary>
+    /// The system time moving forward, for example when NTP sets it after a boot without a real-time clock, does not expire an idle session:
+    /// the timeout runs on the monotonic clock (SessionStorage.cs:403)
+    /// </summary>
+    [Test]
+    public void ForwardSystemTimeChangeDoesNotExpireSession()
+    {
+        string socketPath = Path.Combine(Path.GetTempPath(), "dsf-missing-" + Guid.NewGuid().ToString("N") + ".sock");
+        ShiftableClock clock = new();
+        SessionStorage storage = new(_logger, clock);
+        string key = storage.MakeSessionKey(1, string.Empty, true);
+
+        clock.Offset = TimeSpan.FromHours(1);
+        storage.MaintainSessions(TimeSpan.FromSeconds(8), socketPath);
+        Assert.That(storage.CheckSessionKey(key, true), Is.True);
+    }
+
+    /// <summary>
+    /// The system time moving back, for example at the end of daylight saving time, does not keep an idle session beyond its timeout
+    /// </summary>
+    [Test]
+    public async Task BackwardSystemTimeChangeDoesNotKeepSessionAlive()
+    {
+        string socketPath = Path.Combine(Path.GetTempPath(), "dsf-missing-" + Guid.NewGuid().ToString("N") + ".sock");
+        ShiftableClock clock = new();
+        SessionStorage storage = new(_logger, clock);
+        string key = storage.MakeSessionKey(1, string.Empty, true);
+
+        clock.Offset = TimeSpan.FromHours(-1);
+        await Task.Delay(300);
+        storage.MaintainSessions(TimeSpan.FromMilliseconds(100), socketPath);
+        Assert.That(storage.CheckSessionKey(key, true), Is.False);
     }
 
     private static async Task WaitForAsync(Func<bool> condition)

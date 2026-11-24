@@ -77,6 +77,7 @@ public sealed partial class LinkInterface(
 
     // Print handling
     internal readonly AsyncLock PrintStateLock = new();
+    internal GCodeFileInfo? PrintFileInfo;
     internal TaskCompletionSource? SetPrintInfoRequest;
     internal PrintStoppedReason StopPrintReason;
     internal TaskCompletionSource? StopPrintRequest;
@@ -392,6 +393,7 @@ public sealed partial class LinkInterface(
     /// <summary>
     /// Update the print file info in the firmware
     /// </summary>
+    /// <param name="info">Information about the selected file. It is sent as it is, so it must not be changed afterwards</param>
     /// <param name="cancellationToken">Optional cancellation token</param>
     /// <returns>Task that completes when the print file info has been sent</returns>
     /// <exception cref="InvalidOperationException">Not connected over SPI</exception>
@@ -399,10 +401,11 @@ public sealed partial class LinkInterface(
     /// The returned task must not be awaited while the job processor is locked, because the link task
     /// needs that lock to abort or pause a job before it gets to send the print file info
     /// </remarks>
-    public async Task<Task> SetPrintFileInfo(CancellationToken cancellationToken = default)
+    public async Task<Task> SetPrintFileInfo(GCodeFileInfo info, CancellationToken cancellationToken = default)
     {
         using (await PrintStateLock.LockAsync(cancellationToken))
         {
+            PrintFileInfo = info;
             SetPrintInfoRequest ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             return SetPrintInfoRequest.Task.WaitAsync(cancellationToken);
         }

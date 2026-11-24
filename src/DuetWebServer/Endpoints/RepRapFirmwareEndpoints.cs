@@ -255,18 +255,13 @@ public class RepRapFirmwareEndpoints
                         Directory.CreateDirectory(directory);
                     }
 
-                    if (string.IsNullOrEmpty(crc32))
+                    string partFile = resolvedPath + ".part";
+                    try
                     {
-                        // Write plain file
-                        await using FileStream stream = new(resolvedPath, FileMode.Create, FileAccess.ReadWrite);
-                        await context.Request.Body.CopyToAsync(stream);
-                    }
-                    else
-                    {
+                        // Write .part file
                         uint computedCrc32 = 0;
-                        await using (FileStream stream = new(resolvedPath, FileMode.Create, FileAccess.ReadWrite))
+                        await using (FileStream stream = new(partFile, FileMode.Create, FileAccess.ReadWrite))
                         {
-                            // Write file
                             await context.Request.Body.CopyToAsync(stream);
 
                             // Compute CRC32
@@ -278,19 +273,28 @@ public class RepRapFirmwareEndpoints
                         }
 
                         // Verify CRC32 checksum
-                        if (!computedCrc32.ToString("x8").Equals(crc32, StringComparison.InvariantCultureIgnoreCase))
+                        if (!string.IsNullOrEmpty(crc32) && !computedCrc32.ToString("x8").Equals(crc32, StringComparison.InvariantCultureIgnoreCase))
                         {
                             EndpointHelper.LogWarning(logger, $"CRC32 check failed in rr_upload ({crc32} != {computedCrc32:x8})");
                             _lastUploadSuccessful = false;
-                            File.Delete(resolvedPath);
+                            File.Delete(partFile);
                             return Results.Text("{\"err\":1}", "application/json");
                         }
-                    }
 
-                    // Set last modified time if applicable
-                    if (!string.IsNullOrEmpty(time) && DateTime.TryParse(time, out DateTime lastModified))
+                        // Move it into place
+                        File.Move(partFile, resolvedPath, true);
+
+                        // Set last modified time if applicable
+                        if (!string.IsNullOrEmpty(time) && DateTime.TryParse(time, out DateTime lastModified))
+                        {
+                            File.SetLastWriteTime(resolvedPath, lastModified);
+                        }
+                    }
+                    catch
                     {
-                        File.SetLastWriteTime(resolvedPath, lastModified);
+                        // Delete the file on error
+                        File.Delete(partFile);
+                        throw;
                     }
 
                     _lastUploadSuccessful = true;

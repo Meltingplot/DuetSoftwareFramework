@@ -3,6 +3,7 @@ using DuetAPI.Utility;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace DuetControlServer.Codes.Meta.Parsing;
@@ -101,6 +102,12 @@ public sealed class MetaExpressionParser
     // Evaluate an expression internally, stopping before any binary operator with priority 'priority' or lower
     private void ParseInternal(ref object? val, bool evaluate, byte priority)
     {
+        // Every recursion passes through here. Refuse an expression nested too deeply before it overflows the stack, as RRF does in CheckStack
+        if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        {
+            ThrowParseException("Expression nesting too deep");
+        }
+
         // Start by looking for a unary operator or opening bracket
         char c = SkipWhiteSpace();
         switch (c)

@@ -39,7 +39,7 @@ public class MetaCommandFiles
     }
 
     /// <summary>
-    /// Error messages that DSF output to the object model, e.g. for an error while reading a macro (MacroFile.cs:417-418)
+    /// Error messages that DSF output to the object model, e.g. for an error while reading a macro (MacroFile.cs:418-419)
     /// </summary>
     private async Task<string[]> ErrorMessagesAsync()
     {
@@ -88,7 +88,7 @@ public class MetaCommandFiles
     [TestCase("while true\nG1 X2\n", "empty while loop detected")]
     public async Task InvalidFlowControl(string content, string error)
     {
-        // CodeFile throws a CodeParserException while reading, MacroFile reports it and aborts the macro (MacroFile.cs:408-426),
+        // CodeFile throws a CodeParserException while reading, MacroFile reports it and aborts the macro (MacroFile.cs:409-427),
         // so the lines after the error are not executed
         string reply = await RunMacroAsync(content);
         Assert.That(Executed(), Does.Not.Contain("G1 X2"), $"reply: {reply}");
@@ -133,8 +133,8 @@ public class MetaCommandFiles
     [Test]
     public async Task IterationsOutsideLoop()
     {
-        // CodeFile.GetIterations throws "'iterations' used when not inside a loop" (CodeFile.cs:254) while DSF substitutes the SBC fields,
-        // and MacroFile reports the exception with the file and line (MacroFile.cs:441-452)
+        // CodeFile.GetIterations throws "'iterations' used when not inside a loop" (CodeFile.cs:267) while DSF substitutes the SBC fields,
+        // and MacroFile reports the exception with the file and line (MacroFile.cs:442-453)
         await RunMacroAsync("G1 X{iterations}\n");
         Assert.That(Executed(), Is.Empty);
         Assert.That(await ErrorMessagesAsync(), Has.Some.EqualTo("in file test.g line 1: 'iterations' used when not inside a loop"));
@@ -174,7 +174,7 @@ public class MetaCommandFiles
     [Test]
     public async Task LineNumber()
     {
-        // 'line' is the line number of the code in the file, which DSF substitutes (Expressions.cs:704-710)
+        // 'line' is the line number of the code in the file, which DSF substitutes (Expressions.cs:705-711)
         Assert.That(await RunMacroAsync("G1 X1\n\nG1 X{line}\n"), Is.EqualTo("\n"));
         Assert.That(Executed(), Is.EqualTo(new[] { "G1 X1", "G1 X{3}" }));
     }
