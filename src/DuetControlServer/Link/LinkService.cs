@@ -1646,14 +1646,19 @@ public sealed class LinkService(
 
         try
         {
-            // Close the file stream
+            // RRF has released its handle when it sends this request, so remove the file from the list of open files even if closing it fails
             FileStream fs = _openFiles[handle];
-            fs.Close();
-
-            // Remove it again from the list of open files
             _openFiles.Remove(handle);
 
-            // RRF doesn't expect a response for this...
+            // Sync a file RRF has written to the disk before closing it, as f_close does on the SD card (FileStore::ForceClose).
+            // RRF doesn't expect a response for this, so an error can only be logged
+            using (fs)
+            {
+                if (fs.CanWrite)
+                {
+                    fs.Flush(true);
+                }
+            }
         }
         catch (Exception e)
         {
