@@ -16,7 +16,8 @@ using File = System.IO.File;
 /// in place of the file: chown without -h, chmod, sed -i, shell redirections and FileMode.Create act on what the symlink points to, so dsf could make root
 /// change or disclose any file. The packages of upstream give /opt/dsf/conf and /opt/dsf/sd with all files to dsf (duetcontrolserver postinst:
 /// chown -R dsf:dsf /opt/dsf/conf, duetsd postinst: chown -R dsf:dsf /opt/dsf/sd), and the files checked here belong to dsf in any layout, so dsf may replace
-/// each of them at any time.
+/// each of them at any time. Below /opt/dsf/sd dsf may replace the directories as well, so there every path leads wherever dsf wants, -h or not. Only the
+/// entries of root-owned directories stay where they are: /opt/dsf/conf and /opt/dsf/sd themselves are entries of /opt/dsf.
 /// The scripts run against a tree in a temporary directory: /opt/dsf in the scripts is replaced by that tree, and the tools are stubs that record each file
 /// they act on and then behave like the real tool. The stubs run as regular user and stand for root unless setpriv (also a stub) dropped to another user.
 /// Files outside the tree stand for files of root: a stub that runs as another user may not open or change them, as the kernel would refuse it
@@ -30,6 +31,8 @@ public class RootSymlinks
     private const UnixFileMode Mode644 = Mode600 | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
     private const UnixFileMode Mode660 = Mode600 | UnixFileMode.GroupRead | UnixFileMode.GroupWrite;
     private const UnixFileMode Mode755 = Mode644 | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
+
+    private const string DpkgInfo = "/var/lib/dpkg/info";
 
     private string _directory = null!;
 
@@ -162,6 +165,21 @@ public class RootSymlinks
             "export RUN_AS\n" +
             "exec \"$@\"\n");
 
+        // cp opens what a symlink in place of the source or the destination points to. mv renames the source and replaces the destination entry itself
+        WriteStub("cp",
+            "for a in \"$@\"; do case \"$a\" in -*) ;; *) record 1 \"$a\"\n" +
+            "  if denied \"$a\"; then echo \"cp: cannot open '$a': Permission denied\" >&2; exit 1; fi ;; esac; done\n" +
+            $"exec {RealTool("cp")} \"$@\"\n");
+        WriteStub("mv",
+            "for a in \"$@\"; do case \"$a\" in -*) ;; *) record 0 \"$a\"\n" +
+            "  if denied \"$a\"; then echo \"mv: cannot move '$a': Permission denied\" >&2; exit 1; fi ;; esac; done\n" +
+            $"exec {RealTool("mv")} \"$@\"\n");
+
+        // dpkg-query -L lists the files of an installed package from the database of dpkg, which only root may change
+        WriteStub("dpkg-query",
+            "[ \"$1\" = -L ] || exit 1\n" +
+            $"exec {RealTool("cat")} \"{Physical(DpkgInfo)}/$2.list\"\n");
+
         WriteStub("id", "if [ \"$user\" = root ]; then echo 0; else echo 999; fi\n");
         WriteStub("hostname", "echo duet3\n");
         WriteStub("systemctl", "exit 1\n");                 // no unit is active or enabled
@@ -225,11 +243,27 @@ public class RootSymlinks
     private static bool DsfMayReplace(string path) => Path.GetDirectoryName(path) == "/opt/dsf/conf" || path.StartsWith("/opt/dsf/sd/");
 
     /// <summary>
-    /// Check that root acted on nothing through an entry that dsf may replace, symlink or not: dsf may put one there between a check and the call
+    /// Whether dsf may put a symlink in place of a directory on the way to an entry, so that the path leads into another directory
+    /// </summary>
+    private static bool DsfMayRedirect(string path)
+    {
+        for (string? directory = Path.GetDirectoryName(path); !string.IsNullOrEmpty(directory); directory = Path.GetDirectoryName(directory))
+        {
+            if (DsfMayReplace(directory))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Check that root acted on nothing through an entry that dsf may replace, symlink or not: dsf may put one there between a check and the call.
+    /// Neither may root act on an entry in a directory that dsf may replace, which -h does not help against
     /// </summary>
     private void AssertRootActsOnNothingDsfMayReplace()
     {
-        List<string> calls = [.. Calls().Where(call => call.User == Root && call.Dereferences && DsfMayReplace(call.Path)).Select(call => call.ToString())];
+        List<string> calls = [.. Calls().Where(call => call.User == Root && ((call.Dereferences && DsfMayReplace(call.Path)) || DsfMayRedirect(call.Path))).Select(call => call.ToString())];
         Assert.That(calls, Is.Empty, "calls of root that act on what dsf may put a symlink in place of");
     }
 
@@ -289,6 +323,80 @@ public class RootSymlinks
             AssertRootActsOnNothingDsfMayReplace();
             AssertUnchanged(existingFile, "file of root\n");
             Assert.That(File.Exists(newFile), Is.False, "root made a file through a symlink");
+        });
+    }
+
+    #endregion
+
+    #region reprapfirmware package
+
+    private const string FirmwarePostinst = "pkg/deb/reprapfirmware/DEBIAN/postinst";
+
+    /// <summary>
+    /// Let dpkg install a package: list its files in the database of dpkg, as dpkg-query -L reads them
+    /// </summary>
+    private void AddPackageList(string package, params string[] paths)
+    {
+        Directory.CreateDirectory(Physical(DpkgInfo));
+        File.WriteAllLines(Physical($"{DpkgInfo}/{package}.list"), paths.Select(Physical));
+    }
+
+    /// <summary>
+    /// The files of the package in the layout of this template (sys) and in the layout of the reprapfirmware package of Duet3D (firmware, *.bin and *.uf2)
+    /// </summary>
+    private static readonly string[] FirmwareFiles = ["/opt/dsf/sd/sys/Duet3Firmware_MB6HC.bin", "/opt/dsf/sd/firmware/Duet3Firmware_EXP3HC.uf2"];
+
+    /// <summary>
+    /// The reprapfirmware postinst gives the firmware files to dsf: dpkg installs them as root, and DWS (rr_upload) and DCS (M28, echo, files written by RRF)
+    /// overwrite files in place. dsf owns /opt/dsf/sd (duetsd postinst) and may put a symlink in place of sys, so that /opt/dsf/sd/sys/*.bin names files of
+    /// root, as the files of the package that dpkg put through that symlink. chown -h does not help there, its last component is no symlink. root must
+    /// neither give those files to dsf nor change them
+    /// </summary>
+    [Test]
+    public void FirmwarePackageChangesNoFileOfRootThroughASymlinkInPlaceOfItsDirectory()
+    {
+        string fileOfRoot = AddFileOfRoot("brcmfmac.bin", "firmware of root\n");
+        string packagedFile = AddFileOfRoot("Duet3Firmware_MB6HC.bin", "firmware of the package\n");
+        PlantSymlink("/opt/dsf/sd/sys", Outside);
+        AddPackageList("reprapfirmware", ["/opt/dsf", "/opt/dsf/sd", "/opt/dsf/sd/sys", "/opt/dsf/sd/sys/Duet3Firmware_MB6HC.bin"]);
+
+        RunShippedScript(FirmwarePostinst, DpkgInfo + "/reprapfirmware.postinst", "configure");
+
+        Assert.Multiple(() =>
+        {
+            AssertRootActsOnNothingDsfMayReplace();
+            AssertUnchanged(fileOfRoot, "firmware of root\n");
+            AssertUnchanged(packagedFile, "firmware of the package\n");
+            Assert.That(Directory.GetFiles(Outside).Select(Path.GetFileName), Is.EquivalentTo(new[] { "brcmfmac.bin", "Duet3Firmware_MB6HC.bin" }), "files made through the symlink");
+        });
+    }
+
+    /// <summary>
+    /// dsf takes over the firmware files of the package with its own rights: it copies each of them and puts the copy in its place. Other files stay as they are
+    /// </summary>
+    [Test]
+    public void FirmwarePackageGivesItsFilesToDsf()
+    {
+        foreach (string file in FirmwareFiles)
+        {
+            AddFile(file, "firmware " + Path.GetFileName(file));
+        }
+        AddFile("/opt/dsf/sd/sys/Uploaded.bin", "file of dsf");
+        AddPackageList("reprapfirmware", ["/opt/dsf", "/opt/dsf/sd", "/opt/dsf/sd/firmware", "/opt/dsf/sd/sys", .. FirmwareFiles]);
+
+        RunShippedScript(FirmwarePostinst, DpkgInfo + "/reprapfirmware.postinst", "configure");
+
+        Assert.Multiple(() =>
+        {
+            AssertRootActsOnNothingDsfMayReplace();
+            Assert.That(Calls().Where(call => call.Tool == "mv").Select(call => $"{call.User} {call.Path}"),
+                Is.EquivalentTo(FirmwareFiles.SelectMany(file => new[] { $"{Dsf} {file}.new", $"{Dsf} {file}" })), "the firmware files no longer go to dsf");
+            foreach (string file in FirmwareFiles)
+            {
+                Assert.That(File.ReadAllText(Physical(file)), Is.EqualTo("firmware " + Path.GetFileName(file)), $"content of {file}");
+                Assert.That(File.Exists(Physical(file + ".new")), Is.False, $"{file}.new is left over");
+            }
+            Assert.That(Calls().Where(call => call.Path == "/opt/dsf/sd/sys/Uploaded.bin"), Is.Empty, "a file of dsf was copied");
         });
     }
 

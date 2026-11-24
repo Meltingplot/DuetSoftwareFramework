@@ -1,7 +1,16 @@
 #!/bin/sh
 
-# Adjust file permissions
-chown dsf:dsf /opt/dsf/sd/sys/*.bin
+# DWS (rr_upload) and DCS (M28, echo, files written by RRF) overwrite files in place, so the firmware files that dpkg installs as root must belong to dsf.
+# dsf owns /opt/dsf/sd and may put a symlink in place of any entry below it, a directory too, so root does nothing there. Instead dsf copies each firmware
+# file of this package and puts the copy in its place, with its own rights
+dpkg-query -L reprapfirmware | while read -r file; do
+	case "$file" in
+		/opt/dsf/sd/*.bin|/opt/dsf/sd/*.uf2)
+			setpriv --reuid=dsf --regid=dsf --clear-groups -- cp "$file" "$file.new" &&
+				setpriv --reuid=dsf --regid=dsf --clear-groups -- mv -f "$file.new" "$file"
+			;;
+	esac
+done
 
 # Instruct DuetControlServer to update the firmware.
 # Do this only if GPIO and SPI nodes are available in SysFS
