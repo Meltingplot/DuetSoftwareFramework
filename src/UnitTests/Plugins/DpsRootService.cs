@@ -599,17 +599,20 @@ public class DpsRootService : DpsTestBase
                 writer.Write("#!/bin/sh\n");
             }
         }
-        string unpacked = Path.Combine(Path.GetTempPath(), name);
         DuetPluginService.IPC.InstallSystemPackage command = Dps!.Create<DuetPluginService.IPC.InstallSystemPackage>();
         command.PackageFile = package;
         await command.ExecuteAsync();
 
         string[] calls = FakeTool.Calls(Dps.Settings.SystemdRunCommand);
         Assert.That(calls, Has.Length.EqualTo(2));
+        string scriptPrefix = "--collect --wait --pipe --quiet --unit=dsf-package ";
+        Assert.That(calls[1], Does.StartWith(scriptPrefix).And.EndWith("/update.sh"));
+        string unpacked = Path.GetDirectoryName(calls[1][scriptPrefix.Length..])!;
+        Assert.That(Path.GetFileName(unpacked), Does.StartWith("dsf-package-"), "The package is unpacked into a new temporary directory");
+        Assert.That(Path.GetDirectoryName(unpacked), Is.EqualTo(Path.GetTempPath().TrimEnd('/')));
         string prefix = $"--collect --wait --pipe --quiet --unit=dsf-package {Dps.Settings.InstallLocalPackageCommand} --force-confold -i ";
         Assert.That(calls[0], Does.StartWith(prefix));
         Assert.That(calls[0][prefix.Length..].Split(' '), Is.EquivalentTo(new[] { Path.Combine(unpacked, "first.deb"), Path.Combine(unpacked, "second.deb") }));
-        Assert.That(calls[1], Is.EqualTo($"--collect --wait --pipe --quiet --unit=dsf-package {Path.Combine(unpacked, "update.sh")}"));
         Assert.That(Directory.Exists(unpacked), Is.False, "The unpacked package is deleted");
 
         // Unpacking, installing, update script, end of the update
@@ -617,6 +620,41 @@ public class DpsRootService : DpsTestBase
         using (await Dcs.Model.AccessReadOnlyAsync())
         {
             Assert.That(Dcs.Model.SBC?.Upgrade, Is.Null);
+        }
+    }
+
+    [Test]
+    public async Task CombinedPackageIgnoresAPlantedDirectory()
+    {
+        // The root service used to unpack a combined package into <temp>/<name of the package file>. DWS uploads the package to a temporary file
+        // in the same directory (MachineEndpoints.cs:725), so that name is known during the upload, and an existing directory of that name was
+        // used together with what it held. Its files were installed as root and its update.sh run
+        await StartDpsAsync(register: false, privileged: true);
+        string name = "planted-" + Guid.NewGuid().ToString("N");
+        string package = OutsidePath(name + ".zip");
+        using (ZipArchive archive = ZipFile.Open(package, ZipArchiveMode.Create))
+        {
+            using StreamWriter writer = new(archive.CreateEntry("only.deb").Open());
+            writer.Write("package");
+        }
+        string planted = Path.Combine(Path.GetTempPath(), name);
+        Directory.CreateDirectory(planted);
+        File.WriteAllText(Path.Combine(planted, "planted.deb"), "planted");
+        File.WriteAllText(Path.Combine(planted, "update.sh"), "#!/bin/sh\n");
+        try
+        {
+            DuetPluginService.IPC.InstallSystemPackage command = Dps!.Create<DuetPluginService.IPC.InstallSystemPackage>();
+            command.PackageFile = package;
+            await command.ExecuteAsync();
+
+            string[] calls = FakeTool.Calls(Dps.Settings.SystemdRunCommand);
+            Assert.That(calls, Has.Length.EqualTo(1), "No update script is run");
+            Assert.That(calls[0], Does.Not.Contain("planted.deb"));
+            Assert.That(calls[0], Does.EndWith("/only.deb"));
+        }
+        finally
+        {
+            Directory.Delete(planted, true);
         }
     }
 
