@@ -318,14 +318,15 @@ public sealed class MacroFile : CodeFile, IDisposable
                     break;
 
                 case ConfigExtraSteps.SendDateTime:
+                    DateTime now = DateTime.Now;
                     result = _codeFactory.Create();
                     result.Channel = Channel;
                     result.File = this;
                     result.Flags = CodeFlags.IsInternallyProcessed;        // don't check our own datetime
                     result.Type = CodeType.MCode;
                     result.MajorNumber = 905;
-                    result.Parameters.Add(new CodeParameter('P', DateTime.Now.ToString("yyyy-MM-dd")));
-                    result.Parameters.Add(new CodeParameter('S', DateTime.Now.ToString("HH:mm:ss")));
+                    result.Parameters.Add(new CodeParameter('P', now.ToString("yyyy-MM-dd")));
+                    result.Parameters.Add(new CodeParameter('S', now.ToString("HH:mm:ss")));
                     _extraConfigStep = ConfigExtraSteps.Done;
                     break;
 

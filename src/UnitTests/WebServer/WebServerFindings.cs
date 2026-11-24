@@ -102,7 +102,7 @@ public class WebServerFindings : WebServerFixture
     /// Every successful rr_connect adds another session for the IP address of the client (RepRapFirmwareEndpoints.cs:88-89). RRF keeps one
     /// IP-based session per address ("Don't register a second IP-based HTTP session", HttpResponder.cpp:803-808), and the RRF HTTP request
     /// docs say that further rr_connect calls return err 0 without creating a new session. In DWS the extra sessions show up as user sessions
-    /// in DCS and cache every message (SessionStorage.cs:132-141) until they expire, while requests only ever use the first one
+    /// in DCS and cache every message (SessionStorage.cs:138-147) until they expire, while requests only ever use the first one
     /// </summary>
     [Test]
     [Explicit("Deviation: rr_connect adds another IP session for the same client")]
@@ -267,7 +267,7 @@ public class WebServerFindings : WebServerFixture
 
     /// <summary>
     /// SessionStorage.MaintainSessions removes every expired session from DCS with an IPC connection of its own, all started at once
-    /// (SessionStorage.cs:404 and 420-422). DCS listens with a backlog of 4 (DuetControlServer/Settings.cs:116, the same in
+    /// (SessionStorage.cs:410 and 426-428). DCS listens with a backlog of 4 (DuetControlServer/Settings.cs:116, the same in
     /// pkg/common/duetcontrolserver/opt/dsf/conf/config.json) and accepts in a loop (IPC/Server.cs:98-101). When more connects arrive at
     /// once than the backlog holds before the loop accepts them, they fail with EAGAIN ("Resource temporarily unavailable"), DWS only logs
     /// "Failed to unregister expired user session" and the user sessions stay in sbc.dsf.userSessions for good. Whether that happens depends

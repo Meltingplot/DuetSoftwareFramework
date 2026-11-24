@@ -57,7 +57,7 @@ public partial class CodeBufferReserve : LabTest
     private const int FillerSize = 340;
 
     /// <summary>
-    /// Fillers per load channel. DSF reads at most 16 codes of a macro ahead (Settings.BufferedMacroCodes, MacroFile.cs:394), the G4 S is one of them.
+    /// Fillers per load channel. DSF reads at most 16 codes of a macro ahead (Settings.BufferedMacroCodes, MacroFile.cs:395), the G4 S is one of them.
     /// Without the fix each channel may buffer up to 3328 bytes, so the two together send fillers until RRF reports less room than one filler needs
     /// (SendCode wants more room than the code, LinkInterface.cs:578; RRF reports the largest free block, SbcInterface.cpp:1376). With the fix they leave
     /// more than 2 * 388 bytes free
