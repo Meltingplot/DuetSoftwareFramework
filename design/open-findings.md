@@ -522,3 +522,44 @@ Line numbers below refer to DSF `v3.7-dev` at 3db68bd7 and RRF fork `3.7-dev` at
   - RRF in standalone mode aborts the print when a meta command fails (`GCodes.cpp:875-882`, `AbortPrint`). In SBC mode RRF does not run meta commands; DSF does.
   - So a `set` or `var` that fails in a job file stops a macro (L7) but not the job.
   - Found from the code while fixing L7, not tested. No decision yet.
+
+## Found by the lock census of RRF and Duet3Expansion (2026-11-23)
+
+Census of error class 4: lock order, waits under a lock, priority inversion. Line numbers refer to RRF fork `3.7-dev` at 6c45e07a7 and Duet3Expansion fork `3.7-dev` at a325d93e. Upstream Duet3D RRF `3.7-dev` at 371c71412 has the same code in LC2 and LC5. No lock-order cycle was found in RRF (MB6HC) or Duet3Expansion (TOOL1LC, EXP1HCL, SZP). The census itself is not in a repository.
+
+- **Fixed and not listed:** C1, the CAN receiver finishing the accelerometer file of a restarted board under `boardsLock` (RRF #112, which replaced #91; not merged yet).
+- **Rule for the class (RRF #112, open):** no task waits for the SBC task while it holds a `ReadWriteLock` for writing. `SbcInterface::WaitForFileSlot` and `GCodeBuffer::RequestMacroFile` report an internal error when the caller holds one, counted per task by RRFLibraries #4. Read locks are not counted, so LC5 needs its own fix. Host test `Tools/sbc-wait-lock-test`.
+- **LC2. M558 C, M950 H Q and M308 wait for the SBC task under write locks the SBC task needs.**
+  - A parameter expression that calls `fileexists()` or `fileread()` waits up to 3 s for the SBC task in SBC mode (`MassStorage.cpp:1261-1265`, `SbcInterface.cpp:2362`, `:2682-2697`).
+  - MAIN parses these parameters while it holds the write lock of the list. The locks and parse points are:
+    - M558: `zProbesLock`, `EndstopsManager.cpp:750` -> `:794`;
+    - M950 H: `heatersLock`, `Heat.cpp:572` -> `:575`;
+    - M308: `sensorsLock`, `Heat.cpp:1090` -> `:1095`.
+  - The fork's `ObjectModel::lifetimeLock` is held there as well (K22, 704b6a7e7).
+  - `global` and `set global.` evaluate their expression under the write lock of the global variables (`StringParser.cpp:748` -> `:760`, `:778` -> `:825/843`, `GlobalVariables.cpp:74`; local variables have no lock). There the SBC task blocks only when it reads `global` or evaluates an expression with a global variable, because only `seqs.global` is live (`RepRap.cpp:264`, `:393`).
+  - The live poll of DSF (every 100 ms) reads `heat.heaters`, `sensors.analog` and `sensors.probes` under these locks (`Heat.cpp:92-146`, `EndstopsManager.cpp:50-109`). The SBC task then blocks, the reply to the file request is not processed, and both tasks stall for 3 s. `fileexists()` returns false.
+  - Only codes that RRF parses itself reach this: USB and PanelDue/aux in SBC mode (`GCodes.cpp:723-735`), and fork trigger actions (M581.1). DSF evaluates `fileexists()` and `fileread()` in the codes it sends (DSF `Code.cs:238`, `Functions.cs:26-28`).
+  - An SBC-side fix (`ConditionalReadLocker` on `lifetimeLock`) was tried and dropped, because the list locks still block the poll (Tim 2026-11-23). Parsing the parameters before the write locks would change several upstream handlers; M308 hands the parameters to the sensor's `Configure` under the lock (`Heat.cpp:1114`).
+  - Fix (Tim 2026-11-24, option A): RRF #112 (open) sends such a G, M or T command of text to DSF in `GCodes::ActOnCode`, as upstream sends other commands that DSF handles, and a `global` or `set global.` with them in `StringParser::ProcessConditionalGCode`. DSF substitutes the calls and sends the rest back. Needs DSF #237: DSF did not answer a firmware code that failed in DSF, so the RRF channel stayed busy until an abort (same code upstream).
+  - DSF looked for a relative name in `fileexists()` in `0:/`, RRF in the system directory; `fileread()` reads from `0:/` in both. DSF #240 (open) makes DSF use the system directory, so with it the fix does not change the meaning of a relative name.
+  - Open decision: a trigger action (`M581.1 U`) whose `set global.`/`global` or command calls one of these functions now goes to DSF, while the rule for actions (RRF 794e78625) is that M581.1 rejects what SBC mode passes to DSF. Triggers that DSF evaluates (`sbc.*`) are not affected: they run `triggerN.g` through DSF.
+  - Found from the code and a host test of the SBC side, not seen on the printer. Upstream report candidate.
+- **LC5. `fileexists()` with a heap string argument waits for the SBC task under `Heap::heapLock`.**
+  - It keeps the read lock of `StringHandle::Get` (`StringHandle.cpp:104`) around `SysFileExists` (`ExpressionParser.cpp:2183-2187`). The comment there assumes that the call does not need the heap.
+  - The SBC task needs the write lock when a packet it handles creates a heap string or array, e.g. a `set` (`StringHandle.cpp:23/39/59`, `Variable.cpp:152/166/186`). Then both tasks stall for 3 s. The live poll needs only the read lock.
+  - `fileread()` already copies the name and releases the lock before it opens the file (`ExpressionParser.cpp:1219-1226`). `fileexists()` could do the same.
+  - Fix: RRF #112 (open), `Platform::SysFileExists(const StringHandle&)` copies the name and releases the lock before it asks the SBC. The host test shows the 3 s stall with the old order.
+  - Same trigger as LC2: codes that RRF parses itself in SBC mode. Found from the code. Upstream report candidate.
+- **LC6. Creating an input monitor on a SAME5x expansion board delays all input change reports of that board by at least 2 ms.**
+  - `InputMonitor::Create` (main task, priority 1) holds `listLock` for writing (`InputMonitor.cpp:369`) through `Activate` (`:406`), which waits `delay(2)` for the debouncer (`:75`, upstream fe8c1978).
+  - The CAN async sender (priority 5) needs the read lock in `AddStateChanges` (`:539`, called at `CanInterface.cpp:1003`) before it sends input changes and stall endstop notifications. `ReadWriteLock` has no priority inheritance, so every task of priority 2 to 4 that runs meanwhile adds to the wait.
+  - RRF waits for standstill before M574 and M558 create a monitor (`EndstopsManager.cpp:416`, `:470`, `:744` at RRF 6c45e07a7). M950 J does not (`GpInPort.cpp:75` -> `:150`), so only an M950 J during a move on another channel can delay an endstop or stall report of that move. SAMC21 boards have no delay there.
+  - `Change` already calls `Activate` under the read lock (`InputMonitor.cpp:446`). `Create` could insert the monitor under the write lock and activate it under a read lock, because only the main task deletes monitors.
+  - Low impact. Tim (2026-11-23): record it, no fix now. Upstream report candidate.
+- **LC7. RRF drops the commands after one it sends to DSF on the same line of text.**
+  - `GCodeBuffer::SentToSbc` calls `StringParser::Init` (`GCodeBuffer.h:488-493`), which sets `gcodeLineEnd` to 0, and RRF sends only the current command (`DataStart`/`DataLength`). So in `M503 G1 X5` from USB in SBC mode, where RRF sends `M503` to DSF (`GCodes2.cpp:738-759`), the `G1` is lost.
+  - Upstream behaviour for every command that RRF sends to DSF. With RRF #112 it also applies to commands that call `fileexists()` or `fileread()`.
+  - Found from the code while fixing LC2, not tested. No decision yet. Upstream report candidate.
+- **LC8. The fake firmware holds the binary codes of a channel while its text code is with DSF; RRF takes them.**
+  - `FakeGCodes.cs:596-600` holds them; RRF takes a binary code of such a channel (`GCodes.cpp:721-762` -> `SbcInterface::FillBuffer`), which ends `executingOnSbc`. So DSF tests cannot show a DoCode that DSF sends on to RRF finishing (`FirmwareCodeFileFunctions.CodeForRrfFinishesTheDoCode` is `[Explicit]`).
+  - A trial alignment of the fake passed both cases and the 211 FakeFirmware/Link tests, but `Link/ChannelEpochStress.cs:837-844` relies on the holding (K13). Test infrastructure only. No decision yet.
