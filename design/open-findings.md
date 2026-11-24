@@ -551,3 +551,147 @@ Census of error class 4: lock order, waits under a lock, priority inversion. Lin
   - RRF waits for standstill before M574 and M558 create a monitor (`EndstopsManager.cpp:416`, `:470`, `:744` at RRF 6c45e07a7). M950 J does not (`GpInPort.cpp:75` -> `:150`), so only an M950 J during a move on another channel can delay an endstop or stall report of that move. SAMC21 boards have no delay there.
   - `Change` already calls `Activate` under the read lock (`InputMonitor.cpp:446`). `Create` could insert the monitor under the write lock and activate it under a read lock, because only the main task deletes monitors.
   - Low impact. Tim (2026-11-23): record it, no fix now. Upstream report candidate.
+
+## Found by the censuses of error classes 7, 5 and 6 (2026-11-23)
+
+Census of error class 7 (barriers, DMA and caches, flash and NVM) and of classes 5 and 6 (shared non-pointer data, re-entrancy). Line numbers refer to RRF fork `3.7-dev` at 6c45e07a7, CoreN2G fork `3.7-dev` at 7d41892 and Duet3Expansion fork `3.7-dev` at a325d93e. MB6HC ELF addresses are from 6c45e07a7 plus RRF #91. Upstream Duet3D RRF `3.7-dev` at 371c71412, CoreN2G `3.7-dev` at 45ae60a and Duet3Expansion `3.7-dev` at 8bff6768 have the same code where a finding says upstream. The censuses themselves are not in a repository.
+
+- **Fixed and not listed:** dma-cache F1, USB direct-read buffers not invalidated after the DMA (CoreN2G #4, test in RRF #92); dma-cache F3 and barriers F1, SAME70 `Cache::Flush` without a DSB (CoreN2G #5); barriers F2, LED strip DMA without a flush (RRF #93, with the ELF check `Tools/dma-barrier-check`); flash F7, the length in `EraseAndReset` (CoreN2G #6, test in RRF #94); flash F4, SAMC21 `EnsureWritten` returns before the last page is written (Duet3Expansion #30); class 5/6 F1, F4, F5 and F6, a stale "now" in `RemoteHeater`, `FilamentMonitor`, `RemoteFan` and `LocalFan` (RRF #95); class 5/6 F2, `UpdateSyncLockState` (Duet3Expansion #29); flash F6, the user row rewrite fills the page buffer with interrupts on (CoreN2G #7, test in Duet3Expansion #31); the class 5/6 F4 side item, a stale "now" in `PulsedFilamentMonitor` (RRF #95). None of these PRs is merged yet.
+- **B7-1. Erasing the user signature on the MB6HC runs with the caches on** (flash census F1).
+  - `NonVolatileMemory::EnsureWritten` erases with the caches on (`NonVolatileMemory.cpp:58-65`) and turns them off only around the write (`:70-75`). The erase waits in `efc_perform_fcr` without cache maintenance (CoreN2G `efc.c:383-394`).
+  - The read sequence has the fork's I-cache invalidate after it (`efc.c:349-357`, CoreN2G #1, 5e43635). The erase has none. If instruction fetches during the erase return non-code data, an I-cache line filled then holds garbage until `Cache::Disable` at `:70` (SAME70 EEFC; datasheet, not checked here).
+  - Trigger: M308 H or L thermistor calibration outside config.g (`Thermistor.cpp:120-125`, `:171-176`). The crash handler turns the caches off first (`ExceptionHandlers.cpp:38`).
+  - Upstream code. A fix would turn the caches off around the erase as well, as `EnsureWritten` does for the write and CoreN2G `UniqueIdBase.cpp:56-61` does for the unique ID. Not done here: the code gives no reason for turning the caches off around the write (`NonVolatileMemory.cpp:70-75`; the comment in `Flash::WriteUserSignature`, CoreN2G `Flash.cpp:543`, is about the interrupts), so the write path says nothing about the erase.
+  - Found from the code. Not seen on a board.
+- **B7-2. After a user signature read the D-cache keeps signature data over the first 512 bytes of flash** (flash census F2).
+  - `Flash::ReadUserSignature` invalidates the 512 bytes before the read only (CoreN2G `Flash.cpp:522-525`). The copy loop reads them through the D-cache (`efc.c:331-333`), because MPU region 1 makes them cacheable, write-through (`Cache.cpp:256-260`).
+  - Flash there holds `exception_table` (0x00400000-0x00400167 in the ELF) and code up to 0x004001FF. VTOR points at it (CoreN2G `SAME70/Startup.cpp:149-153`). The firmware CRC check reads the range before the caches are on (`Tasks.cpp:187-213`, `:265-266`). That no other run-time data read of it exists is from the census, not re-checked.
+  - Whether exception vector fetches look up the D-cache is in the Cortex-M7 TRM (datasheet, not checked here). Latent: code with a literal pool in that range would load signature data after the first read.
+  - Trigger: every user signature read, e.g. M122 (`Platform.cpp:1313`, `:1330` -> `NonVolatileMemory.cpp:27`) and thermistor setup (`Thermistor.cpp:215-217`). Upstream code. An invalidate after the read removes it. Upstream stopped turning the caches off for the read on purpose (RRF c5ad761d1, "Don't disable cache when reading NVram").
+  - Found from the code and the ELF. Not seen on a board.
+- **B7-3. The bootloader update of an expansion board does not detect a failed erase or write** (flash census F5).
+  - `UpdateBootloaderTask` erases the 16 KB bootloader in place and writes it again (Duet3Expansion `Tasks.cpp:896-922`). `flash_erase` and `flash_append` return `ERR_NONE` after the command whatever NVMCTRL reports (CoreN2G `SAME5x/hal/src/hal_flash.c:144-146`, `:168-170`, the same in SAMC21). The NVMCTRL error flags are used only as interrupt enables (SAME5x `hpl_nvmctrl.c:52-54`, `:360-362`).
+  - Nothing reads the flash back. The verify code under `#if 0` (`Tasks.cpp:815-831`, `:834-851`) is in `UpdateFirmwareTask`, which is built for the RP2040 only (`#if RP2040` at `:705`, `#else` at `:854`, task choice at `:366-370`). The bootloader path of the SAME5x and SAMC21 boards has no verify code, disabled or not.
+  - A silent write error, or a power cut between the erase (`:906`) and the end of the write (`:910`), leaves an erased or partial bootloader. That the board then needs SWD is from the census, not re-checked. The checks before the erase are the CRC of the image (`:880`) and Vin (`:884-894`).
+  - Open: whether a read-back has to invalidate the NVMCTRL read cache first (left on, CoreN2G `SAME5x/Config/hpl_nvmctrl_config.h:22`, `:29`, SAMC21 `:31`), and on the SAME5x the CMCC when `USE_CACHE` is set (`Tasks.cpp:343-346`) (datasheet, not checked here).
+  - Upstream code (David Crocker). Decided without Tim (2026-11-23): record only. Upstream report candidate.
+  - Found from the code. Not seen on a board.
+- **B7-4. Nothing checks that the IAP image stays below the handler stack of the MB6HC** (flash census F8).
+  - `IAP_IMAGE_START` is 0x20458000 (`Pins_Duet3_MB6HC.h:14`). The handler stack is 0x2045FC00-0x20460000 (`_sstack`, `_estack` in the ELF; MSP set at CoreN2G `SAME70/Startup.cpp:138`). `PrepareToLoadIap` turns off the caches and the MPU but not the interrupts (`RepRap.cpp:2168-2202`). The SD path loads the image at `:2131`, the SBC path at `SbcInterface.cpp:1818-1831`.
+  - An image larger than 31744 bytes (0x7C00) would overlap the stack that the interrupts use meanwhile. The IAP files of 3.7.0 are smaller: `Duet3_SBCiap32_MB6HC.bin` 20216 bytes (Duet3D package `reprapfirmware_3.7.0-1_all.deb`), `Duet3_SDiap32_MB6HC.bin` 20692 bytes (GitHub release 3.7.0).
+  - The fork builds no IAP: DSF takes `reprapfirmware` from Duet3D (`pkg/firmware-version`, `pkg/deb/build.sh:82-88`), and DuetIAP is not a submodule (`.gitmodules`). Which IAP file is on the lab printer was not checked.
+  - So there is no overlap today, only a limit that no build step checks. Upstream code. Found from the code and the ELF.
+- **B7-5. The GMAC null descriptors of priority queues 1 to 5 are in cached RAM** (dma-cache census F2).
+  - `gs_tx_desc_null` and `gs_rx_desc_null` have no `__nocache` (`GmacInterface.cpp:103`, `:105`). The ELF puts them at 0x20414920 and 0x20414928, above the non-cached area that ends at 0x20412000.
+  - The CPU writes them once (`:785-801`), and no clean follows. Until the line is evicted, RAM keeps the startup zero, which marks a TX descriptor as owned by the GMAC. The census quotes DS60001527J §37.7.1.2-3 for this and for the GMAC reading all queues (datasheet, not checked here). The effect, a TX error or a frame from address 0, is from the census, not re-checked.
+  - Only standalone mode with Ethernet. SBC mode never starts the network (`RepRap.cpp:623-641`) and refuses network codes (`GCodes.cpp:5784-5791`).
+  - Upstream code (David Crocker, 4a0ee2e48, da9c9f5f5). The fix is `__nocache` on both. Upstream report candidate.
+  - Found from the code and the ELF. Not seen on a board.
+- **B7-6. XDMAC channels are reprogrammed right after the disable, without waiting until they have stopped** (dma-cache census F4).
+  - Sites: HSMCI (CoreN2G `hsmci.c:1080`, `:1146`, `:1184`, `:1248`), TMC51xx (`TMC51xx.cpp:1671-1682`), LED strips (`LocalLedStrip.cpp:341-365`), SBC SPI (`DataTransfer.cpp:121-122`, then `:194`, `:249`), WiFi (`WiFiInterface.cpp:2029`, `:2044`).
+  - The SBC task already polls `XDMAC_GS` before it reads the data (`DataTransfer.cpp:146-149`, `:1058-1061`).
+  - In normal operation the previous transfer has ended. It matters only after an abort or a timeout. Whether a channel is still active then is in the datasheet (DS60001527J §35.5.4.4; datasheet, not checked here).
+  - Upstream code. Found from the code. Not seen on a board.
+- **B7-7. `DmacManager::DisableChannel` can fail on the SAME5x and SAMC21, and most callers ignore it** (dma-cache census F5).
+  - It returns false when ENABLE has not cleared after 20 polls (CoreN2G `SAME5x_C21/DmacManager.cpp:207-244`). Only RRF WiFi checks it (`WiFiInterface.cpp:2448-2451`).
+  - Callers that ignore it: Duet3Expansion `TMC51xx.cpp:1708-1709`, `:1747-1748`, `TMC22xx.cpp:962-963`, `:1060-1061`, `:1915-1916`, `LocalLedStrip.cpp:296`, `:305`; CoreN2G `SharedI2CMaster.cpp:243`, `:302`, `:410`, `SpiDevice.cpp:159`, `:230`, SAMC21 `AnalogIn.cpp:119`, `:168`, `:273`, `:339`, `:437`.
+  - The next `EnableChannel` then sets ENABLE on a channel that still runs (`DmacManager.cpp:183-201`). That the DMAC keeps the old descriptor then is from the census (datasheet, not checked here). How often the disable fails is unknown.
+  - Upstream code (David Crocker). Found from the code. Not seen on a board.
+- **B7-8. `hsmciIdle` reads `XDMAC_CIS` and can take the block-end flag that the HSMCI driver waits for** (dma-cache census F6).
+  - `hsmciIdle` reads the register (`RepRap.cpp:128-131`), and the driver reads it again for `XDMAC_CIS_BIS` (CoreN2G `hsmci.c:1160`, `:1259`). Reading clears it (datasheet, not checked here), so the wait sleeps until XFRDONE or the 200 ms timeout (`RepRap.cpp:142-146`).
+  - The BIS check runs only when a command needs more than one DMA start (`checkDmaEnded`, `hsmci.c:1133`, `:1235`). RRF starts one per command (`sd_mmc_mem.cpp:112`, `:131`), so this is latent.
+  - Upstream code (David Crocker, 2018). Found from the code. Not seen on a board.
+- **B7-9. On the EXP1HCL, Cortex-M4 erratum 838869 could run the ADC interrupt twice, and the ADC handler does not check its flag** (barriers census F3).
+  - The SAME51 is a Cortex-M4 r0p1 (CoreN2G `same51n19a.h:552`). ARM's errata notice could not be read (both documentation-service.arm.com links gave 404). TI SWRZ118A (CC1311P3, entry CPU_01) reproduces erratum 838869: while handler A runs and B is pending, a store with an immediate offset to a bufferable location followed by "A BX instruction ... that causes an exception return", and an interrupt C of a priority between A and B, can make the processor clear C and run B twice. Which Cortex-M4 revisions are affected is not in that copy; `pop {pc}` is not named.
+  - The A role exists on the EXP1HCL: `DMAC_0_Handler` (priority 3) stores to the DMAC interrupt flags with `strb.w r1, [r3, #78]` (0x3100c) and returns with `bx lr` (0x3101a) when no callback is set. CAN (4) fits C and the ADC (5) fits B (`EXP1HCL.h:63-69`). Whether a store to a peripheral counts as bufferable here is in the ARM documents (datasheet, not checked here).
+  - `AdcClass::ResultReadyInterrupt` reads `RESULT` and acts on `state` only, without a check of `INTFLAG.RESRDY` (CoreN2G `SAME5x/AnalogIn.cpp:339-362`). A second run while `state` is `converting` stores `RESULT` again for the next channel (`:347`, `:356`) and starts the conversion again (`:360`), so one scan of thermistor and Vin values is shifted by one channel.
+  - The other EXP1HCL handlers re-check their flags (`CanDevice.cpp:1255`, `DmacManager.cpp:360-361`, Duet3Expansion `StepTimer.cpp:426-427`). ARM's workaround in the TI copy is a DSB between the store and the BX.
+  - Upstream code (David Crocker). Found from the code and the ELF. Not seen on a board.
+- **SD-1. A step error can lose its heater shutdown and its message when two producers use the generic debug buffer** (class 5/6 census F3).
+  - One buffer and two flags (`Platform.h:530-536`) have several producers: the step interrupt (`Move.cpp:2918-2923`, `DriveMovement.cpp:471-484`) and the Move task (`Move.cpp:1934-1939`, `:2191-2200`). MAIN prints the message, checks `shouldTurnOffHeaters` and clears `hasGenericDebug` (`Platform.cpp:788-796`). The comment at `Platform.h:530-533` assumes one producer.
+  - Example: the Move task posts a zero-duration message without the heater flag (`Move.cpp:1939`). MAIN reads `shouldTurnOffHeaters` as false (`Platform.cpp:791`). The step interrupt then logs a step error and sets both flags. MAIN clears `hasGenericDebug` (`:795`), so the step error is not shown and `SwitchOffAll` does not run for it. A producer that writes while MAIN prints garbles the message.
+  - After a step error the Move task ends (`Move.cpp:682-685`; `hadStepError` is never cleared, `Move.h:512`, `:841`). The machine cannot move until a reset, and the heaters stay on. That heater fault protection still runs is from the census, not re-checked.
+  - Upstream code (David Crocker 2024-2025, Christian Hammacher 2026; the step interrupt part 1db5c6755). Upstream report candidate.
+  - Found from the code. Not seen on a board.
+- **SD-2. The fork's M122 value "longest abort apply" can wrap to 4294967295** (class 5/6 census F7).
+  - The SBC task stores `whenAbortRecorded = millis()` without the GB mutex (`SbcInterface.cpp:1964`, comment at `:2070`). MAIN computes `millis() - whenAbortRecorded` after its critical section (`:2104`, section at `:2076-2091`). The ELF loads the stamp after the clock call (0x492756, 0x49275a).
+  - An abort recorded between the two gives 0xFFFFFFFF, and `maxAbortApplyDelay` in M122 (`:2133-2134`) keeps it until a reset. One field serves all channels (`SbcInterface.h:104`), so a second channel's record also shortens the delay measured for the first.
+  - Diagnostic only. Fork code (0ae497a19, 9b0047f0a, 2026-11-10). The real fix is a stamp per channel. Decided without Tim (2026-11-23): record only.
+  - Found from the code and the ELF. Not seen on a board.
+- **SD-3. `TaskGetRunTimeTicks` can count the 32-bit wrap twice** (class 5/6 census F8).
+  - It keeps `msw` and `ticksAtLastCall` in statics without a critical section (`Tasks.cpp:334-343`). The context switch calls it (FreeRTOS `FreeRTOSConfig.h:393`, `tasks.c:5140`), and so does M122 in MAIN through `TaskResetRunTimeCounter` (`Tasks.cpp:346-354`, `:373`).
+  - A context switch in MAIN between the wrap check (`:340`) and the store (`:341`) makes both increment `msw`. The run time then jumps by 2^32 step clocks, about 95 minutes (comment at `:332`), and one M122 report shows wrong CPU shares. No control effect.
+  - Upstream code (David Crocker, bcffe0cbd; the same in Duet3Expansion `Tasks.cpp:955-975`, 1f0a99b72). Found from the code. Not seen on a board.
+- **SD-4. M111 debug output can lose or mix characters** (class 5/6 census M1). `isrDebugBuffer` is a `RingBuffer` for "max 1 getter and 1 putter" (RRFLibraries `RingBuffer.h:59`), but `debugPrintf` puts into it from any task or interrupt (`RepRapFirmware.cpp:211-218`, `Platform.cpp:385-394`). Debug only. Upstream code, found from the code, not seen on a board.
+- **SD-5. An emergency pause can be reported with a stale second file position** (class 5/6 census M2). `SetEmergencyPauseReason` sets the fields without the `TaskCriticalSectionLocker` of `SetPauseReason` (`SbcInterface.h:201-208` vs `:192-199`). MAIN calls it (`GCodes.cpp:1504-1509`), and the SBC task reads the fields (`SbcInterface.cpp:1811-1815`). The ELF stores `reportPause` before `pauseFilePosition2` (0x4250b6, 0x4250ba; which field is which offset is from the census, not re-checked). Very low. Upstream code (Christian Hammacher), found from the code and the ELF, not seen on a board.
+- **SD-6. Print time accounting updates several fields without the lock of the snapshot** (class 5/6 census M3). `PrintMonitor.cpp:257-282` updates them without the lock that the snapshot takes at `:292-298`. The getters at `:309`, `:315` and `:493` read them, the first two for the object model (`:81`, `:84`). Cosmetic times. Upstream code, found from the code, not seen on a board.
+- **SD-7. A temperature read can pair a new error code with an old value** (class 5/6 census M4). `SetResult` stores `lastResult` before `lastTemperature` (`TemperatureSensor.cpp:182-183`, `:194-196`), and `GetLatestTemperature` reads them the other way round (`:69-70`). The ELF order was not checked. Low. Upstream code, found from the code, not seen on a board.
+- **SD-8. M307 can mix old and new heater parameters for one control cycle** (class 5/6 census M5). MAIN updates the model and the PID constants (`Heater.cpp:241-244`, `FOPDT.cpp:231-243`) while the Heat task uses them (`LocalHeater.cpp:474-498`). Negligible. Upstream code, found from the code, not seen on a board.
+- **Notes, no defect:** flash F3 (the I-cache invalidate of CoreN2G #1, `efc.c:349-357`, is fork only); barriers F4 (CMSIS 5.4.0 `ARM_MPU_Enable` and `ARM_MPU_Disable` have their barriers before the MPU write, `mpu_armv7.h:188-208`); barriers F5 and F7, architectural only (GMAC descriptor order, `GmacInterface.cpp:392-403`, `:488-495`, where CoreN2G #5 adds a DSB at `:395`; MCAN RX acknowledge, CoreN2G `CanDevice.cpp:895-898`); barriers F6 (the TMC51xx DMA start relies on the DSB in `ClearCurrentTaskNotifyCount`, `TMC51xx.cpp:1994`); dma-cache F7 (`TMC51xx.cpp:1681` reads the Rx status in the Tx block; `SpiDevice.cpp:169` ignores a timeout). That F4 is harmless at its call sites, the DSB of F6 and that no board in scope uses the `SpiDevice` branch are from the census, not re-checked.
+
+## Found by the fuzz targets of error class 3 (2026-11-24)
+
+Error class 3 covers bounds and undefined behaviour at trust boundaries. The boundary fuzzed here is the SBC link from DSF to RRF. Two
+host fuzz targets cover it, both in RRF #96, with AddressSanitizer and UBSan:
+- `Tools/sbc-packet-fuzz`: the read side of `DataTransfer` and the packet loop of `SbcInterface`.
+- `Tools/binary-code-fuzz`: `BinaryParser`, from `Put` to the getters, `WriteParameters` and `AddParameters`.
+
+The finding IDs below are those of the two READMEs. Line numbers refer to RRF fork `3.7-dev` at 6c45e07a7. All defect lines are upstream
+code, and every defect here is in upstream Duet3D RRF `3.7-dev` at 371c71412 as well, there at other line numbers.
+
+The fork already has some checks of Christian Hammacher from upstream `3.7-ch` that `3.7-dev` lacks (43a6b4fa8, 2026-11-13, "Counts,
+bitmaps and lengths received over CAN or from the SBC are checked before they index fixed-size arrays"):
+- the header check in `ReadPacket`;
+- the limit of `numFilaments` to the array in `ReadPrintStartedInfo`;
+- the `ULong` step in `WriteParameters`.
+
+Upstream is working on this area. When its fix for a finding here comes, it replaces ours (CLAUDE.md, bug fixes 8).
+
+A DSF that writes what `Writer.cs` writes reaches only B6, B8 and B9. The others need one of these:
+- a DSF or SBC process that writes inconsistent lengths;
+- a corruption that the CRC32 of SPI misses;
+- on USB, any corruption that reaches RRF.
+
+- **Fixed and not listed:**
+  - P1 to P5: lengths inside an SBC packet were not checked against the packet (RRF #99).
+  - B1 to B5 and B7: `numParameters` and the value lengths of a binary code were not checked against the code (RRF #97).
+  - B6: INT_MIN printed with `%d` (RRFLibraries #3, test in RRF #98).
+  - #97 and #99 contain the commits of #96. None of these PRs is merged yet.
+- **FZ-B8. `GetIPAddress` and `GetMacAddress` of a binary code parse beyond the string.**
+  - They call `StrToU32` or `StrHexToU32` first and check the end against `intValue` afterwards (`BinaryParser.cpp:388-392`, `:441-445`).
+  - A string value has no null after it when its length is a multiple of 4, because DSF pads with zeros only up to the next multiple of
+    4 (`Writer.cs` `AddPadding`).
+  - If such a string of digits runs up to the last byte of a code of 384 bytes (`MaxGCodeBinaryLength`, `SbcMessageFormats.h:31`), the
+    parse reads beyond the code buffer. ASan reports a heap-buffer-overflow. Shorter codes read the rest of the buffer and then fail
+    the end check.
+  - Reachable from a correct DSF with M540 P or an IP address parameter of the right length. The first input of B8 is refused since
+    RRF #97 (its parameter table does not fit); `findings/B8-macaddress-overread.hex` in #97 is one whose parameters fit.
+  - Found by the fuzz target. Not seen on a board.
+- **FZ-B9. `StringHandle::InternalAssign` reads one byte beyond the string it copies.**
+  - It copies with `SafeStrncpy(..., s, len + 1)` (`StringHandle.cpp:70`). If the first `len` bytes hold no null, `strncpy` reads
+    `s[len]` (RRFLibraries `StringFunctions.cpp:136-140`). The null then replaces that byte.
+  - `AddParameters` passes a string value of a binary code that has no null after it when its length is a multiple of 4
+    (`BinaryParser.cpp:995`). For a code of 384 bytes, the read is beyond the code buffer.
+  - The other callers pass parts of null-terminated strings with `len` at most `strlen` (take and drop, `ExpressionParser.cpp:1105-1106`,
+    `:1116-1117`, `:1182-1184`, `:1194-1196`).
+  - Reachable from a correct DSF with a macro call of the right length. One byte read, no effect on the value. Found by the fuzz
+    target. Not seen on a board.
+- **FZ-P6. SBC packets that are shorter than what their reader reads.**
+  - Most of these reads stay within the transfer buffer and get stale bytes of an earlier transfer. The fuzz target shows them with
+    `FUZZ_POISON_STALE=1`:
+    - `ReadDataHeader` reads the whole header of a packet that is shorter than it (`DataTransfer.cpp:635-640`).
+    - `ReadSetVariable` and `ReadDeleteLocalVariable` read their 8-bit lengths without a check against the packet (`:735-759`).
+    - `ObjectModelKeyChanged` compares the key as a null-terminated string (`SbcInterface.cpp:1455`).
+  - Open question for Tim: what the protocol layer does with a packet that is too short. RRF #99 cuts a value at the packet end,
+    following the existing pattern in `DataTransfer`. For a header there is no such pattern. The options are to cut it (zero the
+    rest), to refuse the packet, or to report it to the logic, which is the link v8 design.
+  - Found by the fuzz target. Not seen on a board.
+- **FZ-P7. Bool fields of SBC packets load any byte.** `ReadBoolean` and the other readers with a bool field load a packet byte other
+  than 0 or 1 as `bool` (`DataTransfer.cpp:642-646`). UBSan reports it with `UBSAN_BOOL=1`. What the firmware build makes of such a
+  byte was not checked. Found by the fuzz target. Not seen on a board.
+- **Notes, no defect:**
+  - `WriteParameters` steps over the values of `BoolArray`, `ULong`, `Bitmap64` and `DateTime` parameters, but `Seen` and
+    `AddParameters` do not. The `ULong` and `Bitmap64` step is from 43a6b4fa8; upstream `3.7-dev` does not step over them. So a code with one of them before a string or array finds the wrong value. DSF does not send these types
+    (`Writer.cs:175-236`). The check of RRF #97 follows the steps of `WriteParameters`, so the reads of `Seen` and `AddParameters` stay
+    within the code either way.
+  - `GetIPAddress` accepts anything after the fourth number that does not start with a dot (`BinaryParser.cpp:399-406`), as before.
