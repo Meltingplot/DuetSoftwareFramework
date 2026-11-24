@@ -701,7 +701,12 @@ A DSF that writes what `Writer.cs` writes reaches only B6, B8 and B9. The others
     (`SPI.cs:1730-1737`, `USB.cs:1819-1827`, `Writer.cs:729-744`) with "network" and "volumes" (`SbcInterface.cpp:1454-1462`, upstream
     d3c4957e4), so `NetworkUpdated` and `VolumesUpdated` never ran in SBC mode and `seqs.network` and `seqs.volumes` of RRF did not
     change. RRF #105 reads the key after its header with its length, as far as it lies within the packet.
-  - #97 and #99 contain the commits of #96, and #100 those of #97. #105 is independent. None of these PRs is merged yet.
+  - RV-2, found by the same review: `take` and `drop` of a heap string held a raw pointer into the heap across the allocation of
+    their result (`ExpressionParser.cpp:1111-1117`, `:1190-1196`). The allocation can garbage-collect, and the collection moves the
+    strings with `memmove` and adjusts only the handles (`Heap.cpp:314-337`, `:133-135`), so the result had wrong text. RRF #106
+    copies through the handle after allocating, and `make take-drop` in `Tools/expression-fuzz` reproduces it with the real parser.
+  - #97 and #99 contain the commits of #96, #100 those of #97, and #106 those of #103 (which has those of #96). #105 is
+    independent. None of these PRs is merged yet.
 - **FZ-P6. SBC packets that are shorter than what their reader reads.**
   - Most of these reads stay within the transfer buffer and get stale bytes of an earlier transfer. The fuzz target shows them with
     `FUZZ_POISON_STALE=1`:
@@ -722,13 +727,6 @@ A DSF that writes what `Writer.cs` writes reaches only B6, B8 and B9. The others
     (`Writer.cs:175-236`). The check of RRF #97 follows the steps of `WriteParameters`, so the reads of `Seen` and `AddParameters` stay
     within the code either way.
   - `GetIPAddress` accepts anything after the fourth number that does not start with a dot (`BinaryParser.cpp:399-406`), as before.
-- **RV-2. `take` and `drop` of a heap string copy from a pointer that a garbage collection can move.**
-  - They hold `p.Ptr()`, a raw pointer into the heap, and pass it to `StringHandle(s, len)` (`ExpressionParser.cpp:1111-1117`,
-    `:1190-1196`, dc42 65f8c54c9).
-  - `InternalAssign` first calls `Heap::AllocateSpace` (`StringHandle.cpp:69`), which garbage-collects when no block has room
-    (`Heap.cpp:330-337`). The collection moves the storage with `memmove` and adjusts only the handles (`Heap.cpp:132-134`), so the copy
-    then reads from where the string was: wrong text, within the heap block.
-  - Found by the review, confirmed by reading only; not reproduced. The host heap test (`Tools/heap-test`) could show it. Not fixed.
 
 ## Found by the expression parser fuzz target (error class 3, 2026-11-24)
 
