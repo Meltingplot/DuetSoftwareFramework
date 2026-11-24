@@ -1,8 +1,9 @@
 #!/bin/bash
 
-# DCS used to write this file with a UTF-8 BOM, which keeps the patterns below from matching
+# DCS used to write this file with a UTF-8 BOM, which keeps the patterns below from matching. dsf may put a symlink in place of the file at any time,
+# so it is read and changed with the rights of dsf
 if [[ -e /opt/dsf/conf/plugins.txt ]]; then
-	sed -e '1s/^\xEF\xBB\xBF//' -i /opt/dsf/conf/plugins.txt
+	setpriv --reuid=dsf --regid=dsf --clear-groups sed -e '1s/^\xEF\xBB\xBF//' -i /opt/dsf/conf/plugins.txt
 fi
 
 # Stop the plugin first
@@ -12,8 +13,8 @@ if (systemctl is-active -q duetcontrolserver && /opt/dsf/bin/PluginManager -q is
 		# Restart it again when the upgrade is complete
 		touch /opt/dsf/plugins/DuetPiManagementPlugin/.start
 	fi
-elif ([[ -e /opt/dsf/conf/plugins.txt ]] && grep -q -e "^DuetPiManagementPlugin$" /opt/dsf/conf/plugins.txt ); then
-	sed -e '/^DuetPiManagementPlugin$/d' -i /opt/dsf/conf/plugins.txt
+elif ([[ -e /opt/dsf/conf/plugins.txt ]] && setpriv --reuid=dsf --regid=dsf --clear-groups grep -q -e "^DuetPiManagementPlugin$" /opt/dsf/conf/plugins.txt ); then
+	setpriv --reuid=dsf --regid=dsf --clear-groups sed -e '/^DuetPiManagementPlugin$/d' -i /opt/dsf/conf/plugins.txt
 	if [[ "$1" == "upgrade" ]]; then
 		# Restart it again when the upgrade is complete
 		touch /opt/dsf/plugins/DuetPiManagementPlugin/.start

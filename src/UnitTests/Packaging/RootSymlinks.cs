@@ -485,4 +485,104 @@ public class RootSymlinks
     }
 
     #endregion
+
+    #region duetpimanagementplugin package
+
+    private const string DmpDirectory = "/opt/dsf/plugins/DuetPiManagementPlugin";
+
+    /// <summary>
+    /// What dpkg leaves of the duetpimanagementplugin package before it runs the postinst. The prerm of an upgrade marks the plugin for a restart with .start
+    /// </summary>
+    private void UnpackDmp()
+    {
+        AddFile("/opt/dsf/plugins/DuetPiManagementPlugin.json", "{}");
+        AddFile(DmpDirectory + "/dsf/DuetPiManagementPlugin", string.Empty, Mode755);
+        AddFile(DmpDirectory + "/.start", string.Empty);
+    }
+
+    /// <summary>
+    /// When DCS or DPS do not run, the postinst puts the plugin on the list of plugins that DCS starts, /opt/dsf/conf/plugins.txt. dsf may put a symlink in
+    /// place of the list at any time, so root must not write through it
+    /// </summary>
+    [Test]
+    public void DmpPackageWritesNoFileOfRootThroughASymlink()
+    {
+        UnpackDmp();
+        string fileOfRoot = AddFileOfRoot("shadow", "file of root\n");
+        PlantSymlink("/opt/dsf/conf/plugins.txt", fileOfRoot);
+
+        RunShippedScript("pkg/deb/duetpimanagementplugin/DEBIAN/postinst", "/var/lib/dpkg/info/duetpimanagementplugin.postinst", "configure", "3.7.0");
+
+        Assert.Multiple(() =>
+        {
+            AssertRootActsOnNothingDsfMayReplace();
+            AssertUnchanged(fileOfRoot, "file of root\n");
+        });
+    }
+
+    /// <summary>
+    /// The plugin still goes on the list of plugins to start, which is made if it does not exist
+    /// </summary>
+    [Test]
+    public void DmpPackagePutsThePluginOnTheListOfPluginsToStart()
+    {
+        UnpackDmp();
+        AddFile("/opt/dsf/conf/plugins.txt", "OtherPlugin\n");
+
+        RunShippedScript("pkg/deb/duetpimanagementplugin/DEBIAN/postinst", "/var/lib/dpkg/info/duetpimanagementplugin.postinst", "configure", "3.7.0");
+        Assert.That(File.ReadAllText(Physical("/opt/dsf/conf/plugins.txt")), Is.EqualTo("OtherPlugin\nDuetPiManagementPlugin\n"));
+
+        File.Delete(Physical("/opt/dsf/conf/plugins.txt"));
+        AddFile(DmpDirectory + "/.start", string.Empty);
+        RunShippedScript("pkg/deb/duetpimanagementplugin/DEBIAN/postinst", "/var/lib/dpkg/info/duetpimanagementplugin.postinst", "configure", "3.7.0");
+        Assert.Multiple(() =>
+        {
+            Assert.That(File.ReadAllText(Physical("/opt/dsf/conf/plugins.txt")), Is.EqualTo("DuetPiManagementPlugin\n"));
+            AssertRootActsOnNothingDsfMayReplace();
+        });
+    }
+
+    /// <summary>
+    /// The prerm takes the plugin off the list of plugins to start with sed -i. sed -i reads what a symlink in place of the file points to and puts a copy of
+    /// it in place of the symlink, which root must not do with a file of root
+    /// </summary>
+    [Test]
+    public void DmpPackageRemovalCopiesNoFileOfRoot()
+    {
+        UnpackDmp();
+        File.Delete(Physical(DmpDirectory + "/.start"));
+        string fileOfRoot = AddFileOfRoot("shadow", "secret of root\n");
+        PlantSymlink("/opt/dsf/conf/plugins.txt", fileOfRoot);
+
+        RunShippedScript("pkg/deb/duetpimanagementplugin/DEBIAN/prerm", "/var/lib/dpkg/info/duetpimanagementplugin.prerm", "upgrade", "3.7.0");
+
+        Assert.Multiple(() =>
+        {
+            AssertRootActsOnNothingDsfMayReplace();
+            AssertUnchanged(fileOfRoot, "secret of root\n");
+            Assert.That(new FileInfo(Physical("/opt/dsf/conf/plugins.txt")).LinkTarget, Is.Not.Null, "root put a copy of a file of root in place of the symlink");
+        });
+    }
+
+    /// <summary>
+    /// The prerm still takes the plugin off the list, with the byte order mark that DCS used to write, and marks it for a restart
+    /// </summary>
+    [Test]
+    public void DmpPackageRemovalTakesThePluginOffTheListOfPluginsToStart()
+    {
+        UnpackDmp();
+        File.Delete(Physical(DmpDirectory + "/.start"));
+        AddFile("/opt/dsf/conf/plugins.txt", "﻿OtherPlugin\nDuetPiManagementPlugin\n");
+
+        RunShippedScript("pkg/deb/duetpimanagementplugin/DEBIAN/prerm", "/var/lib/dpkg/info/duetpimanagementplugin.prerm", "upgrade", "3.7.0");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(File.ReadAllBytes(Physical("/opt/dsf/conf/plugins.txt")), Is.EqualTo("OtherPlugin\n"u8.ToArray()));
+            Assert.That(File.Exists(Physical(DmpDirectory + "/.start")), Is.True, "the plugin is not marked for a restart");
+            AssertRootActsOnNothingDsfMayReplace();
+        });
+    }
+
+    #endregion
 }
