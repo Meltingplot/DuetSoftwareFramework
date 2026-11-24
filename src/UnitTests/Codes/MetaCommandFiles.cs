@@ -174,7 +174,7 @@ public class MetaCommandFiles
     [Test]
     public async Task LineNumber()
     {
-        // 'line' is the line number of the code in the file, which DSF substitutes (Expressions.cs:704-710)
+        // 'line' is the line number of the code in the file, which DSF substitutes (Expressions.cs:705-711)
         Assert.That(await RunMacroAsync("G1 X1\n\nG1 X{line}\n"), Is.EqualTo("\n"));
         Assert.That(Executed(), Is.EqualTo(new[] { "G1 X1", "G1 X{3}" }));
     }

@@ -118,7 +118,7 @@ public class ExpressionFuzz
     [Test]
     public void EvaluateOnSbc() => Fuzzer.Run(Corpus, input =>
     {
-        // MetaExpressionParser.TryEvaluate returns a value, asks to forward the expression or throws a CodeParserException for syntax errors (MetaExpressionParser.cs:11-22, 56)
+        // MetaExpressionParser.TryEvaluate returns a value, asks to forward the expression or throws a CodeParserException for syntax errors (MetaExpressionParser.cs:12-23, 57)
         string expression = Encoding.UTF8.GetString(input);
         string first;
         try
@@ -226,7 +226,7 @@ public class ExpressionFuzz
             code.Channel = CodeChannel.HTTP;
             try
             {
-                // EvaluateExpressionToStringAsync documents CodeParserException (Expressions.cs:1053-1055). The custom functions throw an ArgumentException
+                // EvaluateExpressionToStringAsync documents CodeParserException (Expressions.cs:1060-1062). The custom functions throw an ArgumentException
                 // for invalid arguments (Functions.cs:55, 72, 84-107) and fileread passes on the exceptions of File.OpenText (Functions.cs:111)
                 Task<string> evaluation = expressions.EvaluateExpressionToStringAsync(code, input.Expression, input.OnlySbcFields, false);
                 if (!evaluation.Wait(TimeSpan.FromSeconds(5)))
@@ -301,7 +301,7 @@ public class ExpressionFuzz
     public void CompareWithFakeFirmware()
     {
         // Both evaluators follow the operator priorities, short-circuit evaluation and type rules of RRF's ExpressionParser::ParseInternal for this
-        // part of the grammar (MetaExpressionParser.cs:10-13, FakeExpressionEvaluator.cs:13-25). Integer + - * stay integers in both
+        // part of the grammar (MetaExpressionParser.cs:11-14, FakeExpressionEvaluator.cs:13-25). Integer + - * stay integers in both
         Fuzzer.Run(random => (random.Next(2) == 0) ? IntExpression(random, 4) : BoolExpression(random, 4), expression =>
         {
             string dsf = Evaluate(() => MetaExpressionParser.TryEvaluate(expression, null, out object? value) ? value : throw new FuzzFailure("forwarded", "Nothing to forward in a literal expression"));
