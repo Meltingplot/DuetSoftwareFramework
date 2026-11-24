@@ -751,6 +751,9 @@ alone. The way from a G-code line to the parser was not part of the target, and 
     `ParseInternal` called `ParseQuotedString` (312-byte frame) without `CheckStack`, against the rule in the comment of
     `CheckStack`, and `ParseGeneralArray` called `ParseInternal` without `CheckStack(StackUsage::ParseInternal)`, unlike every other
     call. RRF #107 adds both checks; a sweep of the board stack budget from 2000 to 6000 bytes went from 27 short throws to none.
+  - FZ-E4: `ParseArray`, `take` and `drop` read a nested object model array (e.g. `move.axes[1].drivers`) without its parent index,
+    which `ApplyObjectModelArrayIndex`, `Concat`, `#` and `AppendAsString` put into the context, so they gave the elements of axis 0
+    after an internal error. RRF #108 adds the same `AddIndex(param >> 8)`.
 - **FZ-E1. Signed overflow of the int32 operators.** Unary minus (`ExpressionParser.cpp:210`, "TODO overflow check" in the code), `+`
   (`:531`), `-` (`:567`) and `*` (`:581`), e.g. `{65536 * 65536}`. Undefined behaviour; that it wraps on the board was not checked.
   Low.
@@ -758,13 +761,6 @@ alone. The way from a G-code line to the parser was not part of the target, and 
   Cortex-M7 it was not checked. Low to medium.
 - **FZ-E3. Inclusive float to int32 range checks.** `floor`, `ceil` and `round` (`:2034-2036`) and `pow` (`:2293-2295`) test
   `f <= (float)INT32_MAX`, which admits 2^31. `pow(2, 31)` gives INT_MIN, which then reaches B6 (RRFLibraries #3). Wrong value. Low.
-- **FZ-E4. Nested object model arrays lose the parent index in `ParseArray`, `take` and `drop`.**
-  - `ParseArray` (`:917-937`), `EvaluateTake` (`:1067-1083`) and `EvaluateDrop` (`:1133-1157`) build an `ObjectExplorationContext`
-    without the indices of the enclosing arrays. `ApplyObjectModelArrayIndex` (`:149`), the `#` operator and `AppendAsString` keep them.
-  - Array functions that ask for `GetIndex(1)` or `GetLastIndex()` (`Move.cpp:103-105`, `:111`) then get `REPORT_INTERNAL_ERROR`
-    (`ObjectModel.cpp:603`, `:614`) and go on with index 0.
-  - So `take(move.axes[1].drivers, 1)` returns elements of axis 0, while `(move.axes[1].drivers)[1]` is correct. Wrong data, no memory
-    error. Low.
 - **FZ-E7. Signed overflows in `SafeStrptime`.** `%Y` of INT_MIN (`strptime.cpp:186`) and `%d` of INT_MAX (`:285`). Wrong date. Low.
 - **Observations without a sanitizer report:**
   - FZ-O1: `ObjectModel.cpp:80-84` ignores a failure of `gmtime_r`, so a date-time beyond its year range prints uninitialised `tm`
