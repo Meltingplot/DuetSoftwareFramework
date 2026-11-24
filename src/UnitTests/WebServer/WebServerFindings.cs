@@ -32,13 +32,12 @@ public class WebServerFindings : WebServerFixture
     }
 
     /// <summary>
-    /// rr_upload writes straight into the target file (RepRapFirmwareEndpoints.cs:261-279) and deletes it on a CRC mismatch (line 285), so a
-    /// failed upload destroys the file it was meant to replace. RRF uploads to name + ".part" (UploadingNetworkResponder.cpp:59-62,
-    /// UPLOAD_EXTENSION in Configuration.h:314) and deletes only that file on an error, renaming it over the original only on success
-    /// (UploadingNetworkResponder.cpp:106-128). PUT /machine/file of DWS works the same way as RRF (MachineEndpoints.cs:269-291)
+    /// A failed rr_upload keeps the file it was meant to replace. rr_upload writes to name + ".part", deletes only that file on a CRC mismatch
+    /// or another error and moves it over the original only on success (RepRapFirmwareEndpoints.cs:258-298), as RRF does
+    /// (UploadingNetworkResponder.cpp:59-62 with UPLOAD_EXTENSION ".part" from Configuration.h:314, then :108-128) and as PUT /machine/file of
+    /// DWS does (MachineEndpoints.cs:269-291). Before, rr_upload wrote straight into the target and deleted it on a CRC mismatch
     /// </summary>
     [Test]
-    [Explicit("Bug: a failed rr_upload deletes the file it was meant to replace")]
     public async Task FailedUploadKeepsExistingFile()
     {
         string file = Path.Combine(Dcs.BaseDirectory, "gcodes", "keep.g");
@@ -53,6 +52,55 @@ public class WebServerFindings : WebServerFixture
 
         Assert.That(File.Exists(file), Is.True, "The existing file was deleted");
         Assert.That(await File.ReadAllTextAsync(file), Is.EqualTo("original"));
+        Assert.That(File.Exists(file + ".part"), Is.False, "The partial file was left behind");
+    }
+
+    /// <summary>
+    /// An upload under the name of a file that is open keeps the content of the open file for its reader. This is the case of a job file,
+    /// which CodeFile opens with FileShare.Read and the FileBufferSize of DCS (CodeFile.cs:69, DuetControlServer/Settings.cs:294) and reads
+    /// until the job ends. Both upload endpoints write name + ".part" and move it over the file (RepRapFirmwareEndpoints.cs:258-285,
+    /// MachineEndpoints.cs:269-279); rename(2) gives the name to the new file and leaves the open handle on the old one. Before, rr_upload
+    /// truncated the file in place (FileMode.Create): nothing refuses that open on Linux, and the reader went on at its byte offset inside
+    /// the new content, so a running job executed the rest of another file from an arbitrary offset, or ended early if the new file was
+    /// shorter. RRF in standalone mode does not replace an open file: MassStorage::Rename refuses to delete it (MassStorage.cpp:1232-1238,
+    /// "Cannot delete file %s because it is open" at :697-723), so the upload stays in name + ".part"; the reply is still {"err":0},
+    /// because FinishUpload does not check the result of the rename (UploadingNetworkResponder.cpp:128, HttpResponder.cpp:613)
+    /// </summary>
+    [TestCase("rr_upload")]
+    [TestCase("machine/file")]
+    public async Task UploadKeepsContentOfOpenFile(string endpoint)
+    {
+        string file = Path.Combine(Dcs.BaseDirectory, "gcodes", "open.g");
+        string original = string.Concat(Enumerable.Range(0, 5000).Select(i => $"G1 X{i} ; old\n"));
+        await File.WriteAllTextAsync(file, original);
+        using HttpClient client = CreateClient(0);
+        string key = await ConnectAsync(client);
+
+        // Read past the 32 KiB buffer of the job reader, so that its next read goes to the file again
+        const int bytesRead = 40000;
+        await using FileStream reader = new(file, FileMode.Open, FileAccess.Read, FileShare.Read, 32768);
+        byte[] head = new byte[bytesRead];
+        await reader.ReadExactlyAsync(head);
+        Assert.That(Encoding.ASCII.GetString(head), Is.EqualTo(original[..bytesRead]));
+
+        byte[] body = Encoding.ASCII.GetBytes(string.Concat(Enumerable.Range(0, 6000).Select(i => $"G0 Z{i} ; new\n")));
+        if (endpoint == "rr_upload")
+        {
+            using HttpResponseMessage response = await SendAsync(client, HttpMethod.Post, $"rr_upload?name=0:/gcodes/open.g&crc32={RequestFuzz.Crc32(body):x8}", key, new ByteArrayContent(body));
+            Assert.That(await response.Content.ReadAsStringAsync(), Is.EqualTo("{\"err\":0}"));
+        }
+        else
+        {
+            using HttpResponseMessage response = await SendAsync(client, HttpMethod.Put, "machine/file/" + Uri.EscapeDataString("0:/gcodes/open.g"), key, new ByteArrayContent(body));
+            Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.Created));
+        }
+
+        using (StreamReader rest = new(reader, Encoding.ASCII))
+        {
+            Assert.That(await rest.ReadToEndAsync(), Is.EqualTo(original[bytesRead..]), "The reader of the open file got other content");
+        }
+        Assert.That(await File.ReadAllBytesAsync(file), Is.EqualTo(body), "The file was not replaced");
+        Assert.That(File.Exists(file + ".part"), Is.False, "The partial file was left behind");
     }
 
     /// <summary>
