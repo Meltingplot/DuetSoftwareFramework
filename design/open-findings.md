@@ -629,6 +629,42 @@ Census of error class 7 (barriers, DMA and caches, flash and NVM) and of classes
 - **SD-8. M307 can mix old and new heater parameters for one control cycle** (class 5/6 census M5). MAIN updates the model and the PID constants (`Heater.cpp:241-244`, `FOPDT.cpp:231-243`) while the Heat task uses them (`LocalHeater.cpp:474-498`). Negligible. Upstream code, found from the code, not seen on a board.
 - **Notes, no defect:** flash F3 (the I-cache invalidate of CoreN2G #1, `efc.c:349-357`, is fork only); barriers F4 (CMSIS 5.4.0 `ARM_MPU_Enable` and `ARM_MPU_Disable` have their barriers before the MPU write, `mpu_armv7.h:188-208`); barriers F5 and F7, architectural only (GMAC descriptor order, `GmacInterface.cpp:392-403`, `:488-495`, where CoreN2G #5 adds a DSB at `:395`; MCAN RX acknowledge, CoreN2G `CanDevice.cpp:895-898`); barriers F6 (the TMC51xx DMA start relies on the DSB in `ClearCurrentTaskNotifyCount`, `TMC51xx.cpp:1994`); dma-cache F7 (`TMC51xx.cpp:1681` reads the Rx status in the Tx block; `SpiDevice.cpp:169` ignores a timeout). That F4 is harmless at its call sites, the DSB of F6 and that no board in scope uses the `SpiDevice` branch are from the census, not re-checked.
 
+## Found by the census of CAN receive (error class 3, 2026-11-24)
+
+A read-only census of what RRF and Duet3Expansion do with the data of a CAN message, against the forks' `3.7-dev` (RRF 6c45e07a7,
+Duet3Expansion a325d93e, CANlib 608ac48). It covers the checks upstream added on 2026-11-13 (RRF 43a6b4fa8, Duet3Expansion 162803de,
+CANlib cf53186). Every finding is upstream code, and Duet3D `3.7-dev` and `3.7-ch` have the same code. None was seen on a board.
+
+- **Fixed and not listed:**
+  - CAN-R1: in expansion mode, set-driver-states wrote `driverState[]` beyond its end on the Mini 5+ for drivers 12 to 15, and
+    stop-drivers stopped drives that are not local drivers (RRF #101, as Duet3Expansion 162803de).
+  - CAN-E1: on the EXP1HCL, M23CL and TOOLINDX, `M915 P<address>.5 R1` and then `M915 P<address>.5` read `dms[]` beyond its end
+    (Duet3Expansion #32, which refuses the request as the main board refuses its own drivers).
+  - Neither PR is merged yet.
+- **CAN-R2. RRF indexes the driver data of an expansion board with the G-code driver number, not checked against the count that the
+  board announced.**
+  - `ProcessAnnouncement` allocates `driverData` with `numDrivers` entries (`ExpansionManager.cpp:226-238`).
+  - `StoreDriverDirection`, `StoreDriverMode`, `GetDriverDirection` and `GetDriverMode` index it with `did.localDriver` (`:426-458`).
+  - A write needs a board whose M569 reply and announcement disagree, because Duet3Expansion refuses an unknown driver. A read only
+    needs a configuration mistake, for example `GetDirectionValue` of the Hangprinter for a remote driver (from the census, not traced
+    again).
+- **CAN-R3. Accelerometer data with a resolution of 0 or 1 bits shift by more than 31.**
+  - `GetBitsAfterPoint` returns `dataResolution - 2` as `unsigned int` (`Accelerometers.cpp:148-151`), and the receiver uses the
+    resolution of the message in `1u << GetBitsAfterPoint(receivedResolution)` and `1u << (receivedResolution - 1)` (`:770-778`).
+  - Undefined behaviour, no memory access: the frame length check at `:716` holds.
+- **CAN-G1. Most receivers read the fields of a frame without checking them against its length.**
+  - CANlib aea376e (dc42, 2026-11-18) added `ValidMessageLength` to the message structs (56 places in `CanMessageFormats.h`), but
+    nothing in RRF or Duet3Expansion calls it yet.
+  - The CoreN2G driver copies only the received bytes into the buffer (`CanDevice.cpp:785-850`, from the census), so a short frame gives
+    the bytes of the previous message: wrong data, never outside the buffer.
+  - Upstream is adding these checks, so this is left to upstream (CLAUDE.md, bug fixes 8).
+- **Minor, from the census, not traced again:** division by a value from the message in the revert-position code (infinity, no memory
+  effect); the board type string of a firmware request goes unfiltered into a file name; Duet3Expansion stores CAN timing from a
+  message without checking it; on the main board a G-code driver number up to 255 goes into a 16-bit bitmap with `SetBit`
+  (`CanDriversData.cpp:48`), possibly a shift beyond the width.
+- Not reached by the census: the generic configure handlers of RRF in expansion mode, M655, the diagnostic tests and the heater model
+  of Duet3Expansion, ATE-only code.
+
 ## Found by the fuzz targets of error class 3 (2026-11-24)
 
 Error class 3 covers bounds and undefined behaviour at trust boundaries. The boundary fuzzed here is the SBC link from DSF to RRF. Two
@@ -656,8 +692,10 @@ A DSF that writes what `Writer.cs` writes reaches only B6, B8 and B9. The others
   - P1 to P5: lengths inside an SBC packet were not checked against the packet (RRF #99).
   - B1 to B5 and B7: `numParameters` and the value lengths of a binary code were not checked against the code (RRF #97).
   - B6: INT_MIN printed with `%d` (RRFLibraries #3, test in RRF #98).
-  - B8: `GetIPAddress` and `GetMacAddress` parsed beyond the string value; they parse a null-terminated copy now, as `StringParser` does
-    (RRF #100).
+  - B8: `GetIPAddress` and `GetMacAddress` parsed beyond the string value; they parse a null-terminated copy now, as `StringParser` does,
+    and refuse a value of more than 20 characters, as `StringParser` refuses a quoted one (RRF #100). Its host test shows a second
+    effect of B8: before the fix, `10.0.0.1` (8 characters, so no null after it) was refused after a code that left `.10` behind it in
+    the buffer, so a correct DSF could get "invalid IP address" depending on the code before. Host only, not seen on a board.
   - B9: `StringHandle::InternalAssign` read one byte beyond a string that is not null-terminated (RRF #100).
   - #97 and #99 contain the commits of #96, and #100 those of #97. None of these PRs is merged yet.
 - **FZ-P6. SBC packets that are shorter than what their reader reads.**
@@ -679,3 +717,18 @@ A DSF that writes what `Writer.cs` writes reaches only B6, B8 and B9. The others
     (`Writer.cs:175-236`). The check of RRF #97 follows the steps of `WriteParameters`, so the reads of `Seen` and `AddParameters` stay
     within the code either way.
   - `GetIPAddress` accepts anything after the fourth number that does not start with a dot (`BinaryParser.cpp:399-406`), as before.
+- **RV-1. `ObjectModelKeyChanged` never matches its key, so RRF never runs `NetworkUpdated` or `VolumesUpdated` in SBC mode.**
+  - DSF writes the key as a `StringHeader` of 4 bytes followed by the text (`SPI.cs:1730-1737`, `USB.cs:1819-1827`,
+    `Writer.cs:729-744`).
+  - RRF compares the packet data from its first byte with "network" and "volumes" (`SbcInterface.cpp:1454-1462`, upstream d3c4957e4),
+    so it compares the header. RRF writes the same `StringHeader` itself for its own string requests (`DataTransfer.cpp:1458`, `:2095`,
+    `:2117`) but has no reader for it.
+  - What the two functions would change for a client (sequence numbers of the two keys) was not traced. Upstream `3.7-dev` and `3.7-ch`
+    have the same handler. Found by the review of RRF #97, #99 and #100, confirmed by reading. Not fixed.
+- **RV-2. `take` and `drop` of a heap string copy from a pointer that a garbage collection can move.**
+  - They hold `p.Ptr()`, a raw pointer into the heap, and pass it to `StringHandle(s, len)` (`ExpressionParser.cpp:1111-1117`,
+    `:1190-1196`, dc42 65f8c54c9).
+  - `InternalAssign` first calls `Heap::AllocateSpace` (`StringHandle.cpp:69`), which garbage-collects when no block has room
+    (`Heap.cpp:330-337`). The collection moves the storage with `memmove` and adjusts only the handles (`Heap.cpp:132-134`), so the copy
+    then reads from where the string was: wrong text, within the heap block.
+  - Found by the review, confirmed by reading only; not reproduced. The host heap test (`Tools/heap-test`) could show it. Not fixed.
