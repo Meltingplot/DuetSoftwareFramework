@@ -96,7 +96,7 @@ public class EmergencyStopCrossingMacroEnd
         Assert.That(stop.Transfer, Is.EqualTo(closal.Transfer + 1), "The stop did not go out in the transfer after the closal");
         Assert.That(stop.Id, Is.Zero, "The stop was not the first packet of its transfer");
 
-        // A cancelled code gives an empty string (SimpleCode.cs:183-186), a code with RRF's empty final reply a newline
+        // A cancelled code gives an empty string (SimpleCode.cs:209-212), a code with RRF's empty final reply a newline
         Assert.That(await m112.WaitAsync(Timeout), Is.EqualTo("\n"));
         Assert.That(await m98.WaitAsync(Timeout), Is.EqualTo("\n"), "M98 did not get RRF's final reply");
         Assert.That(StackDepth(http), Is.EqualTo(1));

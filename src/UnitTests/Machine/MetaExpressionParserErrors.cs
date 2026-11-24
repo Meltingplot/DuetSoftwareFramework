@@ -7,7 +7,7 @@ namespace UnitTests.Machine;
 /// <summary>
 /// Number literals that make MetaExpressionParser throw something else than the CodeParserException it documents for syntax errors
 /// (MetaExpressionParser.cs:19-23 and the exception tag of TryEvaluate), found by ExpressionFuzz. Through Expressions the exception reaches
-/// SimpleCode, which only turns CodeParserException and ArgumentException into an error reply (SimpleCode.cs:190-192)
+/// SimpleCode, which only turns CodeParserException and ArgumentException into an error reply (SimpleCode.cs:216-218)
 /// </summary>
 [TestFixture]
 public class MetaExpressionParserErrors

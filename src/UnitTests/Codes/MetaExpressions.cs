@@ -122,7 +122,7 @@ public class MetaExpressions
     public async Task InvalidVariableDeclaration(string code, string error)
     {
         // KeywordHandler validates the name and the '=' before it asks the firmware (KeywordHandler.cs:180-258). Dots are only allowed for set.
-        // SimpleCode reports the CodeParserException without a line break (SimpleCode.cs:190-192)
+        // SimpleCode reports the CodeParserException without a line break (SimpleCode.cs:216-218)
         Assert.That(await _host.ExecuteAsync(code), Is.EqualTo($"Error: {error}"));
         Assert.That(_host.Firmware.GetReceivedRequests().Any(request => request.Request == SbcRequest.SetVariable), Is.False);
     }

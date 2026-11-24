@@ -113,7 +113,7 @@ public class GCodeExecutionFuzz
     }
 
     /// <summary>
-    /// Codes that SimpleCode executes before the others (SimpleCode.cs:110-116), so they are left out of the order check
+    /// Codes that SimpleCode executes before the others (SimpleCode.cs:113-119), so they are left out of the order check
     /// </summary>
     private static bool IsPrioritized(CodeType type, int? majorNumber) => type == CodeType.MCode && majorNumber is 108 or 112 or 122 or 292 or 999;
 
@@ -246,7 +246,7 @@ public class GCodeExecutionFuzz
     }
 
     /// <summary>
-    /// Parse the codes of an input like SimpleCode (SimpleCode.cs:55-72) or CodeFile (CodeFile.cs:69-74) does
+    /// Parse the codes of an input like SimpleCode (SimpleCode.cs:58-75) or CodeFile (CodeFile.cs:69-74) does
     /// </summary>
     /// <param name="text">Input</param>
     /// <param name="isFile">Whether the input is parsed as a file</param>
@@ -330,7 +330,7 @@ public class GCodeExecutionFuzz
     /// </summary>
     private async Task ResetAsync()
     {
-        // SimpleCode passes on the exception of a code without waiting for the following codes of the same request (SimpleCode.cs:173-201),
+        // SimpleCode passes on the exception of a code without waiting for the following codes of the same request (SimpleCode.cs:199-227),
         // so wait for the channels to finish them before their state is reset
         CodeProcessor codeProcessor = _host.Services.GetRequiredService<CodeProcessor>();
         foreach (CodeChannel channel in Channels)
@@ -436,7 +436,7 @@ public class GCodeExecutionFuzz
         switch (input.Mode)
         {
             case Mode.Macro:
-                // Lone surrogates become replacement characters like in SimpleCode.ParseAsync (SimpleCode.cs:57)
+                // Lone surrogates become replacement characters like in SimpleCode.ParseAsync (SimpleCode.cs:60)
                 System.IO.File.WriteAllBytes(Path.Combine(_host.BaseDirectory, "sys", "fuzz.g"), Encoding.UTF8.GetBytes(input.Text));
                 execution = _host.StartCode("M98 P\"fuzz.g\"", CodeChannel.HTTP);
                 break;
@@ -502,7 +502,7 @@ public class GCodeExecutionFuzz
             }
         }
 
-        // Direct codes reach the firmware in the order of the input. A parse error stops SimpleCode before any code is executed (SimpleCode.cs:128-140)
+        // Direct codes reach the firmware in the order of the input. A parse error stops SimpleCode before any code is executed (SimpleCode.cs:131-143)
         if (input.Mode is Mode.Http or Mode.Sbc)
         {
             FakeCode[] received = [.. ExecutedSince(channel, executedBefore).Where(code => code.Type is CodeType.GCode or CodeType.MCode or CodeType.TCode && !IsPrioritized(code.Type, code.MajorNumber))];
