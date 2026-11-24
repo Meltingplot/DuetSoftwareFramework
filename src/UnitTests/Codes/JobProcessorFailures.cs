@@ -72,7 +72,7 @@ public class JobProcessorFailures
     {
         await WaitForAsync(() => !Jobs.IsFileSelected || Jobs.ExecuteTask is { IsCompleted: true });
         Assert.That(Jobs.ExecuteTask, Is.Not.Null);
-        Assert.That(Jobs.ExecuteTask!.IsCompleted, Is.False, $"The job loop has ended ({Jobs.ExecuteTask.Status})");
+        Assert.That(Jobs.ExecuteTask!.IsCompleted, Is.False, $"The job loop has ended ({Jobs.ExecuteTask.Status} {Jobs.ExecuteTask.Exception?.InnerException})");
     }
 
     private async Task<bool> LastFileAbortedAsync()
@@ -81,6 +81,18 @@ public class JobProcessorFailures
         {
             return Host.Model.Job.LastFileAborted;
         }
+    }
+
+    /// <summary>
+    /// Check that M32 does not wait for a job loop that has ended (JobProcessor.SelectFileAsync), where the machine is halted and RRF refuses the code
+    /// </summary>
+    private async Task M32RepliesAsync(string fileName)
+    {
+        WriteJob(fileName, "G1 Z1\n");
+        Task<string> m32 = Host.StartCode($"M32 \"{fileName}\"");
+        Assert.That(await Task.WhenAny(m32, Task.Delay(FakeFirmwareHost.DefaultTimeout)), Is.SameAs(m32), "M32 waits for the job loop");
+        Assert.That(Jobs.ExecuteTask, Is.Not.Null);
+        Assert.That(Jobs.ExecuteTask!.IsCompleted, Is.False, $"The job loop has ended ({Jobs.ExecuteTask.Status} {Jobs.ExecuteTask.Exception?.InnerException})");
     }
 
     /// <summary>
@@ -280,9 +292,7 @@ public class JobProcessorFailures
         // M32 selects its file before it goes to RRF (MCodeHandler.cs, case 32), so it would wait for the job loop. The fake firmware reads the
         // requests that DSF wrote before the reset after it and then ends the new connection as a lost one with an emergency stop (FakeFirmware,
         // ExchangeData and ReadFirstMarker), so RRF refuses the code here and only the reply of M32 is checked
-        WriteJob("second.g", "G1 Y1\n");
-        Task<string> m32 = Host.StartCode("M32 \"second.g\"");
-        Assert.That(await Task.WhenAny(m32, Task.Delay(FakeFirmwareHost.DefaultTimeout)), Is.SameAs(m32), "M32 waits for the job loop");
+        await M32RepliesAsync("second.g");
     }
 
     [Test]
@@ -370,8 +380,33 @@ public class JobProcessorFailures
 
         // The machine is halted here as in the reset test above, so only the reply of M32 is checked
         Assert.That(Host.Firmware.IsEmergencyStopped, Is.True);
-        WriteJob("third.g", "G1 Z1\n");
-        Task<string> m32 = Host.StartCode("M32 \"third.g\"");
-        Assert.That(await Task.WhenAny(m32, Task.Delay(FakeFirmwareHost.DefaultTimeout)), Is.SameAs(m32), "M32 waits for the job loop");
+        await M32RepliesAsync("third.g");
+    }
+
+    [Test]
+    public async Task ResetBeforeRrfGetsTheEndOfAChainingJobDropsTheChainedFile()
+    {
+        // A reset of the link while the job that selected the next file waits for the link to tell RRF that it has stopped cancels that
+        // (LinkInterface.InvalidateCodes) and aborts the job (LinkService.InvalidateCodes), which drops the next file (JobProcessor.Abort). The
+        // M32 of the job has asked the loop to start the next file without waiting (JobProcessor.Resume), and that request must go with the file,
+        // else the next pass of the loop finds no file at all. The test holds the object model until the link has aborted the job, because the
+        // loop writes the end of the job to the object model before it takes the job lock again, and the abort of the link usually comes first
+        await StartAsync();
+        await RunChainingJobUntilItStopsAsync();
+
+        using (await Host.Model.AccessReadOnlyAsync())
+        {
+            Host.Firmware.SimulateReset();
+            Host.Firmware.ReleaseTransfers();
+            await WaitForAsync(() => Jobs.IsAborted);
+        }
+        await WaitForJobEndAsync();
+        Assert.That(Host.Firmware.GetReceivedRequests().Count(request => request.Request == SbcRequest.SetPrintFileInfo), Is.EqualTo(1), "RRF got the chained file");
+        Assert.That(JobCodes(), Does.Not.Contain("G1 Y1"), "The chained file of the aborted job was printed");
+        Assert.That(await LastFileAbortedAsync(), Is.True);
+
+        // Whether the machine is halted here depends on whether DSF wrote anything before the reset (see the reset tests above), so only the reply
+        // of M32 is checked
+        await M32RepliesAsync("third.g");
     }
 }

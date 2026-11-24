@@ -1016,8 +1016,13 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
             _file2?.Close();
 
             IsAborted = true;
-            _pendingFile = null;
-            _pendingFileInfo = null;
+            if (_pendingFile is not null)
+            {
+                // The next file goes with the job that selected it, and so does the request to start it
+                _pendingFile = null;
+                _pendingFileInfo = null;
+                _startPendingFile = false;
+            }
             Resume();
         }
     }
