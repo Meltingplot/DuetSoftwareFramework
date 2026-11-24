@@ -59,5 +59,7 @@ fi
 %config(noreplace) %{dsfoptdir}/conf/http.json
 %{dsfoptdir}/bin/DuetWebServer
 %{dsfoptdir}/bin/DuetWebServer.*
-%{dsfoptdir}/bin/appsettings.json
-%{dsfoptdir}/bin/appsettings.Development.json
+
+# The root plugin service runs in /opt/dsf/bin too and reads appsettings*.json there as its configuration, so the dsf user must not be able to change them
+%attr(-,root,root) %{dsfoptdir}/bin/appsettings.json
+%attr(-,root,root) %{dsfoptdir}/bin/appsettings.Development.json
