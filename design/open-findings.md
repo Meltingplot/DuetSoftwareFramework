@@ -735,7 +735,7 @@ the MB6HC ELF.
 
 The IDs are those of its README with the prefix FZ-. Line numbers are RRF fork `3.7-dev` 6c45e07a7. All defect lines are upstream code
 (David Crocker 2020-2026), and origin `3.7-dev` and `3.7-ch` have the same code. Each one is reached by the text of an expression
-alone. The way from a G-code line to the parser was not part of the target, and none was seen on a board.
+alone. The way from a G-code line to the parser was not part of the target, and only FZ-E6 was seen on a board.
 
 - **Fixed and not listed:**
   - FZ-E5 (high, board only): `vector(n, v)` with n of 2^29 or more wrapped the size `4 + n * 8` in the 32-bit `size_t` of
@@ -745,6 +745,14 @@ alone. The way from a G-code line to the parser was not part of the target, and 
   - FZ-E6: `SafeStrptime` indexed `_DAYS_BEFORE_MONTH[12]` with a `%m` outside 1 to 12 (`strptime.cpp:144`, `:237`, `:273`), reached by
     `datetime("2026-99-01T00:00:00")`, `M905 P` and the HTTP time in standalone mode. RRF #104 refuses such a month. The month only;
     FZ-E7 stays open.
+    - Board (lab printer, SBC mode, 2026-11-24, firmware without #104): `global dtTest = "2026-99-01T00:00:00"`, then
+      `echo {datetime(global.dtTest)}` gave `2034-03-01T00:00:00`. The read of `_DAYS_BEFORE_MONTH[98]` did not fault, and `mktime`
+      turned month 98 into 8 years and 2 months. With #104 the reply should be "string is not a valid date and time"
+      (`ExpressionParser.cpp:2441`); not run on a board yet.
+    - In SBC mode only a string from a variable reaches RRF. DSF evaluates `echo {datetime("2026-99-01T00:00:00")}` itself and refuses
+      it with "can't convert value to DateTime" (DSF `Codes/Meta/Parsing/MetaExpressionParser.cs:1119-1138` at 8507c98c0). When
+      DuetPiManagementPlugin runs, it checks the date of `M905 P` first and refuses it with the same text as RRF, "Invalid date format"
+      (`DuetPiManagementPlugin/Program.cs:610-623`).
   - FZ-E3: the float to int32 range checks of `floor`, `ceil`, `round` (`ExpressionParser.cpp:2034-2036`) and `pow` (`:2293-2295`)
     tested `<= (float)INT32_MAX`, which is 2^31, so 2^31 reached the conversion: INT_MIN on the host, 2147483647 on the MB6HC
     (`vcvt.s32.f32` saturates; read from the disassembly). RRF #110 (stacked on #108) converts only below 2^31; `pow(-2, 31)` stays
