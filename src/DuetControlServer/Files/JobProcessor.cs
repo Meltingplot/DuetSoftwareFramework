@@ -354,7 +354,7 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
 
         // Notify RepRapFirmware and start processing the file in the background
         _logger.LogInformation("Selected file {File}", file.FilePath.Virtual);
-        return await _linkInterface.SetPrintFileInfo(cancellationToken);
+        return await _linkInterface.SetPrintFileInfo(info, cancellationToken);
     }
 
     /// <summary>
