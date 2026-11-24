@@ -59,7 +59,7 @@ public class MetaCommandFiles
     public async Task IfElifElse(string condition1, string condition2, string condition3, string expected)
     {
         // The wiki (Gcode_meta_commands.md, Conditional construct): the first block whose condition is true runs, else the else block.
-        // A true condition makes CodeFile skip the following elif blocks without evaluating them (CodeFile.cs:479-488)
+        // A true condition makes CodeFile skip the following elif blocks without evaluating them (CodeFile.cs:513-522)
         Assert.That(await RunMacroAsync($"if {condition1}\n  G1 X1\nelif {condition2}\n  G1 X2\nelif {condition3}\n  G1 X3\nelse\n  G1 X4\nG1 X5\n"), Is.EqualTo("\n"));
         Assert.That(Executed(), Is.EqualTo(new[] { expected, "G1 X5" }));
     }
@@ -74,7 +74,7 @@ public class MetaCommandFiles
     [Test]
     public async Task ConditionFromFirmware()
     {
-        // move.axes[0].homed is owned by the firmware, so DSF forwards the condition and evaluates the result (CodeFile.cs:508-518)
+        // move.axes[0].homed is owned by the firmware, so DSF forwards the condition and evaluates the result (CodeFile.cs:542-552)
         Assert.That(await RunMacroAsync("if move.axes[0].homed\n  G1 X1\nelif move.axes[0].letter == \"X\"\n  G1 X2\n"), Is.EqualTo("\n"));
         Assert.That(Executed(), Is.EqualTo(new[] { "G1 X2" }));
     }
@@ -108,7 +108,7 @@ public class MetaCommandFiles
     [Test]
     public async Task BreakAndContinue()
     {
-        // break ends the innermost loop, continue starts its next iteration (wiki, Loop; CodeFile.cs:536-558)
+        // break ends the innermost loop, continue starts its next iteration (wiki, Loop; CodeFile.cs:570-592)
         Assert.That(await RunMacroAsync("while true\n  if iterations == 1\n    continue\n  if iterations == 3\n    break\n  G1 X{iterations}\nG1 Y0\n"), Is.EqualTo("\n"));
         Assert.That(Executed(), Is.EqualTo(new[] { "G1 X{0}", "G1 X{2}", "G1 Y0" }));
     }
@@ -124,7 +124,7 @@ public class MetaCommandFiles
     [Test]
     public async Task LoopWithLocalVariable()
     {
-        // The end of each iteration deletes the local variables of the loop body, so the next iteration can declare them again (CodeFile.cs:398-421)
+        // The end of each iteration deletes the local variables of the loop body, so the next iteration can declare them again (CodeFile.cs:432-455)
         Assert.That(await RunMacroAsync("while iterations < 2\n  var x = iterations * 10\n  G1 X{var.x}\n"), Is.EqualTo("\n"));
         Assert.That(Executed(), Is.EqualTo(new[] { "G1 X{var.x}", "G1 X{var.x}" }));
         Assert.That(await ErrorMessagesAsync(), Is.Empty);
@@ -133,7 +133,7 @@ public class MetaCommandFiles
     [Test]
     public async Task IterationsOutsideLoop()
     {
-        // CodeFile.GetIterations throws "'iterations' used when not inside a loop" (CodeFile.cs:220) while DSF substitutes the SBC fields,
+        // CodeFile.GetIterations throws "'iterations' used when not inside a loop" (CodeFile.cs:254) while DSF substitutes the SBC fields,
         // and MacroFile reports the exception with the file and line (MacroFile.cs:441-452)
         await RunMacroAsync("G1 X{iterations}\n");
         Assert.That(Executed(), Is.Empty);
@@ -146,7 +146,7 @@ public class MetaCommandFiles
     [Test]
     public async Task Skip()
     {
-        // skip does nothing (wiki, Skip command; CodeFile.cs:569-571)
+        // skip does nothing (wiki, Skip command; CodeFile.cs:603-605)
         Assert.That(await RunMacroAsync("skip\nif true\n  skip\nG1 X1\n"), Is.EqualTo("\n"));
         Assert.That(Executed(), Is.EqualTo(new[] { "G1 X1" }));
     }
@@ -154,7 +154,7 @@ public class MetaCommandFiles
     [Test]
     public async Task Abort()
     {
-        // The wiki: abort terminates all nested macros, the message is presented to the user. CodeFile closes the file (CodeFile.cs:560-563)
+        // The wiki: abort terminates all nested macros, the message is presented to the user. CodeFile closes the file (CodeFile.cs:594-597)
         await RunMacroAsync("G1 X1\nabort \"stopped \" ^ 1\nG1 X2\n");
         Assert.That(Executed(), Is.EqualTo(new[] { "G1 X1" }));
     }

@@ -23,9 +23,9 @@ namespace UnitTests.Startup;
 /// <item>Once ApplicationStopping is cancelled, the tokens of the codes are cancelled as well, because their sources are linked to it (CodeProcessor.cs:310)</item>
 /// <item>The DSF AsyncLock waited on a SemaphoreSlim, which gives up at once on a cancelled token even when the lock is free (SemaphoreSlim.cs:687-689 of
 /// System.Private.CoreLib). Nito.AsyncEx.AsyncLock, which it replaced in bb5edd5e, takes a free lock in that case, see <see cref="Utility.AsyncLockCancelledToken"/></item>
-/// <item>The Executed stage writes the reply to the event log with that token (Executed.cs:110-121 and 126-129, Logger.cs:258) and updates the file
-/// position of a macro code with the token of the code (Executed.cs:81, Code.cs:181-185), both outside the try block of Executed.cs:164-240, which keeps
-/// a cancellation during the shutdown quiet (Executed.cs:235)</item>
+/// <item>The Executed stage writes the reply to the event log with that token (Executed.cs:110-121 and 126-129, Logger.cs:258) and updated the file
+/// position of a macro code with the token of the code under the file lock (Executed.cs:81), both outside the try block of Executed.cs:164-240, which keeps
+/// a cancellation during the shutdown quiet (Executed.cs:235). The update takes neither the file lock nor a token since TP3 (CodeFile.cs:159-168)</item>
 /// <item>The exception reaches the loop of the stage, which logged "Failed to process code in stage Executed" and left the code neither finished nor
 /// cancelled, so whoever waits for it waited for good</item>
 /// </list>
@@ -188,8 +188,9 @@ public class ExecutedStageShutdown
     }
 
     /// <summary>
-    /// Codes behind the held one in the Executed queue are read after the cancellation as well. A macro code may then be cancelled when its file position is
-    /// updated with its token (Executed.cs:81, Code.cs:181-185, CodeFile.cs:64), which is linked to ApplicationStopping as well (MacroFile.cs:166, 340).
+    /// Codes behind the held one in the Executed queue are read after the cancellation as well. A macro code then reaches the code handlers with its token,
+    /// which is linked to ApplicationStopping as well (MacroFile.cs:166, 340). Before TP3 it could already be cancelled when its file position was updated
+    /// with that token under the file lock (Executed.cs:81, CodeFile.cs:64); that update takes neither now (CodeFile.cs:159-168).
     /// The held code is an M42 that RRF answers, so the G4 behind it is answered and queued meanwhile (an M111 P-1 would flush the channel first,
     /// MCodeHandler.cs:695). Since upstream 61df011e the loop of the stage logs such a cancellation and completes the code with it (PipelineStackItem.cs:85-89),
     /// depending on timing (UP6 in design/open-findings.md)

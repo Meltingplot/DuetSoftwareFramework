@@ -139,7 +139,7 @@ public class JobFiles
     [Test, Explicit("A read error is reported with the line after the failing one: JobProcessor.cs:507 takes file.LineNumber, the line the parser has advanced to, because readCode is null")]
     public async Task ErrorInJobNamesTheFailingLine()
     {
-        // The CodeParserException carries the code with its line number (CodeFile.cs:525)
+        // The CodeParserException carries the code with its line number (CodeFile.cs:559)
         await StartAsync();
         WriteJob("job.g", "G1 X1\nelse\nG1 X2\n");
         Assert.That(await Host.ExecuteAsync("M32 \"job.g\""), Is.EqualTo("\n"));
@@ -321,7 +321,7 @@ public class JobFiles
     public async Task RewindIntoLoop()
     {
         // M26 inside a loop restores the loop of the read-ahead: the rewound lines run again with the iteration of that position,
-        // and the loop goes on afterwards (CodeFile.RewindAsync, CodeFile.cs:142-200)
+        // and the loop goes on afterwards (CodeFile.RewindAsync, CodeFile.cs:176-234)
         await StartAsync(bufferedPrintCodes: 1);
         using ManualResetEventSlim release = new();
         Host.Firmware.OnCode("G4", _ => release.IsSet ? FakeReply.Ok() : FakeReply.NotFinished);

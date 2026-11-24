@@ -154,38 +154,14 @@ public sealed class Code : DuetAPI.Commands.Code, IConnectionCommand
     /// <summary>
     /// Update the next file position in case we need to fork this file
     /// </summary>
+    /// <remarks>
+    /// This does not wait for the lock of the file, which is held while codes are read from it, so the link task may call it
+    /// </remarks>
     internal void UpdateNextFilePosition()
     {
         if (File is not null && FilePosition is not null)
         {
-            using (File.Lock(CancellationToken))
-            {
-                long nextFilePosition = FilePosition.Value + (Length ?? 0L);
-                if (File.NextFilePosition < nextFilePosition)
-                {
-                    File.NextFilePosition = nextFilePosition;
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// Update the next file position in case we need to fork this file
-    /// </summary>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>Asynchronous task</returns>
-    internal async ValueTask UpdateNextFilePositionAsync(CancellationToken cancellationToken)
-    {
-        if (File is not null && FilePosition is not null)
-        {
-            using (await File.LockAsync(cancellationToken))
-            {
-                long nextFilePosition = FilePosition.Value + (Length ?? 0L);
-                if (File.NextFilePosition < nextFilePosition)
-                {
-                    File.NextFilePosition = nextFilePosition;
-                }
-            }
+            File.UpdateNextFilePosition(FilePosition.Value + (Length ?? 0L));
         }
     }
 

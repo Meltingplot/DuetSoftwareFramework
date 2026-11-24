@@ -123,15 +123,49 @@ public class CodeFile(
                 _fileStream.Seek(value, SeekOrigin.Begin);
                 _parserBuffer.Invalidate();
                 _parserBuffer.LineNumber = (value == 0) ? 1 : null;
-                NextFilePosition = value;
+                lock (_nextFilePositionLock)
+                {
+                    _nextFilePosition = value;
+                }
             }
         }
     }
 
     /// <summary>
+    /// Lock for <see cref="NextFilePosition"/>. The lock of this instance is held while codes are read from the file,
+    /// so it must not guard this position, which the link task updates when RRF starts a macro or a message box for a code
+    /// </summary>
+    private readonly object _nextFilePositionLock = new();
+
+    /// <summary>
     /// File position of the next code to actually run
     /// </summary>
-    public long NextFilePosition { get; set; }
+    public long NextFilePosition
+    {
+        get
+        {
+            lock (_nextFilePositionLock)
+            {
+                return _nextFilePosition;
+            }
+        }
+    }
+    private long _nextFilePosition;
+
+    /// <summary>
+    /// Advance the file position of the next code to run unless it is already further
+    /// </summary>
+    /// <param name="nextFilePosition">File position after a code that is being processed</param>
+    public void UpdateNextFilePosition(long nextFilePosition)
+    {
+        lock (_nextFilePositionLock)
+        {
+            if (_nextFilePosition < nextFilePosition)
+            {
+                _nextFilePosition = nextFilePosition;
+            }
+        }
+    }
 
     /// <summary>
     /// Modal G0/G1/G2/G3 command that lines without a command letter repeat, or -1 if there is none.
