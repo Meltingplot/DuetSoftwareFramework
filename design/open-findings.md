@@ -697,13 +697,18 @@ A DSF that writes what `Writer.cs` writes reaches only B6, B8 and B9. The others
     effect of B8: before the fix, `10.0.0.1` (8 characters, so no null after it) was refused after a code that left `.10` behind it in
     the buffer, so a correct DSF could get "invalid IP address" depending on the code before. Host only, not seen on a board.
   - B9: `StringHandle::InternalAssign` read one byte beyond a string that is not null-terminated (RRF #100).
-  - #97 and #99 contain the commits of #96, and #100 those of #97. None of these PRs is merged yet.
+  - RV-1, found by the review of #97, #99 and #100: `ObjectModelKeyChanged` compared the `StringHeader` that DSF writes before the key
+    (`SPI.cs:1730-1737`, `USB.cs:1819-1827`, `Writer.cs:729-744`) with "network" and "volumes" (`SbcInterface.cpp:1454-1462`, upstream
+    d3c4957e4), so `NetworkUpdated` and `VolumesUpdated` never ran in SBC mode and `seqs.network` and `seqs.volumes` of RRF did not
+    change. RRF #105 reads the key after its header with its length, as far as it lies within the packet.
+  - #97 and #99 contain the commits of #96, and #100 those of #97. #105 is independent. None of these PRs is merged yet.
 - **FZ-P6. SBC packets that are shorter than what their reader reads.**
   - Most of these reads stay within the transfer buffer and get stale bytes of an earlier transfer. The fuzz target shows them with
     `FUZZ_POISON_STALE=1`:
     - `ReadDataHeader` reads the whole header of a packet that is shorter than it (`DataTransfer.cpp:635-640`).
     - `ReadSetVariable` and `ReadDeleteLocalVariable` read their 8-bit lengths without a check against the packet (`:735-759`).
-    - `ObjectModelKeyChanged` compares the key as a null-terminated string (`SbcInterface.cpp:1455`).
+    - `ObjectModelKeyChanged` compared the key as a null-terminated string (`SbcInterface.cpp:1455`); RRF #105 (RV-1) reads it with
+      its length now.
   - Open question for Tim: what the protocol layer does with a packet that is too short. RRF #99 cuts a value at the packet end,
     following the existing pattern in `DataTransfer`. For a header there is no such pattern. The options are to cut it (zero the
     rest), to refuse the packet, or to report it to the logic, which is the link v8 design.
@@ -717,14 +722,6 @@ A DSF that writes what `Writer.cs` writes reaches only B6, B8 and B9. The others
     (`Writer.cs:175-236`). The check of RRF #97 follows the steps of `WriteParameters`, so the reads of `Seen` and `AddParameters` stay
     within the code either way.
   - `GetIPAddress` accepts anything after the fourth number that does not start with a dot (`BinaryParser.cpp:399-406`), as before.
-- **RV-1. `ObjectModelKeyChanged` never matches its key, so RRF never runs `NetworkUpdated` or `VolumesUpdated` in SBC mode.**
-  - DSF writes the key as a `StringHeader` of 4 bytes followed by the text (`SPI.cs:1730-1737`, `USB.cs:1819-1827`,
-    `Writer.cs:729-744`).
-  - RRF compares the packet data from its first byte with "network" and "volumes" (`SbcInterface.cpp:1454-1462`, upstream d3c4957e4),
-    so it compares the header. RRF writes the same `StringHeader` itself for its own string requests (`DataTransfer.cpp:1458`, `:2095`,
-    `:2117`) but has no reader for it.
-  - What the two functions would change for a client (sequence numbers of the two keys) was not traced. Upstream `3.7-dev` and `3.7-ch`
-    have the same handler. Found by the review of RRF #97, #99 and #100, confirmed by reading. Not fixed.
 - **RV-2. `take` and `drop` of a heap string copy from a pointer that a garbage collection can move.**
   - They hold `p.Ptr()`, a raw pointer into the heap, and pass it to `StringHandle(s, len)` (`ExpressionParser.cpp:1111-1117`,
     `:1190-1196`, dc42 65f8c54c9).
@@ -732,3 +729,55 @@ A DSF that writes what `Writer.cs` writes reaches only B6, B8 and B9. The others
     (`Heap.cpp:330-337`). The collection moves the storage with `memmove` and adjusts only the handles (`Heap.cpp:132-134`), so the copy
     then reads from where the string was: wrong text, within the heap block.
   - Found by the review, confirmed by reading only; not reproduced. The host heap test (`Tools/heap-test`) could show it. Not fixed.
+
+## Found by the expression parser fuzz target (error class 3, 2026-11-24)
+
+An expression is user input from every channel: `echo {...}`, `if`, `var`, `set`, and every parameter in `{...}`, from DWC and DSF,
+macros, job files, USB and PanelDue. The host fuzz target `Tools/expression-fuzz` (RRF #103) runs the real `ExpressionParser`, object
+model code, string and array heap and `SafeStrptime` with AddressSanitizer and UBSan, and models the board stack with the frame sizes of
+the MB6HC ELF.
+
+The IDs are those of its README with the prefix FZ-. Line numbers are RRF fork `3.7-dev` 6c45e07a7. All defect lines are upstream code
+(David Crocker 2020-2026), and origin `3.7-dev` and `3.7-ch` have the same code. Each one is reached by the text of an expression
+alone. The way from a G-code line to the parser was not part of the target, and none was seen on a board.
+
+- **Fixed and not listed:**
+  - FZ-E5 (high, board only): `vector(n, v)` with n of 2^29 or more wrapped the size `4 + n * 8` in the 32-bit `size_t` of
+    `ArrayHandle::Allocate` (`ArrayHandle.cpp:29-42`). It then wrote n elements from the start of a 2 KB heap block, over the whole RAM.
+    Confirmed in the MB6HC disassembly, not run on a board. RRF #102 refuses such a size with "Array too large", the message for a
+    size that does not wrap.
+  - FZ-E6: `SafeStrptime` indexed `_DAYS_BEFORE_MONTH[12]` with a `%m` outside 1 to 12 (`strptime.cpp:144`, `:237`, `:273`), reached by
+    `datetime("2026-99-01T00:00:00")`, `M905 P` and the HTTP time in standalone mode. RRF #104 refuses such a month. The month only;
+    FZ-E7 stays open.
+- **FZ-E1. Signed overflow of the int32 operators.** Unary minus (`ExpressionParser.cpp:210`, "TODO overflow check" in the code), `+`
+  (`:531`), `-` (`:567`) and `*` (`:581`), e.g. `{65536 * 65536}`. Undefined behaviour; that it wraps on the board was not checked.
+  Low.
+- **FZ-E2. `mod(INT_MIN, -1)`.** The check before `rslt.iVal %= nextOperand.iVal` (`:2060`) only excludes 0. On x86 it traps; on the
+  Cortex-M7 it was not checked. Low to medium.
+- **FZ-E3. Inclusive float to int32 range checks.** `floor`, `ceil` and `round` (`:2034-2036`) and `pow` (`:2293-2295`) test
+  `f <= (float)INT32_MAX`, which admits 2^31. `pow(2, 31)` gives INT_MIN, which then reaches B6 (RRFLibraries #3). Wrong value. Low.
+- **FZ-E4. Nested object model arrays lose the parent index in `ParseArray`, `take` and `drop`.**
+  - `ParseArray` (`:917-937`), `EvaluateTake` (`:1067-1083`) and `EvaluateDrop` (`:1133-1157`) build an `ObjectExplorationContext`
+    without the indices of the enclosing arrays. `ApplyObjectModelArrayIndex` (`:149`), the `#` operator and `AppendAsString` keep them.
+  - Array functions that ask for `GetIndex(1)` or `GetLastIndex()` (`Move.cpp:103-105`, `:111`) then get `REPORT_INTERNAL_ERROR`
+    (`ObjectModel.cpp:603`, `:614`) and go on with index 0.
+  - So `take(move.axes[1].drivers, 1)` returns elements of axis 0, while `(move.axes[1].drivers)[1]` is correct. Wrong data, no memory
+    error. Low.
+- **FZ-E7. Signed overflows in `SafeStrptime`.** `%Y` of INT_MIN (`strptime.cpp:186`) and `%d` of INT_MAX (`:285`). Wrong date. Low.
+- **FZ-E8. A throw with less than `StackUsage::Throw` left.**
+  - `CheckStack(StackUsage::ParseGeneralArray)` (`ExpressionParser.cpp:132`) reserves 360 + 1050 + 300 bytes.
+  - `ParseGeneralArray` then calls `ParseInternal` (`:994`), which calls `ParseQuotedString` (`:196`), which throws: 784 bytes of
+    frames without a further check, more than the 300 bytes of `StackUsage::Margin`.
+  - libFuzzer found `m[[1,[5,m[[1,[2,"`, which throws with 1024 of 1050 bytes left under the 4096-byte budget of the target.
+  - How much stack the unwinder really needs, and so whether the missing 26 to 124 bytes corrupt the task control block below the
+    stack, was not checked. The input would have to be tuned to the stack in use on the board. Medium.
+- **Observations without a sanitizer report:**
+  - FZ-O1: `ObjectModel.cpp:80-84` ignores a failure of `gmtime_r`, so a date-time beyond its year range prints uninitialised `tm`
+    fields (host: `datetime(0) - 1`). What newlib does on the board was not checked.
+  - FZ-O2: two stack figures quoted in `ExpressionParser.cpp:48` and `ObjectModel.cpp` are 8 bytes below the ELF figures, within
+    `StackUsage::Margin`.
+  - FZ-O3: the `first_day` loop of `SafeStrptime` (`strptime.cpp:76-84`) runs once per year since 1970: 1e8 years took 2.9 s on the
+    host. Whether the board watchdog fires was not checked.
+  - FZ-O4: `BinaryParser.cpp:533-611` calls the array parsers without checking for `{`, which `StringParser.cpp:1370` does. Whether DSF
+    can send such a parameter was not checked.
+  - `labs(INT_MIN)` at `ExpressionParser.cpp:1937` is undefined only where `long` has 32 bits, as on the board; the host cannot show it.
