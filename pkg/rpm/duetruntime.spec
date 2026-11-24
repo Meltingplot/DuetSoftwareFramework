@@ -26,5 +26,6 @@ AutoReq:  0
 DSF Common Runtime Components
 
 %files
-%defattr(-,dsf,dsf,-)
+# The root plugin service runs on these, so the dsf user must not be able to change them
+%defattr(-,root,root,-)
 %{dsfoptdir}/bin/*

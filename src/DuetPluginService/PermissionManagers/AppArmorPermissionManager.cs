@@ -15,7 +15,9 @@ namespace DuetPluginService.PermissionManagers;
 /// <remarks>
 /// This implementation still relies on fixed SD paths. In the future this code must react to changes of directories in the OM!
 /// </remarks>
-public class AppArmorPermissionManager(IOptions<Settings> settings) : IPermissionManager
+/// <param name="privileges">Privileges of this service</param>
+/// <param name="settings">Settings</param>
+public class AppArmorPermissionManager(ServicePrivileges privileges, IOptions<Settings> settings) : IPermissionManager
 {
     private Settings _settings => settings.Value;
 
@@ -29,6 +31,13 @@ public class AppArmorPermissionManager(IOptions<Settings> settings) : IPermissio
     /// <returns>Asynchronous task</returns>
     public async Task InstallProfileAsync(Plugin plugin, string pluginDirectory, string sdDirectory, CancellationToken cancellationToken)
     {
+        // The root service loads the profile as root, so it takes the template only from a file that nobody else may change
+        privileges.CheckSettings();
+        if (privileges.IsPrivileged && RootSettingsFiles.Check(_settings.AppArmorTemplate, privileges.UserId) is string error)
+        {
+            throw new ArgumentException($"Refusing to install the security profile of plugin {plugin.Id}: {error}");
+        }
+
         // Load template
         string profile = await File.ReadAllTextAsync(_settings.AppArmorTemplate, cancellationToken);
         profile = profile.Replace("{pluginDirectory}", Path.Combine(pluginDirectory, plugin.Id)).Replace("{pluginId}", plugin.Id);
@@ -177,6 +186,7 @@ public class AppArmorPermissionManager(IOptions<Settings> settings) : IPermissio
     /// <returns>Asynchronous task</returns>
     public async Task UninstallProfileAsync(Plugin plugin, CancellationToken cancellationToken)
     {
+        privileges.CheckSettings();
         string profilePath = Path.Combine(_settings.AppArmorProfileDirectory, $"dsf.{plugin.Id}");
         if (File.Exists(profilePath))
         {

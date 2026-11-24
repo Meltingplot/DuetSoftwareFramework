@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using DuetAPI.ObjectModel;
 using DuetAPI.Utility;
 using DuetAPIClient;
+using DuetPluginService;
 using DuetPluginService.PermissionManagers;
 using Microsoft.Extensions.Options;
 using NUnit.Framework;
@@ -20,7 +21,7 @@ using Settings = DuetPluginService.Settings;
 
 /// <summary>
 /// AppArmor profiles that DuetPluginService generates for plugins without SuperUser (DuetPluginService/PermissionManagers/AppArmorPermissionManager.cs).
-/// apparmor_parser is a <see cref="FakeTool"/>, so no profile reaches the kernel. Which rules each permission gives is listed in AppArmorPermissionManager.cs:42-149;
+/// apparmor_parser is a <see cref="FakeTool"/>, so no profile reaches the kernel. Which rules each permission gives is listed in AppArmorPermissionManager.cs:51-158;
 /// the expected rules below are taken from there, and PLUGINS.md:79-104 describes what the permissions are for
 /// </summary>
 [TestFixture]
@@ -46,7 +47,8 @@ public class DpsAppArmorProfiles
             AppArmorTemplate = template,
             AppArmorProfileDirectory = Path.Combine(_directory, "apparmor.d")
         };
-        _manager = new AppArmorPermissionManager(Options.Create(_settings));
+        // The content of the profiles does not depend on the privileges, DpsRootSettings checks the template of the root service
+        _manager = new AppArmorPermissionManager(new ServicePrivileges { IsPrivileged = false }, Options.Create(_settings));
     }
 
     [TearDown]
@@ -65,11 +67,11 @@ public class DpsAppArmorProfiles
         $"dir={PluginDirectory}/Confined\nincludes:\n{string.Concat(includes.Select(line => line + Environment.NewLine))}rules:\n{string.Concat(rules.Select(line => line + Environment.NewLine))}end\n";
 
     /// <summary>
-    /// Rules of each permission, in the words of AppArmorPermissionManager.cs:44-148
+    /// Rules of each permission, in the words of AppArmorPermissionManager.cs:53-157
     /// </summary>
     private static IEnumerable<TestCaseData> PermissionRules()
     {
-        // Enforced by DCS, no rule (AppArmorPermissionManager.cs:44-52), and not applicable (145-148)
+        // Enforced by DCS, no rule (AppArmorPermissionManager.cs:53-61), and not applicable (154-157)
         foreach (SbcPermissions permission in new[] { SbcPermissions.CodeInterceptionRead, SbcPermissions.CodeInterceptionReadWrite, SbcPermissions.CommandExecution,
             SbcPermissions.ManageUserSessions, SbcPermissions.ObjectModelRead, SbcPermissions.ObjectModelReadWrite, SbcPermissions.ServicePlugins,
             SbcPermissions.SuperUser, SbcPermissions.None })
@@ -77,7 +79,7 @@ public class DpsAppArmorProfiles
             yield return new TestCaseData(permission, Array.Empty<string>(), Array.Empty<string>()).SetName($"RulesOf{permission}");
         }
 
-        // The sockets that DCS reserves for HTTP endpoints (AppArmorPermissionManager.cs:54-58)
+        // The sockets that DCS reserves for HTTP endpoints (AppArmorPermissionManager.cs:63-67)
         yield return new TestCaseData(SbcPermissions.RegisterHttpEndpoints, Array.Empty<string>(),
             new[] { "  /{,var/}run/dsf/**-{GET,POST,PUT,PATCH,TRACE,DELETE,OPTIONS,WebSocket}.sock rw," }).SetName("RulesOfRegisterHttpEndpoints");
         yield return new TestCaseData(SbcPermissions.ManagePlugins, Array.Empty<string>(), new[] { $"  {PluginDirectory}/ r,", $"  {PluginDirectory}/** rw," }).SetName("RulesOfManagePlugins");
@@ -118,7 +120,7 @@ public class DpsAppArmorProfiles
     [Test]
     public void EveryPermissionIsCovered()
     {
-        // A new SbcPermissions value would fall through the switch of AppArmorPermissionManager.cs:42-149 without a rule; the cases above must list it
+        // A new SbcPermissions value would fall through the switch of AppArmorPermissionManager.cs:51-158 without a rule; the cases above must list it
         HashSet<string> tested = [.. PermissionRules().Select(data => data.TestName!)];
         foreach (SbcPermissions permission in Enum.GetValues<SbcPermissions>())
         {
@@ -129,7 +131,7 @@ public class DpsAppArmorProfiles
     [Test]
     public async Task CombinedPermissionsAddTheirRulesInTheOrderOfTheEnum()
     {
-        // Enum.GetValues returns the values sorted by value (AppArmorPermissionManager.cs:38): ReadGCodes 8192, WriteGCodes 16384, NetworkAccess 33554432
+        // Enum.GetValues returns the values sorted by value (AppArmorPermissionManager.cs:47): ReadGCodes 8192, WriteGCodes 16384, NetworkAccess 33554432
         string profile = await InstallAsync(SbcPermissions.NetworkAccess | SbcPermissions.WriteGCodes | SbcPermissions.ReadGCodes | SbcPermissions.ObjectModelRead);
         Assert.That(profile, Is.EqualTo(Expected(["  #include <abstractions/nameservice>"],
         [
@@ -141,7 +143,7 @@ public class DpsAppArmorProfiles
     [Test]
     public async Task DirectoriesWithTrailingSeparators()
     {
-        // ManagePlugins trims the separator of the plugin directory (AppArmorPermissionManager.cs:61-62), the SD paths go through Path.Combine
+        // ManagePlugins trims the separator of the plugin directory (AppArmorPermissionManager.cs:70-71), the SD paths go through Path.Combine
         string profile = await InstallAsync(SbcPermissions.ManagePlugins | SbcPermissions.ReadMacros, PluginDirectory + "/", SdDirectory + "/");
         Assert.That(profile, Does.Contain($"  {PluginDirectory}/ r,\n  {PluginDirectory}/** rw,\n"));
         Assert.That(profile, Does.Contain($"  {SdDirectory}/macros/ r,\n  {SdDirectory}/macros/** r,\n"));
@@ -151,7 +153,7 @@ public class DpsAppArmorProfiles
     [Test]
     public async Task ShippedTemplateConfinesThePluginToItsDirectory()
     {
-        // pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf: the profile is named dsf.<id>, the name DPS starts the plugin in (StartPlugin.cs:167-173),
+        // pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf: the profile is named dsf.<id>, the name DPS starts the plugin in (StartPlugin.cs:169-175),
         // and gives the plugin its own directory (lines 28-29); all placeholders are replaced. It has no attachment: a profile that attached to the files below
         // the plugin directory never confined bash and the interpreter of a Python plugin
         _settings.AppArmorTemplate = DpsHost.ShippedFile("pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf");
@@ -186,7 +188,7 @@ public class DpsAppArmorProfiles
     }
 
     /// <summary>
-    /// In /run/dsf a plugin without permissions gets only the socket of DCS, which every plugin connects to (DSF_SOCKET_PATH, StartPlugin.cs:158-162). The rule
+    /// In /run/dsf a plugin without permissions gets only the socket of DCS, which every plugin connects to (DSF_SOCKET_PATH, StartPlugin.cs:160-164). The rule
     /// /{,var/}run/dsf/** rw gave it every file there, so that it could create, replace and delete the start error file of DCS, the endpoint sockets of other
     /// plugins and anything else in the directory. dcs.sock keeps rw, which includes deleting it: a socket with a path is mediated by file rules (apparmor.d(5),
     /// "Unix socket rules"), w is required to unlink a file ("Access Modes Details"), and file rules have no mode of their own for deleting (ACCESS of FILE RULE)
@@ -314,7 +316,7 @@ public class DpsAppArmorProfiles
         await InstallAsync(SbcPermissions.ReadGCodes);
         Assert.That(File.Exists(ProfilePath("Confined")), Is.True);
 
-        // apparmor_parser -r "<profile>" (AppArmorPermissionManager.cs:162) replaces a loaded profile or loads it
+        // apparmor_parser -r "<profile>" (AppArmorPermissionManager.cs:171) replaces a loaded profile or loads it
         Assert.That(FakeTool.Calls(_settings.AppArmorParser), Is.EqualTo(new[] { $"-r {ProfilePath("Confined")}" }));
     }
 
@@ -322,7 +324,7 @@ public class DpsAppArmorProfiles
     public async Task ProfileIsDeletedWhenTheParserFails()
     {
         // StartPlugin only checks that the profile file exists (StartPlugin.cs:63-72), so a profile the kernel did not load must not stay behind
-        // (AppArmorPermissionManager.cs:160-168)
+        // (AppArmorPermissionManager.cs:169-177)
         FakeTool.SetExitCode(_settings.AppArmorParser, 3);
         ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(SbcPermissions.ReadGCodes)))!;
         Assert.That(e.Message, Is.EqualTo("Failed to load AppArmor profile for plugin Confined (apparmor_parser exited with code 3)"));
@@ -344,7 +346,7 @@ public class DpsAppArmorProfiles
         await InstallAsync(SbcPermissions.ReadGCodes);
         await _manager.UninstallProfileAsync(new Plugin { Id = "Confined", Name = "Confined" }, CancellationToken.None);
 
-        // apparmor_parser -R "<profile>" unloads it (AppArmorPermissionManager.cs:184), then the file is deleted (188)
+        // apparmor_parser -R "<profile>" unloads it (AppArmorPermissionManager.cs:194), then the file is deleted (198)
         Assert.That(FakeTool.Calls(_settings.AppArmorParser), Is.EqualTo(new[] { $"-r {ProfilePath("Confined")}", $"-R {ProfilePath("Confined")}" }));
         Assert.That(File.Exists(ProfilePath("Confined")), Is.False);
     }

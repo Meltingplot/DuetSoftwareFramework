@@ -57,6 +57,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
             // Run preinstall routine if needed
             if (plugin.SbcPackageDependencies.Count > 0 && !string.IsNullOrEmpty(_settings.PreinstallPackageCommand))
             {
+                privileges.CheckSettings();
                 logger.LogInformation("Running preinstall command");
                 using Process process = Process.Start(_settings.PreinstallPackageCommand, _settings.PreinstallPackageArguments);
                 await process.WaitForExitAsync(cancellationToken);
@@ -84,6 +85,11 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
         // to the web files belong to the dsf user, so that they can be edited like the other files there
         bool installsPluginDirectory = plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser) == privileges.IsPrivileged;
         bool installsSdFiles = !privileges.IsPrivileged;
+        if (installsPluginDirectory)
+        {
+            // The root service installs the files of a root plugin in the plugin directory of its settings
+            privileges.CheckSettings();
+        }
         if (installsPluginDirectory || installsSdFiles)
         {
             // The files of the root service must not be writable by others, whatever the umask is
@@ -361,6 +367,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
         {
             throw new ArgumentException("Cannot install packages as regular user");
         }
+        privileges.CheckSettings();
 
         using (await _packageLock.LockAsync(cancellationToken))
         {
@@ -397,6 +404,7 @@ public sealed class InstallPlugin(IPermissionManager permissionManager, PluginSt
         {
             throw new ArgumentException(privileges.IsPrivileged ? "Cannot install Python packages of a regular plugin as root" : "Cannot install Python packages of a root plugin as regular user");
         }
+        privileges.CheckSettings();
 
         using (await _packageLock.LockAsync(cancellationToken))
         {

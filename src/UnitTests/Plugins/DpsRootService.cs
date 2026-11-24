@@ -60,7 +60,7 @@ public class DpsRootService : DpsTestBase
 
     /// <summary>
     /// Replace a fake tool by one that also records the value of DSF_TEST_FRONTEND. The test process may have DEBIAN_FRONTEND already, which
-    /// EnvironmentVariables.Add (InstallPlugin.cs:336-339) refuses, so the tests pass their own variable via InstallPackageEnvironment
+    /// EnvironmentVariables.Add (InstallPlugin.cs:342-345) refuses, so the tests pass their own variable via InstallPackageEnvironment
     /// </summary>
     private static string EnvironmentTool(string path)
     {
@@ -79,7 +79,7 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task PackagesAndProfileAreInstalledByTheRootService()
     {
-        // InstallPlugin.cs:54-79: the preinstall command once, then each package with InstallPackageEnvironment, then the profile
+        // InstallPlugin.cs:54-80: the preinstall command once, then each package with InstallPackageEnvironment, then the profile
         await StartRootDpsAsync();
         await InstallAsync(Package(Manifest("Confined", manifest =>
         {
@@ -96,7 +96,7 @@ public class DpsRootService : DpsTestBase
         Assert.That(FakeTool.Calls(Dps.Settings.AppArmorParser), Is.EqualTo(new[] { $"-r {Dps.ProfilePath("Confined")}" }));
         Assert.That(Dps.Log.Contains("Security profile installed"), Is.True);
 
-        // The files, the manifest and the Python packages are up to the regular service (InstallPlugin.cs:80-264), the root service only registers the plugin
+        // The files, the manifest and the Python packages are up to the regular service (InstallPlugin.cs:81-270), the root service only registers the plugin
         Assert.That(Directory.Exists(Path.Combine(PluginDirectory, "Confined")), Is.False);
         Assert.That(File.Exists(Path.Combine(PluginDirectory, "Confined.json")), Is.False);
         Assert.That(File.Exists(Path.Combine(SdDirectory, "macros/confined.g")), Is.False);
@@ -117,7 +117,7 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task RootPluginsGetNoProfile()
     {
-        // "Apply security profile for this plugin unless it gets root permissions anyway" (InstallPlugin.cs:71-78)
+        // "Apply security profile for this plugin unless it gets root permissions anyway" (InstallPlugin.cs:72-79)
         await StartRootDpsAsync();
         await InstallAsync(Package(Manifest("Root", manifest => manifest["sbcPermissions"] = new JsonArray("superUser")), ("dsf/root", "x")));
         Assert.That(File.Exists(Dps!.ProfilePath("Root")), Is.False);
@@ -137,7 +137,7 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task FailingPackageInstallationIsReported()
     {
-        // InstallPlugin.cs:341-349
+        // InstallPlugin.cs:347-355
         await StartRootDpsAsync();
         FakeTool.SetExitCode(Dps!.Settings.InstallPackageCommand, 100);
         ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () =>
@@ -150,7 +150,7 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task ProfileThatCannotBeLoadedIsRemoved()
     {
-        // AppArmorPermissionManager.cs:160-168: StartPlugin checks only that the profile exists, so a profile that the kernel refused must not stay
+        // AppArmorPermissionManager.cs:169-177: StartPlugin checks only that the profile exists, so a profile that the kernel refused must not stay
         await StartRootDpsAsync();
         FakeTool.SetExitCode(Dps!.Settings.AppArmorParser, 1);
         ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(Manifest("Refused"), ("dsf/file", "x")))))!;
@@ -162,7 +162,7 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task MissingProfilesAreRegeneratedAtStart()
     {
-        // PluginService.cs:62-112: the DSF package removes the dsf.* profiles on upgrade, the root service writes the missing ones again at start
+        // PluginService.cs:67-117: the DSF package removes the dsf.* profiles on upgrade, the root service writes the missing ones again at start
         Directory.CreateDirectory(PluginDirectory);
         File.WriteAllText(Path.Combine(PluginDirectory, "Missing.json"), "{\"id\":\"Missing\",\"name\":\"Missing\",\"sbcPermissions\":[\"readMacros\"]}");
         File.WriteAllText(Path.Combine(PluginDirectory, "Present.json"), "{\"id\":\"Present\",\"name\":\"Present\"}");
@@ -187,7 +187,7 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task ProfileRegenerationGoesOnAfterAFailure()
     {
-        // PluginService.cs:105-110: StartPlugin refuses the plugin whose profile is still missing, the other plugins get theirs
+        // PluginService.cs:110-115: StartPlugin refuses the plugin whose profile is still missing, the other plugins get theirs
         File.WriteAllText(Path.Combine(PluginDirectory, "First.json"), "{\"id\":\"First\",\"name\":\"First\"}");
         File.WriteAllText(Path.Combine(PluginDirectory, "Second.json"), "{\"id\":\"Second\",\"name\":\"Second\"}");
         await StartDpsAsync(settings => FakeTool.SetExitCode(settings.AppArmorParser, 1), register: false, privileged: true);
@@ -200,7 +200,7 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task ProfileRegenerationIsSkippedWithoutDcs()
     {
-        // PluginService.cs:85-96
+        // PluginService.cs:90-101
         File.WriteAllText(Path.Combine(PluginDirectory, "Waiting.json"), "{\"id\":\"Waiting\",\"name\":\"Waiting\"}");
         await using DpsHost dps = await DpsHost.StartAsync(null, PluginDirectory, register: false, privileged: true);
         Assert.That(dps.Log.Contains("Could not resolve SD path; skipping AppArmor profile regeneration"), Is.True);
@@ -552,7 +552,7 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task RootServiceRemovesOnlyTheProfileOfRegularPlugins()
     {
-        // UninstallPlugin.cs:167-171
+        // UninstallPlugin.cs:172-176
         await StartDpsAsync(register: false, privileged: true);
         Plugin plugin = new() { Id = "Confined", Name = "Confined", SbcExecutable = "confined", Pid = -1 };
         plugin.DsfFiles.Add("confined");
@@ -570,7 +570,7 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task SystemPackageIsInstalledInATransientUnit()
     {
-        // InstallSystemPackage.cs:105-133: a single package is passed to dpkg in the transient unit dsf-package, without update status
+        // InstallSystemPackage.cs:106-134: a single package is passed to dpkg in the transient unit dsf-package, without update status
         await StartDpsAsync(register: false, privileged: true);
         string package = OutsidePath("single.deb");
         File.WriteAllText(package, "not a ZIP file");
@@ -588,7 +588,7 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task CombinedPackageIsUnpackedInstalledAndItsUpdateScriptRun()
     {
-        // InstallSystemPackage.cs:89-104, 135-164 and 172-182
+        // InstallSystemPackage.cs:90-105, 136-165 and 173-183
         await StartDpsAsync(register: false, privileged: true);
         string name = "combined-" + Guid.NewGuid().ToString("N");
         string package = OutsidePath(name + ".zip");

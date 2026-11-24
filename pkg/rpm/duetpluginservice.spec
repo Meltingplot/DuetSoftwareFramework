@@ -46,6 +46,16 @@ fi
 systemctl daemon-reload >/dev/null 2>&1 || :
 # Drop existing per-plugin AppArmor profiles so DPS regenerates them from the current template on its next start
 rm -f /etc/apparmor.d/dsf.* >/dev/null 2>&1 || :
+# The root service runs the commands configured in plugins.json and loads AppArmor profiles made from apparmor.conf, so the dsf user must not
+# be able to change them. Older packages gave both files to dsf, and a changed config file is kept on upgrade. chown -h changes a symlink
+# itself instead of its target, and afterwards dsf can no longer replace the entry, so chmod does not follow one either. A symlink is left in
+# place, the root service refuses to run commands from it and says so in its log
+for file in %{dsfoptdir}/conf/plugins.json %{dsfoptdir}/conf/apparmor.conf ; do
+	if [ -e "$file" ] || [ -L "$file" ] ; then
+		chown -h root:root "$file"
+		[ -L "$file" ] || chmod 644 "$file"
+	fi
+done
 
 %preun
 if [ $1 -eq 0 ] ; then
@@ -78,10 +88,13 @@ fi
 
 %defattr(-,dsf,dsf,-)
 %dir %{dsfoptdir}/plugins
+
+# The root service runs these and the commands configured in plugins.json, so the dsf user must not be able to change them
+%defattr(-,root,root,-)
 %{dsfoptdir}/bin/DuetPluginService
 %{dsfoptdir}/bin/DuetPluginService.*
-%{dsfoptdir}/bin/pipInstall2.py
-%config(noreplace) %{dsfoptdir}/conf/plugins.json
-%config(noreplace) %{dsfoptdir}/conf/apparmor.conf
+%attr(0755,root,root) %{dsfoptdir}/bin/pipInstall2.py
+%config(noreplace) %attr(0644,root,root) %{dsfoptdir}/conf/plugins.json
+%config(noreplace) %attr(0644,root,root) %{dsfoptdir}/conf/apparmor.conf
 
 

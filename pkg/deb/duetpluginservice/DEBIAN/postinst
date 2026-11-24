@@ -1,7 +1,16 @@
 #!/bin/sh
 
-# Set ownership and permissions. The root service runs the Python installer for root plugins, so the dsf user must not be able to change it
-chown -R dsf:dsf /opt/dsf/conf/plugins*
+# Set ownership and permissions. The root service runs the commands configured in plugins.json, loads AppArmor profiles made from apparmor.conf
+# and runs the Python installer for root plugins, so the dsf user must not be able to change them. /opt/dsf/conf belongs to root and has the
+# sticky bit (duetcontrolserver postinst), so dsf cannot replace them either. Older packages gave both files to dsf. chown -h changes a symlink
+# itself instead of its target, and afterwards dsf can no longer replace the entry, so chmod does not follow one either. A symlink is left in
+# place, the root service refuses to run commands from it and says so in its log
+for file in /opt/dsf/conf/plugins.json /opt/dsf/conf/apparmor.conf; do
+    if [ -e "$file" ] || [ -L "$file" ]; then
+        chown -h root:root "$file"
+        [ -L "$file" ] || chmod 644 "$file"
+    fi
+done
 chown root:root /opt/dsf/bin/pipInstall2.py
 chmod 755 /opt/dsf/bin/pipInstall2.py
 

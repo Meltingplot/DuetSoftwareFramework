@@ -35,6 +35,11 @@ public sealed class PluginService(CommandFactory commandFactory, IPermissionMana
     /// <returns>Asynchronous task</returns>
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        if (privileges.SettingsError is not null)
+        {
+            logger.LogError("{Error}", privileges.SettingsError);
+        }
+
         List<Plugin> loadedPlugins = [];
         foreach (string file in Directory.GetFiles(settings.Value.PluginDirectory))
         {

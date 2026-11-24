@@ -77,6 +77,11 @@ public sealed class UninstallPlugin(IPermissionManager permissionManager, Plugin
         // the regular service the files on the virtual SD card and the links to the web files (see InstallPlugin)
         bool removesPluginDirectory = plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser) == privileges.IsPrivileged;
         bool removesSdFiles = !privileges.IsPrivileged;
+        if (removesPluginDirectory)
+        {
+            // The root service removes the files of a root plugin from the plugin directory of its settings
+            privileges.CheckSettings();
+        }
         if (removesPluginDirectory || removesSdFiles)
         {
             if (ForUpgrade)
