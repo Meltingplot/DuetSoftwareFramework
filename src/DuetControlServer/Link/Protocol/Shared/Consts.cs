@@ -42,6 +42,14 @@ public static class Consts
     public const int MaxFilenameLength = 254;
 
     /// <summary>
+    /// Maximum length of a file path including all directories that RRF can hold (in bytes)
+    /// </summary>
+    /// <remarks>
+    /// MaxFilenameLength in RRF Configuration.h. RRF cuts a longer path it gets from the SBC
+    /// </remarks>
+    public const int MaxFilePathLength = 120;
+
+    /// <summary>
     /// Maximum length of the slicer in a SetPrintFileInfo request (in bytes)
     /// </summary>
     public const int MaxGeneratedByLength = 254;

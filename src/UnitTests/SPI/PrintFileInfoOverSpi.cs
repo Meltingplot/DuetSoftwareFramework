@@ -69,13 +69,14 @@ public class PrintFileInfoOverSpi
     /// <summary>
     /// The file name in the request may have 254 UTF-8 bytes (Writer.WritePrintFileInfo). A longer one made the Writer throw ArgumentException on
     /// the link task. Linux allows 255 bytes per name, so the virtual path of a file in 0:/gcodes/ can have up to 265 bytes, here 255 with 93
-    /// characters
+    /// characters. RRF holds 120 bytes of the path (MaxFilenameLength, Configuration.h:143) and cuts a longer one, which a path of 121 bytes in
+    /// 49 characters already exceeds
     /// </summary>
-    [Test]
-    public async Task LongFileNameIsRefusedBeforeTheLink()
+    [TestCase(81, ".g"), TestCase(36, "a.g")]
+    public async Task LongFileNameIsRefusedBeforeTheLink(int euros, string suffix)
     {
         await using Host host = await Host.StartAsync();
-        Assert.That(async () => await SelectAsync(host, new string('\u20AC', 81) + ".g", "G1 X1\n"), Throws.ArgumentException);
+        Assert.That(async () => await SelectAsync(host, new string('\u20AC', euros) + suffix, "G1 X1\n"), Throws.ArgumentException);
         Assert.That(host.Get<JobProcessor>().IsFileSelected, Is.False);
 
         // The link carries on

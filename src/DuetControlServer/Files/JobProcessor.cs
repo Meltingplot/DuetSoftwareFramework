@@ -308,11 +308,11 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
     /// </remarks>
     public async Task<Task> SelectFileAsync(string virtualFile, string physicalFile, bool simulating = false, bool fromJobFile = false, CancellationToken cancellationToken = default)
     {
-        // Analyze and open the file. RRF is told about it in a single request, which cannot take a longer name
+        // Analyze and open the file. RRF keeps its path for the object model and resurrect.g and cannot hold a longer one
         GCodeFileInfo info = await _fileInfoParser.ParseAsync(physicalFile, true);
-        if (Encoding.UTF8.GetByteCount(info.FileName) > Consts.MaxFilenameLength)
+        if (Encoding.UTF8.GetByteCount(info.FileName) > Consts.MaxFilePathLength)
         {
-            throw new ArgumentException($"Filename too long (max {Consts.MaxFilenameLength} bytes)");
+            throw new ArgumentException($"Filename too long (max {Consts.MaxFilePathLength} bytes)");
         }
         if (info.Size > uint.MaxValue)
         {

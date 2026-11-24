@@ -129,10 +129,15 @@ public class PrintFileInfo
     }
 
     /// <summary>
-    /// The SetPrintFileInfo request takes a file name of 254 UTF-8 bytes (Writer.WritePrintFileInfo). M32 of a file with a longer virtual path
-    /// made the Writer throw on the link task, so DCS stopped and the caller got no reply. Now M32 replies with an error and selects nothing
+    /// RRF holds the path of the file it prints in a String of MaxFilenameLength = 120 bytes (Configuration.h:143, PrintMonitor.h:124). In SBC
+    /// mode it cuts a longer one without an error, both in SetPrintFileInfo (SbcInterface.cpp:563-565, DataTransfer.cpp:706) and in M32 itself
+    /// (GCodes2.cpp:1189-1190, BinaryParser.cpp:595). It reports the cut path as job.file.fileName and job.lastFileName (PrintMonitor.cpp:76,
+    /// :89), which UpdateService applies over the selected file's path, and it writes it into resurrect.g (M23, GCodes.cpp:1831). In standalone
+    /// mode M32 of a quoted path of more than 120 bytes fails with "string too long" (StringParser.cpp:1716-1717), and the wiki documents 120
+    /// characters for full paths (Gcodes.md:266). Before, M32 of a virtual path of more than 254 bytes also made the Writer throw on the link
+    /// task, so DCS stopped. Now M32 of a path RRF cannot hold replies with an error and selects nothing
     /// </summary>
-    [TestCase(244, false), TestCase(245, true)]
+    [TestCase(110, false), TestCase(111, true), TestCase(245, true)]
     public async Task LongFileNameIsRefused(int nameLength, bool refused)
     {
         _host = await FakeFirmwareHost.StartAsync();
