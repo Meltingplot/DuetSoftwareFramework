@@ -444,4 +444,45 @@ public class RootSymlinks
     }
 
     #endregion
+
+    #region HTTP settings written by the DuetPi management plugin
+
+    /// <summary>
+    /// The DuetPi management plugin runs as root and writes /opt/dsf/conf/http.json from a template when M586 changes HTTP or HTTPS (HTTP.cs:147-148).
+    /// dsf may put a symlink in place of the file, so the plugin replaces it instead of writing through it
+    /// </summary>
+    [Test]
+    public async Task HttpSettingsReplaceASymlinkInsteadOfWritingThroughIt()
+    {
+        string template = Path.Combine(_directory, "http-simple.json"), settings = Physical("/opt/dsf/conf/http.json");
+        File.WriteAllText(template, "{ \"Url\": \"http://*:{httpPort}\", \"Secure\": \"https://*:{httpsPort}\" }\n");
+        string fileOfRoot = AddFileOfRoot("shadow", "file of root\n");
+        PlantSymlink("/opt/dsf/conf/http.json", fileOfRoot);
+
+        await DuetPiManagementPlugin.Network.Protocols.HTTP.WriteConfig(template, settings);
+
+        Assert.Multiple(() =>
+        {
+            AssertUnchanged(fileOfRoot, "file of root\n");
+            Assert.That(new FileInfo(settings).LinkTarget, Is.Null, "http.json is still a symlink");
+            Assert.That(File.ReadAllText(settings), Is.EqualTo("{ \"Url\": \"http://*:80\", \"Secure\": \"https://*:443\" }\n"));
+        });
+    }
+
+    /// <summary>
+    /// The plugin replaces an existing file as well
+    /// </summary>
+    [Test]
+    public async Task HttpSettingsReplaceTheFile()
+    {
+        string template = Path.Combine(_directory, "http-simple.json"), settings = Physical("/opt/dsf/conf/http.json");
+        File.WriteAllText(template, "{ \"Url\": \"http://*:{httpPort}\" }\n");
+        AddFile("/opt/dsf/conf/http.json", "{ \"Url\": \"http://*:8080\", \"Old\": \"settings that are longer than the new ones\" }\n");
+
+        await DuetPiManagementPlugin.Network.Protocols.HTTP.WriteConfig(template, settings);
+
+        Assert.That(File.ReadAllText(settings), Is.EqualTo("{ \"Url\": \"http://*:80\" }\n"));
+    }
+
+    #endregion
 }
