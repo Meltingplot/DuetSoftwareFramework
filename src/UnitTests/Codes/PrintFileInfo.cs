@@ -2,7 +2,9 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using DuetAPI.ObjectModel;
 using DuetControlServer.Files;
+using DuetControlServer.Files.Parser;
 using DuetControlServer.Link;
 using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
@@ -35,7 +37,14 @@ public class PrintFileInfo
 
     private JobProcessor Jobs => Host.Services.GetRequiredService<JobProcessor>();
 
-    private void WriteJob(string fileName, string content) => System.IO.File.WriteAllText(Path.Combine(Host.BaseDirectory, "gcodes", fileName), content);
+    private string WriteJob(string fileName, string content)
+    {
+        string path = Path.Combine(Host.BaseDirectory, "gcodes", fileName);
+        System.IO.File.WriteAllText(path, content);
+        return path;
+    }
+
+    private Task<GCodeFileInfo> ParseAsync(string path) => Host.Services.GetRequiredService<FileInfoParser>().ParseAsync(path, false);
 
     /// <summary>
     /// Wait for the job loop to finish
@@ -85,5 +94,36 @@ public class PrintFileInfo
         Assert.That(await m32.WaitAsync(FakeFirmwareHost.DefaultTimeout), Is.EqualTo("\n"));
         await WaitForJobEndAsync();
         Assert.That(SentFileInfos(), Is.EqualTo(new[] { "0:/gcodes/next.g" }));
+    }
+
+    /// <summary>
+    /// IdeaMaker writes the filament usage of each extruder with its index (";Material#1 Used: 868.0", Settings.cs:369). FileInfoParser
+    /// grows the filament list up to the index from the comment (FileInfoParser.cs:473-480), so a large index made it allocate and fill that
+    /// many floats, and removing the leading zeros again (FileInfoParser.cs:116-120) took quadratic time. RRF ignores an index of MaxFilaments
+    /// or more (FileInfoParser.cpp:778)
+    /// </summary>
+    [Test]
+    public async Task FilamentIndexIsBounded()
+    {
+        _host = await FakeFirmwareHost.StartAsync();
+        GCodeFileInfo info = await ParseAsync(WriteJob("job.g", ";Material#0 Used: 5.0\n;Material#100000 Used: 1.0\nG1 X1\n"));
+        Assert.That(info.Filament, Is.EqualTo(new[] { 5F }));
+    }
+
+    /// <summary>
+    /// A list of filament usages in one comment (PrusaSlicer, Settings.cs:368) or one comment per filament adds as many filaments as there are
+    /// values. RRF keeps MaxFilaments of them (FileInfoParser.cpp:799-804)
+    /// </summary>
+    [Test]
+    public async Task FilamentCountIsBounded()
+    {
+        _host = await FakeFirmwareHost.StartAsync();
+        string values = string.Join(", ", Enumerable.Range(1, 30).Select(i => $"{i}.0"));
+        GCodeFileInfo info = await ParseAsync(WriteJob("job.g", $"; filament used [mm] = {values}\nG1 X1\n"));
+        Assert.That(info.Filament, Is.EqualTo(Enumerable.Range(1, 20).Select(i => (float)i)));
+
+        string lines = string.Concat(Enumerable.Range(1, 30).Select(i => $";Estimated Build Volume: {i}.0\n"));
+        info = await ParseAsync(WriteJob("job.g", lines + "G1 X1\n"));
+        Assert.That(info.Filament, Has.Count.EqualTo(20));
     }
 }

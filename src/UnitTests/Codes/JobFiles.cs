@@ -396,7 +396,7 @@ public class JobFiles
         Assert.That(await System.IO.File.ReadAllTextAsync(path), Is.EqualTo(expected));
     }
 
-    [Test, Explicit("UpdateSimulatedTimeAsync seeks to the end only for files of at least 64 bytes (FileInfoParser.cs:929-945), so it overwrites the start of shorter files")]
+    [Test, Explicit("UpdateSimulatedTimeAsync seeks to the end only for files of at least 64 bytes (FileInfoParser.cs:945-961), so it overwrites the start of shorter files")]
     public async Task SimulationOfShortFile()
     {
         await StartAsync();
