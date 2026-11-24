@@ -237,6 +237,7 @@ public class DpsRootService : DpsTestBase
         int pid = Dps.Store.Processes["Root"].Id;
         Assert.That((await GetFromDcsAsync("Root"))!.Pid, Is.EqualTo(pid));
         Assert.That(await WaitForDcsMessageAsync("[Root]: root"), Is.True);
+        Assert.That(FakeTool.Calls(Dps.Settings.AppArmorExecCommand), Is.Empty, "A plugin with SuperUser has no profile to start in");
 
         await StopAsync("Root");
         Assert.That(Dps.Log.Contains("Process stopped by SIGTERM"), Is.True);

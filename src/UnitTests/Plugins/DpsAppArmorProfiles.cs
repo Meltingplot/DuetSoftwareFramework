@@ -145,18 +145,108 @@ public class DpsAppArmorProfiles
     [Test]
     public async Task ShippedTemplateConfinesThePluginToItsDirectory()
     {
-        // pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf: the profile attaches to the files below the plugin directory (line 4) and gives the
-        // plugin its own directory (lines 26-27); all three placeholders are replaced
+        // pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf: the profile is named dsf.<id>, the name DPS starts the plugin in (StartPlugin.cs:167-173),
+        // and gives the plugin its own directory (lines 28-29); all placeholders are replaced. It has no attachment: a profile that attached to the files below
+        // the plugin directory never confined bash and the interpreter of a Python plugin
         _settings.AppArmorTemplate = DpsHost.ShippedFile("pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf");
         string profile = await InstallAsync(SbcPermissions.NetworkAccess | SbcPermissions.ReadSystem);
-        Assert.That(profile, Does.Contain($"\n{PluginDirectory}/Confined/** {{\n"));
+        Assert.That(profile, Does.Contain("\nprofile dsf.Confined {\n"));
+        Assert.That(profile.Split('\n').Count(line => line.TrimEnd().EndsWith('{')), Is.EqualTo(1), "The profile is the only block");
         Assert.That(profile, Does.Contain($"  owner {PluginDirectory}/Confined/ r,\n  owner {PluginDirectory}/Confined/** rwmlk,\n"));
         Assert.That(profile, Does.Contain("  #include <abstractions/base>\n  #include <abstractions/bash>\n  #include <abstractions/python>\n  #include <abstractions/user-tmp>\n  #include <abstractions/nameservice>\n"));
         Assert.That(profile, Does.Contain($"  {SdDirectory}/sys/ r,\n  {SdDirectory}/sys/** r,\n"));
         Assert.That(profile, Does.Contain("  signal (send) peer=@{profile_name},"));
-        Assert.That(profile, Does.Not.Contain("{pluginDirectory}").And.Not.Contain("{includes}").And.Not.Contain("{rules}"));
+        Assert.That(profile, Does.Not.Contain("{pluginDirectory}").And.Not.Contain("{pluginId}").And.Not.Contain("{includes}").And.Not.Contain("{rules}"));
         Assert.That(profile.TrimEnd(), Does.EndWith("}"));
     }
+
+    /// <summary>
+    /// Bash runs a Python plugin in the profile and executes the interpreter of the venv, which the kernel resolves to the interpreter the venv links to
+    /// (pipInstall2.py creates the venv without --copies: venv/bin/python -> python3 -> /usr/bin/python3, which is python3.13 on Debian trixie and python3.11 on
+    /// bookworm). The rule for it must give ix, so that the interpreter stays in the profile. It said python3.[0-9]+, but + is no glob character of AppArmor
+    /// and stays a literal + (apparmor_parser -D rule-exprs: 3\.[0-9]\+), so it matched none of these
+    /// </summary>
+    [TestCase("/usr/bin/python3")]
+    [TestCase("/usr/bin/python3.9")]
+    [TestCase("/usr/bin/python3.11")]
+    [TestCase("/usr/bin/python3.12")]
+    [TestCase("/usr/bin/python3.13")]
+    public async Task ShippedTemplateLetsBashExecutePythonInTheProfile(string interpreter)
+    {
+        _settings.AppArmorTemplate = DpsHost.ShippedFile("pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf");
+        string profile = await InstallAsync(SbcPermissions.None);
+        Assert.That(PermissionsOf(profile, interpreter), Does.Contain("i").And.Contain("x"));
+        Assert.That(PermissionsOf(profile, "/usr/bin/perl"), Does.Not.Contain("x"), "Other programs are not executed");
+    }
+
+    /// <summary>
+    /// Permissions that the file rules of a profile give for a path, as one string of mode characters. The globbing of apparmor.d(5) ("Globbing (AARE)": *, **,
+    /// ?, [...], {a,b}) is converted like apparmor_parser converts it (apparmor_parser -D rule-exprs): * and ** that make up a whole path component, directly
+    /// after a / and before a / or the end, need one character other than /, every other character is literal. Includes and rules with variables are not looked
+    /// at, owner rules count as if the file belonged to the plugin
+    /// </summary>
+    /// <param name="profile">Content of the profile</param>
+    /// <param name="path">Path to check</param>
+    /// <returns>Mode characters, sorted</returns>
+    private static string PermissionsOf(string profile, string path)
+    {
+        SortedSet<char> permissions = [];
+        foreach (string line in profile.Split('\n'))
+        {
+            System.Text.RegularExpressions.Match rule = System.Text.RegularExpressions.Regex.Match(line, @"^\s*(owner\s+)?(?<path>/\S*)\s+(?<modes>[a-zA-Z]+),\s*$");
+            if (rule.Success && !rule.Groups["path"].Value.Contains("@{") &&
+                System.Text.RegularExpressions.Regex.IsMatch(path, "^" + AareToRegex(rule.Groups["path"].Value) + "$"))
+            {
+                permissions.UnionWith(rule.Groups["modes"].Value);
+            }
+        }
+        return string.Concat(permissions);
+    }
+
+    private static string AareToRegex(string aare)
+    {
+        System.Text.StringBuilder regex = new();
+        int braces = 0;
+        for (int i = 0; i < aare.Length; i++)
+        {
+            switch (aare[i])
+            {
+                case '*' when i + 1 < aare.Length && aare[i + 1] == '*':
+                    regex.Append(IsWholeComponent(aare, i, 2) ? "[^/].*" : ".*");
+                    i++;
+                    break;
+                case '*':
+                    regex.Append(IsWholeComponent(aare, i, 1) ? "[^/][^/]*" : "[^/]*");
+                    break;
+                case '?':
+                    regex.Append("[^/]");
+                    break;
+                case '[':
+                    int end = aare.IndexOf(']', i + 1);
+                    regex.Append(aare, i, end - i + 1);
+                    i = end;
+                    break;
+                case '{':
+                    braces++;
+                    regex.Append('(');
+                    break;
+                case ',' when braces > 0:
+                    regex.Append('|');
+                    break;
+                case '}' when braces > 0:
+                    braces--;
+                    regex.Append(')');
+                    break;
+                default:
+                    regex.Append(System.Text.RegularExpressions.Regex.Escape(aare[i].ToString()));
+                    break;
+            }
+        }
+        return regex.ToString();
+    }
+
+    private static bool IsWholeComponent(string aare, int start, int length) =>
+        start > 0 && aare[start - 1] == '/' && (start + length == aare.Length || aare[start + length] == '/');
 
     [Test]
     public async Task ProfileIsWrittenAndLoaded()

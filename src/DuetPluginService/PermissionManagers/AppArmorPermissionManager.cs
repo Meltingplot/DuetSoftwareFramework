@@ -31,7 +31,7 @@ public class AppArmorPermissionManager(IOptions<Settings> settings) : IPermissio
     {
         // Load template
         string profile = await File.ReadAllTextAsync(_settings.AppArmorTemplate, cancellationToken);
-        profile = profile.Replace("{pluginDirectory}", Path.Combine(pluginDirectory, plugin.Id));
+        profile = profile.Replace("{pluginDirectory}", Path.Combine(pluginDirectory, plugin.Id)).Replace("{pluginId}", plugin.Id);
 
         // Build security profile
         StringBuilder includes = new(), rules = new();

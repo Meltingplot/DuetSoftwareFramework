@@ -270,7 +270,7 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     /// <summary>
     /// DCS skips manifests without id or name at start (DuetControlServer/Model/PeriodicUpdateService.cs), DPS does the same with the same check
     /// (DuetSharedLibrary/PluginManifestCheck.cs). Otherwise the root service would regenerate the missing profile "dsf." for it (PluginService.cs:62-112),
-    /// whose attachment is the whole plugin directory, Path.Combine(pluginDirectory, "") (AppArmorPermissionManager.cs:34)
+    /// whose rules give the whole plugin directory, Path.Combine(pluginDirectory, "") (AppArmorPermissionManager.cs:34)
     /// </summary>
     [Test]
     public async Task ManifestWithoutIdIsNotLoadedAtStart()
