@@ -276,8 +276,8 @@ public sealed class CustomEndpointMiddleware(ILogger<CustomEndpointMiddleware> l
         }
 
         // Send it to the third-party application and get a response type
-        await endpointConnection.SendHttpRequest(receivedHttpRequest);
-        SendHttpResponse httpResponse = await endpointConnection.GetHttpResponse();
+        await endpointConnection.SendHttpRequest(receivedHttpRequest, context.RequestAborted);
+        SendHttpResponse httpResponse = await endpointConnection.GetHttpResponse(context.RequestAborted);
 
         // Send the response to the HTTP client
         context.Response.StatusCode = httpResponse.StatusCode;
