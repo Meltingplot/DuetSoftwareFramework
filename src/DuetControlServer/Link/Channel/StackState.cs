@@ -70,11 +70,14 @@ public sealed class StackState
     /// <summary>
     /// Called to flag if the pipeline is busy or not
     /// </summary>
+    /// <remarks>
+    /// The stack item remains busy if another code has been written to it after the pending codes were sent
+    /// </remarks>
     public void SetBusy(bool isBusy)
     {
         lock (_pipelineStackItem)
         {
-            _pipelineStackItem.Busy = isBusy;
+            _pipelineStackItem.Busy = isBusy || PendingCodes.Reader.TryPeek(out _);
         }
     }
 

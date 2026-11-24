@@ -37,6 +37,12 @@ public partial class FileInfoParser(CodeFactory codeFactory, Expressions express
     /// </summary>
     private const float DefaultFilamentDiameter = 1.75F;
 
+    /// <summary>
+    /// Maximum number of filaments in the file information, MaxFilaments of RRF on Duet 3 (Configuration.h:207). RRF stops its own parser
+    /// there (FileInfoParser.cpp:778, 799) and takes no more from the SBC (DataTransfer.cpp:667)
+    /// </summary>
+    private const int MaxFilaments = 20;
+
     // Filters are configured as patterns, so they are compiled once here instead of on every parse
     private readonly List<Regex> _layerHeightFilters = Settings.CompileFilters(settings.Value.LayerHeightFilters);
     private readonly List<Regex> _numLayersFilters = Settings.CompileFilters(settings.Value.NumLayersFilters);
@@ -463,17 +469,22 @@ public partial class FileInfoParser(CodeFactory codeFactory, Expressions express
                     {
                         if (match.Groups.TryGetValue("index", out Group? indexGroup) && int.TryParse(indexGroup.Value, out int index))
                         {
-                            for (int i = fileInfo.Filament.Count; i <= index; i++)
+                            // Like RRF, ignore an index beyond the last filament instead of growing the list up to it
+                            if (index < MaxFilaments)
                             {
-                                fileInfo.Filament.Add(0F);
+                                for (int i = fileInfo.Filament.Count; i <= index; i++)
+                                {
+                                    fileInfo.Filament.Add(0F);
+                                }
+                                fileInfo.Filament[index] = filamentUsage;
                             }
-                            fileInfo.Filament[index] = filamentUsage;
                         }
                         else
                         {
                             foreach (Capture capture in mmGroup.Captures.Cast<Capture>())
                             {
-                                if (float.TryParse(capture.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out filamentUsage) &&
+                                if (fileInfo.Filament.Count < MaxFilaments &&
+                                    float.TryParse(capture.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out filamentUsage) &&
                                     float.IsFinite(filamentUsage))
                                 {
                                     fileInfo.Filament.Add(filamentUsage);
@@ -491,17 +502,22 @@ public partial class FileInfoParser(CodeFactory codeFactory, Expressions express
                     {
                         if (match.Groups.TryGetValue("index", out Group? indexGroup) && int.TryParse(indexGroup.Value, out int index))
                         {
-                            for (int i = fileInfo.Filament.Count; i <= index; i++)
+                            // Like RRF, ignore an index beyond the last filament instead of growing the list up to it
+                            if (index < MaxFilaments)
                             {
-                                fileInfo.Filament.Add(0F);
+                                for (int i = fileInfo.Filament.Count; i <= index; i++)
+                                {
+                                    fileInfo.Filament.Add(0F);
+                                }
+                                fileInfo.Filament[index] = filamentUsage * 1000F;
                             }
-                            fileInfo.Filament[index] = filamentUsage * 1000F;
                         }
                         else
                         {
                             foreach (Capture capture in mGroup.Captures.Cast<Capture>())
                             {
-                                if (float.TryParse(capture.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out filamentUsage) &&
+                                if (fileInfo.Filament.Count < MaxFilaments &&
+                                    float.TryParse(capture.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out filamentUsage) &&
                                     float.IsFinite(filamentUsage))
                                 {
                                     fileInfo.Filament.Add(filamentUsage * 1000F);
@@ -514,7 +530,7 @@ public partial class FileInfoParser(CodeFactory codeFactory, Expressions express
 
                 if (match.Groups.TryGetValue("cm3", out Group? cm3Group))
                 {
-                    if (filamentDiameter > 0F && float.TryParse(cm3Group.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out float filamentVolume) &&
+                    if (fileInfo.Filament.Count < MaxFilaments && filamentDiameter > 0F && float.TryParse(cm3Group.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out float filamentVolume) &&
                         float.IsFinite(filamentVolume))
                     {
                         fileInfo.Filament.Add(filamentVolume * 1000F / (MathF.PI * MathF.Pow(filamentDiameter / 2F, 2F)));

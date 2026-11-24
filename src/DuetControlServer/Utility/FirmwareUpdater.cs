@@ -26,8 +26,15 @@ namespace DuetControlServer.Utility;
 /// <param name="lifetime">Host application lifetime</param>
 /// <param name="logger">Logger instance</param>
 /// <param name="settings">Settings</param>
-public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath, Model.ObjectModel model, IHostApplicationLifetime lifetime, ILogger<FirmwareUpdater> logger, IOptions<Settings> settings)
+/// <param name="timeProvider">Clock for the update timeout, the system clock if null</param>
+public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath, Model.ObjectModel model, IHostApplicationLifetime lifetime, ILogger<FirmwareUpdater> logger, IOptions<Settings> settings,
+    TimeProvider? timeProvider = null)
 {
+    /// <summary>
+    /// Clock for the update timeout. Its time stamps do not change with the system time
+    /// </summary>
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+
     /// <summary>
     /// How long to wait for an expansion board to report the firmware version it was updated to
     /// </summary>
@@ -190,9 +197,9 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
                     // status cannot be used for that because a package upgrade in progress pins it to
                     // Updating, see SetUpdateStatus, so wait for the board to report the new version instead
                     string? newVersion = firmwareVersions[board.FirmwareFileName!];
-                    DateTime updateTimeout = DateTime.Now.Add(ExpansionUpdateTimeout);
+                    long updateStart = _timeProvider.GetTimestamp();
                     bool updated = false;
-                    while (!updated && DateTime.Now < updateTimeout)
+                    while (!updated && _timeProvider.GetElapsedTime(updateStart) < ExpansionUpdateTimeout)
                     {
                         await Task.Delay(2000, cancellationToken);
 
@@ -407,9 +414,9 @@ public class FirmwareUpdater(CodeFactory codeFactory, FilePathResolver filePath,
                     // status cannot be used for that because a package upgrade in progress pins it to
                     // Updating, see SetUpdateStatus, so wait for the board to report the new version instead
                     string? newVersion = firmwareVersions[board.FirmwareFileName!];
-                    DateTime updateTimeout = DateTime.Now.Add(ExpansionUpdateTimeout);
+                    long updateStart = _timeProvider.GetTimestamp();
                     bool updated = false;
-                    while (!updated && DateTime.Now < updateTimeout)
+                    while (!updated && _timeProvider.GetElapsedTime(updateStart) < ExpansionUpdateTimeout)
                     {
                         await Task.Delay(2000, cancellationToken);
 

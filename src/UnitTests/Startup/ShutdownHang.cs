@@ -32,7 +32,7 @@ namespace UnitTests.Startup;
 /// offline only, the third also on the lab printer:
 /// <list type="number">
 /// <item>A code of a client that is still pending was never completed: the stages of the code pipeline stopped reading their queues on ApplicationStopping,
-/// and LinkService.StopAsync cancels the codes of the link into the Executed queue afterwards (LinkService.cs:249, LinkInterface.cs:696-702,
+/// and LinkService.StopAsync cancels the codes of the link into the Executed queue afterwards (LinkService.cs:249, LinkInterface.cs:699-705,
 /// Channel/Processor.cs:1444-1484, CodeProcessor.cs:277-285). The IPC connection waits for the code (SimpleCode.ExecuteAsync awaits it without a token),
 /// and the IPC server waits for its connections until ApplicationStopped (IPC/Server.cs:123), which the host signals only after all services have stopped
 /// (Host.cs:272 of Microsoft.Extensions.Hosting).
