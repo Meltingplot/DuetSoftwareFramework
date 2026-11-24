@@ -757,10 +757,15 @@ alone. The way from a G-code line to the parser was not part of the target, and 
 - **FZ-E1. Signed overflow of the int32 operators.** Unary minus (`ExpressionParser.cpp:210`, "TODO overflow check" in the code), `+`
   (`:531`), `-` (`:567`) and `*` (`:581`), e.g. `{65536 * 65536}`. Undefined behaviour; that it wraps on the board was not checked.
   Low.
-- **FZ-E2. `mod(INT_MIN, -1)`.** The check before `rslt.iVal %= nextOperand.iVal` (`:2060`) only excludes 0. On x86 it traps; on the
-  Cortex-M7 it was not checked. Low to medium.
+- **FZ-E2. `mod(INT_MIN, -1)`.** The check before `rslt.iVal %= nextOperand.iVal` (`:2060`) only excludes 0. On x86 it traps. On the
+  MB6HC the `%` is `sdiv` + `mls` (`0x41a25c` in the MB6HC build of RRF #108; the addresses below are from the same build). Per the
+  SDIV pseudocode of the ARMv7-M ARM, the quotient keeps its low 32 bits (0x80000000), so the remainder is 0, the right value;
+  undefined behaviour in C++ only, not run on a board. Low.
 - **FZ-E3. Inclusive float to int32 range checks.** `floor`, `ceil` and `round` (`:2034-2036`) and `pow` (`:2293-2295`) test
-  `f <= (float)INT32_MAX`, which admits 2^31. `pow(2, 31)` gives INT_MIN, which then reaches B6 (RRFLibraries #3). Wrong value. Low.
+  `f <= (float)INT32_MAX`, which admits 2^31 (`(float)INT32_MAX` is 2^31). On the host, `pow(2, 31)` gives INT_MIN, which then reaches
+  B6 (RRFLibraries #3). On the MB6HC, `floor` and the others convert with `vcvt.s32.f32` (`0x41a6ae`), and newlib `lrintf` does the
+  same for an exponent above 30 (`0x4cdd84`, `0x4cddf4`). VCVT saturates, so the board gives 2147483647 instead of the float
+  2147483648; read from the disassembly, not run on a board. Wrong value by one. Low.
 - **FZ-E7. Signed overflows in `SafeStrptime`.** `%Y` of INT_MIN (`strptime.cpp:186`) and `%d` of INT_MAX (`:285`). Wrong date. Low.
 - **Observations without a sanitizer report:**
   - FZ-O1: `ObjectModel.cpp:80-84` ignores a failure of `gmtime_r`, so a date-time beyond its year range prints uninitialised `tm`
@@ -772,3 +777,7 @@ alone. The way from a G-code line to the parser was not part of the target, and 
   - FZ-O4: `BinaryParser.cpp:533-611` calls the array parsers without checking for `{`, which `StringParser.cpp:1370` does. Whether DSF
     can send such a parameter was not checked.
   - `labs(INT_MIN)` at `ExpressionParser.cpp:1937` is undefined only where `long` has 32 bits, as on the board; the host cannot show it.
+  - FZ-O5 (found by reading, while checking FZ-E3): `Kinematics::RoundToInt32` (`Kinematics.cpp:366`) and
+    `Move::MotorMovementToSteps` (`Move.cpp:1276`) compare with `(float)(INT32_MAX - 10)`, which is 2^31 in float, so the margin of 10
+    steps is lost and a position of exactly 2^31 microsteps passes; `lrintf` then saturates to INT32_MAX on the MB6HC (see FZ-E3).
+    Motion code: what this does to the moves that follow was not checked. Recorded only.
