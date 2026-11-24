@@ -302,7 +302,7 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
     /// <param name="fromJobFile">Whether the job file being printed is selecting this file</param>
     /// <param name="cancellationToken">Optional cancellation token</param>
     /// <returns>Task that completes when the firmware has been told about the file, to be awaited after releasing the lock</returns>
-    /// <exception cref="ArgumentException">The name of the file is too long</exception>
+    /// <exception cref="ArgumentException">The name of the file is too long or the file is too big</exception>
     /// <remarks>
     /// This class has to be locked when this method is called
     /// </remarks>
@@ -313,6 +313,11 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
         if (Encoding.UTF8.GetByteCount(info.FileName) > Consts.MaxFilenameLength)
         {
             throw new ArgumentException($"Filename too long (max {Consts.MaxFilenameLength} bytes)");
+        }
+        if (info.Size > uint.MaxValue)
+        {
+            // RepRapFirmware has 32-bit file positions, which it reports back when the job is paused, and does not take larger files either
+            throw new ArgumentException($"File too big (max {uint.MaxValue} bytes)");
         }
         CodeFile file = _fileFactory.Create(virtualFile, physicalFile, CodeChannel.File);
 

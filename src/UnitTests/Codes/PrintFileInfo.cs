@@ -1,5 +1,6 @@
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using DuetAPI.ObjectModel;
@@ -16,7 +17,7 @@ namespace UnitTests.Codes;
 /// <summary>
 /// The information about a selected job file that DSF sends to RRF with SetPrintFileInfo. JobProcessor.SelectFileAsync parses the file
 /// (JobProcessor.cs:312), ApplyFileSelectionAsync copies the information into the object model and asks the link task to send it
-/// (JobProcessor.cs:355-362, LinkInterface.SetPrintFileInfo), and the link task writes it into its next transfer (LinkService.cs:404-411)
+/// (JobProcessor.cs:360-367, LinkInterface.SetPrintFileInfo), and the link task writes it into its next transfer (LinkService.cs:404-411)
 /// </summary>
 [TestFixture]
 public class PrintFileInfo
@@ -151,5 +152,30 @@ public class PrintFileInfo
             await WaitForJobEndAsync();
             Assert.That(SentFileInfos(), Is.EqualTo(new[] { "0:/gcodes/" + name }));
         }
+    }
+
+    /// <summary>
+    /// File positions are 32-bit values in the SBC protocol and in RRF (CodeHeader.FilePosition, Writer.cs:103; FilePosition in RepRapFirmware.h:726).
+    /// RRF reports the position of a pause back (PrintPaused), and JobProcessor rewinds the file to it on resume (JobProcessor.cs:677-679), so in a
+    /// file of 4 GiB or more a pause past 4 GiB resumed near the start of the file. RRF does not take such files either (FAT32 only, FF_FS_EXFAT 0 in
+    /// ffconf.h:244), and M560 refuses them (CodeStream.cs:636-640). The file is sparse, with valid codes where FileInfoParser reads
+    /// </summary>
+    [TestCase("M32 \"big.g\"")]
+    [TestCase("M37 P\"big.g\"")]
+    public async Task FileOf4GiBIsRefused(string code)
+    {
+        _host = await FakeFirmwareHost.StartAsync();
+        byte[] codes = Encoding.ASCII.GetBytes(string.Concat(Enumerable.Repeat("G1 X1\n", 100000)));
+        using (FileStream stream = new(Path.Combine(Host.BaseDirectory, "gcodes", "big.g"), FileMode.Create))
+        {
+            stream.Write(codes);
+            stream.SetLength((long)uint.MaxValue + 1);
+            stream.Seek(-codes.Length, SeekOrigin.End);
+            stream.Write(codes);
+        }
+
+        Assert.That(await Host.ExecuteAsync(code), Does.StartWith("Error: File too big"));
+        Assert.That(Jobs.IsFileSelected, Is.False);
+        Assert.That(SentFileInfos(), Is.Empty);
     }
 }
