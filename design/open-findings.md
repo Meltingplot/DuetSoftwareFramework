@@ -128,12 +128,10 @@ The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the tr
 
 ### HTTP: DuetWebServer and DuetHttpClient (#123)
 
+- **Fixed and removed from this list (2026-11-24):** H3 (fix/rr-upload-in-place; a failed `rr_upload` with a wrong crc32 deleted the file it was meant to replace, and an upload under the name of the file being printed truncated it under the job, census FS2). rr_upload writes `name.part` and moves it over the file only on success, as PUT /machine/file and RRF do (`RepRapFirmwareEndpoints.cs:258-298`, `MachineEndpoints.cs:269-291`, RRF `UploadingNetworkResponder.cpp:59-62, 108-128`); a running job keeps reading its old file. Tests: `WebServer.WebServerFindings.FailedUploadKeepsExistingFile`, no longer explicit, and `UploadKeepsContentOfOpenFile`.
 - **H2. Expired sessions stay in DCS for good when many expire at once.** Printer: 40 parallel logins left 4, each logged "Failed to unregister … (11) Resource temporarily unavailable".
   - Each expiry opens its own IPC connection (`SessionStorage.cs:404, 420-422`). The DCS backlog is 4 (`Settings.cs:116`, also in the printer's `config.json`), and there is no retry.
   - Test: `WebServer.WebServerFindings.ExpiredSessionsAreRemovedFromDcs`.
-- **H3. A failed `rr_upload` (wrong crc32) deletes the file it was meant to replace.** Printer.
-  - DWS writes into the target (`RepRapFirmwareEndpoints.cs:261-285`). RRF and DWS's own PUT use a `.part` file (`UploadingNetworkResponder.cpp:59-62, 106-128`, `MachineEndpoints.cs:269-291`).
-  - Test: `FailedUploadKeepsExistingFile`.
 - **H4. POST /machine/file/move with an invalid form gives an unhandled 500.** Printer. `ReadFormAsync` sits outside the try (`MachineEndpoints.cs:397`). Test: `MoveWithInvalidFormIsHandled`.
 - **H5. PUT /machine/directory or /machine/file with `?` plus a non-ASCII character gives an unhandled 500, but creates the item anyway.** Printer. `UrlPathEncode` stops at `?` (`MachineEndpoints.cs:294, 504`). Test: `CreatedLocationIsEncoded`.
 - **H6. DWS never answers a WebSocket close frame, so clients see 1006.** Printer. `WebSocketEndpoint.cs:283-287`, `CustomEndpointMiddleware.cs:156-160`. Test: `ClientCloseIsAnswered`.
