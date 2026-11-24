@@ -274,7 +274,7 @@ public class JobFiles
     [Test]
     public async Task ResumeWhileDraining()
     {
-        // A resume that arrives before the job task has reached the pause must not be lost (JobProcessor.cs:228-232, 649-654, 935-939)
+        // A resume that arrives before the job task has reached the pause must not be lost (JobProcessor.cs:228-232, 649-654, 943-947)
         await StartAsync(bufferedPrintCodes: 1);
         using ManualResetEventSlim release = new();
         Host.Firmware.OnCode("G4", _ => release.IsSet ? FakeReply.Ok() : FakeReply.NotFinished);
@@ -309,7 +309,7 @@ public class JobFiles
         release.Set();
         await WaitForPausedAsync();
 
-        // M0 cancels a paused print, which is then reported as cancelled and not aborted (MCodeHandler.cs:87-118, JobProcessor.cs:788-792, 952-967)
+        // M0 cancels a paused print, which is then reported as cancelled and not aborted (MCodeHandler.cs:87-118, JobProcessor.cs:788-792, 960-975)
         Assert.That(await Host.ExecuteAsync("M0"), Is.EqualTo("\n"));
         await WaitForJobEndAsync();
         Assert.That(JobCodes(), Is.EqualTo(new[] { "G1 X1", "G4 P1" }));
@@ -344,7 +344,7 @@ public class JobFiles
     [Test]
     public async Task SelectFileFromJob()
     {
-        // A job may start another file with M32, which JobProcessor starts when the first one has ended (JobProcessor.cs:321-332, 869-875)
+        // A job may start another file with M32, which JobProcessor starts when the first one has ended (JobProcessor.cs:321-332, 869-883)
         await StartAsync();
         WriteJob("second.g", "G1 Y1\n");
         WriteJob("job.g", "G1 X1\nM32 \"second.g\"\nG1 X2\n");

@@ -870,7 +870,15 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
                         // Try to update the last simulated time
                         if (lastDuration > 0)
                         {
-                            await _fileInfoParser.UpdateSimulatedTimeAsync(physicalFileName, lastDuration.Value, stoppingToken);
+                            try
+                            {
+                                await _fileInfoParser.UpdateSimulatedTimeAsync(physicalFileName, lastDuration.Value, stoppingToken);
+                            }
+                            catch (Exception e) when (e is not OperationCanceledException)
+                            {
+                                // The file may have been deleted or may not be writable
+                                _logger.LogWarning(e, "Failed to update simulation time of {File}", physicalFileName);
+                            }
                         }
                         else
                         {

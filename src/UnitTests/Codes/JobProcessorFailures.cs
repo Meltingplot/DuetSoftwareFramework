@@ -16,7 +16,8 @@ namespace UnitTests.Codes;
 
 /// <summary>
 /// Failures around a job that must neither stop the link nor end the job loop of <see cref="JobProcessor"/>: the variable requests of the rewind
-/// after a pause that wait for RRF, are cancelled or are refused, and the file that a job selects for the next one when the link is reset
+/// after a pause that wait for RRF, are cancelled or are refused, the file that a job selects for the next one when the link is reset, and the
+/// simulated time that cannot be written back
 /// </summary>
 [TestFixture]
 public class JobProcessorFailures
@@ -408,5 +409,29 @@ public class JobProcessorFailures
         // Whether the machine is halted here depends on whether DSF wrote anything before the reset (see the reset tests above), so only the reply
         // of M32 is checked
         await M32RepliesAsync("third.g");
+    }
+
+    [Test]
+    public async Task SimulatedTimeThatCannotBeWrittenEndsTheSimulationOnly()
+    {
+        // After M37 JobProcessor writes the simulated time from job.lastDuration back to the file (FileInfoParser.UpdateSimulatedTimeAsync), which
+        // opens it with FileMode.Open and fails once the file is gone. That must end the simulation without the time, as when RRF reports no
+        // time, and not fault the job loop, which stops DCS. The file is deleted while the simulation is held at a dwell
+        await StartAsync();
+        using ManualResetEventSlim release = new();
+        Host.Firmware.OnCode("G4", code => (code.Text == "G4 P5" && !release.IsSet) ? FakeReply.NotFinished : null);
+        Host.Firmware.ObjectModel.Set("job.lastDuration", 42);
+        string path = WriteJob("sim.g", "G1 X1\nG4 P5\nG1 X2\n");
+
+        Assert.That(await Host.ExecuteAsync("M37 P\"sim.g\""), Is.EqualTo("\n"));
+        Assert.That(Host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.File)?.Text == "G4 P5", FakeFirmwareHost.DefaultTimeout), Is.True);
+        System.IO.File.Delete(path);
+        release.Set();
+
+        await WaitForJobEndAsync();
+        Assert.That(JobCodes(), Is.EqualTo(new[] { "G1 X1", "G4 P5", "G1 X2", "M400" }));
+        Assert.That(System.IO.File.Exists(path), Is.False);
+
+        await NextJobRunsAsync();
     }
 }
