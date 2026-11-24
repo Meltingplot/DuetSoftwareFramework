@@ -747,6 +747,10 @@ alone. The way from a G-code line to the parser was not part of the target, and 
   - FZ-E6: `SafeStrptime` indexed `_DAYS_BEFORE_MONTH[12]` with a `%m` outside 1 to 12 (`strptime.cpp:144`, `:237`, `:273`), reached by
     `datetime("2026-99-01T00:00:00")`, `M905 P` and the HTTP time in standalone mode. RRF #104 refuses such a month. The month only;
     FZ-E7 stays open.
+  - FZ-E8 (medium): a deeply nested expression that ends in a quoted string threw with less than `StackUsage::Throw` left.
+    `ParseInternal` called `ParseQuotedString` (312-byte frame) without `CheckStack`, against the rule in the comment of
+    `CheckStack`, and `ParseGeneralArray` called `ParseInternal` without `CheckStack(StackUsage::ParseInternal)`, unlike every other
+    call. RRF #107 adds both checks; a sweep of the board stack budget from 2000 to 6000 bytes went from 27 short throws to none.
 - **FZ-E1. Signed overflow of the int32 operators.** Unary minus (`ExpressionParser.cpp:210`, "TODO overflow check" in the code), `+`
   (`:531`), `-` (`:567`) and `*` (`:581`), e.g. `{65536 * 65536}`. Undefined behaviour; that it wraps on the board was not checked.
   Low.
@@ -762,13 +766,6 @@ alone. The way from a G-code line to the parser was not part of the target, and 
   - So `take(move.axes[1].drivers, 1)` returns elements of axis 0, while `(move.axes[1].drivers)[1]` is correct. Wrong data, no memory
     error. Low.
 - **FZ-E7. Signed overflows in `SafeStrptime`.** `%Y` of INT_MIN (`strptime.cpp:186`) and `%d` of INT_MAX (`:285`). Wrong date. Low.
-- **FZ-E8. A throw with less than `StackUsage::Throw` left.**
-  - `CheckStack(StackUsage::ParseGeneralArray)` (`ExpressionParser.cpp:132`) reserves 360 + 1050 + 300 bytes.
-  - `ParseGeneralArray` then calls `ParseInternal` (`:994`), which calls `ParseQuotedString` (`:196`), which throws: 784 bytes of
-    frames without a further check, more than the 300 bytes of `StackUsage::Margin`.
-  - libFuzzer found `m[[1,[5,m[[1,[2,"`, which throws with 1024 of 1050 bytes left under the 4096-byte budget of the target.
-  - How much stack the unwinder really needs, and so whether the missing 26 to 124 bytes corrupt the task control block below the
-    stack, was not checked. The input would have to be tuned to the stack in use on the board. Medium.
 - **Observations without a sanitizer report:**
   - FZ-O1: `ObjectModel.cpp:80-84` ignores a failure of `gmtime_r`, so a date-time beyond its year range prints uninitialised `tm`
     fields (host: `datetime(0) - 1`). What newlib does on the board was not checked.
