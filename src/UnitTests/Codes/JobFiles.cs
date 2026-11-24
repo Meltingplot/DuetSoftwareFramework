@@ -108,7 +108,7 @@ public class JobFiles
     [Test]
     public async Task AbortFromJob()
     {
-        // abort terminates the print (wiki, Abort command). JobProcessor reports it as aborted to RRF (JobProcessor.cs:774-778)
+        // abort terminates the print (wiki, Abort command). JobProcessor reports it as aborted to RRF (JobProcessor.cs:793-797)
         await StartAsync();
         WriteJob("job.g", "G1 X1\nabort \"stop\"\nG1 X2\n");
         Assert.That(await Host.ExecuteAsync("M32 \"job.g\""), Is.EqualTo("\n"));
@@ -274,7 +274,7 @@ public class JobFiles
     [Test]
     public async Task ResumeWhileDraining()
     {
-        // A resume that arrives before the job task has reached the pause must not be lost (JobProcessor.cs:228-232, 649-654, 902-906)
+        // A resume that arrives before the job task has reached the pause must not be lost (JobProcessor.cs:228-232, 649-654, 921-925)
         await StartAsync(bufferedPrintCodes: 1);
         using ManualResetEventSlim release = new();
         Host.Firmware.OnCode("G4", _ => release.IsSet ? FakeReply.Ok() : FakeReply.NotFinished);
@@ -309,7 +309,7 @@ public class JobFiles
         release.Set();
         await WaitForPausedAsync();
 
-        // M0 cancels a paused print, which is then reported as cancelled and not aborted (MCodeHandler.cs:87-118, JobProcessor.cs:769-773, 919-934)
+        // M0 cancels a paused print, which is then reported as cancelled and not aborted (MCodeHandler.cs:87-118, JobProcessor.cs:788-792, 938-953)
         Assert.That(await Host.ExecuteAsync("M0"), Is.EqualTo("\n"));
         await WaitForJobEndAsync();
         Assert.That(JobCodes(), Is.EqualTo(new[] { "G1 X1", "G4 P1" }));
@@ -344,7 +344,7 @@ public class JobFiles
     [Test]
     public async Task SelectFileFromJob()
     {
-        // A job may start another file with M32, which JobProcessor starts when the first one has ended (JobProcessor.cs:321-332, 850-856)
+        // A job may start another file with M32, which JobProcessor starts when the first one has ended (JobProcessor.cs:321-332, 869-875)
         await StartAsync();
         WriteJob("second.g", "G1 Y1\n");
         WriteJob("job.g", "G1 X1\nM32 \"second.g\"\nG1 X2\n");
@@ -382,7 +382,7 @@ public class JobFiles
         string content = "G1 X1\nM106 S1\nG1 X2\n" + new string(';', 64) + "\n";
         string path = WriteJob("job.g", content);
 
-        // The simulated time is taken from job.lastDuration once the firmware reports it (JobProcessor.cs:800-829)
+        // The simulated time is taken from job.lastDuration once the firmware reports it (JobProcessor.cs:819-848)
         Host.Firmware.ObjectModel.Set("job.lastDuration", 42);
         Assert.That(await Host.ExecuteAsync($"M37 P\"job.g\"{(updateSimulatedTime ? string.Empty : " F0")}"), Is.EqualTo("\n"));
         await WaitForJobEndAsync();

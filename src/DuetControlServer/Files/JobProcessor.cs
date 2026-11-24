@@ -712,8 +712,27 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
                 }
 
                 // Codes read after the rewind must not reach the firmware before its variable requests. Wait for them outside the lock,
-                // because the link task takes it to report a pause or an abort before it gets to send them
-                await variablesRewound;
+                // because the link task takes it to report a pause or an abort before it gets to send them. A request that fails leaves
+                // the local variables out of step with the file, so it ends the job as a read error does unless the file is closed already
+                try
+                {
+                    await variablesRewound;
+                }
+                catch (Exception e)
+                {
+                    using (await LockAsync())
+                    {
+                        if (!file.IsClosed)
+                        {
+                            if (e is not OperationCanceledException)
+                            {
+                                await _eventLogger.LogOutputAsync(MessageType.Error, $"in file {Path.GetFileName(file.FilePath.Physical)}: {e.Message}");
+                                _logger.LogError(e, "Failed to rewind the local variables of the job file (channel {Channel}): {Message}", file.Channel, e.Message);
+                            }
+                            Abort();
+                        }
+                    }
+                }
             }
         } while (!_lifetime.ApplicationStopping.IsCancellationRequested);
 

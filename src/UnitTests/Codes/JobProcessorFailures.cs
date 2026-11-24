@@ -16,7 +16,7 @@ namespace UnitTests.Codes;
 
 /// <summary>
 /// Failures around a job that must neither stop the link nor end the job loop of <see cref="JobProcessor"/>: the variable requests of the rewind
-/// after a pause
+/// after a pause that wait for RRF, are cancelled or are refused
 /// </summary>
 [TestFixture]
 public class JobProcessorFailures
@@ -66,9 +66,33 @@ public class JobProcessorFailures
     }
 
     /// <summary>
-    /// Wait for the job loop to finish the job and dispose its files
+    /// Wait for the job loop to finish the job and dispose its files. A job loop that has ended leaves the file selected for good
     /// </summary>
-    private Task WaitForJobEndAsync() => WaitForAsync(() => !Jobs.IsFileSelected);
+    private async Task WaitForJobEndAsync()
+    {
+        await WaitForAsync(() => !Jobs.IsFileSelected || Jobs.ExecuteTask is { IsCompleted: true });
+        Assert.That(Jobs.ExecuteTask, Is.Not.Null);
+        Assert.That(Jobs.ExecuteTask!.IsCompleted, Is.False, $"The job loop has ended ({Jobs.ExecuteTask.Status})");
+    }
+
+    private async Task<bool> LastFileAbortedAsync()
+    {
+        using (await Host.Model.AccessReadOnlyAsync())
+        {
+            return Host.Model.Job.LastFileAborted;
+        }
+    }
+
+    /// <summary>
+    /// Check that the job loop still starts jobs. A job loop that has ended lets M32 wait forever for the previous job (JobProcessor.SelectFileAsync)
+    /// </summary>
+    private async Task NextJobRunsAsync()
+    {
+        WriteJob("second.g", "G1 Y1\n");
+        Assert.That(await Host.StartCode("M32 \"second.g\"").WaitAsync(FakeFirmwareHost.DefaultTimeout), Is.EqualTo("\n"));
+        Assert.That(WaitUntilExecuted("G1 Y1"), Is.True, "The next job did not run");
+        await WaitForJobEndAsync();
+    }
 
     private async Task<string[]> ErrorMessagesAsync()
     {
@@ -234,5 +258,51 @@ public class JobProcessorFailures
         await WaitForJobEndAsync();
         Assert.That(await ErrorMessagesAsync(), Is.Empty);
         Assert.That(JobCodes(), Is.EqualTo(new[] { "G4 P2", "G4 P2", "G1 Z0", "M400" }));
+    }
+
+    [Test]
+    public async Task RewindWhoseVariableRequestsAreCancelledEndsTheJobOnly()
+    {
+        // A reset of the link cancels the variable requests before it aborts the job (LinkService.InvalidateCodes, LinkInterface.InvalidateCodes).
+        // The cancellation must end the job only, not the job loop: the loop ends only on its OperationCanceledException catch of the shutdown
+        await StartAsync(bufferedPrintCodes: 1);
+        using ManualResetEventSlim release = new();
+        await RunBlockJobAndPauseAsync(release, HoldLink);
+        StepUntilRestoreIsWritten();
+
+        Host.Firmware.SimulateReset();
+        Host.Firmware.ReleaseTransfers();
+        await WaitForJobEndAsync();
+        Assert.That(JobCodes(), Is.EqualTo(new[] { "G4 P2" }));
+        Assert.That(await LastFileAbortedAsync(), Is.True);
+
+
+        // M32 selects its file before it goes to RRF (MCodeHandler.cs, case 32), so it would wait for the job loop. The fake firmware reads the
+        // requests that DSF wrote before the reset after it and then ends the new connection as a lost one with an emergency stop (FakeFirmware,
+        // ExchangeData and ReadFirstMarker), so RRF refuses the code here and only the reply of M32 is checked
+        WriteJob("second.g", "G1 Y1\n");
+        Task<string> m32 = Host.StartCode("M32 \"second.g\"");
+        Assert.That(await Task.WhenAny(m32, Task.Delay(FakeFirmwareHost.DefaultTimeout)), Is.SameAs(m32), "M32 waits for the job loop");
+    }
+
+    [Test]
+    public async Task RewindWhoseVariableRequestIsRefusedAbortsTheJob()
+    {
+        // RRF refuses to create a variable that exists already (SbcInterface.cpp:1003-1008 at RRF cde4e4fa1) and DSF passes the error on to the
+        // request (LinkService.HandleVariableResult). The local variables are then out of step with the file, so the job ends with an error as it
+        // does on a read error, and the next job runs. Here the variable of the block exists again in RRF before the rewind restores it
+        await StartAsync(bufferedPrintCodes: 1);
+        using ManualResetEventSlim release = new();
+        await RunBlockJobAndPauseAsync(release, () => Host.Firmware.SetLocalVariable(CodeChannel.File, "a", 5));
+        await WaitForAsync(() => Jobs.IsPaused && !Jobs.IsProcessing);
+        Assert.That(Host.Firmware.WaitUntil(firmware => firmware.GetReceivedRequests().Any(IsRestoreRequest), FakeFirmwareHost.DefaultTimeout), Is.True);
+
+        Assert.That(await Host.ExecuteAsync("M24"), Is.EqualTo("\n"));
+        await WaitForJobEndAsync();
+        Assert.That(await ErrorMessagesAsync(), Is.EqualTo(new[] { "in file job.g: variable 'var.a' already exists" }));
+        Assert.That(await LastFileAbortedAsync(), Is.True);
+        Assert.That(JobCodes(), Is.EqualTo(new[] { "G4 P2" }), "The job read on after its rewind failed");
+
+        await NextJobRunsAsync();
     }
 }
