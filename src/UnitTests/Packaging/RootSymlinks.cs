@@ -401,4 +401,47 @@ public class RootSymlinks
     }
 
     #endregion
+
+    #region duetwebserver package
+
+    /// <summary>
+    /// The duetwebserver postinst gives http.json to dsf, which may put a symlink in place of it at any time. chown -h changes the entry itself, and chmod
+    /// would follow such a symlink, so the postinst leaves the mode of the file alone
+    /// </summary>
+    [Test]
+    public void WebServerPackageChangesNoFileOfRootThroughASymlink()
+    {
+        string fileOfRoot = AddFileOfRoot("shadow", "file of root\n");
+        Directory.CreateDirectory(Physical("/opt/dsf/bin"));
+        PlantSymlink("/opt/dsf/conf/http.json", fileOfRoot);
+
+        RunShippedScript("pkg/deb/duetwebserver/DEBIAN/postinst", "/var/lib/dpkg/info/duetwebserver.postinst", "configure");
+
+        Assert.Multiple(() =>
+        {
+            AssertRootActsOnNothingDsfMayReplace();
+            AssertUnchanged(fileOfRoot, "file of root\n");
+        });
+    }
+
+    /// <summary>
+    /// http.json still goes to dsf, which runs DWS, and keeps the mode it comes with
+    /// </summary>
+    [Test]
+    public void WebServerPackageGivesItsSettingsToDsf()
+    {
+        Directory.CreateDirectory(Physical("/opt/dsf/bin"));
+        AddFile("/opt/dsf/conf/http.json", "{}", Mode644);
+
+        RunShippedScript("pkg/deb/duetwebserver/DEBIAN/postinst", "/var/lib/dpkg/info/duetwebserver.postinst", "configure");
+
+        Assert.Multiple(() =>
+        {
+            AssertRootActsOnNothingDsfMayReplace();
+            Assert.That(Calls().Where(call => call.Tool == "chown dsf:dsf").Select(call => call.Path), Is.EqualTo(new[] { "/opt/dsf/conf/http.json" }));
+            Assert.That(File.GetUnixFileMode(Physical("/opt/dsf/conf/http.json")), Is.EqualTo(Mode644));
+        });
+    }
+
+    #endregion
 }
