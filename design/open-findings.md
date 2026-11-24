@@ -747,6 +747,12 @@ alone. The way from a G-code line to the parser was not part of the target, and 
   - FZ-E6: `SafeStrptime` indexed `_DAYS_BEFORE_MONTH[12]` with a `%m` outside 1 to 12 (`strptime.cpp:144`, `:237`, `:273`), reached by
     `datetime("2026-99-01T00:00:00")`, `M905 P` and the HTTP time in standalone mode. RRF #104 refuses such a month. The month only;
     FZ-E7 stays open.
+  - FZ-O3 and FZ-E7a: `first_day` (`strptime.cpp:76-84`) looped once per year since 1970, in the main task, for any year of `%Y`:
+    about 2.1e9 times for 2147483647, 20 s on the host. On the MB6HC this loop has 15 instructions per year (300 MHz), so I estimate one
+    to two minutes, more than the 20 s after which `RepRap::Tick` resets with `stuckInSpin` (`RepRap.h:211`); not measured. Every caller
+    passes the result to newlib's `mktime`, which returns -1 for a `tm_year` beyond +/- 10000. RRF #109 (stacked on #104) refuses a
+    year outside 1900 +/- 10000, which also removes the overflow of `ret - 1900` near INT_MIN (FZ-E7a). Behaviour change: such a year
+    is an error instead of the date-time -1.
   - FZ-E8 (medium): a deeply nested expression that ends in a quoted string threw with less than `StackUsage::Throw` left.
     `ParseInternal` called `ParseQuotedString` (312-byte frame) without `CheckStack`, against the rule in the comment of
     `CheckStack`, and `ParseGeneralArray` called `ParseInternal` without `CheckStack(StackUsage::ParseInternal)`, unlike every other
@@ -766,14 +772,13 @@ alone. The way from a G-code line to the parser was not part of the target, and 
   B6 (RRFLibraries #3). On the MB6HC, `floor` and the others convert with `vcvt.s32.f32` (`0x41a6ae`), and newlib `lrintf` does the
   same for an exponent above 30 (`0x4cdd84`, `0x4cddf4`). VCVT saturates, so the board gives 2147483647 instead of the float
   2147483648; read from the disassembly, not run on a board. Wrong value by one. Low.
-- **FZ-E7. Signed overflows in `SafeStrptime`.** `%Y` of INT_MIN (`strptime.cpp:186`) and `%d` of INT_MAX (`:285`). Wrong date. Low.
+- **FZ-E7b. Signed overflow in `SafeStrptime`.** `%d` of INT_MAX (`strptime.cpp:285`). Wrong date. Low. (FZ-E7a, `%Y` of INT_MIN at
+  `:186`, is fixed by RRF #109, see above.)
 - **Observations without a sanitizer report:**
   - FZ-O1: `ObjectModel.cpp:80-84` ignores a failure of `gmtime_r`, so a date-time beyond its year range prints uninitialised `tm`
     fields (host: `datetime(0) - 1`). What newlib does on the board was not checked.
   - FZ-O2: two stack figures quoted in `ExpressionParser.cpp:48` and `ObjectModel.cpp` are 8 bytes below the ELF figures, within
     `StackUsage::Margin`.
-  - FZ-O3: the `first_day` loop of `SafeStrptime` (`strptime.cpp:76-84`) runs once per year since 1970: 1e8 years took 2.9 s on the
-    host. Whether the board watchdog fires was not checked.
   - FZ-O4: `BinaryParser.cpp:533-611` calls the array parsers without checking for `{`, which `StringParser.cpp:1370` does. Whether DSF
     can send such a parameter was not checked.
   - `labs(INT_MIN)` at `ExpressionParser.cpp:1937` is undefined only where `long` has 32 bits, as on the board; the host cannot show it.
