@@ -569,7 +569,7 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task SystemPackageIsInstalledInATransientUnit()
     {
-        // InstallSystemPackage.cs:105-133: a single package is passed to dpkg in the transient unit dsf-package, without update status
+        // InstallSystemPackage.cs:104-132: a single package is passed to dpkg in the transient unit dsf-package, without update status
         await StartDpsAsync(register: false, privileged: true);
         string package = OutsidePath("single.deb");
         File.WriteAllText(package, "not a ZIP file");
@@ -587,7 +587,7 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task CombinedPackageIsUnpackedInstalledAndItsUpdateScriptRun()
     {
-        // InstallSystemPackage.cs:89-104, 135-164 and 172-182
+        // InstallSystemPackage.cs:89-103, 134-163 and 171-181
         await StartDpsAsync(register: false, privileged: true);
         string name = "combined-" + Guid.NewGuid().ToString("N");
         string package = OutsidePath(name + ".zip");
