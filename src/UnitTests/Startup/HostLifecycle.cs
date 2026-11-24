@@ -122,7 +122,7 @@ public class HostLifecycle
     }
 
     /// <summary>
-    /// The PeriodicUpdateService reads the plugin manifests from the plugin directory when it starts, if PluginSupport is on (PeriodicUpdateService.cs:90-93).
+    /// The PeriodicUpdateService reads the plugin manifests from the plugin directory when it starts, if PluginSupport is on (PeriodicUpdateService.cs:96-99).
     /// Settings.cs:127-129 says the directory is provided by DPS, not by the DCS package. DCS does not depend on DPS (pkg/deb/duetcontrolserver/DEBIAN/control:6),
     /// the meta package only recommends it (pkg/deb/duetsoftwareframework/DEBIAN/control:7), and only the DuetPiManagementPlugin package ships /opt/dsf/plugins.
     /// Directory.GetFiles threw for a missing directory outside the try block of the loop, so the start of the host failed. Now a missing directory means

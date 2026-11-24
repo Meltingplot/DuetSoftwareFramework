@@ -488,19 +488,25 @@ else {              // Character parameters are not supported yet, they are wrap
     /// <param name="to">Destination</param>
     /// <param name="info">Information about the file being printed</param>
     /// <returns>Number of bytes written</returns>
-    /// <exception cref="ArgumentException">One of the supplied values is too big</exception>
+    /// <exception cref="ArgumentException">The file name is too long</exception>
     public static int WritePrintFileInfo(Span<byte> to, GCodeFileInfo info)
     {
         Span<byte> unicodeFilename = Encoding.UTF8.GetBytes(info.FileName!);
-        if (unicodeFilename.Length > 254)
+        if (unicodeFilename.Length > Consts.MaxFilenameLength)
         {
             throw new ArgumentException("Filename is too long", nameof(info));
         }
 
+        // RRF keeps only the first 50 bytes of the slicer (GCodeFileInfo::generatedBy), so cut a longer one on a UTF-8 character boundary like a comment
         Span<byte> unicodeGeneratedBy = Encoding.UTF8.GetBytes(info.GeneratedBy ?? string.Empty);
-        if (unicodeGeneratedBy.Length > 254)
+        if (unicodeGeneratedBy.Length > Consts.MaxGeneratedByLength)
         {
-            throw new ArgumentException("GeneratedBy is too long", nameof(info));
+            int generatedByLength = Consts.MaxGeneratedByLength;
+            while (generatedByLength > 0 && (unicodeGeneratedBy[generatedByLength] & 0xC0) == 0x80)
+            {
+                generatedByLength--;
+            }
+            unicodeGeneratedBy = unicodeGeneratedBy[..generatedByLength];
         }
 
         // Write header

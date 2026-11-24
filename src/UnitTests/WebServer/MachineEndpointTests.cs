@@ -266,7 +266,7 @@ public class MachineEndpointTests : WebServerFixture
     [Test]
     public async Task LongRunningCodesKeepTheirSession()
     {
-        // A code that has not finished keeps its session from expiring (MachineEndpoints.cs:178-195, SessionStorage.cs:397)
+        // A code that has not finished keeps its session from expiring (MachineEndpoints.cs:178-195, SessionStorage.cs:403)
         _release = false;
         Dcs.Firmware.OnCode("M4711", _ => _release ? FakeReply.Ok("done") : FakeReply.NotFinished);
         string key = await ConnectAsync(_client, "machine-secret");

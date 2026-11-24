@@ -133,10 +133,12 @@ public sealed class SbcTriggerService(
 
         int condition = code.TryGetInt('R', out int rParam) ? rParam : 0;
 
-        // Clear any existing pin-based RRF trigger for this slot to avoid duplicate firing
+        // Clear any existing pin-based RRF trigger for this slot to avoid duplicate firing.
+        // Make sure it goes the same route as the M581.1, else it waits behind the macro file running the M581.1
         Commands.Code clearCode = codeFactory.Create();
-        clearCode.Flags = CodeFlags.IsInternallyProcessed;
+        clearCode.Flags = CodeFlags.IsInternallyProcessed | (code.Flags & CodeFlags.IsFromMacro);
         clearCode.Channel = code.Channel;
+        clearCode.File = code.File;
         clearCode.Type = CodeType.MCode;
         clearCode.MajorNumber = 581;
         clearCode.Parameters = [new('T', triggerNumber), new('P', -1)];

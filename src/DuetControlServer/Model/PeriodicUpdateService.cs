@@ -35,9 +35,15 @@ namespace DuetControlServer.Model;
 /// <param name="model">Object model</param>
 /// <param name="logger">Logger instance</param>
 /// <param name="settings">Settings of the application</param>
+/// <param name="timeProvider">Clock to notice changes of the system time with, the system clock if null</param>
 public partial class PeriodicUpdateService(CodeFactory codeFactory, EventLogger eventLogger, FilePathResolver filePathResolver, LinkInterface linkInterface, ObjectModel model,
-    ILogger<PeriodicUpdateService> logger, IOptions<Settings> settings) : BackgroundService
+    ILogger<PeriodicUpdateService> logger, IOptions<Settings> settings, TimeProvider? timeProvider = null) : BackgroundService
 {
+    /// <summary>
+    /// Clock to notice changes of the system time with: its local time follows the system time, its time stamps do not
+    /// </summary>
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+
     /// <summary>
     /// List of enabled protocols
     /// </summary>
@@ -143,7 +149,8 @@ public partial class PeriodicUpdateService(CodeFactory codeFactory, EventLogger 
         Task runOnceFile = RunOnceFileAsync(stoppingToken);
         try
         {
-            TimeSpan measuredDelay = TimeSpan.Zero;
+            DateTime lastLocalTime = _timeProvider.GetLocalNow().DateTime;
+            long lastTimestamp = _timeProvider.GetTimestamp();
             string lastHostname = Environment.MachineName;
             bool updateNetworkSeq, updateVolumesSeq;
             string? lastIPAddress = null;
@@ -177,8 +184,14 @@ public partial class PeriodicUpdateService(CodeFactory codeFactory, EventLogger 
                         CleanMessages();
                     }
 
-                    // Check if the system time has to be updated
-                    if (measuredDelay > TimeSpan.FromMilliseconds(settings.Value.HostUpdateInterval + 2000) && !Debugger.IsAttached)
+                    // Check if the system time has to be updated. The local time moving more or less than the time that passed since the last check
+                    // means that the system time changed
+                    DateTime now = _timeProvider.GetLocalNow().DateTime;
+                    long timestamp = _timeProvider.GetTimestamp();
+                    TimeSpan timeChange = now - lastLocalTime - _timeProvider.GetElapsedTime(lastTimestamp, timestamp);
+                    lastLocalTime = now;
+                    lastTimestamp = timestamp;
+                    if (timeChange.Duration() > TimeSpan.FromSeconds(2) && !Debugger.IsAttached)
                     {
                         logger.LogInformation("System time has been changed");
                         Code code = codeFactory.Create();
@@ -188,8 +201,8 @@ public partial class PeriodicUpdateService(CodeFactory codeFactory, EventLogger 
                         code.MajorNumber = 905;
                         code.Parameters =
                         [
-                            new('P', DateTime.Now.ToString("yyyy-MM-dd")),
-                            new('S', DateTime.Now.ToString("HH:mm:ss"))
+                            new('P', now.ToString("yyyy-MM-dd")),
+                            new('S', now.ToString("HH:mm:ss"))
                         ];
                         await code.ExecuteAsync();
                     }
@@ -247,9 +260,7 @@ public partial class PeriodicUpdateService(CodeFactory codeFactory, EventLogger 
                 }
 
                 // Wait for next scheduled update check
-                DateTime lastUpdateTime = DateTime.Now;
                 await Task.Delay(settings.Value.HostUpdateInterval, stoppingToken);
-                measuredDelay = DateTime.Now - lastUpdateTime;
             } while (!stoppingToken.IsCancellationRequested);
         }
         catch (OperationCanceledException)
