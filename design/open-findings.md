@@ -775,11 +775,15 @@ alone. The way from a G-code line to the parser was not part of the target, and 
   `:186`, is fixed by RRF #109, see above.)
 - **Observations without a sanitizer report:**
   - FZ-O1: `ObjectModel.cpp:80-84` ignores a failure of `gmtime_r`, so a date-time beyond its year range prints uninitialised `tm`
-    fields (host: `datetime(0) - 1`). What newlib does on the board was not checked.
+    fields (host: `datetime(0) - 1`). Host only: newlib's `gmtime_r` in the MB6HC build has one exit, which returns `res`
+    (`0x4d5ad0`), and no NULL return. A date-time far out of range gives a wrong date on the board, not uninitialised fields.
+    `Platform.cpp:1394` and `:4102` check the return of `gmtime_r`; the other callers do not.
   - FZ-O2: two stack figures quoted in `ExpressionParser.cpp:48` and `ObjectModel.cpp` are 8 bytes below the ELF figures, within
     `StackUsage::Margin`.
-  - FZ-O4: `BinaryParser.cpp:533-611` calls the array parsers without checking for `{`, which `StringParser.cpp:1370` does. Whether DSF
-    can send such a parameter was not checked.
+  - FZ-O4: `BinaryParser.cpp:533-611` calls the array parsers without checking for `{`, which `StringParser.cpp:1370` does. A correct
+    DSF does not send such a parameter: DuetAPI marks a parameter as an expression only when it starts with `{` and ends with `}`
+    (`Parameter.cs:96-99`, `:176-181`), and only then `Writer.cs:228` sends `DataType.Expression`. Only a broken SBC reaches it; the
+    fuzz target saw no sanitizer report there.
   - `labs(INT_MIN)` at `ExpressionParser.cpp:1937` is undefined only where `long` has 32 bits, as on the board; the host cannot show it.
   - FZ-O5 (found by reading, while checking FZ-E3): `Kinematics::RoundToInt32` (`Kinematics.cpp:366`) and
     `Move::MotorMovementToSteps` (`Move.cpp:1276`) compare with `(float)(INT32_MAX - 10)`, which is 2^31 in float, so the margin of 10
