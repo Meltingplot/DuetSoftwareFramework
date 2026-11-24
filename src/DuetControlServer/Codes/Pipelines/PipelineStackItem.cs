@@ -183,12 +183,13 @@ public sealed class PipelineStackItem
         lock (this)
         {
             Busy = true;
+            if (PendingCodes.Writer.TryWrite(code))
+            {
+                return;
+            }
         }
-        if (!PendingCodes.Writer.TryWrite(code))
-        {
-            _pipeline.ChannelProcessor.Logger.LogError("Pipeline failed to store code immediately so waiting synchronously for it to be added");
-            PendingCodes.Writer.WriteAsync(code, _lifetime.ApplicationStopping).AsTask().Wait();
-        }
+        _pipeline.ChannelProcessor.Logger.LogError("Pipeline failed to store code immediately so waiting synchronously for it to be added");
+        WriteCodeAsync(code, _lifetime.ApplicationStopping).AsTask().Wait();
     }
 
     /// <summary>
@@ -199,10 +200,12 @@ public sealed class PipelineStackItem
     /// <returns>Asynchronous task</returns>
     public ValueTask WriteCodeAsync(Code code, CancellationToken cancellationToken = default)
     {
+        // Set the busy flag and store the code in one step, else the processor may reset the flag in between because it does not see the code yet.
+        // If the channel is full, the code is queued as a waiting write, which the channel moves into its items when the processor reads one
         lock (this)
         {
             Busy = true;
+            return PendingCodes.Writer.WriteAsync(code, cancellationToken);
         }
-        return PendingCodes.Writer.WriteAsync(code, cancellationToken);
     }
 }
