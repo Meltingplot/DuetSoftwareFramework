@@ -150,7 +150,7 @@ public class ExecutedStageShutdown
     /// <summary>
     /// A code handler that is cancelled while DCS stops, e.g. because it waits with the cancelled token of the code for a lock that is held: the loop of the
     /// stage logs the cancellation and completes the code with it (PipelineStackItem.cs:85-89, upstream 61df011e). SimpleCode answers a cancelled code with
-    /// an empty reply (SimpleCode.cs:194-197)
+    /// an empty reply (SimpleCode.cs:209-212)
     /// </summary>
     [Test]
     public async Task CodeWhoseHandlerIsCancelledWhileDcsStopsIsCompleted()

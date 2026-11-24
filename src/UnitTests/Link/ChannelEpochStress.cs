@@ -545,7 +545,7 @@ public class ChannelEpochStress
 
         /// <summary>
         /// Start a single code like a client does, but keep a cancellation visible: SimpleCode returns an empty reply for a cancelled code
-        /// (SimpleCode.cs:192-195), the code itself throws OperationCanceledException
+        /// (SimpleCode.cs:207-210), the code itself throws OperationCanceledException
         /// </summary>
         private Task<Message?> StartCode(string text, CodeChannel channel)
         {

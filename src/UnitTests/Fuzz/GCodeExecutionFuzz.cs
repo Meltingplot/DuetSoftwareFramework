@@ -330,7 +330,7 @@ public class GCodeExecutionFuzz
     /// </summary>
     private async Task ResetAsync()
     {
-        // SimpleCode passes on the exception of a code without waiting for the following codes of the same request (SimpleCode.cs:184-212),
+        // SimpleCode passes on the exception of a code without waiting for the following codes of the same request (SimpleCode.cs:199-227),
         // so wait for the channels to finish them before their state is reset
         CodeProcessor codeProcessor = _host.Services.GetRequiredService<CodeProcessor>();
         foreach (CodeChannel channel in Channels)
