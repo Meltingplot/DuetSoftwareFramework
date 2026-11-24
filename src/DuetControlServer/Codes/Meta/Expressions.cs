@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -865,6 +866,12 @@ public sealed class Expressions(Model.Filter filter, Model.ObjectModel model, Li
         // Eat a sub-expression and evaluate SBC-only properties + custom functions where applicable
         async Task<string> eatExpression(char brace, bool raw = false)
         {
+            // Nested levels that complete synchronously run on the same stack. Refuse an expression nested too deeply before it overflows
+            if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
+            {
+                throw new CodeParserException("Expression nesting too deep", code);
+            }
+
             StringBuilder lastToken = new(), result = new();
             while (i < expression.Length)
             {

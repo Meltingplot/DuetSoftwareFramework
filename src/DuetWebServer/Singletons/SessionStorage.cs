@@ -106,12 +106,18 @@ public interface ISessionStorage
 /// Storage singleton for internal HTTP sessions
 /// </summary>
 /// <param name="logger">Logger instance</param>
-public class SessionStorage(ILogger<SessionStorage> logger) : ISessionStorage
+/// <param name="timeProvider">Clock for the session timeout, the system clock if null</param>
+public class SessionStorage(ILogger<SessionStorage> logger, TimeProvider? timeProvider = null) : ISessionStorage
 {
+    /// <summary>
+    /// Clock for the session timeout. Its time stamps do not change with the system time
+    /// </summary>
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+
     /// <summary>
     /// Internal session wrapper around auth tickets
     /// </summary>
-    private sealed class Session(AuthenticationTicket ticket)
+    private sealed class Session(AuthenticationTicket ticket, long timestamp)
     {
         public AuthenticationTicket Ticket { get; } = ticket;
 
@@ -121,7 +127,7 @@ public class SessionStorage(ILogger<SessionStorage> logger) : ISessionStorage
 
         public string IpAddress => Ticket.Principal.FindFirst("ipAddress")!.Value;
 
-        public DateTime LastQueryTime { get; set; } = DateTime.Now;
+        public long LastQueryTimestamp { get; set; } = timestamp;
 
         public int NumWebSocketsConnected { get; set; }
 
@@ -174,7 +180,7 @@ public class SessionStorage(ILogger<SessionStorage> logger) : ISessionStorage
                     string? access = item.Ticket.Principal.FindFirstValue("access");
                     if ((readWrite && access == Policies.ReadWrite) || (!readWrite && (access == Policies.ReadOnly || access == Policies.ReadWrite)))
                     {
-                        item.LastQueryTime = DateTime.Now;
+                        item.LastQueryTimestamp = _timeProvider.GetTimestamp();
                         return true;
                     }
                     return false;
@@ -205,7 +211,7 @@ public class SessionStorage(ILogger<SessionStorage> logger) : ISessionStorage
             AuthenticationTicket ticket = new(new ClaimsPrincipal(identity), SessionKeyAuthenticationHandler.SchemeName);
             if (sessionId > 0)
             {
-                _sessions.Add(new(ticket));
+                _sessions.Add(new(ticket, _timeProvider.GetTimestamp()));
                 logger.LogInformation("Session {Session} added ({Permission})", sessionKey, readWrite ? "readWrite" : "readOnly");
             }
             return sessionKey;
@@ -233,7 +239,7 @@ public class SessionStorage(ILogger<SessionStorage> logger) : ISessionStorage
             AuthenticationTicket ticket = new(new ClaimsPrincipal(identity), SessionKeyAuthenticationHandler.SchemeName);
             if (sessionId > 0)
             {
-                _sessions.Add(new(ticket));
+                _sessions.Add(new(ticket, _timeProvider.GetTimestamp()));
                 logger.LogInformation("Session {Session} added ({Permission})", sessionKey, readWrite ? "readWrite" : "readOnly");
             }
             return ticket;
@@ -253,7 +259,7 @@ public class SessionStorage(ILogger<SessionStorage> logger) : ISessionStorage
             {
                 if (item.Key == key)
                 {
-                    item.LastQueryTime = DateTime.Now;
+                    item.LastQueryTimestamp = _timeProvider.GetTimestamp();
                     return item.SessionId;
                 }
             }
@@ -274,7 +280,7 @@ public class SessionStorage(ILogger<SessionStorage> logger) : ISessionStorage
             {
                 if (item.Key == key)
                 {
-                    item.LastQueryTime = DateTime.Now;
+                    item.LastQueryTimestamp = _timeProvider.GetTimestamp();
                     return item.Ticket;
                 }
             }
@@ -295,7 +301,7 @@ public class SessionStorage(ILogger<SessionStorage> logger) : ISessionStorage
             {
                 if (item.IpAddress == ipAddress)
                 {
-                    item.LastQueryTime = DateTime.Now;
+                    item.LastQueryTimestamp = _timeProvider.GetTimestamp();
                     return item.Ticket;
                 }
             }
@@ -337,7 +343,7 @@ public class SessionStorage(ILogger<SessionStorage> logger) : ISessionStorage
             {
                 if (item.Key == key)
                 {
-                    item.LastQueryTime = DateTime.Now;
+                    item.LastQueryTimestamp = _timeProvider.GetTimestamp();
                     if (webSocketConnected)
                     {
                         item.NumWebSocketsConnected++;
@@ -366,7 +372,7 @@ public class SessionStorage(ILogger<SessionStorage> logger) : ISessionStorage
             {
                 if (item.Ticket.Principal == user)
                 {
-                    item.LastQueryTime = DateTime.Now;
+                    item.LastQueryTimestamp = _timeProvider.GetTimestamp();
                     if (requestStarted)
                     {
                         item.NumRunningRequests++;
@@ -394,7 +400,7 @@ public class SessionStorage(ILogger<SessionStorage> logger) : ISessionStorage
             for (int i = _sessions.Count - 1; i >= 0; i--)
             {
                 Session item = _sessions[i];
-                if (item.NumWebSocketsConnected == 0 && item.NumRunningRequests == 0 && DateTime.Now - item.LastQueryTime > sessionTimeout)
+                if (item.NumWebSocketsConnected == 0 && item.NumRunningRequests == 0 && _timeProvider.GetElapsedTime(item.LastQueryTimestamp) > sessionTimeout)
                 {
                     // Session expired
                     _sessions.RemoveAt(i);

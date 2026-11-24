@@ -104,7 +104,7 @@ public class DcsProcess
         startInfo.Environment["DOTNET_GCHeapHardLimit"] = "0x80000000";
 
         using Process process = Process.Start(startInfo)!;
-        process.StandardInput.Close();      // FirmwareUpdater asks for confirmation unless the input is redirected (FirmwareUpdater.cs:336-340)
+        process.StandardInput.Close();      // FirmwareUpdater asks for confirmation unless the input is redirected (FirmwareUpdater.cs:343-347)
         Task<string> output = process.StandardOutput.ReadToEndAsync(), error = process.StandardError.ReadToEndAsync();
         using CancellationTokenSource cts = new(RunTimeout);
         try
