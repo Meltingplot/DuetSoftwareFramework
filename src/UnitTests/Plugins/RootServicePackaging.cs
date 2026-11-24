@@ -522,4 +522,41 @@ public class RootServicePackaging
             }
         });
     }
+
+    /// <summary>
+    /// The root service, and every program it starts without a working directory of its own (InstallPlugin.cs:62, :374-384, :411-423,
+    /// AppArmorPermissionManager.cs:171, :194), run in the WorkingDirectory of duetpluginservice-root.service. Host.CreateDefaultBuilder (Program.cs:42) uses
+    /// that directory as content root and reads its appsettings.json as configuration before plugins.json, so a setting that plugins.json leaves out comes from
+    /// there, e.g. SystemdRunCommand or another entry of InstallPackageEnvironment. pipInstall2.py runs python -m venv and python -m pip (pipInstall2.py:435,
+    /// :483, :570-572), and python -m imports modules from the current directory first. So dsf must neither create files in that directory nor change the
+    /// ones there
+    /// </summary>
+    [Test]
+    public void RootServiceRunsInADirectoryOnlyRootMayChange()
+    {
+        Match match = Regex.Match(File.ReadAllText(DpsHost.ShippedFile("pkg/common/duetpluginservice/usr/lib/systemd/system/duetpluginservice-root.service")),
+            @"^WorkingDirectory=(.*?)\s*$", RegexOptions.Multiline);
+        Assert.That(match.Success, Is.True, "WorkingDirectory not found");
+        string workingDirectory = match.Groups[1].Value;
+
+        UnpackNewInstallation();
+        ConfigurePackages();
+        Assert.That(Directory.Exists(Physical(workingDirectory)), Is.True, $"no package installs {workingDirectory}");
+        Assert.Multiple(() =>
+        {
+            Assert.That(DsfMayChange(workingDirectory), Is.False, $"dsf may create files in {workingDirectory} ({Owner(workingDirectory).User}:{Owner(workingDirectory).Group} {Mode(workingDirectory)})");
+            foreach (string entry in Directory.GetFileSystemEntries(Physical(workingDirectory)))
+            {
+                string path = entry[TreeRoot.Length..];
+                Assert.That(DsfMayChange(path), Is.False, $"dsf may change {path} ({Owner(path).User}:{Owner(path).Group} {Mode(path)})");
+            }
+
+            // The RPM packages put appsettings*.json of DuetWebServer there (duetwebserver.spec)
+            foreach (RpmEntry entry in RpmSpecs.SelectMany(RpmFiles).Where(entry => Path.GetDirectoryName(entry.Path) == workingDirectory && Path.GetFileName(entry.Path).StartsWith("appsettings")))
+            {
+                Assert.That(entry.User, Is.EqualTo(Root), $"owner of {entry.Path} in {entry.Spec}.spec");
+                Assert.That(entry.Group, Is.Not.EqualTo(Dsf), $"group of {entry.Path} in {entry.Spec}.spec");
+            }
+        });
+    }
 }
