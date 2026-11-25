@@ -65,8 +65,9 @@ public class ExpressionEvaluation : LabTest
     /// bracket (Expressions.cs:891-894). The refused code never reaches RRF; if it did, G4 P0 would only dwell for 0 ms</item>
     /// </list>
     /// The unfixed build ends DCS (the PR's counter-check ended the unit test host for both paths with "Stack overflow"), and the test restarts DCS
-    /// and resets RRF before it fails. Each refusal logs the exception with a stack trace of thousands of lines, so the test waits for the rate limit
-    /// of journald afterwards, also when the test fails (G1Helpers.LetJournaldRateLimitPassAsync)
+    /// and resets RRF before it fails. Before DSF #251 each refusal logged the exception with a stack trace of thousands of lines (finding LT3), so the
+    /// test waits for the rate limit of journald afterwards, also when the test fails (G1Helpers.LetJournaldRateLimitPassAsync), and then checks that
+    /// the refusal left at most G1Helpers.MaxRefusalLines lines
     /// </remarks>
     [TestCase("M20 P\"0:/sys\" S", "1", TestName = "DeeplyNestedExpressionIsRefused(parser)")]
     [TestCase("G4 P", "sbc.dsf.pluginSupport ? 0 : 0", TestName = "DeeplyNestedExpressionIsRefused(SBC fields)")]
@@ -78,6 +79,7 @@ public class ExpressionEvaluation : LabTest
         string pid = await Lab.GetControlServerPidAsync();
         string cursor = await Lab.GetJournalCursorAsync();
 
+        int lines;
         try
         {
             string reply = await G1Helpers.SendOrRecoverAsync(Session, code, pid, 60);
@@ -87,8 +89,9 @@ public class ExpressionEvaluation : LabTest
         }
         finally
         {
-            await G1Helpers.LetJournaldRateLimitPassAsync(cursor);
+            lines = await G1Helpers.LetJournaldRateLimitPassAsync(cursor);
         }
+        Assert.That(lines, Is.LessThan(G1Helpers.MaxRefusalLines), "The refusal was logged with a stack frame per nesting level (DSF #251)");
     }
 
     /// <summary>
