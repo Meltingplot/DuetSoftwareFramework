@@ -1003,7 +1003,8 @@ public sealed class MetaExpressionParser
                     }
                     if ((int)a[0]! > MaxArrayElements)
                     {
-                        ThrowParseException(ExpressionErrors.ArrayTooLarge);
+                        // RRF's ArrayHandle::Allocate throws this without a position, so there is no column, as for the concatenation
+                        throw new CodeParserException(ExpressionErrors.ArrayTooLarge);
                     }
                     object?[] vector = new object?[(int)a[0]!];
                     Array.Fill(vector, a[1]);
