@@ -230,7 +230,7 @@ flowchart TD
   | M28/M29/M30 | Begin / end SD write, delete file |
   | M36/M38/M39 | File info (incl. thumbnails), CRC32, SD volume info |
   | M98 | Mark a macro as pausable |
-  | M98.1 | Start a macro on another channel, S is its index in `inputs[]` (0 HTTP, 1 Telnet, 4 Aux, 10 Aux2). Waits up to 500 ms for a busy channel and returns once the macro is queued, else a warning |
+  | M98.1 | Start a macro on another channel, S is its index in `inputs[]` (0 HTTP, 1 Telnet, 4 Aux, 8 SBC, 10 Aux2). Returns at once; on a busy channel the macro waits for it, without limit by default (W0) or for at most W milliseconds, then a warning says it was dropped |
   | M111 P-1 | Set the DCS log level |
   | M112 | Emergency stop via the link interface |
   | M118 P6 | Publish over MQTT |

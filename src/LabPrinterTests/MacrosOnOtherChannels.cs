@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using DuetAPI;
 using DuetAPI.ObjectModel;
@@ -11,7 +12,8 @@ namespace LabPrinterTests;
 
 /// <summary>
 /// M98.1 S<n> starts a macro on the code channel with index n in inputs[], so that a trigger macro can start something blocking without holding
-/// the trigger channel. The caller checks inputs[] before, M98.1 waits only up to 500 ms for a code that took the channel in the meantime
+/// the trigger channel (Duet3D/RepRapFirmware#1337). M98.1 returns at once. If a code took the channel after the caller checked inputs[],
+/// the macro waits for the channel, by default (W0) without limit, with W&lt;ms&gt; at most that long
 /// </summary>
 /// <remarks>
 /// Uses a temporary trigger that the machine configuration does not use and deletes it again. The macro only waits, nothing moves or heats
@@ -44,21 +46,21 @@ public class MacrosOnOtherChannels : LabTest
               global labTestChannelTriggerRuns = 0
               global labTestMacroRuns = 0
               global labTestSkipped = 0
-              global labTestBusy = 0
+              global labTestFailed = 0
               global labTestParameters = ""
               global labTestInput = -1
             else
               set global.labTestChannelTriggerRuns = 0
               set global.labTestMacroRuns = 0
               set global.labTestSkipped = 0
-              set global.labTestBusy = 0
+              set global.labTestFailed = 0
               set global.labTestParameters = ""
               set global.labTestInput = -1
 
             """);
         await Lab.UploadAsync(session, BlockingMacro, $"""
             set global.labTestMacroRuns = global.labTestMacroRuns + 1
-            set global.labTestParameters = param.C ^ "," ^ param.A[1] ^ "," ^ param.B ^ "," ^ param.D ^ "," ^ exists(param.S)
+            set global.labTestParameters = param.C ^ "," ^ param.A[1] ^ "," ^ param.B ^ "," ^ param.D ^ "," ^ exists(param.S) ^ "," ^ exists(param.W)
             set global.labTestInput = state.thisInput
             echo "labTest output of the macro"
             G4 S{MacroSeconds}
@@ -81,7 +83,7 @@ public class MacrosOnOtherChannels : LabTest
 
     /// <summary>
     /// The trigger keeps firing while the macro it started blocks the other channel. Further runs see the channel busy in inputs[] and skip
-    /// the call, and the macro gets its parameters from the variables of the trigger macro with the same types as from M98, without S.
+    /// the call, and the macro gets its parameters from the variables of the trigger macro with the same types as from M98, without S and W.
     /// A channel that has had no code since the RRF boot reads "unused" instead of "idle" (GCodeBuffer::GetStateText), so that counts as free
     /// </summary>
     /// <param name="index">Index of the channel in inputs[]</param>
@@ -90,6 +92,7 @@ public class MacrosOnOtherChannels : LabTest
     [TestCase(4, CodeChannel.Aux, false)]
     [TestCase(0, CodeChannel.HTTP, true)]
     [TestCase(1, CodeChannel.Telnet, true)]
+    [TestCase(8, CodeChannel.SBC, true)]
     [TestCase(10, CodeChannel.Aux2, false)]
     public async Task TriggerKeepsFiringWhileMacroRuns(int index, CodeChannel channel, bool outputReachesMessages)
     {
@@ -100,9 +103,9 @@ public class MacrosOnOtherChannels : LabTest
             if (inputs[{{index}}].state != "idle" && inputs[{{index}}].state != "unused") || inputs[{{index}}].inMacro
               set global.labTestSkipped = global.labTestSkipped + 1
             else
-              M98.1 S{{index}} P"{{BlockingMacro}}" C{var.x} A{1,2} B{"5"} D{true}
-              if result == 1
-                set global.labTestBusy = global.labTestBusy + 1
+              M98.1 S{{index}} P"{{BlockingMacro}}" C{var.x} A{1,2} B{"5"} D{true} W5000
+              if result != 0
+                set global.labTestFailed = global.labTestFailed + 1
 
             """);
         await SendCodeAsync($"M98 P\"{ResetMacro}\"");
@@ -140,11 +143,12 @@ public class MacrosOnOtherChannels : LabTest
         int triggerRuns = (await QueryAsync("global.labTestChannelTriggerRuns")).GetInt32();
         int macroRuns = (await QueryAsync("global.labTestMacroRuns")).GetInt32();
         int skipped = (await QueryAsync("global.labTestSkipped")).GetInt32();
-        int busy = (await QueryAsync("global.labTestBusy")).GetInt32();
+        int failed = (await QueryAsync("global.labTestFailed")).GetInt32();
         int input = (await QueryAsync("global.labTestInput")).GetInt32();
         string? parameters = (await QueryAsync("global.labTestParameters")).GetString();
         string journal = await Lab.ReadJournalAsync(cursor);
-        TestContext.Progress.WriteLine($"M98.1 S{index} ({channel}): trigger ran {triggerRuns} times, macro {macroRuns} times, {skipped} runs skipped the call, {busy} calls found the channel busy, " +
+        int dropped = Regex.Count(journal, "not started because code channel");
+        TestContext.Progress.WriteLine($"M98.1 S{index} ({channel}): trigger ran {triggerRuns} times, macro {macroRuns} times, {skipped} runs skipped the call, {failed} calls failed, {dropped} macros dropped after W, " +
             $"input {input}, parameters {parameters}, " +
             $"seen in inputs[] {macroSeen}, status then {firstStatus}, busy {busySeen} after {busyTime.ElapsedMilliseconds} ms, HTTP code took {deleteTime.Elapsed.TotalSeconds:F1} s, output in journal {journal.Contains("labTest output of the macro")}");
 
@@ -156,8 +160,9 @@ public class MacrosOnOtherChannels : LabTest
             Assert.That(busySeen, Is.True, "The machine did not report busy");
             Assert.That(finished, Is.True, "The stack depth of the channel did not return to 0");
             Assert.That(skipped, Is.GreaterThanOrEqualTo(MacroSeconds / 4), "The trigger stopped firing while the macro was running, or inputs[] did not show the macro");
-            Assert.That(triggerRuns, Is.EqualTo(macroRuns + skipped + busy), "A call neither started the macro nor set result to 1");
-            Assert.That(parameters, Is.EqualTo("5,2,5,true,false"));
+            Assert.That(failed, Is.Zero, "M98.1 did not return result 0");
+            Assert.That(triggerRuns, Is.EqualTo(macroRuns + skipped + dropped), "A call neither started the macro nor was dropped with a warning");
+            Assert.That(parameters, Is.EqualTo("5,2,5,true,false,false"));
             Assert.That(journal.Contains("labTest output of the macro"), Is.EqualTo(outputReachesMessages), "Unexpected route of the echo output");
             Assert.That(journal, Does.Not.Contain("Failed to start macro file"));
             Assert.That(journal, Does.Not.Contain("Out-of-order reply"));
@@ -177,6 +182,7 @@ public class MacrosOnOtherChannels : LabTest
     [TestCase($"M98.1 S0 P\"{BlockingMacro}\"", "Use M98 to start a macro on the same code channel")]
     [TestCase($"M98.1 S4 P\"{Lab.MacroDirectory}/other-channel/missing.g\"", "not found")]
     [TestCase($"M98.1 P\"{BlockingMacro}\"", "Missing S parameter")]
+    [TestCase($"M98.1 S4 P\"{BlockingMacro}\" W-1", "Invalid wait time -1")]
     public async Task CallIsRefused(string code, string error)
     {
         Assert.That(await SendCodeAsync(code), Does.Contain(error));
