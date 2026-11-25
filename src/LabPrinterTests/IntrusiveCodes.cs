@@ -269,7 +269,7 @@ public class IntrusiveCodes : LabTest
     [Test, Category("Restart")]
     public async Task RunOnceRunsAfterConfig()
     {
-        // needs a DCS with #224
+        await G3Helpers.RequireControlServerWithNewFixesAsync("#224");
         const string runOnce = "0:/sys/runonce.g";
         if ((await Session.GetFileListAsync("0:/sys")).Any(item => item.Filename == "runonce.g"))
         {

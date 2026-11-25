@@ -48,6 +48,11 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
   - `PluginServices.StoppedPluginLeavesNoChildProcesses`: stops and starts one plugin that has child processes.
   - `ExpansionBoards.RestartDuringAccelerometerRunKeepsLinkAndResetData` (also `Restart`): one watchdog reset of the SZP during an accelerometer run, then a DCS restart and M999, one E-stop.
   - `ExpansionBoards.SzpCoilKeepsUpdatingDuringAccelerometerRuns`: 700 accelerometer runs of the SZP, about 17 minutes, into a file in `0:/sys/accelerometer` that the test deletes.
+  - `JobSimulation`: test files in `0:/gcodes/lab-tests` run as M37 simulations only, never with M32. On the CHX, `sys/start.g` returns before it heats or moves when simulating, and only in automatic mode, which the tests require; RRF runs no `stop.g` after a simulation. The doors must stay closed: at the start RRF resets the extruder positions, which `daemon.g` sees as motion for 0.25 s, and a door opened then triggers M112. An event macro that pauses the job (heater, driver, filament or expansion faults) would run `pause.g`, which retracts.
+  - `SystemTime`: steps the SBC clock by -60 s, or forward by at least 60 s, and restores it.
+  - `RootDeletion`: non-recursive delete requests that name `0:/`. Each request form must first delete an empty test folder and keep a non-empty one, each alias of the root must list exactly what `0:/` lists, and `0:/` and `sys/config.g` are checked after every request; the test stops at the first change.
+  - `FullDisk`: points `sys/config-override.g` or the event log at `/dev/full` or a small tmpfs. `config-override.g` is never deleted or written: it is backed up with its checksum to `/run/lab-sbc-files`, renamed aside and back as dsf, and the checksum is checked afterwards.
+  - `IntrusiveCodes.M997*`: M997 with a 100-byte UF2 file and with `S0:4` and a missing file; both are refused before anything is flashed. `IntrusiveCodes.RunOnceRunsAfterConfig` (also `Restart`) writes `0:/sys/runonce.g` and sends M999.
 - Explicit only: the 30-minute soak and the 60-minute `MacroCloseStress` (category `Trigger`).
 - `MacroCloseStress` runs trigger 30 up to five times a second, and its macro nests four more. DCS logs two lines for each macro on the trigger channel, so the journal gets about 50 lines a second for an hour. The machine's own triggers keep priority (see the test).
 - `AbortsCrossingMacroRequests` (explicit, `Restart`) runs a Python IPC client as root on the SBC, which aborts Telnet with the IPC command `InvalidateChannel`, and sets the DCS log level to debug for about a minute (`M111 P-1 S"debug"`, set back afterwards). `LAB_ABORT_ITERATIONS` sets the number of aborts (default 600).
@@ -156,6 +161,20 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 | `ExpansionBoards.Samc21SystemStackIs800Bytes` | The SAMC21 system stack grew to 3200 bytes, 2400 bytes less heap on TOOL1LC and SZP | Duet3Expansion PR #11 |
 | `ExpansionBoards.RestartDuringAccelerometerRunKeepsLinkAndResetData` (explicit, Approval, Restart) | A board restart during M956 stalled CAN input and SBC transfers for up to 2 × 3 s; SAMC21 reset data could be cut short (the slot that shows it comes up in one run of three) | RRF fork PR #112, Duet3Expansion PR #30 |
 | `ExpansionBoards.SzpCoilKeepsUpdatingDuringAccelerometerRuns` (explicit, Approval) | The SZP coil reading froze with state ok during M956 runs, about 1.4 % per run, until `M999 B60` | CoreN2G PR #2 |
+| `JobSimulation.CodesBeforeUnreadableLineStillRun` (explicit, Approval) | A line that could not be read in a job (unexpected else) cancelled the codes read ahead before it; no release had it, upstream d108e9767 brought it | DSF 91555b8fc (#212) |
+| `JobSimulation.LongJobPathIsRefused` (explicit, Approval) | RRF cut a job path over 120 bytes without an error | DSF #219 |
+| `JobSimulation.HugeJobFileIsRefused` (explicit, Approval) | Files of 4 GiB or more were printed although file positions are 32 bit | DSF #219 |
+| `JobSimulation.LongSlicerCommentIsCut` (explicit, Approval) | A slicer comment over 254 bytes stopped DCS at job start | DSF #219 |
+| `JobSimulation.SimulatedTimeWriteFailureEndsOnlySimulation` (explicit, Approval) | DCS stopped when M37 could not write the simulated time back | DSF #221 |
+| `SystemTime.BackwardClockStepReachesFirmware` (explicit, Approval) | A backward step of the SBC clock never reached RRF | DSF #215 |
+| `SystemTime.SessionSurvivesClockStep` (explicit, Approval) | A forward clock step expired HTTP sessions without WebSocket | DSF #215 |
+| `RootDeletion.*` (explicit, Approval) | Delete requests naming `0:/` deleted the whole SD card (H1) | DSF #136 (mp.14), upstream 61df011ec (mp.15) |
+| `FullDisk.M500ReportsAFullDisk` (explicit, Approval) | M500 reported success on a full disk and left config-override.g empty | DSF #226 |
+| `FullDisk.M929StopsLoggingOnAFullDisk` (explicit, Approval) | A failed event log write stopped DCS or became the reply of a code | DSF #227 |
+| `IntrusiveCodes.M505Point1IsRelativeToTheCurrentFolder` (explicit, Approval) | A relative M505.1 folder was resolved against 0:/www | DSF #75 |
+| `IntrusiveCodes.M997RefusesAnInvalidUf2File` (explicit, Approval) | M997 of an invalid UF2 stopped plugins and restarted DCS | DSF #197 |
+| `IntrusiveCodes.M997RefusesModule0WithOtherModules` (explicit, Approval) | M997 S0:4 dropped module 4 | DSF #148 |
+| `IntrusiveCodes.RunOnceRunsAfterConfig` (explicit, Approval, Restart) | runonce.g never ran in SBC mode on 3.7 | DSF #224 |
 
 ## SPI fault injection
 
@@ -206,7 +225,7 @@ src/LabPrinterTests/run-lab-tests.sh --side-load --fault-injection --filter "Ful
 - The end-of-print reply and M32 from a job file (upstream 9acd058f) need a print job.
 - Case 2 of #57 (RRF takes the data of a retried transfer) has never been observed and needs fault injection.
 - DSF #59: a fault that the fix repairs recovers without it too in the lab; it needs a census case first.
-- The job file cases of DSF #204 and #216 and the running-job case of #222 need a print job.
+- The job file cases of DSF #204 and #216 and the running-job case of #222 need a print job; M37 does not reach them, because DSF and RRF ignore M581/M581.1 from a simulated file.
 - The DoCode path of DSF #220, #237 and #242 (a code that RRF passes to DSF fails there) needs USB or PanelDue, which the CHX lacks; trigger actions no longer reach it since RRF fork PR #115.
 - The array parser part of RRF fork PR #108 (M584 and other codes with array parameters) would change the machine configuration.
 - Duet3Expansion PR #2, #6, #24 and #29 need motion, extrusion or heaters. CoreN2G PR #4 needs a USB cable to the SBC. CoreN2G PR #6 would need the board's flash erased, which the lab tests never do.

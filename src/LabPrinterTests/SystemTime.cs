@@ -40,6 +40,7 @@ public class SystemTime : LabTest
     [Test]
     public async Task BackwardClockStepReachesFirmware()
     {
+        await G3Helpers.RequireControlServerWithNewFixesAsync("#215");
         TimeSpan step = TimeSpan.FromSeconds(-60);
         DateTime start = Lab.Read(Session, model => model.State.Time) ?? DateTime.MinValue;
         if (start == DateTime.MinValue)
@@ -81,6 +82,7 @@ public class SystemTime : LabTest
     [Test]
     public async Task SessionSurvivesClockStep()
     {
+        await G3Helpers.RequireWebServerWithNewFixesAsync("#215");
         // Read as dsf, the user of DuetWebServer (duetwebserver.service:14), not as root: dsf may replace files in /opt/dsf/conf (duetcontrolserver postinst:18-24)
         await ApprovalHelpers.RequireSudoAsDsfAsync();
         TimeSpan sessionTimeout = TimeSpan.FromMilliseconds(double.Parse((await Lab.RunOnSbcAsync($"""

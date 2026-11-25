@@ -48,6 +48,7 @@ public class FullDisk : LabTest
     [Test]
     public async Task M500ReportsAFullDisk()
     {
+        await G3Helpers.RequireControlServerWithNewFixesAsync("#226");
         string? systemDirectory = (await QueryAsync("directories.system")).GetString()?.TrimEnd('/');
         if (systemDirectory != "0:/sys")
         {
@@ -138,7 +139,7 @@ public class FullDisk : LabTest
     [Test]
     public async Task M929StopsLoggingOnAFullDisk()
     {
-        // needs a DCS with #227
+        await G3Helpers.RequireControlServerWithNewFixesAsync("#227");
         string? level = (await QueryAsync("state.logLevel")).GetString();
         JsonElement oldFile = await QueryAsync("state.logFile");
         string sdDirectory = await ApprovalHelpers.GetSdDirectoryAsync();

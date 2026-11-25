@@ -140,6 +140,9 @@ result["sideLoadDir"] = os.path.exists("/var/tmp/lab-tests")
 result["ota"] = run("systemctl", "is-active", "mp-ota-gate.timer").strip()
 result["trigger30"] = subprocess.run(["sudo", "-n", "test", "-e", "/opt/dsf/sd/sys/trigger30.g"]).returncode == 0
 result["testMacros"] = subprocess.run(["sudo", "-n", "test", "-e", "/opt/dsf/sd/macros/lab-tests"]).returncode == 0
+result["testJobs"] = subprocess.run(["sudo", "-n", "test", "-e", "/opt/dsf/sd/gcodes/lab-tests"]).returncode == 0
+result["runOnce"] = subprocess.run(["sudo", "-n", "test", "-e", "/opt/dsf/sd/sys/runonce.g"]).returncode == 0
+result["testDirs"] = [path for path in ("/var/tmp/lab-capabilities", "/run/lab-sbc-files") if os.path.lexists(path)]
 try:
     key = json.load(urllib.request.urlopen("http://localhost/machine/connect?password=reprap", timeout=5))["sessionKey"]
     request = urllib.request.Request("http://localhost/machine/code", data=b"M122", headers={"X-Session-Key": key}, method="POST")
@@ -387,6 +390,9 @@ def evaluate(start: dict, end: dict, journal: str, results: list, output_log: Pa
         ('mp-ota-gate.timer active', end.get('ota') == 'active'),
         ('sys/trigger30.g removed', not end.get('trigger30', True)),
         ('0:/macros/lab-tests removed', not end.get('testMacros', True)),
+        ('0:/gcodes/lab-tests removed', not end.get('testJobs', True)),
+        ('sys/runonce.g as before', end.get('runOnce') == start.get('runOnce')),
+        ('SBC test directories removed', end.get('testDirs', ['?']) == []),
         ('printer idle, no job', end.get('status') == 'idle' and not end.get('job')),
         ('expansion boards running', bool(end.get('boards')) and all(state == 'running' for state in end.get('boards', []))),
         (f'versions as before (DSF {end.get("dsf")}, RRF {end.get("rrf")})', end.get('dsf') == start.get('dsf') and end.get('rrf') == start.get('rrf')),
