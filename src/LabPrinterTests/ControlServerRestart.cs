@@ -93,7 +93,8 @@ public class ControlServerRestart : LabTest
     /// Unfixed: idle, G4 is carried out. Deterministic</item>
     /// <item>RRF #23: the emergency stop switches ATX power off (RRF RepRap.cpp:1057-1058, Platform.cpp:3561-3577). state.atxPower reads the pin back
     /// (RepRap.cpp:341, Platform.cpp:3500-3504), so it must turn false if it was true. The machine switches it on in e-stop.g, which config.g runs, and
-    /// again after M999. Unfixed: it stays true. Deterministic; skipped where ATX power is not controlled (null)</item>
+    /// again after M999. Unfixed: it stays true. The test reads RRF's value with M409 R1 and requires the model of the new DCS to show the same within
+    /// 10 s; the model gets it only with the query of the key state, after the status. Deterministic; skipped where ATX power is not controlled (null)</item>
     /// </list>
     /// No extra restart: the stop and start were in the test before. A separate test for #149b would cost one more DCS restart and M999
     /// </summary>
@@ -133,15 +134,28 @@ public class ControlServerRestart : LabTest
             MachineStatus status;
             int upTimeAfter;
             bool? atxAfter, atxAfterInModel;
+            double? atxInModelAfter = null;
             string g4Reply;
             double elapsed;
             await using (DuetHttpSession after = await Lab.ReconnectAsync(TimeSpan.FromMinutes(2)))
             {
                 await Lab.WaitForModelAsync(after, model => model.State.Status is MachineStatus.Halted or MachineStatus.Idle, TimeSpan.FromMinutes(2), "DCS to report the firmware state");
+
+                // The status comes with the live query of the new DCS (Model/UpdateService.cs:286), atxPower only with the query of the key state after it
+                // (:299-334), because RRF has no live flag on it (RepRap.cpp:341). The wait above returns at the first patch with the status
+                // (DuetHttpClient RestConnector.cs:299-305), which had no atxPower yet in both lab runs of 2026-11-25
+                if (atxBefore == true)
+                {
+                    Stopwatch sinceStatus = Stopwatch.StartNew();
+                    if (await Lab.TryWaitForModelAsync(after, model => model.State.AtxPower is not null, TimeSpan.FromSeconds(10)))
+                    {
+                        atxInModelAfter = sinceStatus.Elapsed.TotalSeconds;
+                    }
+                }
                 (status, upTimeAfter, atxAfterInModel) = Lab.Read(after, model => (model.State.Status, model.State.UpTime, model.State.AtxPower));
 
-                // RRF's own value: the model of the new DCS showed null once (lab run 2026-11-25) while RRF keeps the pin after the stop
-                // (Platform.cpp:3561-3577). M409 is a status request, which RRF carries out while halted (GCodes2.cpp:676, IsStatusRequestMCode)
+                // RRF's own value: RRF keeps the pin after the stop (Platform.cpp:3561-3577). M409 is a status request, which RRF carries out while
+                // halted (GCodes2.cpp:676, IsStatusRequestMCode)
                 JsonElement atxReply = await G1Helpers.QueryFirmwareAsync(after, "state.atxPower");
                 atxAfter = atxReply.ValueKind switch { JsonValueKind.True => true, JsonValueKind.False => false, _ => null };
                 elapsed = sinceUpTime.Elapsed.TotalSeconds;
@@ -162,7 +176,8 @@ public class ControlServerRestart : LabTest
             TestContext.Progress.WriteLine($"Box {(boxOpen ? "open" : "not open")} at the stop, M291 ended with {boxOutcome}; M122 loop: {loop.Trim()}; " +
                 $"stop {(ended - stopping)?.ToString("0.00") ?? "not found"} s; after the start {status}, up time {upTimeBefore} -> {upTimeAfter} s in {elapsed:0} s, " +
                 $"ATX power {atxBefore?.ToString() ?? "not controlled"} -> {atxAfter?.ToString() ?? "not controlled"} in RRF, " +
-                $"{atxAfterInModel?.ToString() ?? "not controlled"} in the model of the new DCS, G4: {g4Reply.Trim()}");
+                $"{atxAfterInModel?.ToString() ?? "not controlled"} in the model of the new DCS" +
+                $"{((atxInModelAfter is null) ? string.Empty : $" {atxInModelAfter:0.00} s after the status")}, G4: {g4Reply.Trim()}");
 
             Assert.Multiple(() =>
             {
@@ -180,6 +195,7 @@ public class ControlServerRestart : LabTest
                 {
                     Assert.That(atxAfter, Is.Not.True, "The emergency stop left ATX power on (RRF #23)");
                     Assert.That(atxAfter, Is.False, "RRF no longer controls ATX power after the emergency stop");
+                    Assert.That(atxAfterInModel, Is.EqualTo(atxAfter), "The model of the new DCS does not show RRF's ATX power state within 10 s");
                 }
             });
         }
