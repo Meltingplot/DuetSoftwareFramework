@@ -110,7 +110,8 @@ public class FileInfoReplies : LabTest
     /// does, and FileInfoParser leaves the key out like any key that fails to evaluate (FileInfoParser.cs:101-114). The fast path of the evaluation
     /// (Expressions.cs:1016-1032) takes the value to that parser. Unfixed, M36 ends DCS: the unit test CustomInfoWithDeepNestingIsSkipped ended
     /// the test host with "Stack overflow" before the fix (PR #218); here systemd restarts DCS, RRF loses the link and stops, and the test resets it.
-    /// Deterministic, one M36. The other half of #218, a deeply nested expression in a code, is not tested here
+    /// Deterministic, one M36. The other half of #218, a deeply nested expression in a code, is not tested here. Since DSF #251 the refusal is logged
+    /// with a short stack trace (finding LT3), so the test checks that it left at most G1Helpers.MaxRefusalLines lines
     /// </summary>
     [Test]
     public async Task DeeplyNestedCustomInfoIsSkipped()
@@ -118,15 +119,17 @@ public class FileInfoReplies : LabTest
         await G3Helpers.RequireControlServerWithNewFixesAsync("#218");
         string nested = new string('(', DeepNesting) + "1" + new string(')', DeepNesting);
         string cursor = await Lab.GetJournalCursorAsync();
+        int lines;
         try
         {
             await CheckNestedCustomInfoAsync(nested);
         }
         finally
         {
-            // The refusal is logged with a stack trace of thousands of lines (lab run 2026-11-25), which journald limits
-            await G1Helpers.LetJournaldRateLimitPassAsync(cursor);
+            // Before DSF #251 the refusal was logged with a stack trace of thousands of lines (lab run 2026-11-25), which journald limits
+            lines = await G1Helpers.LetJournaldRateLimitPassAsync(cursor);
         }
+        Assert.That(lines, Is.LessThan(G1Helpers.MaxRefusalLines), "The refusal was logged with a stack frame per nesting level (DSF #251)");
     }
 
     /// <summary>

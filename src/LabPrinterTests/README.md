@@ -62,7 +62,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 - Root Python IPC clients on the SBC, as in `AbortsCrossingMacroRequests`, also run in `CodeLengths`, `IpcCommands`, `TelnetCodes`, `PluginPermissions`, `JournalPriorities`, `WebServer`, `CodeInterception`, `ObjectModelLifetime` and `ControlServerRestart`. `WebServer.PluginRequestEndsWhenTheClientAborts` registers the endpoint `labtest/stall` for a few seconds and removes it again.
 - `TelnetCodes.M20MarlinHeader` switches Telnet to Marlin mode with `M555 P2` if it is in another mode and restores the mode afterwards.
 - `ObjectModelLifetime.DeletingCommandsDoNotStallAssignments` opens and closes non-blocking message boxes (`M291 S1`) for about a minute, which flicker on the HMI.
-- `ExpressionEvaluation.DeeplyNestedExpressionIsRefused` sends codes of about 400 KB, and each refusal logs a long stack trace.
+- `ExpressionEvaluation.DeeplyNestedExpressionIsRefused` sends codes of about 400 KB. Before DSF #251 each refusal logged a stack trace of thousands of lines; the test waits for journald's rate limit and checks that the refusal now leaves only a few lines.
 - `CodeBufferReserve` keeps Telnet and Aux2 waiting for 12 s with RRF's code buffer full. Without the fix, no trigger macro, including those of the doors and the E-stop input, gets a code to RRF in that time.
 - Never: print jobs, motion or heaters.
 - A test that leaves a channel stuck restarts DCS and sends M999 before it fails.
@@ -129,7 +129,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 | `WebServer.WebServerComesBackAfterAKill` (explicit, Approval) | Same as above, checked by killing DWS | DSF #225 |
 | `FileInfoReplies.FilamentIndexIsBounded` | A large IdeaMaker filament index made DCS grow the filament list to that index | DSF #219 |
 | `FileInfoReplies.NonFiniteValuesKeepFileInfoReadable` | A Z or filament value beyond the float range made M36 reply err 1 | DSF #223 |
-| `FileInfoReplies.DeeplyNestedCustomInfoIsSkipped` | A deeply nested customInfo value ended DCS with a stack overflow | DSF #218 |
+| `FileInfoReplies.DeeplyNestedCustomInfoIsSkipped` | A deeply nested customInfo value ended DCS with a stack overflow; its refusal flooded the journal | DSF #218, #251 |
 | `CodeReplies.M36ReadsFooterWithTwoCodesOnOneLine` | A footer line with two codes made M36 fail | DSF #84 |
 | `MacroErrors.CodesBeforeUnreadableLineStillRun` | Codes before an unreadable macro line were cancelled | DSF #204 |
 | `MacroErrors.CodeThatFailsInDsfStopsTheMacro` | Codes after a failed macro code still ran | DSF #204 |
@@ -140,7 +140,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 | `CodeInterception.ExecutedInterceptorWithAutoFlushGetsItsCode` | An Executed interceptor with AutoFlush blocked its channel for good | DSF #181 |
 | `ObjectModelLifetime.DeletingCommandsDoNotStallAssignments` | No bug seen: M291/M292 against SBC expressions and assignments guard the new lifetime lock; the use-after-free itself cannot be forced | RRF fork PR #70 |
 | `ExpressionEvaluation.ParameterOutOfRangeIsAnError` | `M20 S31e9` ended with an OverflowException (HTTP 500) instead of an error reply | DSF #162 |
-| `ExpressionEvaluation.DeeplyNestedExpressionIsRefused` | An expression nested too deeply ended DCS with a stack overflow | DSF #218 |
+| `ExpressionEvaluation.DeeplyNestedExpressionIsRefused` | An expression nested too deeply ended DCS with a stack overflow; its refusal flooded the journal | DSF #218, #251 |
 | `ExpressionEvaluation.DateTimeStringsGoToRrf` | datetime() of strings that RRF accepts was refused by DSF ("can't convert value to DateTime") | DSF #238 (month 99 also RRF fork PR #104) |
 | `ExpressionEvaluation.TwoToThe31IsAFloat` | floor(), ceil(), round() and pow() gave the int 2147483647 instead of the float 2147483648 for 2^31 | DSF #249 |
 | `ExpressionEvaluation.OversizedArraysAndGlobalsAreRefused` | Values whose JSON cannot come back over the link reached RRF when DSF could evaluate them | DSF #239 with RRF fork PR #114 |

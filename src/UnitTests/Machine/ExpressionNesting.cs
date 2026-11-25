@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using DuetAPI;
@@ -51,15 +52,25 @@ public class ExpressionNesting
         thread.Join();
         if (error is not null)
         {
-            throw error;
+            // Keep the stack trace of the thread, MaxFrames checks it
+            ExceptionDispatchInfo.Capture(error).Throw();
         }
     }
+
+    /// <summary>
+    /// Most stack frames that a refusal may list. Both parsers throw it again at their top, so that a log entry with it does not list every nesting
+    /// level (finding LT3: ProcessInternally.cs and FileInfoParser.cs log the exception, about 4,000 journal lines per refusal before)
+    /// </summary>
+    private const int MaxFrames = 50;
+
+    private static int Frames(Exception e) => e.StackTrace?.Split('\n').Length ?? 0;
 
     [Test]
     public void ParserRefusesDeepNesting()
     {
-        Assert.That(() => RunWithStack(() => MetaExpressionParser.TryEvaluate(Nested(DeepNesting), null, out _)),
-            Throws.InstanceOf<CodeParserException>().With.Message.StartsWith("Expression nesting too deep"));
+        CodeParserException? e = Assert.Throws<CodeParserException>(() => RunWithStack(() => MetaExpressionParser.TryEvaluate(Nested(DeepNesting), null, out _)));
+        Assert.That(e!.Message, Does.StartWith("Expression nesting too deep"));
+        Assert.That(Frames(e), Is.LessThan(MaxFrames));
     }
 
     [Test]
@@ -115,6 +126,27 @@ public class ExpressionNesting
         Task<string>? evaluation = null;
         RunWithStack(() => evaluation = expressions.EvaluateExpressionToStringAsync(code, Nested(DeepNesting), true, false));
 
-        Assert.That(async () => await evaluation!, Throws.InstanceOf<CodeParserException>().With.Message.StartsWith("Expression nesting too deep"));
+        CodeParserException? e = await Assert.ThrowsAsync<CodeParserException>(async () => await evaluation!);
+        Assert.That(e!.Message, Does.StartWith("Expression nesting too deep"));
+        Assert.That(Frames(e), Is.LessThan(MaxFrames));
+    }
+
+    /// <summary>
+    /// An expression that DSF evaluates itself goes to MetaExpressionParser first (Expressions.cs:1015-1031), e.g. a ";customInfo" value
+    /// </summary>
+    [Test]
+    public async Task ValueEvaluationRefusesDeepNesting()
+    {
+        _host = await FakeFirmwareHost.StartAsync();
+        Expressions expressions = _host.Services.GetRequiredService<Expressions>();
+        Code code = _host.Services.GetRequiredService<CodeFactory>().Create();
+        code.Channel = CodeChannel.HTTP;
+
+        Task<object?>? evaluation = null;
+        RunWithStack(() => evaluation = expressions.EvaluateExpressionToValueAsync(code, Nested(DeepNesting), false));
+
+        CodeParserException? e = await Assert.ThrowsAsync<CodeParserException>(async () => await evaluation!);
+        Assert.That(e!.Message, Does.StartWith("Expression nesting too deep"));
+        Assert.That(Frames(e), Is.LessThan(MaxFrames));
     }
 }

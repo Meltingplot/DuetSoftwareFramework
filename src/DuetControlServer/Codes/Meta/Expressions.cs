@@ -869,7 +869,7 @@ public sealed class Expressions(Model.Filter filter, Model.ObjectModel model, Li
             // Nested levels that complete synchronously run on the same stack. Refuse an expression nested too deeply before it overflows
             if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
             {
-                throw new CodeParserException("Expression nesting too deep", code);
+                throw new CodeParserException(Parsing.ExpressionErrors.NestingTooDeep, code);
             }
 
             StringBuilder lastToken = new(), result = new();
@@ -1031,7 +1031,16 @@ public sealed class Expressions(Model.Filter filter, Model.ObjectModel model, Li
             }
         }
 
-        string expressionContent = await eatExpression('\0');
+        string expressionContent;
+        try
+        {
+            expressionContent = await eatExpression('\0');
+        }
+        catch (CodeParserException e) when (e.Message.StartsWith(Parsing.ExpressionErrors.NestingTooDeep, StringComparison.Ordinal))
+        {
+            // Throw the refusal again from here, so that its stack trace does not list every nesting level
+            throw (e.Code is null) ? new CodeParserException(e.Message) : new CodeParserException(e.Message, e.Code);
+        }
         if (onlySbcFields)
         {
             return expressionContent;

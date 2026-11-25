@@ -30,6 +30,13 @@ internal static partial class G1Helpers
     public const string NestingTooDeep = "Expression nesting too deep";
 
     /// <summary>
+    /// Most journal lines of DCS for one refused nesting. Since DSF #251 both parsers throw the refusal again at their top
+    /// (MetaExpressionParser.Parse, Expressions.EvaluateExpressionToValueAsync), so its log entry lists a few frames (unit tests ExpressionNesting:
+    /// 5 to 8) instead of one per nesting level (finding LT3: about 4,000 kept lines per refusal and "Suppressed N messages")
+    /// </summary>
+    public const int MaxRefusalLines = 100;
+
+    /// <summary>
     /// Error text of RRF for a value whose answer cannot be sent to the SBC (RRF SbcInterface.cpp:56), which DSF uses as well
     /// (Codes/Meta/VariableValueLength.cs:26)
     /// </summary>
@@ -164,7 +171,8 @@ internal static partial class G1Helpers
     /// The wait is unconditional: when the reply comes, DCS may still be writing the trace, and journald notes "Suppressed N messages" only once the
     /// unit logs again after the interval. So the helper waits until the number of kept lines stops growing, then for one interval
     /// </summary>
-    public static async Task LetJournaldRateLimitPassAsync(string cursor)
+    /// <returns>Number of lines of DCS since the cursor that journald kept</returns>
+    public static async Task<int> LetJournaldRateLimitPassAsync(string cursor)
     {
         int lines = await CountJournalLinesAsync(cursor), last;
         do
@@ -176,6 +184,7 @@ internal static partial class G1Helpers
         while (lines != last);
         TestContext.Progress.WriteLine($"journald kept {lines} lines of DCS, waiting 31 s for its rate limit interval");
         await Task.Delay(TimeSpan.FromSeconds(31));
+        return lines;
     }
 
     /// <summary>
