@@ -141,11 +141,34 @@ public class MetaExpressions
     [Test]
     public async Task FileExists()
     {
-        // fileexists is true for files only (wiki, Functions), DSF resolves the path relative to 0:/ (Functions.cs:65-73)
+        // fileexists is true for files only (wiki, Functions). RRF looks for a relative name in the system directory and takes a name that
+        // starts with / or a drive as it is (Platform::SysFileExists -> MassStorage::CombineName), and so does DSF (Functions.cs:66-75)
         WriteFile("sys/a.g", "G1 X1\n");
-        Assert.That(await _host.ExecuteAsync("echo fileexists(\"0:/sys/a.g\"), fileexists(\"sys/a.g\"), fileexists(\"0:/sys\"), fileexists(\"missing.g\")"),
-                    Is.EqualTo("true true false false\n"));
+        WriteFile("b.g", "G1 X1\n");
+        Assert.That(await _host.ExecuteAsync("echo fileexists(\"0:/sys/a.g\"), fileexists(\"/sys/a.g\"), fileexists(\"a.g\"), fileexists(\"sys/a.g\")"),
+                    Is.EqualTo("true true true false\n"));
+        Assert.That(await _host.ExecuteAsync("echo fileexists(\"0:/b.g\"), fileexists(\"/b.g\"), fileexists(\"b.g\")"), Is.EqualTo("true true false\n"));
+        Assert.That(await _host.ExecuteAsync("echo fileexists(\"0:/sys\"), fileexists(\"missing.g\")"), Is.EqualTo("false false\n"));
         Assert.That(await _host.ExecuteAsync("echo fileexists(1)"), Is.EqualTo("Error: fileexists requires a string argument"));
+    }
+
+    [Test]
+    public async Task FileExistsFollowsSystemDirectory()
+    {
+        // A relative name is looked for in the system directory that M505 set (MCodeHandler.cs:995-1010)
+        WriteFile("sys/a.g", "G1 X1\n");
+        WriteFile("sys/custom/c.g", "G1 X1\n");
+        Assert.That(await _host.ExecuteAsync("M505 P\"0:/sys/custom\""), Is.EqualTo("\n"));
+        Assert.That(await _host.ExecuteAsync("echo fileexists(\"c.g\"), fileexists(\"a.g\"), fileexists(\"0:/sys/a.g\")"), Is.EqualTo("true false true\n"));
+    }
+
+    [Test]
+    public async Task FileExistsInCodeForFirmware()
+    {
+        // DSF substitutes the call in a code it sends to RRF (Code.cs:238), with the same resolution
+        WriteFile("sys/a.g", "G1 X1\n");
+        Assert.That(await SubstituteAsync("fileexists(\"a.g\")"), Is.EqualTo("true"));
+        Assert.That(await SubstituteAsync("fileexists(\"sys/a.g\")"), Is.EqualTo("false"));
     }
 
     [Test]
@@ -163,6 +186,15 @@ public class MetaExpressions
         WriteFile("sys/data.csv", "1,2,3\n");
         Assert.That(await _host.ExecuteAsync("echo #fileread(\"0:/sys/data.csv\", 0, 5, ',')"), Is.EqualTo("3\n"));
         Assert.That(await _host.ExecuteAsync("echo fileread(\"0:/sys/data.csv\", 0, 5)"), Is.EqualTo("Error: fileread requires 4 arguments"));
+    }
+
+    [Test]
+    public async Task FileReadRelativeName()
+    {
+        // Unlike fileexists, RRF reads a relative name from 0:/ (ExpressionParser::ReadArrayFromFile, CombineName with "0:/"), and so does DSF
+        WriteFile("data.csv", "1,2\n");
+        WriteFile("sys/data.csv", "1,2,3\n");
+        Assert.That(await _host.ExecuteAsync("echo #fileread(\"data.csv\", 0, 5, ',')"), Is.EqualTo("2\n"));
     }
 
     private async Task<object?[]> FileReadAsync(string content, int offset, int length, char delimiter = ',')

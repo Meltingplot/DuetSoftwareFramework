@@ -1,4 +1,5 @@
 ﻿using DuetAPI;
+using DuetAPI.Commands;
 using DuetControlServer.Files;
 using DuetControlServer.Link;
 using DuetControlServer.Model;
@@ -66,7 +67,8 @@ public class Functions(Expressions expressions, FilePathResolver filePathResolve
     {
         if (arguments.Length == 1 && arguments[0] is string stringArgument)
         {
-            string resolvedPath = await filePathResolver.ToPhysicalAsync(stringArgument);
+            // Like RepRapFirmware, which looks for a relative name in the system directory (Platform::SysFileExists)
+            string resolvedPath = await filePathResolver.ToPhysicalAsync(stringArgument, FileDirectory.System);
             return File.Exists(resolvedPath);
         }
         throw new ArgumentException("fileexists requires a string argument");
