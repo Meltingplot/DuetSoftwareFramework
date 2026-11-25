@@ -30,6 +30,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 - `LAB_PRESSURE_SECONDS` sets how long `OutputBufferPressure` keeps RRF's output buffers busy (default 60).
 - `LAB_MACRO_CLOSE_MINUTES` sets the duration of `MacroCloseStress` (default 60), e.g. 3 to check its rate. Run it with `--filter "FullyQualifiedName~MacroCloseStress"`.
 - `LAB_SZP_RUNS` sets the number of accelerometer runs of `ExpansionBoards.SzpCoilKeepsUpdatingDuringAccelerometerRuns` (default 700).
+- `LAB_AUTOMATIC_MODE_WAIT` makes the `JobSimulation` tests wait up to that many seconds for automatic mode instead of skipping. With `--side-load` the mode has to be set after the run started: the side-load restarts DCS, and the M999 that follows runs `config.g`, which leaves automatic mode.
 - Without `LAB_PRINTER_URL` and `LAB_PRINTER_SHELL`, which the script sets, every test is skipped.
 - **Tests of fixes the printer may not have yet** skip instead of failing, so that a run on an older image or firmware shows no false failures and costs no emergency stop where the bug would end DCS or hang a channel:
   - DSF fixes after 3.7.0+mp.15 (`G3Helpers.RequireControlServerWithNewFixesAsync`, `RequireWebServerWithNewFixesAsync`): the test runs if the service is side-loaded from this tree and runs that file, or if its package is newer. v3.7-dev builds report 3.7.0+mp.15 too until the next version bump.

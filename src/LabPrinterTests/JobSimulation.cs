@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
@@ -55,15 +56,35 @@ public class JobSimulation : LabTest
 
     private readonly List<string> _files = [];
 
+    /// <summary>
+    /// How long to wait for automatic mode before a test, set with LAB_AUTOMATIC_MODE_WAIT in seconds (default: no wait). A side-load restarts DCS, RRF
+    /// is halted then, and the M999 of the runner runs config.g again, which leaves automatic mode (run-lab-tests.py:91-110, :469-473). So with a side-load
+    /// the mode can only be set on the machine after the run has started (Approval run 2026-11-25)
+    /// </summary>
+    private static readonly TimeSpan AutomaticModeWait =
+        TimeSpan.FromSeconds(int.TryParse(Environment.GetEnvironmentVariable("LAB_AUTOMATIC_MODE_WAIT"), out int seconds) && seconds > 0 ? seconds : 0);
+
     [SetUp]
     public async Task RequireAutomaticModeAsync()
     {
         JsonElement mode = await QueryAsync("global.machine_mode");
-        if (mode.ValueKind != JsonValueKind.String || mode.GetString() != "automatic")
+        if (!IsAutomatic(mode) && AutomaticModeWait > TimeSpan.Zero)
+        {
+            TestContext.Progress.WriteLine($"global.machine_mode is {mode}: close both doors and switch the machine to automatic mode, waiting up to {AutomaticModeWait.TotalSeconds:0} s");
+            Stopwatch waited = Stopwatch.StartNew();
+            while (!IsAutomatic(mode) && waited.Elapsed < AutomaticModeWait)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2));
+                mode = await QueryAsync("global.machine_mode");
+            }
+        }
+        if (!IsAutomatic(mode))
         {
             Assert.Ignore($"global.machine_mode is {mode}, not \"automatic\": the CHX start.g ends a simulation in any other mode (sys/start.g:5-11)");
         }
     }
+
+    private static bool IsAutomatic(JsonElement mode) => mode.ValueKind == JsonValueKind.String && mode.GetString() == "automatic";
 
     [TearDown]
     public async Task DeleteFilesAsync()
