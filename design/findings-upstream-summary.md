@@ -2,7 +2,7 @@
 
 - **What:** bugs in upstream DuetSoftwareFramework and RepRapFirmware code that the Meltingplot fork found (CHX 350: Duet 3 MB6HC, Raspberry Pi 5 as SBC over SPI), one row per finding. Details: **DU** = `design/dsf-findings-upstream.md`, **LU** = `design/sbc-link-findings-upstream.md`, **OF** = `design/open-findings.md` (fork repository); **new** = results of 2026-11-11, in no document yet.
 - **Date and code:** 2026-11-11. Upstream looked at: DSF `v3.7-dev` 973838bf and f76ffc70 (K32), 77684383 (K34); RRF `3.7-dev` 25ec27aec and 231daaac87, `3.7-ch` e7e30e13f3 and 7e95567976 (K34), f8c8a1d69f (USB input files); DuetIAP 9af72da4. Line numbers follow their source; the commit per source is in the Notes.
-- **Count:** 153 findings: DSF 116, RRF 13, both sides of the SBC link 24; 19 more under "Origin not checked". 35 have a sample, 68 a reproducer test, 50 neither.
+- **Count:** 154 findings: DSF 116, RRF 14, both sides of the SBC link 24; 19 more under "Origin not checked". 36 have a sample, 68 a reproducer test, 50 neither. K39 was added on 2026-11-25, checked against RRF `3.7-ch` dc57fe098 and Duet3Expansion `3.7-ch` fc3180fa.
 - **Privilege boundaries (2026-11-24):** 7 findings of the error class census of DSF (UB5 to LX6) are in their own table at the end of the DSF part, checked against DSF `v3.7-dev` dbf9b044. They are not in the counts above.
 - **Evidence:** `printer` seen on the fork's lab printer (MB6HC + Pi 5); `upstream test` a test on unchanged upstream code (K32 only); `fork test` a test in the fork (unit tests, fake firmware, SPI census against a C# port of RRF); `read` read in the code only. Sample basis: "from test …", "seen on printer" or "derived, not run".
 - **Structure:** the ten most important, then every stop and deadlock at a glance, then how to run the tests and the SPI link in numbers, then the tables: the SBC link first (both sides, then the DSF link code), then the rest of DSF and RRF.
@@ -583,6 +583,7 @@ Reproducers: UB5 `DpsRootService.CombinedPackageIgnoresAPlantedDirectory`; FS4 `
 | <a id="t11-daemon"></a>T11 (daemon.g) | daemon.g request after InvalidateChannel (fork fix at `SbcInterface.cpp:1611-1648`, `:1967` @5c0cf3b8f) | A daemon.g request, which has no wait to end, written one transfer after InvalidateChannel reaches DSF after its abort window. | Daemon channel blocked (43 per 2000 aborts in the fake firmware) | abort on the Daemon channel | E2 | R3 | fork test | RRF #47 | OF Triggers T11; DU T1 "Not covered" |
 | <a id="t10"></a>T10 | `SbcInterface.cpp:857`, `:867` (`InvalidateBufferedCodes`); `GCodes2.cpp:1713`; DSF `Processor.HandleReply` `:1073-1086` | InvalidateChannel drops only the pending codes; the running code still replies, and DSF matches replies by order. | the next code gets "Error: M98: Macro file … not found" | abort while a code runs or an M98 waits for its macro | E3 | R3 | printer | RRF #46 + #163; with the epoch #167 + RRF #47 | DU T10; OF Triggers T10 |
 | <a id="of-s7"></a>S7 (OF) | `SbcInterface.h:155`; `OutputMemory.h:15-19`; `OutputMemory.cpp:487-506`; DSF `Processor.cs:1108-1117` | One 64-entry OutputStack holds the replies of all channels; on overflow `Push` drops the reply. | later replies of that channel shift by one | 64 replies pending | E3 | R3 | read | open | OF SBC link |
+| <a id="k39"></a>K39 | `SbcInterface.cpp:877-878`, `GCodes4.cpp:2074-2084`, `LocalZProbe.cpp:111-119`, `RemoteZProbe.cpp:94-139`; Duet3Expansion `InputMonitor.cpp:478-484`, `:536-563` | InvalidateChannel calls `AbortStateMachine` while a probing move of the channel can still run, so probing ends during the move: heaters suspended by `M558 B1` switch on, a local probe of type 5 or 8 drives its modulation output low, a remote probe goes to its inactive report spacing (a load cell also to baseline tracking). Standalone ends probing this way only at standstill or after an emergency stop. | probing ends before the probe triggers; whether the probe still stops the move depends on the probe | an IPC InvalidateChannel on a channel whose probing move runs | E3 | R3 | read | none (same code as upstream) | OF K39 |
 | <a id="k20"></a>K20 | `GCodes.cpp:490-499`, `:990-999`, `:1065-1070`; `GCodes2.cpp:1953-1955`; `GCodeBuffer.cpp:128-150` | DoEmergencyStop calls `GCodes::Reset`, which pops every stack and clears the abort flags, so no AbortFile reaches DSF and the SBC ring is not purged. | DSF keeps its macro levels and buffered codes; RRF answers them with "stopped" | trigger 0, PanelDue's M112, an M112 that RRF executes | E4 | R2 | read | open | OF v7 contract |
 | <a id="new-s2"></a>S2 (new) | `DataTransfer.cpp:719`, `:744` | In SBC mode an expression text over 256 bytes is truncated silently. | RRF may evaluate a different expression | expression over 256 bytes | E4 | R2 | read | open | new |
 | <a id="new-s3"></a>S3 (new) | `BinaryParser.cpp:495`, `:503` | In SBC mode string parameters are truncated silently; standalone raises "string too long". | truncated string | long string parameter | E4 | R2 | read | open | new |
@@ -590,6 +591,16 @@ Reproducers: UB5 `DpsRootService.CombinedPackageIgnoresAPlantedDirectory`; FS4 `
 
 Reproducers: T1 `TriggerMacros.TriggerChannelWorksAfterInvalidationDuringTriggerRequest`; T11 (daemon.g) `ChannelEpochStress.Measure` (v7 model); T10 `TriggerFuzz.NextCodeGetsItsOwnReplyAfterAbortWhileM98WaitsForItsMacro`, `NextCodeGetsItsOwnReplyAfterAbortWhileACodeRuns`.
 Neither: S7 (OF), K20, S2 (new), S3 (new), K21.
+
+Samples:
+- **K39** · derived, not run; RRF and Duet3Expansion read (3.7-ch dc57fe098, fc3180fa) · expected: the probing move ends at the trigger with the probe in probing mode and the heaters off, as without the abort; the G30 at the base level goes on · actual (read): during the move the heaters switch on and the modulation output goes low (`GCodes4.cpp:2074-2084`, `LocalZProbe.cpp:111-119`)
+  ```
+  ; config.g: M558 P8 C"io3.in+io3.out" H5 F120 T6000 B1   ; watch io3.out with a scope or an LED, one heater on
+  G28
+  G30                ; on the HTTP channel (DWC console)
+  ; while the probing move runs, from an IPC client: InvalidateChannel on the HTTP channel,
+  ; e.g. DuetAPIClient CommandConnection.InvalidateChannelAsync(CodeChannel.HTTP) (BaseCommandConnection.cs:445-447)
+  ```
 
 ### G-code input and expressions
 
