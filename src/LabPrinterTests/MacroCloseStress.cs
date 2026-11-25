@@ -23,6 +23,13 @@ namespace LabPrinterTests;
 /// The test runs trigger 30 back to back. Its macro nests four more, up to three levels deep, like the idle tick of the machine (trigger8.g
 /// with the fan/ and self-test/ macros), only much more often. Triggers with lower numbers, such as those of the doors, still run first
 /// (GCodes::CheckTriggers), and a trigger whose action is M112 fires as trigger 0 at once
+///
+/// It also reads the journal of DCS for the lines that TriggerMacros.TriggerMacroCallingMacro checks. RRF before 3.7.0-rc.2+1-mp.3 copied the macro name of
+/// a trigger request without holding the GB mutex, so the SBC task could send the new name over the tail of the previous request ("Macro file trigger8.g
+/// not found", fixed in RRF fork PR #12 and #13, upstream as Duet3D 6c53cc748, GCodeBuffer.cpp:1333). That happened about once per 1100 trigger runs;
+/// 60 minutes are 7,200 runs at the lowest rate the test accepts (10 closes a second) and 18,000 at five runs a second, so a regression would show
+/// 6 to 16 times. "Failed to start macro file" is the error
+/// of DCS for a macro request it cannot serve (Processor.cs:1712), "Out-of-order reply" a reply that reached a channel without a code for it (Processor.cs:1390)
 /// </remarks>
 [TestFixture, Category("Trigger"), Explicit("Runs for 60 minutes")]
 public class MacroCloseStress : LabTest
@@ -178,6 +185,9 @@ public class MacroCloseStress : LabTest
                 Assert.That(journal, Does.Not.Contain(line), $"The journal of DCS shows a restart of RRF {where}");
             }
             Assert.That(perSecond, Is.GreaterThanOrEqualTo(MinimumClosesPerSecond), $"Only {perSecond:0.0} macro closes a second");
+            Assert.That(journal, Does.Not.Contain("Failed to start macro file"));
+            Assert.That(journal, Does.Not.Match("Macro file .* not found"), "A macro request of RRF named a file that does not exist (RRF #12)");
+            Assert.That(journal, Does.Not.Contain("Out-of-order reply"));
         });
     }
 
