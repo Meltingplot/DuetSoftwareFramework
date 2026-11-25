@@ -16,7 +16,8 @@ namespace LabPrinterTests;
 /// config-override.g holds the Z height of the CHX (set-new-height.g:22, M500 P10:31) and is never deleted or written by the test: it is copied to
 /// <see cref="ApprovalHelpers.SbcDirectory"/> and checked by SHA-256 first, then renamed next to the symlink in the same directory, and renamed back by a
 /// trap of the same SBC script, even if the script is stopped. Afterwards the test checks the file against the checksum and copies the backup back if it
-/// differs. DCS runs as user dsf without AppArmor confinement in the DSF packages (pkg/common/duetcontrolserver/.../duetcontrolserver.service; the AppArmor
+/// differs. Files on the SD card are read and changed only as dsf (<see cref="ApprovalHelpers.AsDsf"/>), root writes only into its own
+/// <see cref="ApprovalHelpers.SbcDirectory"/> and mounts the tmpfs, which belongs to dsf. DCS runs as user dsf without AppArmor confinement in the DSF packages (pkg/common/duetcontrolserver/.../duetcontrolserver.service; the AppArmor
 /// profiles of pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf are for plugins); an image may differ, so a refused open of /dev/full or of the
 /// tmpfs is inconclusive and the test prints the permissions and the AppArmor label of DCS
 /// </remarks>
@@ -27,9 +28,14 @@ public class FullDisk : LabTest
     private const string LogDirectory = $"{Lab.MacroDirectory}/full-disk";
     private const string LogFile = $"{LogDirectory}/event.log";
     private const string Tmpfs = $"{ApprovalHelpers.SbcDirectory}/full";
+    private const string AsDsf = ApprovalHelpers.AsDsf;
 
     [SetUp]
-    public Task RequirePython3Async() => ApprovalHelpers.RequirePython3Async();
+    public async Task RequireSbcToolsAsync()
+    {
+        await ApprovalHelpers.RequirePython3Async();
+        await ApprovalHelpers.RequireSudoAsDsfAsync();
+    }
 
     /// <summary>
     /// RRF writes config-override.g on the SBC with OpenFile, WriteFile and CloseFile requests. DSF opened it with a FileStream buffer, so every WriteFile was
@@ -49,17 +55,17 @@ public class FullDisk : LabTest
         }
         string target = $"{await ApprovalHelpers.GetSdDirectoryAsync()}/sys/config-override.g";
 
-        // Back it up and record its checksum before anything is changed
+        // Back it up and record its checksum before anything is changed. The file is read as dsf, root only writes the copy into its own directory
         string state = (await Lab.RunOnSbcAsync($"""
             set -e
+            {ApprovalHelpers.PrepareSbcDirectoryScript}
             target='{target}'
-            if [ -L "$target" ]; then echo symlink; exit 0; fi
-            if [ -e "$target.lab-original" ]; then echo leftover; exit 0; fi
-            sudo -n install -d -m 0700 '{ApprovalHelpers.SbcDirectory}'
-            if [ -e "$target" ]; then
-              sudo -n cp -p "$target" '{Backup}'
-              sum=$(sudo -n sha256sum "$target" | cut -d' ' -f1)
-              [ "$(sudo -n sha256sum '{Backup}' | cut -d' ' -f1)" = "$sum" ]
+            if {AsDsf} test -L "$target"; then echo symlink; exit 0; fi
+            if {AsDsf} test -e "$target.lab-original" || {AsDsf} test -L "$target.lab-original" || [ -e '{Backup}' ]; then echo leftover; exit 0; fi
+            if {AsDsf} test -e "$target"; then
+              {AsDsf} cat -- "$target" | sudo -n tee '{Backup}' >/dev/null
+              sum=$({AsDsf} sha256sum -- "$target" | cut -d' ' -f1)
+              [ "$(sha256sum '{Backup}' | cut -d' ' -f1)" = "$sum" ]
               echo "file $sum"
             else
               echo none
@@ -69,29 +75,30 @@ public class FullDisk : LabTest
         {
             Assert.Ignore($"{target} is a symlink, the test does not touch it");
         }
-        Assert.That(state, Is.Not.EqualTo("leftover"), $"{target}.lab-original is left from an earlier run: put it back by hand first");
+        Assert.That(state, Is.Not.EqualTo("leftover"), $"{target}.lab-original or {Backup} is left from an earlier run: put it back by hand first");
         TestContext.Progress.WriteLine($"config-override.g before the test: {state}");
 
         string? result = null, failure = null;
         try
         {
+            // Every change in the sys directory is made as dsf; only the IPC client runs as root, as in AbortsCrossingMacroRequests
             string output = await Lab.RunOnSbcAsync($$"""
                 set -e
                 target='{{target}}'
                 restore() {
-                  sudo -n rm -f "$target.lab-link"
-                  if [ -e "$target.lab-original" ]; then
-                    sudo -n mv -fT "$target.lab-original" "$target"
-                  elif [ -L "$target" ]; then
-                    sudo -n rm -f "$target"
+                  {{AsDsf}} rm -f "$target.lab-link"
+                  if {{AsDsf}} test -e "$target.lab-original"; then
+                    {{AsDsf}} mv -fT "$target.lab-original" "$target"
+                  elif {{AsDsf}} test -L "$target"; then
+                    {{AsDsf}} rm -f "$target"
                   fi
                 }
                 trap restore EXIT
                 trap 'exit 1' HUP INT TERM
-                if [ -e "$target" ]; then sudo -n mv -T "$target" "$target.lab-original"; fi
-                sudo -n ln -sfn /dev/full "$target.lab-link"
-                sudo -n mv -T "$target.lab-link" "$target"
-                sudo -n timeout 60 python3 - M500 SBC <<'EOF'
+                if {{AsDsf}} test -e "$target"; then {{AsDsf}} mv -T "$target" "$target.lab-original"; fi
+                {{AsDsf}} ln -sfn /dev/full "$target.lab-link"
+                {{AsDsf}} mv -T "$target.lab-link" "$target"
+                sudo -n timeout 60 python3 -I - M500 SBC <<'EOF'
                 {{ApprovalHelpers.IpcCodeScript}}
                 EOF
                 """);
@@ -142,16 +149,17 @@ public class FullDisk : LabTest
         try
         {
             // tmpfs counts whole pages. The log file gets the page size minus the 42 bytes of "yyyy-MM-dd HH:mm:ss Event logging started\n" (Logger.cs:105),
-            // which M929 then writes, so that the next byte needs a new page
+            // which M929 then writes, so that the next byte needs a new page. Root only creates the mount point in its own directory and mounts the tmpfs;
+            // the tmpfs belongs to dsf and is not writable for others, and the files in it and the link on the SD card are made as dsf
             string setup = await Lab.RunOnSbcAsync($$"""
                 set -e
+                {{ApprovalHelpers.PrepareSbcDirectoryScript}}
                 page=$(getconf PAGESIZE)
-                sudo -n install -d -m 0755 '{{ApprovalHelpers.SbcDirectory}}' '{{Tmpfs}}'
                 if mountpoint -q '{{Tmpfs}}'; then echo leftover; exit 0; fi
-                sudo -n mount -t tmpfs -o size=$((4 * page)),mode=0777 lab-full-disk '{{Tmpfs}}'
-                { head -c $((page - 43)) /dev/zero | tr '\0' '#'; echo; } | sudo -n tee '{{Tmpfs}}/event.log' >/dev/null
-                sudo -n chmod 0666 '{{Tmpfs}}/event.log'
-                sudo -n ln -sfn '{{Tmpfs}}/event.log' '{{sdDirectory}}{{LogFile["0:".Length..]}}'
+                sudo -n install -d -m 0755 -o root -g root '{{Tmpfs}}'
+                sudo -n mount -t tmpfs -o size=$((4 * page)),mode=0755,uid=$(id -u dsf),gid=$(id -g dsf) lab-full-disk '{{Tmpfs}}'
+                { head -c $((page - 43)) /dev/zero | tr '\0' '#'; echo; } | {{AsDsf}} tee '{{Tmpfs}}/event.log' >/dev/null
+                {{AsDsf}} ln -sfn '{{Tmpfs}}/event.log' '{{sdDirectory}}{{LogFile["0:".Length..]}}'
                 echo "page $page"
                 """);
             Assert.That(setup, Does.Not.StartWith("leftover"), $"{Tmpfs} was still mounted from an earlier run, it is unmounted now");
@@ -166,7 +174,7 @@ public class FullDisk : LabTest
             {
                 string fill = await Lab.RunOnSbcAsync($"""
                     size=$(stat -c %s '{Tmpfs}/event.log')
-                    sudo -n dd if=/dev/zero of='{Tmpfs}/filler' bs={page} 2>/dev/null || true
+                    {AsDsf} dd if=/dev/zero of='{Tmpfs}/filler' bs={page} 2>/dev/null || true
                     echo "$size $(stat -f -c %a '{Tmpfs}') $(stat -c %s '{Tmpfs}/event.log')"
                     """);
                 int[] numbers = [.. fill.Trim().Split(' ').Select(int.Parse)];
@@ -210,7 +218,7 @@ public class FullDisk : LabTest
     /// </summary>
     private async Task RestoreLoggingAsync(string? level, JsonElement oldFile, string pid, string sdDirectory)
     {
-        await Lab.RunOnSbcAsync($"sudo -n rm -f '{Tmpfs}/filler'");
+        await Lab.RunOnSbcAsync($"if mountpoint -q '{Tmpfs}'; then {AsDsf} rm -f '{Tmpfs}/filler'; fi");
         bool restored;
         try
         {
@@ -234,24 +242,27 @@ public class FullDisk : LabTest
         }
 
         await Lab.RunOnSbcAsync($"""
-            sudo -n rm -f '{sdDirectory}{LogFile["0:".Length..]}'
-            sudo -n umount '{Tmpfs}' 2>/dev/null || sudo -n umount -l '{Tmpfs}' || true
+            {AsDsf} rm -f '{sdDirectory}{LogFile["0:".Length..]}'
+            if mountpoint -q '{Tmpfs}'; then sudo -n umount '{Tmpfs}' 2>/dev/null || sudo -n umount -l '{Tmpfs}' || true; fi
             sudo -n rmdir '{Tmpfs}' 2>/dev/null || true
+            sudo -n rmdir '{ApprovalHelpers.SbcDirectory}' 2>/dev/null || true
             """);
         await Lab.DeleteAsync(Session, $"{LogDirectory}/keep.txt");
         await Lab.DeleteAsync(Session, LogDirectory);
     }
 
     /// <summary>
-    /// Check config-override.g against the state before the test and copy the backup back if it differs
+    /// Check config-override.g against the state before the test and copy the backup back if it differs. Everything in the sys directory is done as dsf:
+    /// the copy goes to a new file next to it, which mv -T then renames over the target; a rename replaces a symlink instead of following it. The copy
+    /// gets mode 0664, the mode of a file DCS creates (UMask=0002, duetcontrolserver.service:14)
     /// </summary>
     /// <returns>State after the test, in the format of the state before it</returns>
     private static async Task<string> RestoreConfigOverrideAsync(string target, string expected)
     {
         string Check() => $"""
-            if [ -L '{target}' ]; then echo symlink
-            elif [ -f '{target}' ]; then echo "file $(sudo -n sha256sum '{target}' | cut -d' ' -f1)"
-            elif [ -e '{target}' ]; then echo other
+            if {AsDsf} test -L '{target}'; then echo symlink
+            elif {AsDsf} test -f '{target}'; then echo "file $({AsDsf} sha256sum -- '{target}' | cut -d' ' -f1)"
+            elif {AsDsf} test -e '{target}'; then echo other
             else echo none
             fi
             """;
@@ -261,14 +272,15 @@ public class FullDisk : LabTest
             TestContext.Progress.WriteLine($"config-override.g is {state} after the test, copying the backup back");
             state = (await Lab.RunOnSbcAsync($"""
                 set -e
-                [ ! -L '{target}' ] || sudo -n rm -f '{target}'
-                sudo -n cp -p '{Backup}' '{target}'
+                {AsDsf} rm -f '{target}.lab-restore'
+                {AsDsf} install -m 0664 -T -- '{Backup}' '{target}.lab-restore'
+                {AsDsf} mv -fT '{target}.lab-restore' '{target}'
                 {Check()}
                 """)).Trim();
         }
         else if (state != expected && state == "symlink")
         {
-            state = (await Lab.RunOnSbcAsync($"sudo -n rm -f '{target}'\n{Check()}")).Trim();
+            state = (await Lab.RunOnSbcAsync($"{AsDsf} rm -f '{target}'\n{Check()}")).Trim();
         }
 
         if (state == expected)

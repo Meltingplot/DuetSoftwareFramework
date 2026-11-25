@@ -46,6 +46,7 @@ public class JobSimulation : LabTest
     private const string Directory = "0:/gcodes/lab-tests/simulation";
 
     private const string GlobalsMacro = $"{Lab.MacroDirectory}/simulation-globals.g";
+    private const string AsDsf = ApprovalHelpers.AsDsf;
 
     /// <summary>
     /// Time a simulated test file may take from M37 to the end, including start.g of the CHX and the update of job.lastFileName
@@ -178,7 +179,9 @@ public class JobSimulation : LabTest
     /// SelectFileAsync refuses a file of more than uint.MaxValue bytes with "File too big (max 4294967295 bytes)" (JobProcessor.cs:322-326). Without the fix
     /// the file is simulated, and its first code M2 cancels the simulation at once (allowed in simulation by MCodeHandler.cs:82-86 and GCodes2.cpp:687-700,
     /// no macros on a cancelled simulation, GCodes2.cpp:848-861), so the reply has no error. Deterministic.
-    /// The file is sparse, the SBC creates it on the file system of the SD directory, which must support holes. As in the unit test
+    /// The file is sparse, the SBC creates it on the file system of the SD directory, which must support holes. It is written as dsf, which owns the
+    /// uploaded placeholder (DuetWebServer runs as dsf, duetwebserver.service:14, and writes uploads itself, MachineEndpoints.cs:269-279), so a symlink
+    /// in its place could not make the test change a file that dsf cannot change anyway. As in the unit test
     /// Codes.PrintFileInfo.FileOf4GiBIsRefused, 100000 short codes at both ends keep the zeros of the hole away from what DSF reads: FileInfoParser
     /// reads at most 16 KiB from the start and 400 KiB from the end (Settings.cs:306, :311), and the job reader of an unfixed build stays at most
     /// 32 codes ahead of RRF (Settings.cs:233) and never gets past the G4 lines, which RRF only finishes in a job that M2 has not cancelled
@@ -189,17 +192,17 @@ public class JobSimulation : LabTest
         await ApprovalHelpers.RequirePython3Async();
         string sdDirectory = await ApprovalHelpers.GetSdDirectoryAsync();
 
-        // The upload creates the directory as DCS creates it; the sparse file replaces the placeholder and keeps its owner
+        // The upload creates the directory as DuetWebServer creates it; the sparse file replaces the placeholder and keeps its owner
         string file = await UploadJobAsync("huge.g", "; placeholder, replaced by a sparse file of 4 GiB\n");
         string physicalFile = sdDirectory + file["0:".Length..];
         string output = await Lab.RunOnSbcAsync($$"""
             set -e
-            fs=$(stat -f -c %T '{{sdDirectory}}')
+            fs=$({{AsDsf}} stat -f -c %T '{{sdDirectory}}')
             case "$fs" in
               ext2/ext3|xfs|btrfs|tmpfs) ;;
               *) echo "unsupported $fs"; exit 0 ;;
             esac
-            sudo -n python3 - '{{physicalFile}}' <<'EOF'
+            {{AsDsf}} python3 -I - '{{physicalFile}}' <<'EOF'
             import sys
             path, size = sys.argv[1], 1 << 32
             codes = b"G4 P1\n" * 100000
@@ -210,7 +213,7 @@ public class JobSimulation : LabTest
                 f.seek(size - len(codes))
                 f.write(codes)
             EOF
-            echo "size $(stat -c %s '{{physicalFile}}') bytes, $(du -k '{{physicalFile}}' | cut -f1) KiB allocated"
+            echo "size $({{AsDsf}} stat -c %s '{{physicalFile}}') bytes, $({{AsDsf}} du -k '{{physicalFile}}' | cut -f1) KiB allocated"
             """);
         if (output.StartsWith("unsupported"))
         {
@@ -280,9 +283,10 @@ public class JobSimulation : LabTest
     /// After M37 with F1 (the default, Gcodes.md M37) DSF writes the simulated time back into the file (JobProcessor.cs:861-896,
     /// FileInfoParser.UpdateSimulatedTimeAsync opens it for writing, FileInfoParser.cs:915-921). If that failed, the exception left the job loop and the
     /// host stopped (AS2 of the async census). Fixed in DSF #221: the failure is logged as "Failed to update simulation time of ..." and the job loop goes
-    /// on (JobProcessor.cs:883-891). The file belongs to root and is not writable for the dsf user, whose DCS has no CAP_DAC_OVERRIDE (pkg postinst:43,
-    /// ControlServerCapabilities). G4 S2 gives a simulated time of 2 s, and DSF writes only a time above 0 (JobProcessor.cs:880, RRF lastDuration,
-    /// GCodes.cpp:5020). Without the fix DCS gets a new PID, the test recovers (DCS restart and M999, one E-stop) and fails. Deterministic
+    /// on (JobProcessor.cs:883-891). The owner of the uploaded file, dsf (duetwebserver.service:14), takes its write permission away (mode 0444), so
+    /// DCS, which runs as dsf (duetcontrolserver.service:12) without CAP_DAC_OVERRIDE (duetcontrolserver postinst:36-43, ControlServerCapabilities),
+    /// cannot open it for writing (FileMode.Open with FileAccess.ReadWrite, FileInfoParser.cs:921). No root command touches the file. G4 S2 gives a
+    /// simulated time of 2 s, and DSF writes only a time above 0 (JobProcessor.cs:880, RRF lastDuration, GCodes.cpp:5020). Without the fix DCS gets a new PID, the test recovers (DCS restart and M999, one E-stop) and fails. Deterministic
     /// </summary>
     [Test]
     public async Task SimulatedTimeWriteFailureEndsOnlySimulation()
@@ -293,11 +297,7 @@ public class JobSimulation : LabTest
         string file = await UploadJobAsync("read-only.g", "; lab printer test: DSF cannot write the simulated time into this file\nG4 S2\nset global.labTestJobReadOnly = true\n");
         string next = await UploadJobAsync("after-read-only.g", "; lab printer test: simulated after the file DSF could not write\nset global.labTestJobAfterReadOnly = true\n");
         string physicalFile = sdDirectory + file["0:".Length..];
-        await Lab.RunOnSbcAsync($"""
-            set -e
-            sudo -n chown root:root '{physicalFile}'
-            sudo -n chmod 0644 '{physicalFile}'
-            """);
+        await Lab.RunOnSbcAsync($"{AsDsf} chmod 0444 '{physicalFile}'");
 
         string cursor = await Lab.GetJournalCursorAsync(), pid = await Lab.GetControlServerPidAsync();
         Assert.That(await SendCodeAsync($"M37 P\"{file}\""), Does.Not.Contain("Error"));
@@ -319,7 +319,7 @@ public class JobSimulation : LabTest
 
         Assert.That(ended, Is.True, "The simulation did not end");
         Assert.That((await QueryAsync("global.labTestJobReadOnly")).GetBoolean(), Is.True, "The file was not simulated");
-        Assert.That(journal, Does.Contain("Failed to update simulation time of"), "DSF wrote into a file that belongs to root, or never tried");
+        Assert.That(journal, Does.Contain("Failed to update simulation time of"), "DSF wrote into a read-only file, or never tried");
 
         // The job loop still takes files
         string nextReply;

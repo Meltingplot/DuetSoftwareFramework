@@ -81,8 +81,10 @@ public class SystemTime : LabTest
     [Test]
     public async Task SessionSurvivesClockStep()
     {
-        TimeSpan sessionTimeout = TimeSpan.FromMilliseconds(double.Parse((await Lab.RunOnSbcAsync("""
-            sudo -n python3 -c 'import json; print(json.load(open("/opt/dsf/conf/http.json")).get("SessionTimeout", 8000))'
+        // Read as dsf, the user of DuetWebServer (duetwebserver.service:14), not as root: dsf may replace files in /opt/dsf/conf (duetcontrolserver postinst:18-24)
+        await ApprovalHelpers.RequireSudoAsDsfAsync();
+        TimeSpan sessionTimeout = TimeSpan.FromMilliseconds(double.Parse((await Lab.RunOnSbcAsync($"""
+            {ApprovalHelpers.AsDsf} python3 -I -c 'import json; print(json.load(open("/opt/dsf/conf/http.json")).get("SessionTimeout", 8000))'
             """)).Trim(), System.Globalization.CultureInfo.InvariantCulture));
         TimeSpan step = TimeSpan.FromTicks(Math.Max(TimeSpan.FromSeconds(60).Ticks, 4 * sessionTimeout.Ticks));
         // RRF's clock is only checked after the restore if DCS had set it to the time of the SBC
@@ -129,7 +131,7 @@ public class SystemTime : LabTest
     private static async Task<string> StepClockAsync(TimeSpan step)
     {
         string offset = (await Lab.RunOnSbcAsync($$"""
-            sudo -n python3 - {{step.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture)}} <<'EOF'
+            sudo -n python3 -I - {{step.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture)}} <<'EOF'
             import sys, time
             offset = time.clock_gettime(time.CLOCK_REALTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
             time.clock_settime(time.CLOCK_REALTIME, time.clock_gettime(time.CLOCK_REALTIME) + float(sys.argv[1]))
@@ -146,7 +148,7 @@ public class SystemTime : LabTest
     private async Task RestoreClockAsync(string offset, DateTime? firmwareStart, Stopwatch elapsed)
     {
         await Lab.RunOnSbcAsync($$"""
-            sudo -n python3 - {{offset}} <<'EOF'
+            sudo -n python3 -I - {{offset}} <<'EOF'
             import sys, time
             time.clock_settime(time.CLOCK_REALTIME, time.clock_gettime(time.CLOCK_MONOTONIC) + float(sys.argv[1]))
             EOF

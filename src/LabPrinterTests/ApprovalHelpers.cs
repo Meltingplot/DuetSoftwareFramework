@@ -17,10 +17,47 @@ namespace LabPrinterTests;
 public static partial class ApprovalHelpers
 {
     /// <summary>
-    /// Directory on the SBC for the files these tests create there. It is below /var like the one of ControlServerCapabilities and away from the
-    /// side-load directory /var/tmp/lab-tests, which run-lab-tests.py expects to be gone after a run
+    /// Directory on the SBC for the files these tests keep there as root: the backup of config-override.g and the mount point of a small tmpfs. It is
+    /// below /run, where only root can create entries, so no other user can create it first or plant a symlink in its place, as one could in
+    /// /tmp or /var/tmp. It belongs to root and only root writes into it; mode 0755, because DCS (user dsf) must reach the tmpfs below it.
+    /// <see cref="PrepareSbcDirectoryScript"/> creates or checks it
     /// </summary>
-    public const string SbcDirectory = "/var/tmp/lab-sbc-files";
+    public const string SbcDirectory = "/run/lab-sbc-files";
+
+    /// <summary>
+    /// Shell lines that create <see cref="SbcDirectory"/>, or check that the one there is a directory of root that no other user can write. stat without
+    /// -L reports a symlink itself instead of its target. Anything else ends the script with exit code 1, so the test stops before root writes there
+    /// </summary>
+    public const string PrepareSbcDirectoryScript = $$"""
+        if [ -e '{{SbcDirectory}}' ] || [ -L '{{SbcDirectory}}' ]; then
+          found=$(stat -c '%U:%G:%F:%a' '{{SbcDirectory}}')
+          case "$found" in
+            root:root:directory:755|root:root:directory:700) ;;
+            *) echo "{{SbcDirectory}} is $found, not a directory of root that only root can write" >&2; exit 1 ;;
+          esac
+        else
+          sudo -n install -d -m 0755 -o root -g root '{{SbcDirectory}}'
+        fi
+        sudo -n chmod 0755 '{{SbcDirectory}}'
+        """;
+
+    /// <summary>
+    /// Prefix of a command that runs as dsf, the user of DCS and DuetWebServer (duetcontrolserver.service:12, duetwebserver.service:14), which owns the
+    /// virtual SD card (duetsd postinst:3). Files in a directory that dsf can write are read and changed only this way, never as root: dsf could replace an
+    /// entry there by a symlink at any time, and a root command would follow it. As dsf a command can do no more than DCS itself
+    /// </summary>
+    public const string AsDsf = "sudo -n -u dsf";
+
+    /// <summary>
+    /// Skip the test unless sudo on the SBC may run commands as dsf (<see cref="AsDsf"/>). Lab.SbcShell only promises passwordless sudo
+    /// </summary>
+    public static async Task RequireSudoAsDsfAsync()
+    {
+        if ((await Lab.RunOnSbcAsync($"{AsDsf} true 2>/dev/null && echo yes || echo no")).Trim() != "yes")
+        {
+            Assert.Ignore("sudo on the SBC cannot run commands as dsf, which the test needs to change files on the virtual SD card without root");
+        }
+    }
 
     /// <summary>
     /// Macro code that creates a global or sets it if it exists, as in VariableCopies
@@ -56,12 +93,14 @@ public static partial class ApprovalHelpers
 
     /// <summary>
     /// Physical directory of drive 0: BaseDirectory of the DCS configuration /opt/dsf/conf/config.json, /opt/dsf/sd if it sets none
-    /// (DuetControlServer/Settings.cs:29 and :122)
+    /// (DuetControlServer/Settings.cs:29 and :122). Read as dsf, which owns the file (duetcontrolserver postinst:28-33). Skips the test unless sudo may
+    /// run commands as dsf, which every caller needs afterwards
     /// </summary>
     public static async Task<string> GetSdDirectoryAsync()
     {
-        string output = await Lab.RunOnSbcAsync("""
-            sudo -n python3 -c 'import json; print(json.load(open("/opt/dsf/conf/config.json")).get("BaseDirectory") or "/opt/dsf/sd")'
+        await RequireSudoAsDsfAsync();
+        string output = await Lab.RunOnSbcAsync($"""
+            {AsDsf} python3 -I -c 'import json; print(json.load(open("/opt/dsf/conf/config.json")).get("BaseDirectory") or "/opt/dsf/sd")'
             """);
         return output.Trim().TrimEnd('/');
     }
