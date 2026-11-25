@@ -135,8 +135,9 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
 
     /// <summary>
     /// Clean up the side effects of the state machine on every frame of a buffer before its files are aborted, see GCodes::AbortStateMachine
-    /// (GCodes4.cpp:2028-2080). Like in RRF it does not change the state of a frame, so a code at the base level goes on with its next step. The
-    /// probing, flashing and event states are not emulated
+    /// (GCodes4.cpp:2048-2101). Like in RRF it clears toBeHomed, so a G28 at the base level fails in homing2, and it sets a tool change frame to
+    /// toolChangeComplete, so a T-code at the base level ends without running its remaining tool change macros (upstream 0ca1dff6c). The probing,
+    /// flashing and event states are not emulated
     /// </summary>
     /// <param name="gb">G-code buffer</param>
     private void AbortStateMachine(FakeGCodeBuffer gb)
@@ -155,13 +156,14 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
                 case FakeMachineState.MachineStateKind.ToolChange2:
                 case FakeMachineState.MachineStateKind.ToolChangeComplete:
                     DoingToolChange = false;
+                    ms.State = FakeMachineState.MachineStateKind.ToolChangeComplete;
                     break;
             }
         }
     }
 
     /// <summary>
-    /// Cancel the macros and the state machine of a buffer, see GCodes::AbortPrint (GCodes.cpp:3643-3660): PauseSequenceAborted (pausing is not
+    /// Cancel the macros and the state machine of a buffer, see GCodes::AbortPrint (GCodes.cpp:3675-3692): PauseSequenceAborted (pausing is not
     /// emulated), AbortStateMachine and AbortFile(true). Stopping the print of a file channel is not emulated
     /// </summary>
     /// <param name="gb">G-code buffer</param>
@@ -305,11 +307,12 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
 
     /// <summary>
     /// End the work of a channel: the routine of the apply of a channel abort, see SbcInterface::InvalidateChannel(GCodeBuffer&amp;) (SbcInterface.cpp:
-    /// 1960-1984 at 4d687cec0), which the RRF of E1 also runs in InvalidateResources (design/sbc-link-v8-requirements.md CE-25). The caller has ended a
-    /// macro wait before and has voided a closal that has not gone out and the invalidation (the take of the apply, :2051-2058). No "tell DSF" flag of
-    /// the buffer is left set, so nothing of the old work is announced afterwards. A code that still runs at the base level survives and its state
-    /// machine goes on with its next step: the routine does not clean up the state machine (owner decision D-A of 2026-11-10, RRF b1d3929a6; RRF's own
-    /// abort does, <see cref="AbortPrint"/>), does not set the state of a frame back and does not reset the buffer
+    /// 1984-2010 at RRF a10384abe), which the RRF of E1 also runs in InvalidateResources (design/sbc-link-v8-requirements.md CE-25). The caller has
+    /// ended a macro wait before and has voided a closal that has not gone out and the invalidation (the take of the apply). No "tell DSF" flag of the
+    /// buffer is left set, so nothing of the old work is announced afterwards. A code that still runs at the base level survives, but the routine
+    /// cleans up the state machine as RRF's own abort does (<see cref="AbortStateMachine"/>, upstream 0ca1dff6c; owner decision of 2026-11-25, which
+    /// reverses D-A of 2026-11-10): a G28 whose homing file the abort popped fails, a T-code whose tool change macro it popped ends. The routine does
+    /// not reset the buffer
     /// </summary>
     /// <param name="gb">G-code buffer</param>
     public void EndChannelWork(FakeGCodeBuffer gb)
@@ -323,9 +326,10 @@ internal sealed class FakeGCodes(FakeFirmware firmware)
             gb.SetFinished(true);
         }
 
-        // PauseSequenceAborted comes before the files are aborted in RRF, but pausing is not emulated
+        // PauseSequenceAborted comes before the files are aborted in RRF, but pausing is not emulated. Then the state machine is cleaned up
+        AbortStateMachine(gb);
 
-        // File levels, without telling DSF, which has aborted them itself (:902-903, :1770-1771)
+        // File levels, without telling DSF, which has aborted them itself
         gb.AbortFile(true, AbortFileClearsJustStartedMacro);
         gb.FileAbortSent();
 
