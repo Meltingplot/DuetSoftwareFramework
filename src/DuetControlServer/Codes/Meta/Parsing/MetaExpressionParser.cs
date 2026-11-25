@@ -959,6 +959,10 @@ public sealed class MetaExpressionParser
                 break;
             case "datetime":
                 result = DateTimeFunction(Arg(args, name, 1)[0]);
+                if (result is null)
+                {
+                    return false;
+                }
                 break;
             default:
                 result = null;
@@ -1123,7 +1127,9 @@ public sealed class MetaExpressionParser
         };
     }
 
-    private object DateTimeFunction(object? value)
+    // Returns null for a string that .NET cannot parse, so the firmware decides: its strptime takes fields without leading zeros and
+    // leaves the day and the time of day to mktime, and it refuses other strings with its own message
+    private object? DateTimeFunction(object? value)
     {
         switch (value)
         {
@@ -1139,6 +1145,8 @@ public sealed class MetaExpressionParser
                 return dt;
             case string s when DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime parsed):
                 return parsed;
+            case string:
+                return null;
             default:
                 ThrowParseException("can't convert value to DateTime");
                 return DateTime.UnixEpoch;
