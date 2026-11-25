@@ -12,7 +12,8 @@ namespace LabPrinterTests;
 /// with CAP_DAC_READ_SEARCH, so M36.2 returned root-only files from any volume, e.g. the SSH host keys of the /etc/ssh mount. The packages set
 /// them as permitted only now, and DCS raises them only for the /proc reads of its IPC peer check (ProcessHelpers.cs). That check still has to
 /// work, or DWS could not talk to DCS and no test here would get a reply.
-/// A side-load does not change the file capabilities of /opt/dsf/bin/DuetControlServer, so these tests need a DCS package with the fix
+/// A side-load does not change the file capabilities of /opt/dsf/bin/DuetControlServer, so these tests need a DCS package with the fix (DSF #232,
+/// after 3.7.0+mp.15) and skip on an older one
 /// </summary>
 [TestFixture]
 public class ControlServerCapabilities : LabTest
@@ -27,9 +28,25 @@ public class ControlServerCapabilities : LabTest
     /// </summary>
     private const ulong PermittedCapabilities = (1UL << 2) | (1UL << 19);
 
+    /// <summary>
+    /// Skip unless the installed package sets the capabilities as permitted only. The postinst of the packages up to 3.7.0+mp.15 runs
+    /// setcap cap_sys_ptrace,cap_dac_read_search+ep (pkg/deb/duetcontrolserver/DEBIAN/postinst before #232). That the package scripts say +p
+    /// is checked offline by UnitTests/Startup/ControlServerCapabilities.cs, so the skip hides no regression of the scripts; this test checks
+    /// what the installed script gives the running DCS
+    /// </summary>
+    private static async Task IgnoreIfPackagePredatesTheFixAsync()
+    {
+        string setcap = (await Lab.RunOnSbcAsync("grep -oE 'setcap [^ ]+ /opt/dsf/bin/DuetControlServer' /var/lib/dpkg/info/duetcontrolserver.postinst || true")).Trim();
+        if (setcap.Contains("+ep"))
+        {
+            Assert.Ignore($"The installed DCS package predates DSF #232, its postinst runs \"{setcap}\"");
+        }
+    }
+
     [Test]
     public async Task ControlServerRunsWithoutEffectiveCapabilities()
     {
+        await IgnoreIfPackagePredatesTheFixAsync();
         string pid = await Lab.GetControlServerPidAsync();
         string status = await Lab.RunOnSbcAsync($"grep -E '^Cap(Prm|Eff):' /proc/{pid}/status");
         ulong Read(string key) => Convert.ToUInt64(status.Split('\n').Single(line => line.StartsWith(key + ":"))[(key.Length + 1)..].Trim(), 16);
@@ -44,6 +61,8 @@ public class ControlServerCapabilities : LabTest
     [Test]
     public async Task FileReadsHaveTheRightsOfTheDsfUser()
     {
+        await IgnoreIfPackagePredatesTheFixAsync();
+
         // The volume with the longest path that holds the directory. Drive 0 is the virtual SD card, whatever volumes[0] says
         List<string?> volumes = Lab.Read(Session, model => model.Volumes.Select(item => item.Path).ToList());
         int drive = -1;
