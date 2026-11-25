@@ -70,8 +70,8 @@ public class FakeFirmwareDoCode
         // RRF passes M30 and M32 from a text channel on to DSF before it reads their parameters (GCodes2.cpp:737-761 at RRF 6c45e07a7). StringParser ends
         // the line at the newline whatever its quote or brace state, and keeps '(' as text outside CNC mode (StringParser.cpp:113-116, :227-237, :311),
         // so the DoCode carries the line as typed (FindParameters, DataStart and DataLength, :1129-1276; SbcInterface.cpp:1797-1803). DSF's parser refuses
-        // it, so no code reaches the Executed stage that sends the result of a DoCode (Executed.cs:170-209). SimpleCode sends the error as the result
-        // instead, with the flags and the tag that stage uses (SimpleCode.cs:151-155, :250-254). Without it RRF's channel stays "executing on SBC"
+        // it, so no code reaches the Executed stage that sends the result of a DoCode (Executed.cs:176-217). SimpleCode sends the error as the result
+        // instead, with the flags and the tag that stage uses (SimpleCode.cs:151-155, :227-231). Without it RRF's channel stays "executing on SBC"
         // and takes no further code (SbcInterface.cpp:884-903)
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
         await host.ExecuteAsync("G4 P1", CodeChannel.USB);      // a code from DSF makes the epoch of the channel known, so RRF tags the DoCode
@@ -113,8 +113,8 @@ public class FakeFirmwareDoCode
     {
         // M32 needs the file information, and FileInfoParser passes on the CodeParserException of a header line that the code parser rejects
         // (InfoParserErrors). The code from the firmware is asynchronous, so the exception ends it without a result (ProcessInternally.cs:32-39,
-        // CodeProcessor.cs:298-306) and the Executed stage sends nothing (Executed.cs:225-230). SimpleCode waits for the code and sends the error as
-        // the result of the DoCode instead (SimpleCode.cs:178-193, :224-241). Without it RRF's channel stays "executing on SBC" (SbcInterface.cpp:884-903)
+        // CodeProcessor.cs:298-306). The Executed stage makes the error its result and sends it like any other result of a DoCode (Executed.cs:169-217),
+        // and only that stage sends it. Without it RRF's channel stays "executing on SBC" (SbcInterface.cpp:884-903)
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync();
         System.IO.File.WriteAllText(Path.Combine(host.BaseDirectory, "gcodes", "job.gcode"), "G1 X1\nM117 \"unterminated\n");
         await host.ExecuteAsync("G4 P1", CodeChannel.USB);      // a code from DSF makes the epoch of the channel known, so RRF tags the DoCode
@@ -141,8 +141,8 @@ public class FakeFirmwareDoCode
     [Test]
     public async Task ExceptionOfAHandlerIsTheResultOfACodeFromTheFirmwareOnly()
     {
-        // Any exception but a cancellation becomes the result of a code from the firmware, because RRF has no other way to learn that the code ended.
-        // A client still gets an exception other than CodeParserException and ArgumentException as an exception (SimpleCode.cs:224)
+        // Any exception but a cancellation becomes the result of a code from the firmware, because RRF has no other way to learn that the code ended
+        // (Executed.cs:169-174). A client still gets an exception other than CodeParserException and ArgumentException as an exception (SimpleCode.cs:207)
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(configureServices: services => services.AddKeyedSingleton<ICodeHandler>(Keys.MCodes,
             (provider, _) => new ThrowingMCodeHandler(ActivatorUtilities.CreateInstance<MCodeHandler>(provider))));
         Assert.That(async () => await host.ExecuteAsync("M929", CodeChannel.USB),

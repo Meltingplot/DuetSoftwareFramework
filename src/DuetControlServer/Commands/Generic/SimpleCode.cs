@@ -175,23 +175,6 @@ public sealed class SimpleCode(Codes.CodeFactory codeFactory, Model.ObjectModel 
                 }
             }
 
-            // Codes from the firmware are asynchronous, and the Executed stage sends their results. A code that fails gets no result there,
-            // so wait for them and send the error below. A cancelled code is not answered
-            if (IsFromFirmware)
-            {
-                foreach (Code priorityCode in priorityCodes)
-                {
-                    try
-                    {
-                        await priorityCode.Task;
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        // not answered
-                    }
-                }
-            }
-
             // Execute normal codes next. Use a lock here because multiple codes may be queued for the same channel
             if (codes.Count > 0)
             {
@@ -221,7 +204,7 @@ public sealed class SimpleCode(Codes.CodeFactory codeFactory, Model.ObjectModel 
                 }
             }
         }
-        catch (Exception e) when (e is CodeParserException or ArgumentException || (IsFromFirmware && e is not OperationCanceledException))
+        catch (Exception e) when (e is CodeParserException or ArgumentException)
         {
             result.Append(MessageType.Error, e.Message);
             using (await model.AccessReadOnlyAsync(lifetime.ApplicationStopping))
@@ -231,12 +214,6 @@ public sealed class SimpleCode(Codes.CodeFactory codeFactory, Model.ObjectModel 
                 {
                     result.AppendLine("ok");
                 }
-            }
-
-            // The failed code has not reached the Executed stage with a result
-            if (IsFromFirmware)
-            {
-                SendErrorToFirmware(result);
             }
         }
         return result.ToString();
