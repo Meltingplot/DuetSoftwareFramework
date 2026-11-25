@@ -51,12 +51,20 @@ public class IntrusiveCodes : LabTest
     }
 
     /// <summary>
-    /// DCS crashed with a stack overflow while M111 P-1 O1 was active (#70)
+    /// DCS crashed with a stack overflow while M111 P-1 O1 was active (#70): MessageLogger.Log called ObjectModel.OutputAsync, which logs the message again
+    /// before its first await, so the two called each other at the first DCS log line at or above the log level. Fixed in DSF #70 (3.7.0+mp.14):
+    /// MessageLogger adds the message to the object model directly (MessageLogTarget.cs:121-135). M111 O1 itself logs nothing and M115 makes DCS log nothing
+    /// at Info (MCodeHandler.cs:737-790), so the test also starts a macro while O1 is active, which logs "Starting macro file ..." at Info (FileFactory.cs:58-61).
+    /// Without the fix that line crashes DCS: it gets a new PID, the test recovers (DCS restart and M999, one E-stop) and fails. If DCS logs nothing at Info
+    /// (log level above Info), the line is missing from the journal and the test is inconclusive. Deterministic
     /// </summary>
     [Test]
     public async Task M111OutputDoesNotCrashDcs()
     {
+        const string macro = $"{Lab.MacroDirectory}/m111-info-line.g";
+        await Lab.UploadAsync(Session, macro, "; lab printer test: starting this macro makes DCS log a line at Info\n");
         string cursor = await Lab.GetJournalCursorAsync(), pid = await Lab.GetControlServerPidAsync();
+        string? failure = null;
         try
         {
             Assert.That(await SendCodeAsync("M111 P-1 O1"), Does.Not.Contain("Error"));
@@ -64,15 +72,38 @@ public class IntrusiveCodes : LabTest
             {
                 Assert.That(await SendCodeAsync(code), Does.Not.Contain("Error"));
             }
+            Assert.That(await SendCodeAsync($"M98 P\"{macro}\""), Does.Not.Contain("Error"));
             await Task.Delay(TimeSpan.FromSeconds(2));
+        }
+        catch (Exception e) when (e is OperationCanceledException or HttpRequestException)
+        {
+            failure = e.Message;
         }
         finally
         {
-            await SendCodeAsync("M111 P-1 O0");
+            try
+            {
+                await SendCodeAsync("M111 P-1 O0");
+            }
+            catch (Exception e) when (e is OperationCanceledException or HttpRequestException)
+            {
+                // DCS has been restarted, which does not keep O1
+            }
         }
 
-        Assert.That(await Lab.GetControlServerPidAsync(), Is.EqualTo(pid), "DCS was restarted");
-        Assert.That(await Lab.ReadJournalAsync(cursor), Does.Not.Contain("Stack overflow"));
+        string journal = await Lab.ReadJournalAsync(cursor);
+        if (await Lab.GetControlServerPidAsync() != pid)
+        {
+            await Lab.RecoverAsync();
+            await ReconnectSessionAsync();
+            Assert.Fail($"DCS was restarted{(journal.Contains("Stack overflow") ? " after a stack overflow" : string.Empty)} ({failure ?? "codes were answered"})");
+        }
+        Assert.That(failure, Is.Null, "A code got no reply");
+        Assert.That(journal, Does.Not.Contain("Stack overflow"));
+        if (!journal.Split('\n').Any(line => line.Contains("Starting macro file") && line.Contains("m111-info-line.g")))
+        {
+            Assert.Inconclusive("DCS logged no line at Info while O1 was active, so nothing went through MessageLogger");
+        }
     }
 
     /// <summary>
