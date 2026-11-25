@@ -71,7 +71,7 @@ public class ExpressionEvaluation : LabTest
     [TestCase("G4 P", "sbc.dsf.pluginSupport ? 0 : 0", TestName = "DeeplyNestedExpressionIsRefused(SBC fields)")]
     public async Task DeeplyNestedExpressionIsRefused(string codeStart, string innermost)
     {
-        // needs a DCS with #218
+        await G3Helpers.RequireControlServerWithNewFixesAsync("#218");
         const int depth = 200_000;
         string code = $"{codeStart}{{{new string('(', depth)}{innermost}{new string(')', depth)}}}";
         string pid = await Lab.GetControlServerPidAsync();
@@ -103,6 +103,11 @@ public class ExpressionEvaluation : LabTest
     [TestCase("2026-99-01T00:00:00", null)]
     public async Task DateTimeStringsGoToRrf(string text, string? expected)
     {
+        await G3Helpers.RequireControlServerWithNewFixesAsync("#238");
+        if (expected is null)
+        {
+            G7Helpers.RequireMainBoardFixes(Session, G7Helpers.Rrf104);
+        }
         string reply = (await SendCodeAsync($"echo {{datetime(\"{text}\")}}", 30)).Trim();
         if (expected is null)
         {
@@ -133,7 +138,8 @@ public class ExpressionEvaluation : LabTest
     [Test]
     public async Task OversizedArraysAndGlobalsAreRefused()
     {
-        // needs a DCS with #239
+        await G3Helpers.RequireControlServerWithNewFixesAsync("#239");
+        G7Helpers.RequireMainBoardFixes(Session, G7Helpers.Rrf114);
         Assert.That((await SendCodeAsync("echo {#vector(256, 0)}")).Trim(), Does.Contain(G1Helpers.ArrayTooLarge));
         Assert.That((await SendCodeAsync("echo {#vector(255, 0)}")).Trim(), Is.EqualTo("255"), "The largest array that RRF allows");
 
@@ -172,6 +178,7 @@ public class ExpressionEvaluation : LabTest
     [Test]
     public async Task FileExistsLooksInTheSystemDirectory()
     {
+        await G3Helpers.RequireControlServerWithNewFixesAsync("#240");
         string? systemDirectory = Lab.Read(Session, model => model.Directories.System);
         Assume.That(systemDirectory, Is.Not.Null.And.Not.Empty, "The model has no system directory");
         string absolute = systemDirectory!.TrimEnd('/') + "/config.g";

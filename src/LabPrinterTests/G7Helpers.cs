@@ -99,6 +99,33 @@ public static partial class G7Helpers
     public static readonly FirmwareFix Rrf112 = new("RRF #112", "3.7.0+1.mp.12");
 
     /// <summary>
+    /// RRF fork fixes of the expression and object model tests and of the trigger action check, merged after tag 3.7.0+1.mp.11 (merge commits
+    /// 6ba549213, 01f00c726, 5d7ed6e93, b840d4f24, f71ed72bd, 4c9c352f3, 2575c498f, 551ecab92, a1bdcb538, 0d4295065; none is an ancestor of the tag)
+    /// </summary>
+    public static readonly FirmwareFix Rrf102 = new("RRF #102", "3.7.0+1.mp.12"), Rrf104 = new("RRF #104", "3.7.0+1.mp.12"),
+        Rrf105 = new("RRF #105", "3.7.0+1.mp.12"), Rrf106 = new("RRF #106", "3.7.0+1.mp.12"), Rrf108 = new("RRF #108", "3.7.0+1.mp.12"),
+        Rrf109 = new("RRF #109", "3.7.0+1.mp.12"), Rrf110 = new("RRF #110", "3.7.0+1.mp.12"), Rrf113 = new("RRF #113", "3.7.0+1.mp.12"),
+        Rrf114 = new("RRF #114", "3.7.0+1.mp.12"), Rrf115 = new("RRF #115", "3.7.0+1.mp.12");
+
+    /// <summary>
+    /// Skip a test unless the main board runs a firmware with all of the given fixes, so that a test whose bug resets RRF or hangs a channel costs
+    /// no emergency stop on a firmware that predates the fix
+    /// </summary>
+    /// <param name="session">Session of the test</param>
+    /// <param name="fixes">Fixes the test needs</param>
+    public static void RequireMainBoardFixes(DuetHttpSession session, params FirmwareFix[] fixes)
+    {
+        string? version = Lab.Read(session, model => model.Boards.Count > 0 ? model.Boards[0].FirmwareVersion : null);
+        foreach (FirmwareFix fix in fixes)
+        {
+            if (WhyNotFixed(fix, "The main board", version) is string whyNot)
+            {
+                Assert.Ignore(whyNot);
+            }
+        }
+    }
+
+    /// <summary>
     /// Fixes that LAB_ASSUME_FIXES declares present, e.g. "RRF#112 D3E#30 D3E#32", for a test or local build whose version cannot show them:
     /// a local build keeps the version of the last release (RRF Version.h at 3.7-dev 0d4295065 says 3.7.0+1.mp.11 and contains #112), and
     /// 3.7.0+1.mp.12-dev.1 is the test build of RRF #113, whose branch (8331cc1c6) does not contain #112

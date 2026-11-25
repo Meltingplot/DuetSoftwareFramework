@@ -111,6 +111,7 @@ public class VariableAnswers : LabTest
     [Test]
     public async Task GlobalTooLongToReportIsDiscardedOnce()
     {
+        G7Helpers.RequireMainBoardFixes(Session, G7Helpers.Rrf113);
         await G1Helpers.SetGlobalAsync(Session, Ten, "10");
         await G1Helpers.SetGlobalAsync(Session, ReportLoad, "1");
         await Lab.WaitForModelAsync(Session, model => GetInt(model.Global, ReportLoad) == 1, TimeSpan.FromSeconds(30), $"global.{ReportLoad} = 1 in the model");
@@ -171,6 +172,7 @@ public class VariableAnswers : LabTest
     [Test]
     public async Task GlobalWhoseAnswerDoesNotFitIsRefused()
     {
+        G7Helpers.RequireMainBoardFixes(Session, G7Helpers.Rrf114);
         await G1Helpers.SetGlobalAsync(Session, Ten, "10");
         if (await G1Helpers.GlobalExistsAsync(Session, Huge))
         {

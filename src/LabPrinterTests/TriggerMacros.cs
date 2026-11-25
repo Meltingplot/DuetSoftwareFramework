@@ -391,6 +391,7 @@ public class TriggerMacros : LabTest
     [TestCase("fileread(\"0:/sys/config.g\", 0, 1, ',')")]
     public async Task ActionCallingFileFunctionIsRefused(string call)
     {
+        G7Helpers.RequireMainBoardFixes(Session, G7Helpers.Rrf115);
         await RequireFreeTriggerAsync();
 
         // The quotes of the action are doubled in the G-code string

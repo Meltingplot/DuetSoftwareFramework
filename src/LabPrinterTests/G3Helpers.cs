@@ -19,7 +19,8 @@ public static class G3Helpers
 {
     /// <summary>
     /// Last fork release that has none of the DWS, DPS and packaging fixes #222, #225, #229 and #234 (merge commits bd051f9a6, 9eebc5180, e4e865a7c
-    /// and 520765373) and none of the DCS fixes #216, #218, #219 and #223 (46adca585, cf21ac188, 77a9ed697, 186e86ce5): no tag contains them. v3.7-dev builds report this version too until the next version bump
+    /// and 520765373) and none of the DCS fixes #216, #218, #219, #223, #238, #239 and #240 (46adca585, cf21ac188, 77a9ed697, 186e86ce5, e2b196f55, 442750d50,
+    /// 9454b3d5e): no tag contains them. v3.7-dev builds report this version too until the next version bump
     /// (src/Directory.Build.props), so a package with exactly this version may have them or not
     /// </summary>
     public const string LastReleaseBeforeNewFixes = "3.7.0+mp.15";

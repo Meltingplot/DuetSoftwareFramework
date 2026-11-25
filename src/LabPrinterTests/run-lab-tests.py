@@ -259,7 +259,8 @@ PER_REBOOT = ['Connection to controller has been reset', 'RepRapFirmware has lef
 # Expected in some test cases
 IN_SOME_TESTS = ['Failed to find corresponding state for code M291 P"never"', 'Machine is halted', 'SPI fault injected', 'Bad header CRC',
                  'Bad data CRC', 'Sending transfer #', 'keeping the plain link', 'RepRapFirmware is exchanging the data',
-                 'Cannot store excessively long object model response']
+                 'Cannot store excessively long object model response', 'Invalid key global in the object model',
+                 'Expression nesting too deep']
 # Known, cause or assessment open
 KNOWN_OPEN = ['Failed to find query for object model response', 'Aborting orphaned macro file daemon.g',
               "Daemon: Out-of-order reply"]

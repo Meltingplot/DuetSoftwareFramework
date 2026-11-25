@@ -66,6 +66,7 @@ public class RrfExpressions : LabTest
     [TestCase("2026-99-01T00:00:00")]
     public async Task DateTimeRefusesMonthOutsideOneToTwelve(string text)
     {
+        G7Helpers.RequireMainBoardFixes(Session, G7Helpers.Rrf104);
         string pid = await Lab.GetControlServerPidAsync();
         Assert.That(await DateTimeOfGlobalAsync("2026-11-24T01:02:03", pid), Is.EqualTo("2026-11-24T01:02:03"), "RRF does not convert a valid date from a global");
 
@@ -90,6 +91,7 @@ public class RrfExpressions : LabTest
     [TestCase("-8101-01-01T00:00:00")]
     public async Task DateTimeRefusesYearOutsideMktimeRange(string text)
     {
+        G7Helpers.RequireMainBoardFixes(Session, G7Helpers.Rrf109);
         string pid = await Lab.GetControlServerPidAsync();
         string reply = await DateTimeOfGlobalAsync(text, pid);
         await G1Helpers.AssertControlServerGoesOnAsync(Session, pid, $"datetime(\"{text}\")");
@@ -112,6 +114,7 @@ public class RrfExpressions : LabTest
     [TestCase("pow(global.labTestTwo, 31)")]
     public async Task RoundingOfTwoToTheThirtyOneStaysFloat(string expression)
     {
+        G7Helpers.RequireMainBoardFixes(Session, G7Helpers.Rrf110);
         await G1Helpers.SetGlobalAsync(Session, "labTestTwoTo31", "2147483648.0");
         await G1Helpers.SetGlobalAsync(Session, "labTestTwo", "2");
         Assert.That((await SendCodeAsync("echo {pow(global.labTestTwo, 30)}")).Trim(), Is.EqualTo("1073741824"), "pow(2, 30) is no longer the int 2^30");
@@ -134,6 +137,7 @@ public class RrfExpressions : LabTest
     [Test]
     public async Task VectorTooLargeIsRefused()
     {
+        G7Helpers.RequireMainBoardFixes(Session, G7Helpers.Rrf102);
         await G1Helpers.SetGlobalAsync(Session, "labTestVectorCount", "536870912");
         string pid = await Lab.GetControlServerPidAsync();
         int upTimeBefore = (await G1Helpers.QueryFirmwareAsync(Session, "state.upTime")).GetInt32();
@@ -171,6 +175,7 @@ public class RrfExpressions : LabTest
     [Test]
     public async Task TakeAndDropOfNestedArrayUseTheirParent()
     {
+        G7Helpers.RequireMainBoardFixes(Session, G7Helpers.Rrf108);
         List<string>[] drivers = Lab.Read(Session, model => model.Move.Axes.Select(axis => axis.Drivers.Select(driver => driver.ToString()).ToList()).ToArray());
         Assume.That(drivers.Length, Is.GreaterThan(1), "The machine has one axis");
         int axis = Enumerable.Range(1, drivers.Length - 1)
@@ -228,6 +233,7 @@ public class RrfExpressions : LabTest
     [Test]
     public async Task TakeOfHeapStringSurvivesGarbageCollection()
     {
+        G7Helpers.RequireMainBoardFixes(Session, G7Helpers.Rrf106);
         Match before = G1Helpers.HeapRegex().Match(await SendCodeAsync("M122", 30));
         if (!before.Success)
         {

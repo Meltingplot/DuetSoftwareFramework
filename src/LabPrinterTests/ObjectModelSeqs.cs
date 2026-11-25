@@ -31,6 +31,7 @@ public class ObjectModelSeqs : LabTest
     [Test]
     public async Task VolumesSeqFollowsDsf()
     {
+        G7Helpers.RequireMainBoardFixes(Session, G7Helpers.Rrf105);
         JsonElement first = await G1Helpers.QueryFirmwareAsync(Session, "seqs.volumes");
         if (first.ValueKind != JsonValueKind.Number)
         {
