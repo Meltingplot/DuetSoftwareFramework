@@ -143,4 +143,81 @@ public class SpiFaultInjection : SpiFaultTest
             Assert.Inconclusive($"None of the {cases.Count} faults found a transfer of its kind");
         }
     }
+
+    /// <summary>
+    /// Warning of DSF when it goes on with the data because RRF answered its BadHeaderChecksum with BadDataChecksum (SPI.IsExchangingData, SPI.cs:2109)
+    /// </summary>
+    private const string ExchangingDataLine = "RepRapFirmware is exchanging the data, exchanging the data as well";
+
+    /// <summary>
+    /// Warning of DSF when the response of RRF to its header is no known code, e.g. a refusal (SPI.ExchangeHeader, SPI.cs:2074)
+    /// </summary>
+    private static string BadHeaderResponseLine(uint code) => $"Restarting full transfer because a bad header response was received (0x{code:x8})";
+
+    /// <summary>
+    /// Faults in the response of RRF to the header of DSF on the plain link, each with the warning of the repair DSF must take. The lines come from
+    /// the census port, through the injector, on v3.7-dev 520765373; on the printer only the Retry outcome of the P1 faults has been seen (2026-11-08)
+    /// </summary>
+    private static readonly (string Spec, string Line)[] PlainLinkHeaderResponseFaults =
+    [
+        // P1 (#137): Success read as BadHeaderChecksum (bit 2 turns 1 into 5, or the whole word) or as BadResponse, in a transfer with data of DSF
+        ("BothData HeaderResponse ToDsf flip 2", ExchangingDataLine),
+        ("BothData HeaderResponse ToDsf word 0x00000005", ExchangingDataLine),
+        ("BothData HeaderResponse ToDsf word 0xfefefefe", ExchangingDataLine),
+        ("DsfData HeaderResponse ToDsf flip 2", ExchangingDataLine),
+        ("DsfData HeaderResponse ToDsf word 0x00000005", ExchangingDataLine),
+        ("DsfData HeaderResponse ToDsf word 0xfefefefe", ExchangingDataLine),
+
+        // #91: Success read as a refusal, BadProtocolVersion (bit 1 turns 1 into 3), BadFormat (1 + 1) or BadDataLength, with and without data
+        ("BothData HeaderResponse ToDsf flip 1", BadHeaderResponseLine(3)),
+        ("NoData HeaderResponse ToDsf add 0 4 1", BadHeaderResponseLine(2)),
+        ("DsfData HeaderResponse ToDsf word 0x00000004", BadHeaderResponseLine(4))
+    ];
+
+    /// <summary>
+    /// One corrupted response of RRF to the header of DSF is repaired by retries on the plain link, which DSF uses with an RRF without link capabilities
+    /// (run-lab-tests.sh --plain-link; on the extended link the response words are corrected, ExtendedLink.DecodeResponse). Needs no case file.
+    /// - P1, DSF #137: RRF went on with the data after its Success, while DSF read another code and exchanged its header again. RRF took that header for
+    ///   data and answered BadDataChecksum, from then on it exchanges the data again while either side reports BadDataChecksum (RRF DataTransfer.cpp:1229, :1252-1257 at 0d4295065). Before #137 DSF had
+    ///   overwritten its copy of RRF's header with that data before the checksum check and kept exchanging headers, so neither side timed out and the link
+    ///   stayed stuck until DCS stopped after SbcRestartTimeout (60 s, SPI.cs:327-332). The fix keeps the header until its checksum is valid (SPI.cs:1974) and
+    ///   goes on with the data (SPI.cs:1940, :1963, :2102-2111). Unfixed, M409 ... R1 gets no answer in 5 s, so the case ends NoRecovery (all six broke on
+    ///   2026-11-08 without #137, design/lab-test-plan.md:568; offline UnitTests LinkRecovery.HeaderResponseOfRrfWithDsfData)
+    /// - DSF #91: the switch after DSF's Success threw "RepRapFirmware refused message format / protocol version / data length" for these codes, the exception
+    ///   ended the transfer thread (LinkService.cs:182-228) and DCS stopped, so the case ends DcsRestart. Now they take the default branch: DSF logs the code,
+    ///   sends BadResponse when data is involved and restarts the transfer (SPI.cs:2066-2085; offline UnitTests LinkRecovery.RefusalCodeInHeaderResponse)
+    /// Each case is one fault in one exchange and costs nothing with the fixes. Unfixed, each costs a DCS restart and M999, and on the fork the lost link also
+    /// costs an emergency stop with ATX off (Lab.RecoverAsync): 6 for #137, 3 for #91. Deterministic: each fault hits the next transfer of its kind
+    /// </summary>
+    [Test]
+    public async Task PlainLinkHeaderResponseFaultsRecover()
+    {
+        await RequireLinkAsync("plain");
+        List<string> failures = [], notInjected = [];
+        foreach ((string spec, string line) in PlainLinkHeaderResponseFaults)
+        {
+            Injection injection = await InjectAsync(spec);
+            if (injection.Kind is null)
+            {
+                notInjected.Add(spec);
+                continue;
+            }
+
+            TestContext.Progress.WriteLine($"{spec} hit {injection.Kind}: {injection.Outcome}");
+            if (injection.Outcome != "Retry")
+            {
+                failures.Add($"{spec}: {injection.Outcome}\n{injection.Lines("Restarting full transfer", "refused", "Lost connection to Duet", "Connection to controller has been reset", "Duet Control Server v")}");
+            }
+            else if (injection.Count(line) == 0)
+            {
+                failures.Add($"{spec}: repaired, but without \"{line}\"\n{injection.Lines("Restarting full transfer", "RepRapFirmware", "Bad header")}");
+            }
+        }
+
+        Assert.That(failures, Is.Empty, "Faults in the header response that the plain link did not repair as expected:\n" + string.Join("\n", failures));
+        if (notInjected.Count > 0)
+        {
+            Assert.Inconclusive($"No transfer of the kind came along for: {string.Join(", ", notInjected)}");
+        }
+    }
 }
