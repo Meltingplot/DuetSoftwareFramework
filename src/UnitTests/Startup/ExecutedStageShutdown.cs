@@ -23,16 +23,16 @@ namespace UnitTests.Startup;
 /// <item>Once ApplicationStopping is cancelled, the tokens of the codes are cancelled as well, because their sources are linked to it (CodeProcessor.cs:310)</item>
 /// <item>The DSF AsyncLock waited on a SemaphoreSlim, which gives up at once on a cancelled token even when the lock is free (SemaphoreSlim.cs:687-689 of
 /// System.Private.CoreLib). Nito.AsyncEx.AsyncLock, which it replaced in bb5edd5e, takes a free lock in that case, see <see cref="Utility.AsyncLockCancelledToken"/></item>
-/// <item>The Executed stage writes the reply to the event log with that token (Executed.cs:110-121 and 126-129, Logger.cs:258) and updates the file
-/// position of a macro code with the token of the code (Executed.cs:81, Code.cs:181-185), both outside the try block of Executed.cs:164-240, which keeps
-/// a cancellation during the shutdown quiet (Executed.cs:235)</item>
+/// <item>The Executed stage writes the reply to the event log with that token (Executed.cs:110-121 and 126-129, Logger.cs:289) and updated the file
+/// position of a macro code with the token of the code under the file lock (Executed.cs:81), both outside the try block of Executed.cs:164-247, which keeps
+/// a cancellation during the shutdown quiet (Executed.cs:242). The update takes neither the file lock nor a token since TP3 (CodeFile.cs:159-168)</item>
 /// <item>The exception reaches the loop of the stage, which logged "Failed to process code in stage Executed" and left the code neither finished nor
 /// cancelled, so whoever waits for it waited for good</item>
 /// </list>
 /// Fixed: the AsyncLock takes a free lock even with a cancelled token (AsyncLock.cs:50, 65), so the reply is still logged and returned, and the loop of the stage
 /// completes a code whose stage throws, quietly for a cancellation while DCS stops (PipelineStackItem.cs:85-93).
 /// The window: the code is in the Executed stage when the shutdown begins. A code handler holds it there in these tests, as the handlers of DCS do when
-/// they wait, e.g. M122 for the diagnostics without a token (MCodeHandler.cs:1431-1436)
+/// they wait, e.g. M122 for the diagnostics without a token (MCodeHandler.cs:1433-1438)
 /// </summary>
 [TestFixture]
 public class ExecutedStageShutdown
@@ -104,7 +104,7 @@ public class ExecutedStageShutdown
     private static List<IpcLog.Entry> StageFailures(IpcLog log) => [.. log.Entries.Where(entry => entry.Message == "Failed to process code in stage Executed")];
 
     /// <summary>
-    /// Without a shutdown the held code goes on as usual: M111 P-1 is answered by DCS (MCodeHandler.cs:742)
+    /// Without a shutdown the held code goes on as usual: M111 P-1 is answered by DCS (MCodeHandler.cs:744)
     /// </summary>
     [Test]
     public async Task HeldCodeFinishesWhenReleased()
@@ -121,7 +121,7 @@ public class ExecutedStageShutdown
     }
 
     /// <summary>
-    /// A reply of a code DSF answered itself goes to the event log (Executed.cs:119) with ApplicationStopping (Logger.cs:258), which is cancelled. The log
+    /// A reply of a code DSF answered itself goes to the event log (Executed.cs:119) with ApplicationStopping (Logger.cs:289), which is cancelled. The log
     /// write failed before the event log was even checked for being open, so this happened without M929 as well. The lock is free, so the reply is logged
     /// and returned as without the stop
     /// </summary>
@@ -150,7 +150,7 @@ public class ExecutedStageShutdown
     /// <summary>
     /// A code handler that is cancelled while DCS stops, e.g. because it waits with the cancelled token of the code for a lock that is held: the loop of the
     /// stage logs the cancellation and completes the code with it (PipelineStackItem.cs:85-89, upstream 61df011e). SimpleCode answers a cancelled code with
-    /// an empty reply (SimpleCode.cs:183-186)
+    /// an empty reply (SimpleCode.cs:209-212)
     /// </summary>
     [Test]
     public async Task CodeWhoseHandlerIsCancelledWhileDcsStopsIsCompleted()
@@ -188,10 +188,11 @@ public class ExecutedStageShutdown
     }
 
     /// <summary>
-    /// Codes behind the held one in the Executed queue are read after the cancellation as well. A macro code may then be cancelled when its file position is
-    /// updated with its token (Executed.cs:81, Code.cs:181-185, CodeFile.cs:64), which is linked to ApplicationStopping as well (MacroFile.cs:166, 340).
+    /// Codes behind the held one in the Executed queue are read after the cancellation as well. A macro code then reaches the code handlers with its token,
+    /// which is linked to ApplicationStopping as well (MacroFile.cs:171, 346). Before TP3 it could already be cancelled when its file position was updated
+    /// with that token under the file lock (Executed.cs:81, CodeFile.cs:64); that update takes neither now (CodeFile.cs:159-168).
     /// The held code is an M42 that RRF answers, so the G4 behind it is answered and queued meanwhile (an M111 P-1 would flush the channel first,
-    /// MCodeHandler.cs:695). Since upstream 61df011e the loop of the stage logs such a cancellation and completes the code with it (PipelineStackItem.cs:85-89),
+    /// MCodeHandler.cs:697). Since upstream 61df011e the loop of the stage logs such a cancellation and completes the code with it (PipelineStackItem.cs:85-89),
     /// depending on timing (UP6 in design/open-findings.md)
     /// </summary>
     [Test]

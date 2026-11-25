@@ -145,20 +145,7 @@ namespace DuetPiManagementPlugin.Network.Protocols
             }
 
             // Copy the template file and replace the port variables
-            await using (FileStream templateStream = new(templateFile, FileMode.Open, FileAccess.Read))
-            {
-                using StreamReader reader = new(templateStream);
-                await using FileStream configStream = new("/opt/dsf/conf/http.json", FileMode.Create, FileAccess.Write);
-                await using StreamWriter writer = new(configStream);
-
-                string? line;
-                while ((line = await reader.ReadLineAsync()) is not null)
-                {
-                    line = line.Replace("{httpPort}", _httpPort.ToString());
-                    line = line.Replace("{httpsPort}", _httpsPort.ToString());
-                    await writer.WriteLineAsync(line);
-                }
-            }
+            await WriteConfig(templateFile, "/opt/dsf/conf/http.json");
 
             // Enable the service if it was disabled before
             if (enableService)
@@ -171,6 +158,34 @@ namespace DuetPiManagementPlugin.Network.Protocols
             // Restart the service
             string restartOutput = await Command.ExecuteAsync("systemctl", "restart duetwebserver.service");
             return new Message(MessageType.Success, restartOutput.TrimEnd());
+        }
+
+        /// <summary>
+        /// Write the configuration file of DWS from a template and replace the port variables
+        /// </summary>
+        /// <param name="templateFile">Template file</param>
+        /// <param name="configFile">Configuration file to write</param>
+        /// <returns>Asynchronous task</returns>
+        public static async Task WriteConfig(string templateFile, string configFile)
+        {
+            await using (FileStream templateStream = new(templateFile, FileMode.Open, FileAccess.Read))
+            {
+                using StreamReader reader = new(templateStream);
+
+                // This runs as root and the dsf user may put a symlink in place of the file at any time, so replace it instead of writing through it.
+                // CreateNew does not follow a symlink that shows up in the meantime either
+                File.Delete(configFile);
+                await using FileStream configStream = new(configFile, FileMode.CreateNew, FileAccess.Write);
+                await using StreamWriter writer = new(configStream);
+
+                string? line;
+                while ((line = await reader.ReadLineAsync()) is not null)
+                {
+                    line = line.Replace("{httpPort}", _httpPort.ToString());
+                    line = line.Replace("{httpsPort}", _httpsPort.ToString());
+                    await writer.WriteLineAsync(line);
+                }
+            }
         }
 
         /// <summary>

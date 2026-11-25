@@ -334,6 +334,7 @@ public class MCodeHandler(
                         motionSystem = model.Inputs[code.Channel]?.MotionSystem ?? 0;
                     }
 
+                    Task variablesRewound = Task.CompletedTask;
                     using (await jobProcessor.LockAsync(cancellationToken))
                     {
                         if (!jobProcessor.IsFileSelected)
@@ -349,9 +350,10 @@ public class MCodeHandler(
                             }
 
                             // C carries the modal G0/G1/G2/G3 command of the move at that position, as written to resurrect.g
-                            await jobProcessor.SetFilePositionAsync(motionSystem, newPosition, code.GetInt('C', -1), cancellationToken);
+                            variablesRewound = await jobProcessor.SetFilePositionAsync(motionSystem, newPosition, code.GetInt('C', -1), cancellationToken);
                         }
                     }
+                    await variablesRewound;
 
                     // P parameter is handled by RRF if present
                     break;

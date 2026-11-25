@@ -41,7 +41,7 @@ public class ExecutedHandlerErrors
     public async Task DiagnosticsWithExpressionParameter()
     {
         // RRF evaluates P with GetIValue and prints the normal diagnostics for 0 (GCodes2.cpp:2291, 2313). DCS leaves the expression to RRF
-        // because it holds no SBC field (Code.cs:242) and MCodeHandler.ProcessAsync does not evaluate it for M122 (MCodeHandler.cs:789-795).
+        // because it holds no SBC field (Code.cs:218) and MCodeHandler.ProcessAsync does not evaluate it for M122 (MCodeHandler.cs:791-797).
         // Confirmed on the lab printer (RRF 3.7.0+1.mp.8, DSF 3.7.0+mp.13): no reply, the DCS log shows "Failed to process code in stage Executed"
         // with this InvalidParameterTypeException, DWS answered with HTTP 503, and the next regular code on the HTTP channel got no reply either,
         // because the unfinished M122 keeps the unbuffered code counter of the channel (CodeProcessor.cs:188-191, Start.cs:224-232)
@@ -62,8 +62,8 @@ public class ExecutedHandlerErrors
     [Test]
     public async Task DiagnosticsWithExpressionBoard()
     {
-        // B is read before the code goes to RRF (MCodeHandler.cs:790), so the exception comes up in the internal processing stage, which
-        // turns it into an error reply (Code.cs:276-281) prefixed with the command (Executed.cs:103-106). Same reply on the lab printer
+        // B is read before the code goes to RRF (MCodeHandler.cs:792), so the exception comes up in the internal processing stage, which
+        // turns it into an error reply (Code.cs:252-257) prefixed with the command (Executed.cs:103-106). Same reply on the lab printer
         Assert.That(await ExecuteAsync("M122 B{0}"), Is.EqualTo("Error: M122: Cannot convert B parameter to Int32 (value {0})\n"));
         Assert.That(await ExecuteAsync("echo \"alive\""), Is.EqualTo("alive\n"));
     }

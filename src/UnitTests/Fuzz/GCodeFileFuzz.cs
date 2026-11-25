@@ -140,7 +140,7 @@ public class GCodeFileFuzz
             byte[] content = Apply(input);
             System.IO.File.WriteAllBytes(path, content);
 
-            // ParseAsync returns the information it could find, malformed thumbnails are skipped (FileInfoParser.cs:720-725)
+            // ParseAsync returns the information it could find, malformed thumbnails are skipped (FileInfoParser.cs:739-744)
             Task<GCodeFileInfo> parse = parser.ParseAsync(path, true);
             GCodeFileInfo info;
             try
@@ -269,7 +269,7 @@ public class GCodeFileFuzz
         }
 
         // Pause like LinkService.HandlePrintPaused does (LinkService.cs:886-904). RRF reports the position of the next code to execute,
-        // and none for a pause from a code, then the job resumes after the last code it executed (JobProcessor.cs:636-641)
+        // and none for a pause from a code, then the job resumes after the last code it executed (JobProcessor.cs:652-657)
         long afterHeld = offsets[input.PauseAt] + held.Length + 1;
         using (await jobs.LockAsync())
         {

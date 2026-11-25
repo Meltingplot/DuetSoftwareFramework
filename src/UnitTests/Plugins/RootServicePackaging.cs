@@ -12,8 +12,8 @@ using File = System.IO.File;
 
 /// <summary>
 /// What the packages leave below /opt/dsf for the root plugin service (duetpluginservice-root.service has no User=). As root it runs the commands configured in
-/// /opt/dsf/conf/plugins.json (InstallPlugin.cs:58-70, :364-433, InstallSystemPackage.cs:104-150, UninstallSystemPackage.cs:32-33,
-/// AppArmorPermissionManager.cs:166, :189), writes and loads AppArmor profiles made from /opt/dsf/conf/apparmor.conf (AppArmorPermissionManager.cs:42-166),
+/// /opt/dsf/conf/plugins.json (InstallPlugin.cs:58-70, :364-433, InstallSystemPackage.cs:103-149, UninstallSystemPackage.cs:32-33,
+/// AppArmorPermissionManager.cs:171, :194), writes and loads AppArmor profiles made from /opt/dsf/conf/apparmor.conf (AppArmorPermissionManager.cs:42-171),
 /// and runs on the files in /opt/dsf/bin. The dsf user, and everything that runs as dsf, must be able to change none of it, else it makes root run its code.
 /// The Debian maintainer scripts and the RPM scriptlets run with /bin/sh against a tree in a temporary directory: /opt/dsf in the scripts is replaced by
 /// that tree, chmod runs for real inside it, and chown and the other tools are stubs. The test runs as regular user, so the chown stub records its calls and
@@ -525,7 +525,7 @@ public class RootServicePackaging
 
     /// <summary>
     /// The root service, and every program it starts without a working directory of its own (InstallPlugin.cs:62, :374-384, :411-423,
-    /// AppArmorPermissionManager.cs:166, :189), run in the WorkingDirectory of duetpluginservice-root.service. Host.CreateDefaultBuilder (Program.cs:42) uses
+    /// AppArmorPermissionManager.cs:171, :194), run in the WorkingDirectory of duetpluginservice-root.service. Host.CreateDefaultBuilder (Program.cs:42) uses
     /// that directory as content root and reads its appsettings.json as configuration before plugins.json, so a setting that plugins.json leaves out comes from
     /// there, e.g. SystemdRunCommand or another entry of InstallPackageEnvironment. pipInstall2.py runs python -m venv and python -m pip (pipInstall2.py:435,
     /// :483, :570-572), and python -m imports modules from the current directory first. So dsf must neither create files in that directory nor change the

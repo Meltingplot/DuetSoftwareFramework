@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -865,6 +866,12 @@ public sealed class Expressions(Model.Filter filter, Model.ObjectModel model, Li
         // Eat a sub-expression and evaluate SBC-only properties + custom functions where applicable
         async Task<string> eatExpression(char brace, bool raw = false)
         {
+            // Nested levels that complete synchronously run on the same stack. Refuse an expression nested too deeply before it overflows
+            if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
+            {
+                throw new CodeParserException("Expression nesting too deep", code);
+            }
+
             StringBuilder lastToken = new(), result = new();
             while (i < expression.Length)
             {
@@ -1057,6 +1064,26 @@ public sealed class Expressions(Model.Filter filter, Model.ObjectModel model, Li
     {
         object? result = await EvaluateExpressionToValueAsync(code, expression, onlySbcFields, cancellationToken);
         return (onlySbcFields && result is string resultString) ? resultString : ObjectToString(result, false, encodeResult, code);
+    }
+
+    /// <summary>
+    /// Try to evaluate an expression on the SBC only, as the fast path of <see cref="EvaluateExpressionToValueAsync"/> does, without asking the
+    /// firmware (Meltingplot)
+    /// </summary>
+    /// <param name="code">Code holding the expression</param>
+    /// <param name="expression">Expression to evaluate</param>
+    /// <param name="cancellationToken">Optional cancellation token</param>
+    /// <returns>Whether the SBC could evaluate the expression, and its value</returns>
+    /// <exception cref="CodeParserException">Failed to parse the expression</exception>
+    /// <exception cref="OperationCanceledException">Code was cancelled</exception>
+    public async Task<(bool resolved, object? value)> TryEvaluateLocallyAsync(Code code, string expression, CancellationToken cancellationToken = default)
+    {
+        Parsing.IExpressionEvaluationContext context = new ExpressionContext(this, () => code.File?.GetIterations(code), (int)(code.LineNumber ?? 0), filter, false);
+        using (await model.AccessReadOnlyAsync(cancellationToken))
+        {
+            bool resolved = Parsing.MetaExpressionParser.TryEvaluate(expression, context, out object? value);
+            return (resolved, value);
+        }
     }
 
     /// <summary>

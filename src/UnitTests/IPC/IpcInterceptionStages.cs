@@ -205,7 +205,7 @@ public class IpcInterceptionStages
     public async Task PreAndPostSeeTheCodeInTurn()
     {
         // A code passes the Pre stage (Pre.cs:30-36) and reaches the Post interceptors when DCS has not handled it internally, which
-        // Code.ProcessInternally does before the code goes to the firmware (Commands/Generic/Code.cs:284-293)
+        // Code.ProcessInternally does before the code goes to the firmware (Commands/Generic/Code.cs:260-269)
         using InterceptConnection pre = await ConnectAsync(InterceptionMode.Pre, [CodeChannel.Telnet], ["M7504"]);
         using InterceptConnection post = await ConnectAsync(InterceptionMode.Post, [CodeChannel.Telnet], ["M7504"]);
         Task<string> reply = StartCode("M7504", CodeChannel.Telnet);
@@ -225,7 +225,7 @@ public class IpcInterceptionStages
         using InterceptConnection post = await ConnectAsync(InterceptionMode.Post, [CodeChannel.Telnet], ["M7508"]);
         int inFirmware = _host.Firmware.GetReceivedCodes(CodeChannel.Telnet).Count(code => code.MajorNumber == 7508);
 
-        // A cancelled code fails with an OperationCanceledException (Commands/Generic/Code.cs:286, ProcessInternally.cs:32-39), which SimpleCode
+        // A cancelled code fails with an OperationCanceledException (Commands/Generic/Code.cs:262, ProcessInternally.cs:32-39), which SimpleCode
         // leaves out of the reply
         Task<string> reply = StartCode("M7508", CodeChannel.Telnet);
         await ReceiveAsync(post);

@@ -165,6 +165,14 @@ public sealed class StartPlugin(PluginStore pluginStore, ServicePrivileges privi
                 RedirectStandardError = plugin.SbcOutputRedirected,
                 RedirectStandardOutput = plugin.SbcOutputRedirected
             };
+
+            // A plugin without super-user permissions enters its AppArmor profile by name when it is executed. The program that runs is not always
+            // below the plugin directory, e.g. bash and the Python interpreter that the venv links to, so the profile must not depend on its path
+            if (!_settings.DisableAppArmor && !plugin.SbcPermissions.HasFlag(SbcPermissions.SuperUser))
+            {
+                startInfo.Arguments = $"-p dsf.{plugin.Id} -- \"{startInfo.FileName}\" {startInfo.Arguments}";
+                startInfo.FileName = _settings.AppArmorExecCommand;
+            }
             logger.LogInformation("Launching {File} {Arguments}", startInfo.FileName, startInfo.Arguments);
 
             Process? process = Process.Start(startInfo) ?? throw new IOException($"Failed to create process {sbcExecutable}");

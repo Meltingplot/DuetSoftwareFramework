@@ -58,7 +58,7 @@ public class MetaExpressions
     public async Task Echo()
     {
         // The expressions are separated by spaces (wiki, Echo command). 1+1 and the SBC field directories.system are evaluated by DSF,
-        // the expression with the firmware value move.axes[0].letter is forwarded after DSF has substituted its own fields (Expressions.cs:1009-1042)
+        // the expression with the firmware value move.axes[0].letter is forwarded after DSF has substituted its own fields (Expressions.cs:1016-1049)
         Assert.That(await _host.ExecuteAsync("echo 1+1, \"a\", directories.system, directories.system ^ move.axes[0].letter"), Is.EqualTo("2 a 0:/sys/ 0:/sys/X\n"));
     }
 
@@ -122,7 +122,7 @@ public class MetaExpressions
     public async Task InvalidVariableDeclaration(string code, string error)
     {
         // KeywordHandler validates the name and the '=' before it asks the firmware (KeywordHandler.cs:180-258). Dots are only allowed for set.
-        // SimpleCode reports the CodeParserException without a line break (SimpleCode.cs:190-192)
+        // SimpleCode reports the CodeParserException without a line break (SimpleCode.cs:216-218)
         Assert.That(await _host.ExecuteAsync(code), Is.EqualTo($"Error: {error}"));
         Assert.That(_host.Firmware.GetReceivedRequests().Any(request => request.Request == SbcRequest.SetVariable), Is.False);
     }
@@ -141,11 +141,34 @@ public class MetaExpressions
     [Test]
     public async Task FileExists()
     {
-        // fileexists is true for files only (wiki, Functions), DSF resolves the path relative to 0:/ (Functions.cs:65-73)
+        // fileexists is true for files only (wiki, Functions). RRF looks for a relative name in the system directory and takes a name that
+        // starts with / or a drive as it is (Platform::SysFileExists -> MassStorage::CombineName), and so does DSF (Functions.cs:66-75)
         WriteFile("sys/a.g", "G1 X1\n");
-        Assert.That(await _host.ExecuteAsync("echo fileexists(\"0:/sys/a.g\"), fileexists(\"sys/a.g\"), fileexists(\"0:/sys\"), fileexists(\"missing.g\")"),
-                    Is.EqualTo("true true false false\n"));
+        WriteFile("b.g", "G1 X1\n");
+        Assert.That(await _host.ExecuteAsync("echo fileexists(\"0:/sys/a.g\"), fileexists(\"/sys/a.g\"), fileexists(\"a.g\"), fileexists(\"sys/a.g\")"),
+                    Is.EqualTo("true true true false\n"));
+        Assert.That(await _host.ExecuteAsync("echo fileexists(\"0:/b.g\"), fileexists(\"/b.g\"), fileexists(\"b.g\")"), Is.EqualTo("true true false\n"));
+        Assert.That(await _host.ExecuteAsync("echo fileexists(\"0:/sys\"), fileexists(\"missing.g\")"), Is.EqualTo("false false\n"));
         Assert.That(await _host.ExecuteAsync("echo fileexists(1)"), Is.EqualTo("Error: fileexists requires a string argument"));
+    }
+
+    [Test]
+    public async Task FileExistsFollowsSystemDirectory()
+    {
+        // A relative name is looked for in the system directory that M505 set (MCodeHandler.cs:995-1010)
+        WriteFile("sys/a.g", "G1 X1\n");
+        WriteFile("sys/custom/c.g", "G1 X1\n");
+        Assert.That(await _host.ExecuteAsync("M505 P\"0:/sys/custom\""), Is.EqualTo("\n"));
+        Assert.That(await _host.ExecuteAsync("echo fileexists(\"c.g\"), fileexists(\"a.g\"), fileexists(\"0:/sys/a.g\")"), Is.EqualTo("true false true\n"));
+    }
+
+    [Test]
+    public async Task FileExistsInCodeForFirmware()
+    {
+        // DSF substitutes the call in a code it sends to RRF (Code.cs:214), with the same resolution
+        WriteFile("sys/a.g", "G1 X1\n");
+        Assert.That(await SubstituteAsync("fileexists(\"a.g\")"), Is.EqualTo("true"));
+        Assert.That(await SubstituteAsync("fileexists(\"sys/a.g\")"), Is.EqualTo("false"));
     }
 
     [Test]
@@ -163,6 +186,15 @@ public class MetaExpressions
         WriteFile("sys/data.csv", "1,2,3\n");
         Assert.That(await _host.ExecuteAsync("echo #fileread(\"0:/sys/data.csv\", 0, 5, ',')"), Is.EqualTo("3\n"));
         Assert.That(await _host.ExecuteAsync("echo fileread(\"0:/sys/data.csv\", 0, 5)"), Is.EqualTo("Error: fileread requires 4 arguments"));
+    }
+
+    [Test]
+    public async Task FileReadRelativeName()
+    {
+        // Unlike fileexists, RRF reads a relative name from 0:/ (ExpressionParser::ReadArrayFromFile, CombineName with "0:/"), and so does DSF
+        WriteFile("data.csv", "1,2\n");
+        WriteFile("sys/data.csv", "1,2,3\n");
+        Assert.That(await _host.ExecuteAsync("echo #fileread(\"data.csv\", 0, 5, ',')"), Is.EqualTo("2\n"));
     }
 
     private async Task<object?[]> FileReadAsync(string content, int offset, int length, char delimiter = ',')
@@ -265,7 +297,7 @@ public class MetaExpressions
             _host.Model.State.LogLevel = EventLogLevel.Info;
         }
 
-        // Strings are quoted with doubled quotes, # gives their length, enums their JSON value (Expressions.cs:502-620)
+        // Strings are quoted with doubled quotes, # gives their length, enums their JSON value (Expressions.cs:503-621)
         Assert.That(await SubstituteAsync("network.corsSite"), Is.EqualTo("\"a\"\"b''c\""));
         Assert.That(await SubstituteAsync("#network.corsSite"), Is.EqualTo("5"));
         Assert.That(await SubstituteAsync("job.lastFileAborted && true"), Is.EqualTo("true&& true"));
@@ -289,7 +321,7 @@ public class MetaExpressions
         {
             _host.Model.Volumes.Clear();
         }
-        Assert.That(await SubstituteAsync("volumes"), Is.EqualTo("vector(0,0)"), "an empty list (Expressions.cs:570-573)");
+        Assert.That(await SubstituteAsync("volumes"), Is.EqualTo("vector(0,0)"), "an empty list (Expressions.cs:571-574)");
         Assert.That(await SubstituteAsync("#volumes"), Is.EqualTo("0"));
 
         using (await _host.Model.AccessReadWriteAsync())
@@ -300,7 +332,7 @@ public class MetaExpressions
         Assert.That(await SubstituteAsync("volumes[0].freeSpace"), Is.EqualTo("12345"));
         Assert.That(() => SubstituteAsync("volumes"), Throws.InstanceOf<CodeParserException>().With.Message.EqualTo("missing array index"));
 
-        // The index of an SBC field is evaluated, by the firmware if needed (Expressions.cs:917-940)
+        // The index of an SBC field is evaluated, by the firmware if needed (Expressions.cs:924-947)
         Assert.That(await SubstituteAsync("volumes[1 - 1].freeSpace"), Is.EqualTo("12345"));
         Assert.That(() => SubstituteAsync("volumes[\"a\"].freeSpace"), Throws.InstanceOf<CodeParserException>().With.Message.EqualTo("Index value in square brackets must be of type integer"));
     }
@@ -308,7 +340,7 @@ public class MetaExpressions
     [Test]
     public async Task SubstituteFunctionResults()
     {
-        // Custom functions are called by DSF and their results are encoded as literals, arrays with a trailing comma if they have one element (Expressions.cs:886-907)
+        // Custom functions are called by DSF and their results are encoded as literals, arrays with a trailing comma if they have one element (Expressions.cs:893-914)
         WriteFile("sys/data.csv", "1, 2.5, \"a\", 'c', , \n");
         Assert.That(await SubstituteAsync("fileread(\"0:/sys/data.csv\", 0, 10, ',')"), Is.EqualTo("{1,2.5,\"a\",'c',null,null}"));
         Assert.That(await SubstituteAsync("fileread(\"0:/sys/data.csv\", 0, 1, ',')"), Is.EqualTo("{1,}"));
@@ -333,7 +365,7 @@ public class MetaExpressions
     [Test]
     public async Task SubstituteParameters()
     {
-        // Expressions in parameters are encapsulated in curly braces again so that RRF knows they were expressions (Expressions.cs:457-484)
+        // Expressions in parameters are encapsulated in curly braces again so that RRF knows they were expressions (Expressions.cs:458-485)
         Code code = CreateCode();
         code.Type = DuetAPI.Commands.CodeType.MCode;
         code.MajorNumber = 117;
@@ -380,7 +412,7 @@ public class MetaExpressions
     [Test]
     public void ExtractFieldPaths()
     {
-        // Indices are stripped and every dotted identifier counts, but not the contents of strings (Expressions.cs:261-335)
+        // Indices are stripped and every dotted identifier counts, but not the contents of strings (Expressions.cs:262-336)
         Assert.That(Expressions.ExtractFieldPaths("tools[0].current > heat.heaters[var.i].current && \"a.b\" == x || 1.5 < state.status"),
                     Is.EquivalentTo(new[] { "tools.current", "heat.heaters.current", "state.status" }));
         Assert.That(Expressions.ExtractFieldPaths("move.axes"), Is.EquivalentTo(new[] { "move.axes" }));

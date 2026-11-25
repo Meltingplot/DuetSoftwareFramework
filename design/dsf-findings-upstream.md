@@ -1,6 +1,6 @@
 # DSF findings for upstream
 
-Status: 2026-11-08, K32 added on 2026-11-11, written for Christian Hammacher (Duet3D). The SPI link findings are in `design/sbc-link-findings-upstream.md`; this document covers everything else that the fork found and fixed on 2026-11-07 and 2026-11-08.
+Status: 2026-11-08, K32 added on 2026-11-11, the privilege boundaries of the DSF census (UB5 to LX6, own section with its own base commit) on 2026-11-24, written for Christian Hammacher (Duet3D). The SPI link findings are in `design/sbc-link-findings-upstream.md`; this document covers everything else that the fork found and fixed on 2026-11-07 and 2026-11-08.
 
 What was checked:
 - DSF `v3.7-dev` at 973838bf, the head of upstream on 2026-11-08. The fork's `v3.7-dev` contains it (merge base 973838bf).
@@ -73,6 +73,13 @@ Line numbers refer to these commits. PR numbers are those of Meltingplot/DuetSof
 | PS8 | Root plugin files belong to dsf, so the dsf user can change what the root service runs. | 335e8ce2 (postinst) | #151 (design) |
 | PS9 | Smaller plugin service bugs: failed process report, closed DCS connection, child processes, missing manifest, registration leak, log. | see section | #151 |
 | PS10 | Package installation of a plugin fails when DPS has inherited a variable of `InstallPackageEnvironment`. | 3b17835f | #153 |
+| UB5 | The root DPS unpacks a combined system package into a directory in /tmp whose name is known during the upload, and installs whatever it finds there as root. | 3b17835f | #231 |
+| FS4 | The root DPS runs commands from `plugins.json` and loads profiles from `apparmor.conf`, which the packages give to dsf. | 335e8ce2, e2bc260a, d828b052 | #234 |
+| LX2 | The root DPS runs in `/opt/dsf/plugins`, where dsf may create the `appsettings.json` it reads and the `venv.py`/`pip.py` Python imports as root. | 42a87449 | #234 |
+| FS5 | DCS has CAP_DAC_READ_SEARCH effective, so M36.2 and the other file codes return files only root may read. | 561d5c2c, 77c3c748 | #232 |
+| LX1 | Python plugins with dependencies run without their AppArmor profile. | e2bc260a, b28b25e7, 1f187df2 | #233 |
+| LX5 | Every plugin may create, replace and delete every file in /run/dsf, `dcs.sock` included. Partly fixed. | e2bc260a | #233 |
+| LX6 | Root follows symlinks of dsf in gen-https-cert.sh, the `http.json` write of M586 and the reprapfirmware, duetwebserver and duetpimanagementplugin package scripts. | 0234537f, bd0c9151, 278bcc00, 8852e819, 78c784a3 | #235 |
 
 H13 (`rr_delete` ignored `recursive=yes`) was fixed upstream in 5130ca43 and is left out. That commit also makes `rr_delete` one more path to H1.
 
@@ -497,6 +504,83 @@ v3.6 stopped in a fixed order: it waited for a firmware update, shut the link do
 - **Found by:** GitHub's runners, which set `DEBIAN_FRONTEND`.
 - **Fork fix (#153):** the indexer, so the setting overrides an inherited value.
 - **Test:** `DpsInstallPlugin.VariableOfTheServiceIsOverridden`.
+
+## Privilege boundaries (error class census of DSF, 2026-11-24)
+
+These findings concern who can make DSF do what as which user. The printers they were found for run in company networks behind firewalls, so the fork fixed them in normal public PRs and reports them here afterwards.
+
+**What was checked:** DSF `upstream/v3.7-dev` at dbf9b0447 (2026-11-23), which the fork's `v3.7-dev` 8507c98c0 contains. Line numbers in this section refer to dbf9b0447. For each finding, the faulty lines were looked up there and their commit was checked with `git merge-base --is-ancestor <commit> upstream/v3.7-dev`. The fixes and their tests are fork PRs; each PR names its probes and counter-checks.
+
+**Who "dsf" is:** DCS, DWS, the regular DPS and every plugin without superUser run as the user dsf. So "the dsf user" below means any of them, e.g. a plugin or a compromised web server. The fork does not regard dsf as trusted with root.
+
+### UB5. The root DPS installs whatever is in a predictable unpack directory
+
+- **Cause:** `InstallSystemPackage` unpacks a combined ZIP package into `Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(PackageFile))` and `Directory.CreateDirectory` accepts an existing directory (DPS `Commands/InstallSystemPackage.cs:96-97`). Every file there except `update.sh` is installed, and `update.sh` is run, as root (`:101`, `:138-151`).
+- **Why the name is known:** `PackageFile` is DWS's upload file, `Path.GetTempFileName()` = `/tmp/tmpXXXXXX.tmp`, visible for the whole upload (DWS `Endpoints/MachineEndpoints.cs:725-735`). No DSF unit sets `PrivateTmp`.
+- **Effect:** a local process that can write /tmp (any local user, DWS, plugins with `abstractions/user-tmp` in their profile) gets its own packages or `update.sh` run as root during a system package update. Needs `RootPluginSupport` (DCS `Commands/Packages/InstallSystemPackage.cs:24-27`).
+- **Origin:** 3b17835f (`InstallSystemPackage.cs:96-101`).
+- **Fork fix (#231):** `Directory.CreateTempSubdirectory("dsf-package-")`, a new directory with a random name and mode 0700.
+- **Test:** `DpsRootService.CombinedPackageIgnoresAPlantedDirectory`.
+
+### FS4. The root DPS runs commands from settings that the dsf user may change
+
+- **Cause:** the root DPS runs the package, Python, systemd-run and AppArmor commands of `/opt/dsf/conf/plugins.json` as root and loads profiles made from `/opt/dsf/conf/apparmor.conf`. The packages give both files to dsf:
+  - duetcontrolserver `postinst:19-20`: `chown -R dsf:dsf /opt/dsf/conf`, `chmod -R g+wX /opt/dsf/conf` (335e8ce2a, 2020);
+  - duetpluginservice `postinst:4-5`: `chown -R dsf:dsf /opt/dsf/conf/plugins*` and `chown dsf:dsf /opt/dsf/bin/pipInstall2.py`, the installer the root DPS runs for root plugins (e2bc260ae, 2021);
+  - RPM `duetpluginservice.spec:74`: `%defattr(-,dsf,dsf,-)` over the settings, the DPS binaries and `pipInstall2.py` (d828b052e, 2021).
+- **Effect:** the dsf user sets e.g. `InstallPackageCommand` or an `LD_PRELOAD` in `InstallPackageEnvironment`; the root DPS reads it at its next start, and the next plugin with an `sbcPackageDependencies` entry runs it as root. That plugin needs no root plugin support.
+- **Fork fix (#234):** `/opt/dsf/conf` is root:dsf 1775, `plugins.json` and `apparmor.conf` root:root 0644 (also on upgrade and in the RPM specs), and the root DPS refuses to run commands from a settings file or template that is a symlink, missing, not root's or writable by others, or in a directory where others may replace it. `pipInstall2.py` already belonged to root in the fork (eaa840bd, PS8).
+- **Limit:** an upgrade keeps a `plugins.json` that was changed before; the PR lists the keys to check.
+- **Tests:** `RootServicePackaging.*` (runs the maintainer scripts against a temporary tree), `DpsRootSettings.*`.
+
+### LX2. The root DPS runs in a directory the dsf user may write
+
+- **Cause:** `duetpluginservice-root.service:9` sets `WorkingDirectory=/opt/dsf/plugins` (42a87449e, 2025), where dsf may create files. `Host.CreateDefaultBuilder` reads `appsettings.json` from the working directory before `plugins.json`, and `pipInstall2.py` runs `python -m venv` and `python -m pip` with `shell=True` and no `cwd`, so Python imports a `venv.py` or `pip.py` from there.
+- **Effect:** settings keys of dsf's choice, or Python code run as root during the installation of a root plugin.
+- **Fork fix (#234):** `WorkingDirectory=/opt/dsf/bin`, as DCS, DWS and the regular DPS have.
+- **Test:** `RootServicePackaging.RootServiceRunsInADirectoryOnlyRootMayChange`.
+
+### FS5. DCS reads every file with CAP_DAC_READ_SEARCH
+
+- **Cause:** the packages give DCS `cap_sys_ptrace,cap_dac_read_search+ep` (duetcontrolserver `postinst:27`, 561d5c2ca; 77c3c748e). With the effective bit both are effective in every thread for the whole run, so every file that a code or IPC client names is opened as if DCS were root for reading.
+- **Effect:** `M36.2 P"<file>" S<offset>` returns the raw bytes of any file on any volume (and through a symlink below one); M38, `fileread()`, M36/M37/M98/M32, file lists and `GetFileInfo` likewise. On the fork's printer image the SSH host keys are on a volume and could be read by any client that may send codes.
+- **Why DCS has them:** CAP_SYS_PTRACE for the peer check of IPC clients (18b298656, 2020), CAP_DAC_READ_SEARCH for `statfs` of volumes (48d603297, 2020); 561d5c2ca made them file capabilities so that AT_SECURE is set. Today only the reads of `/proc/<pid>/exe` and `/proc/<pid>/auxv` in `Connection.IsDsfService` need them (`IPC/Connection.cs:185-215`, `DuetSharedLibrary/ProcessHelpers.cs:71-108`); `statfs` failures are caught.
+- **Fork fix (#232):** `+p` instead of `+ep`. DCS raises both capabilities into the calling thread's effective set only around those two reads (capget/capset) and restores it. AT_SECURE is still set for `+p` (getauxval(3); probe), and DCS stays non-dumpable.
+- **Behaviour change:** a mount below a directory dsf cannot search drops out of `volumes`.
+- **Tests:** `ControlServerCapabilities.*` (unit and lab).
+
+### LX1. Python plugins with dependencies run without their AppArmor profile
+
+- **Cause:** the profile template attaches by path, `{pluginDirectory}/** {` (`apparmor.conf:4`, e2bc260ae), but such a plugin is started as `/bin/bash -c "{pluginDir}/venv/bin/python …"` (`plugins.json:22-23`, b28b25e75), and the venv interpreter is a symlink to `/usr/bin/python3.x`. Neither is below the plugin directory, so the profile never attaches. The interpreter rule `python{2.[4-7],3,3.[0-9]+}` (`apparmor.conf:13`, 1f187df23) does not match `python3.10` or later either, because `+` is a literal in AppArmor globs.
+- **Effect:** on a system with AppArmor and an unconfined DPS (stock DuetPi), these plugins run as dsf without the permissions the user approved.
+- **Fork fix (#233):** the template declares `profile dsf.{pluginId} {`, and DPS starts every plugin without superUser through `aa-exec -p dsf.<id> --`, so the profile applies from the exec on, wherever the binaries are. The interpreter rule matches the versions of Debian's `abstractions/python`.
+- **Tests:** `DpsStartStopPlugin.PythonPluginIsLaunchedThroughItsVirtualEnvironmentInItsProfile`, `DpsAppArmorProfiles.ShippedTemplate*`. The runtime chain on a kernel with AppArmor was not tested.
+
+### LX5. Every plugin may create, replace and delete every file in /run/dsf
+
+- **Cause:** the template grants `/{,var/}run/dsf/** rw,` (`apparmor.conf:30`, e2bc260ae). /run/dsf holds `dcs.sock`, `dcs.err` and the endpoint sockets of all plugins.
+- **Effect:** a confined plugin can unlink `dcs.sock` (DWS then cannot reach DCS, also not for DWC's emergency stop), bind its own socket there, or replace other plugins' endpoint sockets.
+- **Fork fix (#233), partly:** every plugin gets only `dcs.sock rw`; plugins with RegisterHttpEndpoints also get the endpoint socket names DCS reserves (`AddHttpEndpoint.cs:50`).
+- **Not fixed:** AppArmor mediates path sockets by file rules, and the `w` that connecting needs also allows unlinking, so any plugin can still remove or replace `dcs.sock`. Endpoint namespaces are not tied to their plugin (`AddHttpEndpoint.cs:28-30` refuses only the reserved ones). A fix needs plugins under their own uid or a socket in a directory they cannot write; that is a design decision.
+
+### LX6. Programs that run as root follow symlinks of the dsf user
+
+- **Cause:** root writes, chowns or chmods files in directories that dsf may change, without guarding against a symlink:
+  - DuetPiManagementPlugin (a superUser plugin, so root): `M586` with HTTPS runs `gen-https-cert.sh` when `/opt/dsf/conf/https.pfx` does not exist; it writes `https.key`, `.crt` and `.pfx` with openssl and runs `chown dsf.dsf` and `chmod 660` on them (`gen-https-cert.sh:36-37`, 8852e8198). `M586` also writes `http.json` with `FileMode.Create` (`Network/Protocols/HTTP.cs:151`, 78c784a32).
+  - duetwebserver `postinst:3-4`: `chown dsf:dsf` and `chmod 664` on `http.json` (0234537f2, bd0c91516, 2020).
+  - reprapfirmware `postinst:4`: `chown dsf:dsf /opt/dsf/sd/sys/*.bin` (278bcc00b). /opt/dsf/sd belongs to dsf, so dsf may also replace `sys` itself; `chown -h` would not help.
+  - duetpimanagementplugin `postinst:17` and `prerm:5`, `:16`: append to and `sed -i` on `plugins.txt`.
+- **Effect:** dsf puts a symlink in place of one of these files (or of `sys`), and at the next M586, package configuration or removal root writes through it or gives the target to dsf, e.g. `/root/.ssh/authorized_keys`. Probed in Debian 12 and 13 containers for the package scripts.
+- **Fork fix (#235):** files that belong to dsf in the end are made with the rights of dsf (`setpriv --reuid=dsf --regid=dsf --clear-groups`): the certificate script, the copies of the firmware files that replace dpkg's, and the changes to `plugins.txt`. The duetwebserver postinst uses `chown -h` and no chmod; DuetPiManagementPlugin deletes `http.json` and creates it with `FileMode.CreateNew`.
+- **Limit:** dpkg itself follows a symlink in place of a directory below /opt/dsf/sd when it unpacks (dpkg(1), `*.dpkg-new`); dsf chooses the directory, not the names or content.
+- **Tests:** `RootSymlinks.*` (runs the scripts against a temporary tree with stubs).
+
+### Not fixed, for discussion
+
+- **`RootPluginSupport` is decided by the dsf user.** It is a key in the dsf-owned `config.json` (DCS `Settings.cs:68`), and only DCS, which runs as dsf, enforces it. So dsf can allow root plugins and system packages for itself. The root DPS could take that decision from its own root-owned settings instead.
+- **A confined plugin can make DWS read files outside its profile.** For `HttpResponseType.File` DWS opens the path the plugin returns as it is (DWS `Middleware/CustomEndpointMiddleware.cs:284-289`). DWS runs as dsf without a profile.
+- **`pipInstall2.py` builds shell commands from requirements files without a check.** Lines of a requirements file in the plugin are not checked by DCS, the `git+` form accepts any text, and every command runs with `shell=True`. The installer runs as the user that runs the plugin, and pip runs package build code anyway, so this is no escalation, but it runs outside the plugin's profile.
+- **Same class as LX6, not verified:** DuetPiManagementPlugin mounts for `M21 P… S…` as root on a mount point that DCS resolves lexically below the virtual SD card, and mount(8) canonicalizes the path; `DuetControlServer -u`, which the reprapfirmware postinst runs as root, writes the `StartErrorFile` named in the dsf-owned `config.json` (`DuetControlServer/Settings.cs:485`, `Program.cs:48`).
 
 ## Left out
 

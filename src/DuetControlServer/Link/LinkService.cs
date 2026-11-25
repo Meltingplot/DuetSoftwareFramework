@@ -403,7 +403,7 @@ public sealed class LinkService(
             using (linkInterface.PrintStateLock.Lock(stoppingToken))
             {
                 ushort tag = _connection.Tag();
-                if (linkInterface.SetPrintInfoRequest is not null && linkAdapter.WritePrintFileInfo(model.Job.File, tag))
+                if (linkInterface.SetPrintInfoRequest is not null && linkAdapter.WritePrintFileInfo(linkInterface.PrintFileInfo!, tag))
                 {
                     // The packet providing file info has be sent first because it includes a time_t value that must reside on a 64-bit boundary!
                     _connection.Written(tag);
@@ -1487,10 +1487,11 @@ public sealed class LinkService(
                 Directory.CreateDirectory(parentDirectory);
             }
 
-            // Try to open the file as requested
+            // Try to open the file as requested. A file RRF writes is not buffered here, so every write reaches the file system before it is
+            // answered and a write error such as a full disk fails the write request, as f_write fails it on the SD card (FileStore::Store)
             FileMode fsMode = forWriting ? (append ? FileMode.Append : FileMode.Create) : FileMode.Open;
             FileAccess faMode = forWriting ? FileAccess.Write : FileAccess.Read;
-            FileStream fs = new(physicalFile, fsMode, faMode, FileShare.Read, settings.Value.FileBufferSize);
+            FileStream fs = new(physicalFile, fsMode, faMode, FileShare.Read, forWriting ? 0 : settings.Value.FileBufferSize);
             if (forWriting && !append && preAllocSize > 0)
             {
                 fs.SetLength(preAllocSize);
@@ -1645,14 +1646,19 @@ public sealed class LinkService(
 
         try
         {
-            // Close the file stream
+            // RRF has released its handle when it sends this request, so remove the file from the list of open files even if closing it fails
             FileStream fs = _openFiles[handle];
-            fs.Close();
-
-            // Remove it again from the list of open files
             _openFiles.Remove(handle);
 
-            // RRF doesn't expect a response for this...
+            // Sync a file RRF has written to the disk before closing it, as f_close does on the SD card (FileStore::ForceClose).
+            // RRF doesn't expect a response for this, so an error can only be logged
+            using (fs)
+            {
+                if (fs.CanWrite)
+                {
+                    fs.Flush(true);
+                }
+            }
         }
         catch (Exception e)
         {

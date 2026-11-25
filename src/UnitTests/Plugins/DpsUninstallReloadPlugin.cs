@@ -193,7 +193,7 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     /// <summary>
     /// InstallPlugin keeps every installed file inside its directory (zip-slip guard), UninstallPlugin deletes the files that the manifest lists with the same
     /// check (Path.IsInside, DuetSharedLibrary/PathExtensions.cs). The manifest is a file of the dsf user that plugins with ManagePlugins or FileSystemAccess
-    /// may write (AppArmorPermissionManager.cs:64-73). For a plugin with SuperUser the root service runs this code, so it would delete as root whatever such a
+    /// may write (AppArmorPermissionManager.cs:69-78). For a plugin with SuperUser the root service runs this code, so it would delete as root whatever such a
     /// manifest lists. A listed file outside its directory is skipped with a warning, the rest of the plugin is uninstalled
     /// </summary>
     [TestCase(false)]
@@ -270,7 +270,7 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     /// <summary>
     /// DCS skips manifests without id or name at start (DuetControlServer/Model/PeriodicUpdateService.cs), DPS does the same with the same check
     /// (DuetSharedLibrary/PluginManifestCheck.cs). Otherwise the root service would regenerate the missing profile "dsf." for it (PluginService.cs:67-117),
-    /// whose attachment is the whole plugin directory, Path.Combine(pluginDirectory, "") (AppArmorPermissionManager.cs:43)
+    /// whose rules give the whole plugin directory, Path.Combine(pluginDirectory, "") (AppArmorPermissionManager.cs:43)
     /// </summary>
     [Test]
     public async Task ManifestWithoutIdIsNotLoadedAtStart()
@@ -308,7 +308,7 @@ public class DpsUninstallReloadPlugin : DpsTestBase
     /// manifests on disk again, all of them make that check of the installation (DuetSharedLibrary/PluginManifestCheck.cs).
     /// DCS grants a plugin connection the permissions of its manifest (DuetControlServer/IPC/Connection.cs:121-124, 136-140), and ServicePlugins is enough for
     /// Install/UninstallSystemPackage (RequiredPermissions SuperUser | ServicePlugins, any of them). A plugin with ManagePlugins or FileSystemAccess may write the
-    /// manifests (AppArmorPermissionManager.cs:64-73)
+    /// manifests (AppArmorPermissionManager.cs:69-78)
     /// </summary>
     [Test]
     public async Task ReloadRefusesTheReservedPermission()

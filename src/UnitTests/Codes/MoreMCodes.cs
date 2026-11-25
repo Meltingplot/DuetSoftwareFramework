@@ -30,7 +30,7 @@ public class MoreMCodes
     [Test]
     public async Task DeleteDirectoryWithM30()
     {
-        // M30 deletes files only; File.Delete fails for a directory and DCS reports the exception (MCodeHandler.cs:426-435)
+        // M30 deletes files only; File.Delete fails for a directory and DCS reports the exception (MCodeHandler.cs:428-437)
         Directory.CreateDirectory(Physical("gcodes/folder"));
         Assert.That(await _host.ExecuteAsync("M30 \"folder\""), Does.StartWith("Error: M30: Failed to delete file folder: "));
         Assert.That(Directory.Exists(Physical("gcodes/folder")), Is.True);
@@ -39,7 +39,7 @@ public class MoreMCodes
     [Test]
     public async Task CreateDirectoryOverFile()
     {
-        // Directory.CreateDirectory fails where a file exists (MCodeHandler.cs:851-860)
+        // Directory.CreateDirectory fails where a file exists (MCodeHandler.cs:853-862)
         System.IO.File.WriteAllText(Physical("sys/taken"), "x");
         Assert.That(await _host.ExecuteAsync("M470 P\"/sys/taken\""), Does.StartWith("Error: M470: Failed to create directory /sys/taken: "));
     }
@@ -47,7 +47,7 @@ public class MoreMCodes
     [Test]
     public async Task RenameDirectoryOverEmptyDirectory()
     {
-        // With D1 an existing empty target directory is deleted first, like RRF (MCodeHandler.cs:880-888)
+        // With D1 an existing empty target directory is deleted first, like RRF (MCodeHandler.cs:882-890)
         Directory.CreateDirectory(Physical("sys/a"));
         System.IO.File.WriteAllText(Physical("sys/a/file.g"), "G1 X1\n");
         Directory.CreateDirectory(Physical("sys/b"));
@@ -59,7 +59,7 @@ public class MoreMCodes
     [Test]
     public async Task ReportCors()
     {
-        // M586 without parameters reports the CORS site (MCodeHandler.cs:1087-1095)
+        // M586 without parameters reports the CORS site (MCodeHandler.cs:1089-1097)
         Assert.That(await _host.ExecuteAsync("M586"), Is.EqualTo("CORS disabled\n"));
         Assert.That(await _host.ExecuteAsync("M586 C\"http://example.com\""), Is.EqualTo("\n"));
         Assert.That(await _host.ExecuteAsync("M586"), Is.EqualTo("CORS enabled for site 'http://example.com'\n"));
@@ -68,7 +68,7 @@ public class MoreMCodes
     [Test]
     public async Task SelectMovementQueue()
     {
-        // DCS keeps track of the queue that M596 selects (MCodeHandler.cs:1462-1469), RRF gets the code as well
+        // DCS keeps track of the queue that M596 selects (MCodeHandler.cs:1464-1471), RRF gets the code as well
         Assert.That(await _host.ExecuteAsync("M596 P0"), Is.EqualTo("\n"));
         Assert.That(_host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.Some.EqualTo("M596 P0"));
     }
@@ -76,7 +76,7 @@ public class MoreMCodes
     [Test]
     public async Task EventLogFileIsKept()
     {
-        // M929 S2 without P while logging goes on with the current file (MCodeHandler.cs:1174-1183); stopping clears it (Logger.cs:174)
+        // M929 S2 without P while logging goes on with the current file (MCodeHandler.cs:1176-1185); stopping clears it (Logger.cs:190)
         Assert.That(await _host.ExecuteAsync("M929 P\"custom.log\" S1"), Is.EqualTo("\n"));
         Assert.That(await _host.ExecuteAsync("M929 S2"), Is.EqualTo("\n"));
         Assert.That(await _host.ExecuteAsync("M929"), Is.EqualTo("Event logging is enabled at log level info\n"));
@@ -87,7 +87,7 @@ public class MoreMCodes
     [Test]
     public async Task SyncInJob()
     {
-        // M598 in a job makes the file readers meet before it goes to RRF (MCodeHandler.cs:1107-1114)
+        // M598 in a job makes the file readers meet before it goes to RRF (MCodeHandler.cs:1109-1116)
         System.IO.File.WriteAllText(Physical("gcodes/job.g"), "G1 X1\nM598\nG1 X2\n");
         Assert.That(await _host.ExecuteAsync("M32 \"job.g\""), Is.EqualTo("\n"));
         JobProcessor jobs = _host.Services.GetRequiredService<JobProcessor>();
@@ -112,7 +112,7 @@ public class MoreMCodes
     [Test]
     public async Task ReenableLogMessages()
     {
-        // O0 disables the provider that O1 added and a second O1 enables it again (MCodeHandler.cs:714-736)
+        // O0 disables the provider that O1 added and a second O1 enables it again (MCodeHandler.cs:716-738)
         Assert.That(await _host.ExecuteAsync("M111 P-1 O1"), Is.EqualTo("\n"));
         Assert.That(await _host.ExecuteAsync("M111 P-1 O0"), Is.EqualTo("\n"));
         Assert.That(await _host.ExecuteAsync("M111 P-1 O1"), Is.EqualTo("\n"));

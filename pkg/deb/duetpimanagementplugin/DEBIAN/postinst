@@ -16,7 +16,8 @@ if [ -f /opt/dsf/plugins/DuetPiManagementPlugin/.start ]; then
 				# Don't wait for the plugin manager to complete because it could result in a deadlock in case the installation was kicked off from DPS-root
                 /opt/dsf/bin/PluginManager -q reload DuetPiManagementPlugin && /opt/dsf/bin/PluginManager -q start DuetPiManagementPlugin &
         else
-                echo "DuetPiManagementPlugin" >> /opt/dsf/conf/plugins.txt
+                # dsf may put a symlink in place of the list of plugins to start at any time, so it is written with the rights of dsf
+                echo "DuetPiManagementPlugin" | setpriv --reuid=dsf --regid=dsf --clear-groups tee -a /opt/dsf/conf/plugins.txt > /dev/null
         fi
 fi
 

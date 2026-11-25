@@ -49,6 +49,12 @@ public sealed class Settings
     public string AppArmorProfileDirectory { get; set; } = "/etc/apparmor.d";
 
     /// <summary>
+    /// Utility that starts a plugin confined by its AppArmor profile (aa-exec of the apparmor package), called as
+    /// aa-exec -p dsf.&lt;plugin id&gt; -- &lt;executable&gt; &lt;arguments&gt;
+    /// </summary>
+    public string AppArmorExecCommand { get; set; } = "/usr/bin/aa-exec";
+
+    /// <summary>
     /// Command to run before installing third-party packages
     /// </summary>
     public string PreinstallPackageCommand { get; set; } = "/usr/bin/apt";

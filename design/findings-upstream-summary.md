@@ -3,6 +3,7 @@
 - **What:** bugs in upstream DuetSoftwareFramework and RepRapFirmware code that the Meltingplot fork found (CHX 350: Duet 3 MB6HC, Raspberry Pi 5 as SBC over SPI), one row per finding. Details: **DU** = `design/dsf-findings-upstream.md`, **LU** = `design/sbc-link-findings-upstream.md`, **OF** = `design/open-findings.md` (fork repository); **new** = results of 2026-11-11, in no document yet.
 - **Date and code:** 2026-11-11. Upstream looked at: DSF `v3.7-dev` 973838bf and f76ffc70 (K32), 77684383 (K34); RRF `3.7-dev` 25ec27aec and 231daaac87, `3.7-ch` e7e30e13f3 and 7e95567976 (K34), f8c8a1d69f (USB input files); DuetIAP 9af72da4. Line numbers follow their source; the commit per source is in the Notes.
 - **Count:** 153 findings: DSF 116, RRF 13, both sides of the SBC link 24; 19 more under "Origin not checked". 35 have a sample, 68 a reproducer test, 50 neither.
+- **Privilege boundaries (2026-11-24):** 7 findings of the error class census of DSF (UB5 to LX6) are in their own table at the end of the DSF part, checked against DSF `v3.7-dev` dbf9b044. They are not in the counts above.
 - **Evidence:** `printer` seen on the fork's lab printer (MB6HC + Pi 5); `upstream test` a test on unchanged upstream code (K32 only); `fork test` a test in the fork (unit tests, fake firmware, SPI census against a C# port of RRF); `read` read in the code only. Sample basis: "from test …", "seen on printer" or "derived, not run".
 - **Structure:** the ten most important, then every stop and deadlock at a glance, then how to run the tests and the SPI link in numbers, then the tables: the SBC link first (both sides, then the DSF link code), then the rest of DSF and RRF.
 - **Order:** by effect (E1 a stop or safety action that does not reach the machine, E2 deadlock, channel or DCS blocked for good, DCS exits, E3 data loss or a wrong action on the machine, E4 wrong result or error, E5 deviation from the documentation, E6 cosmetic), then by reachability (R1 seen on a printer in normal use, R2 normal codes or clients, R3 rare timing or link fault, R4 malformed input or misbehaving client, R5 not shown), then by evidence; an R5 item never ranks above a reachable item of the next lower effect class, and an R2 item that needs a narrow range of values (O3) is ordered after the other R2 items of its effect class.
@@ -422,7 +423,7 @@ Neither: O6, O2 (rest), O2, O7, [O4 side bug].
 
 | ID | Function / file:line | What goes wrong | Seen as | Reached by | Eff | Reach | Evidence | Fork fix | Detail |
 |---|---|---|---|---|---|---|---|---|---|
-| <a id="h3"></a>H3 | `RepRapFirmwareEndpoints.cs:261-285` | rr_upload writes into the target; RRF and DWS's own PUT use a `.part` file. | a failed upload deletes the file it was meant to replace | rr_upload with a wrong crc32 | E3 | R3 | printer | open | OF HTTP |
+| <a id="h3"></a>H3 | `RepRapFirmwareEndpoints.cs:261-285` | rr_upload writes into the target; RRF and DWS's own PUT use a `.part` file. | a failed upload deletes the file it was meant to replace | rr_upload with a wrong crc32 | E3 | R3 | printer | PR #222 | OF HTTP (text in OF at 8507c98c) |
 | <a id="h2"></a>H2 | `SessionStorage.cs:404`, `:420-422`; DCS `Settings.cs:116` | Each expiry opens its own IPC connection; the DCS backlog is 4 and there is no retry. | expired sessions stay in DCS ("Failed to unregister … (11) Resource temporarily unavailable") | many sessions expiring at once (40 logins left 4) | E4 | R2 | printer | open | OF HTTP |
 | <a id="h5"></a>H5 | `MachineEndpoints.cs:294`, `:504` | `UrlPathEncode` stops at `?`, so the Location header throws. | unhandled 500, the item is created anyway | PUT /machine/directory or /machine/file with `?` and a non-ASCII character | E4 | R2 | printer | open | OF HTTP |
 | <a id="h6"></a>H6 | `WebSocketEndpoint.cs:283-287`; `CustomEndpointMiddleware.cs:156-160` | DWS never answers a WebSocket close frame. | clients see 1006 | client closes the WebSocket | E4 | R2 | printer | open | OF HTTP |
@@ -555,6 +556,22 @@ Nothing here ran on hardware; the tests emulate DuetIAP 3.7-dev 9af72da4. No sam
 | <a id="du-u5"></a>U5 (DU) | `FirmwareUpdater.cs:67`, `:299` | GetFirmwareVersionAsync throws for an invalid UF2 file and nothing catches it. | `-u` stops for every board | one unreadable firmware file | E4 | R4 | fork test | #148 | DU U5 |
 
 Reproducers: U1 `FirmwareUpdateFlashing.UpdateWithUf2FileInUpperCase`; U4 `UpdateOnlyMode.BoardWithoutFirmwareFileIsLeftAlone`; U6 `UpdateOnlyMode.ExpansionUpdateErrorIsReported`; U3 `FirmwareUpdateFlashing.UpdateRefusesEmptyFirmwareFile`; U7 `FirmwareUpdates.UpdateOfMainBoardWithOtherModules`; U2 `FirmwareUpdateFlashing.UpdateFailsWhenTheIapProgramStopsAnswering`; U5 `UpdateOnlyMode.InvalidFirmwareFileLeavesOnlyItsBoardAlone`.
+
+### Privilege boundaries (error class census of DSF, 2026-11-24)
+
+Checked against DSF `v3.7-dev` dbf9b044; line numbers follow it. "dsf" is the user that DCS, DWS, the regular DPS and plugins without superUser run as. Published as normal fork PRs; the details are in DU.
+
+| ID | Function / file:line | What goes wrong | Seen as | Reached by | Eff | Reach | Evidence | Fork fix | Detail |
+|---|---|---|---|---|---|---|---|---|---|
+| <a id="ub5"></a>UB5 | DPS `Commands/InstallSystemPackage.cs:96-101` | A combined system package is unpacked into `/tmp/<name of the upload file>`, and an existing directory is accepted. | packages or an `update.sh` of another local process are installed or run as root | a local process that writes /tmp during a system package update | E4 | R4 | fork test | #231 | DU UB5 |
+| <a id="fs4"></a>FS4 | duetcontrolserver `postinst:19-20`; duetpluginservice `postinst:4-5`; `duetpluginservice.spec:74` | The settings and the profile template of the root DPS belong to dsf. | commands of dsf's choice run as root at the next plugin with package dependencies | anything running as dsf | E4 | R4 | fork test | #234 | DU FS4 |
+| <a id="lx2"></a>LX2 | `duetpluginservice-root.service:9` | The root DPS runs in `/opt/dsf/plugins`, where dsf may create files. | an `appsettings.json` or a `venv.py`/`pip.py` of dsf's choice is used as root | anything running as dsf | E4 | R4 | fork test | #234 | DU LX2 |
+| <a id="fs5"></a>FS5 | duetcontrolserver `postinst:27` | `+ep` keeps CAP_DAC_READ_SEARCH effective for every file DCS opens. | M36.2 returns files only root may read, e.g. SSH host keys on a volume | any client that may send codes | E4 | R2 | fork test | #232 | DU FS5 |
+| <a id="lx1"></a>LX1 | `apparmor.conf:4`, `:13`; `plugins.json:22-23` | The profile attaches by path, but bash and the venv interpreter are outside the plugin directory. | Python plugins with dependencies run without their profile | installing such a plugin with AppArmor on | E4 | R2 | fork test | #233 | DU LX1 |
+| <a id="lx5"></a>LX5 | `apparmor.conf:30` | Every plugin gets `/run/dsf/** rw`. | a plugin removes or replaces `dcs.sock` or the sockets of other plugins | a confined plugin | E4 | R4 | fork test | #233 (partly) | DU LX5 |
+| <a id="lx6"></a>LX6 | `gen-https-cert.sh:36-37`; DuetPiManagementPlugin `HTTP.cs:151`; duetwebserver `postinst:3-4`; reprapfirmware `postinst:4`; duetpimanagementplugin `postinst:17`, `prerm:5`, `:16` | Root writes, chowns or chmods through symlinks that dsf may plant. | dsf owns, or root writes, a file of dsf's choice | anything running as dsf, then M586 or a package update | E4 | R4 | fork test | #235 | DU LX6 |
+
+Reproducers: UB5 `DpsRootService.CombinedPackageIgnoresAPlantedDirectory`; FS4 `RootServicePackaging.*`, `DpsRootSettings.*`; LX2 `RootServicePackaging.RootServiceRunsInADirectoryOnlyRootMayChange`; FS5 `ControlServerCapabilities.*`; LX1 `DpsStartStopPlugin.PythonPluginIsLaunchedThroughItsVirtualEnvironmentInItsProfile`; LX5 `DpsAppArmorProfiles.ShippedTemplateGivesOnlyTheSocketOfDcsInRunDsf`; LX6 `RootSymlinks.*`. These tests are in the fork PRs, which were not merged when this was written.
 
 ## RRF
 

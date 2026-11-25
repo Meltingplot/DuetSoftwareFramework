@@ -174,7 +174,7 @@ public partial class AbortsCrossingMacroRequests : LabTest
     /// <summary>
     /// The channel keeps working after every abort. The debug log counts the crossing requests that DSF discarded, by the fix or, with the channel
     /// epoch, by their tag, which shows that the window was hit. journald limits the rate of the debug log, so the counts are lower bounds.
-    /// The log level of DCS is set to debug for the loop (M111 P-1 S, MCodeHandler.cs:691-712) and set back afterwards
+    /// The log level of DCS is set to debug for the loop (M111 P-1 S, MCodeHandler.cs:693-714) and set back afterwards
     /// </summary>
     [Test, Explicit("Runs about a minute of aborts; a block costs a DCS restart and M999, and RRF 3.7.0+1.mp.8 can block the channel through T1 with the fix as well")]
     public async Task ChannelWorksAfterAbortsCrossingMacroRequests()

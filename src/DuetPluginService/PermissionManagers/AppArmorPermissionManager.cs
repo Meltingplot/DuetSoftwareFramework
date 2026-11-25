@@ -40,7 +40,7 @@ public class AppArmorPermissionManager(ServicePrivileges privileges, IOptions<Se
 
         // Load template
         string profile = await File.ReadAllTextAsync(_settings.AppArmorTemplate, cancellationToken);
-        profile = profile.Replace("{pluginDirectory}", Path.Combine(pluginDirectory, plugin.Id));
+        profile = profile.Replace("{pluginDirectory}", Path.Combine(pluginDirectory, plugin.Id)).Replace("{pluginId}", plugin.Id);
 
         // Build security profile
         StringBuilder includes = new(), rules = new();
@@ -56,9 +56,14 @@ public class AppArmorPermissionManager(ServicePrivileges privileges, IOptions<Se
                     case SbcPermissions.ManageUserSessions:
                     case SbcPermissions.ObjectModelRead:
                     case SbcPermissions.ObjectModelReadWrite:
-                    case SbcPermissions.RegisterHttpEndpoints:
                     case SbcPermissions.ServicePlugins:
                         // enforced by DCS
+                        break;
+
+                    case SbcPermissions.RegisterHttpEndpoints:
+                        // DCS reserves <socket directory>/<namespace>/<path>-<endpoint type>.sock for an endpoint, which the plugin deletes, binds and
+                        // makes writable for the group. Other files in the socket directory, e.g. the socket of DCS, do not match. Partially enforced by DCS
+                        rules.AppendLine($"  /{{,var/}}run/dsf/**-{{{string.Join(',', Enum.GetNames<HttpEndpointType>())}}}.sock rw,");
                         break;
 
                     case SbcPermissions.ManagePlugins:

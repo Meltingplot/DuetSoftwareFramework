@@ -19,7 +19,7 @@ namespace UnitTests.Fuzz;
 /// DSF guarantees that a resolved path stays inside the root of its drive, 0:/ being Settings.BaseDirectory and n:/ the path of
 /// volume n, or else throws an ArgumentException (FilePathResolver.CombineContained, FilePathResolver.cs:54-72, GetDrivePath :80-119).
 /// That is all it guarantees: the check is lexical (Path.GetFullPath does not resolve symbolic links), and the volumes are every mounted
-/// file system that PeriodicUpdateService finds (PeriodicUpdateService.cs:526-583), so n:/ may be a system mount such as /home or /etc/ssh.
+/// file system that PeriodicUpdateService finds (PeriodicUpdateService.cs:617-674), so n:/ may be a system mount such as /home or /etc/ssh.
 /// Containment in BaseDirectory holds for drive 0 and for paths without a drive in a directory on drive 0 only
 /// </summary>
 [TestFixture]

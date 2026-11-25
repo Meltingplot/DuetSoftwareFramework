@@ -121,7 +121,7 @@ public class FileCodes
     public async Task ListFilesWithTypeOutOfRangeIsAnError()
     {
         // Input of the weekly fuzz run (GCodeExecutionFuzz seed 1754056457). DSF parses 31e9 as a float that does not fit the int that
-        // M20 reads for S (MCodeHandler.cs:142). It is refused like a parameter of the wrong type (Code.cs:276-281); before, the
+        // M20 reads for S (MCodeHandler.cs:142). It is refused like a parameter of the wrong type (Code.cs:252-257); before, the
         // OverflowException of Convert.ToInt32 reached the client. RRF reads integers with StrToI32 and would stop at the e (StringParser.cpp:2049-2051)
         Assert.That(await _host.ExecuteAsync("M20 S31e9 P\"0:/macs\""), Does.StartWith("Error: M20: Cannot convert S parameter to Int32 (value 31e9)"));
     }
@@ -480,7 +480,7 @@ public class FileCodes
     {
         string config = WriteFile("M550 P\"test\"\n", "sys", "config.g");
 
-        // M30 deletes files only (MCodeHandler.cs:428), and File.Delete does not remove a directory
+        // M30 deletes files only (MCodeHandler.cs:430), and File.Delete does not remove a directory
         Message? result = await _host.ExecuteCodeAsync("M30 \"0:/\"");
         Assert.That(result?.Type, Is.EqualTo(MessageType.Error));
         Assert.That(System.IO.File.Exists(config), Is.True);

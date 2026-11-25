@@ -20,4 +20,14 @@ internal static class ExpressionErrors
     /// A non-negative integer was required
     /// </summary>
     public const string ExpectedNonNegativeInt = "expected non-negative integer";
+
+    /// <summary>
+    /// An array does not fit into one heap block of the firmware (RRF src/Platform/ArrayHandle.cpp, ArrayHandle::Allocate)
+    /// </summary>
+    public const string ArrayTooLarge = "Array too large";
+
+    /// <summary>
+    /// An array literal has more elements than the firmware parses (RRF src/GCodes/GCodeBuffer/ExpressionParser.cpp, ParseGeneralArray)
+    /// </summary>
+    public const string TooManyArrayElements = "too many array elements";
 }

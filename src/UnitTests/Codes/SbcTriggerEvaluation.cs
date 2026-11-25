@@ -67,7 +67,7 @@ public class SbcTriggerEvaluation
     }
 
     /// <summary>
-    /// Number of times DSF fired a trigger. SbcTriggerService sends M582 T<n> S1 on the trigger channel, and RRF starts the macro (SbcTriggerService.cs:300-323).
+    /// Number of times DSF fired a trigger. SbcTriggerService sends M582 T<n> S1 on the trigger channel, and RRF starts the macro (SbcTriggerService.cs:302-325).
     /// The executed codes count, because RRF discards the codes it has buffered when a macro starts and DSF sends them again
     /// </summary>
     private int Runs(int trigger) => _host.Firmware.GetExecutedCodes(CodeChannel.Trigger).Count(code => code.Text == $"M582 T{trigger} S1");
@@ -81,7 +81,7 @@ public class SbcTriggerEvaluation
 
     /// <summary>
     /// Register the sentinel triggers last. The evaluation loop checks a snapshot of the triggers in the order of the dictionary
-    /// (SbcTriggerService.cs:276-283), which is the order of registration while nothing has been removed
+    /// (SbcTriggerService.cs:278-285), which is the order of registration while nothing has been removed
     /// </summary>
     private async Task RegisterSentinelAsync()
     {
@@ -113,7 +113,7 @@ public class SbcTriggerEvaluation
     {
         Assert.That(await _host.ExecuteAsync("M581.1 T20 P\"sbc.cpu.avgLoad > 0.5\""), Is.EqualTo("\n"));
 
-        // DSF clears the trigger in RRF with M581 P-1 on the same channel and keeps M581.1 to itself (SbcTriggerService.cs:133-140)
+        // DSF clears the trigger in RRF with M581 P-1 on the same channel and keeps M581.1 to itself (SbcTriggerService.cs:136-145)
         Assert.That(_host.Firmware.GetReceivedCodes().Select(code => code.Text), Is.EqualTo(new[] { "M581 T20 P-1" }));
         Assert.That(_host.Firmware.GetReceivedCodes().Single().Channel, Is.EqualTo(CodeChannel.HTTP));
 
@@ -175,7 +175,7 @@ public class SbcTriggerEvaluation
     public async Task ExpressionThatIsTrueAlreadyDoesNotFire()
     {
         // The initial value of the expression is determined when the trigger is created and when R changes, so neither fires it
-        // (SbcTriggerService.cs:142-144, 181-190, like TriggerItem.cpp:323-332)
+        // (SbcTriggerService.cs:144-146, 183-192, like TriggerItem.cpp:323-332)
         await SetAsync(avgLoad: 0.9F);
         Assert.That(await _host.ExecuteAsync("M581.1 T20 P\"sbc.cpu.avgLoad > 0.5\""), Is.EqualTo("\n"));
         await RegisterSentinelAsync();
@@ -196,7 +196,7 @@ public class SbcTriggerEvaluation
     [Test]
     public async Task EnableConditions()
     {
-        // R1 fires only while printing, R2 only while not printing, R-1 never (wiki M581.1, SbcTriggerService.cs:328-347)
+        // R1 fires only while printing, R2 only while not printing, R-1 never (wiki M581.1, SbcTriggerService.cs:330-349)
         Assert.That(await _host.ExecuteAsync("M581.1 T20 P\"sbc.cpu.avgLoad > 0.5\" R1"), Is.EqualTo("\n"));
         Assert.That(await _host.ExecuteAsync("M581.1 T21 P\"sbc.cpu.avgLoad > 0.5\" R2"), Is.EqualTo("\n"));
         Assert.That(await _host.ExecuteAsync("M581.1 T22 P\"sbc.cpu.avgLoad > 0.5\" R-1"), Is.EqualTo("\n"));
@@ -267,7 +267,7 @@ public class SbcTriggerEvaluation
     public async Task EvaluationErrorDoesNotStopTheOtherTriggers()
     {
         // The expression can be evaluated while avgLoad is low because || stops there, RRF evaluates the rest and fails at the unknown field
-        // once avgLoad is high. An error must not stop the evaluation loop (SbcTriggerService.cs:315-318). What happens to the failing trigger
+        // once avgLoad is high. An error must not stop the evaluation loop (SbcTriggerService.cs:317-320). What happens to the failing trigger
         // itself is the subject of ErrorInLaterEvaluationDisablesTheTrigger
         Assert.That(await _host.ExecuteAsync("M581.1 T20 P\"sbc.cpu.avgLoad < 0.5 || sbc.cpu.noSuchField == 1\""), Is.EqualTo("\n"));
         await RegisterSentinelAsync();
@@ -279,7 +279,7 @@ public class SbcTriggerEvaluation
         Assert.That((Runs(SentinelLow), Runs(SentinelHigh)), Is.EqualTo((1, 1)));
     }
 
-    [Test, Explicit("SbcTriggerService.cs:218-222 only logs an error of the initial evaluation, so M581.1 succeeds and creates the trigger (upstream 4229f552)")]
+    [Test, Explicit("SbcTriggerService.cs:220-224 only logs an error of the initial evaluation, so M581.1 succeeds and creates the trigger (upstream 4229f552)")]
     public async Task ErrorInExpressionIsReported()
     {
         // Wiki M581.1: "If an error occurs while evaluating the expression during execution of M581.1 then an error message is returned and the
@@ -291,7 +291,7 @@ public class SbcTriggerEvaluation
         Assert.That(report, Is.EqualTo("\n"), "DSF still reports the trigger as its own");
     }
 
-    [Test, Explicit("SbcTriggerService.cs:315-318 only logs a later evaluation error, the trigger stays enabled and nobody is told (upstream 4229f552)")]
+    [Test, Explicit("SbcTriggerService.cs:317-320 only logs a later evaluation error, the trigger stays enabled and nobody is told (upstream 4229f552)")]
     public async Task ErrorInLaterEvaluationDisablesTheTrigger()
     {
         // Wiki M581.1: "If no error occurs while executing M581.1 but an error occurs while evaluating the expression subsequently, an error message
@@ -426,9 +426,9 @@ public class SbcTriggerServiceState
     [TestCase(MachineStatus.Busy, 2, ExpectedResult = true)]
     [TestCase(MachineStatus.ChangingTool, 2, ExpectedResult = true)]
     [TestCase(MachineStatus.Simulating, 1, ExpectedResult = true, Explicit = true,
-        Reason = "SbcTriggerService.cs:341-344 does not count a simulation as printing, RRF does (PrintMonitor::IsPrinting, GCodes.cpp:3993)")]
+        Reason = "SbcTriggerService.cs:343-346 does not count a simulation as printing, RRF does (PrintMonitor::IsPrinting, GCodes.cpp:3993)")]
     [TestCase(MachineStatus.Cancelling, 1, ExpectedResult = true, Explicit = true,
-        Reason = "SbcTriggerService.cs:341-344 does not count cancelling a print as printing, RRF does (RepRap.cpp:1964)")]
+        Reason = "SbcTriggerService.cs:343-346 does not count cancelling a print as printing, RRF does (RepRap.cpp:1964)")]
     public async Task<bool> EnableConditionWhilePrinting(MachineStatus status, int condition)
     {
         DuetControlServer.Model.ObjectModel model = _provider.GetRequiredService<DuetControlServer.Model.ObjectModel>();

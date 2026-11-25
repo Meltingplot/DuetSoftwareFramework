@@ -64,21 +64,21 @@ public class GCodeExecutionFuzz
     /// <summary>
     /// Codes that are left out because they leave the sandbox or block by design, with the reason from the source:
     /// <list type="bullet">
-    /// <item>M112: emergency stop. Afterwards no code reaches the firmware until M999 (wiki M112, MCodeHandler.cs:748-772)</item>
-    /// <item>M999: resets the firmware and stops DCS after its reply (MCodeHandler.cs:1358-1392)</item>
-    /// <item>M997: updates the firmware, stops the plugins and DCS, or the DSF packages with S2 (MCodeHandler.cs:1202-1352)</item>
+    /// <item>M112: emergency stop. Afterwards no code reaches the firmware until M999 (wiki M112, MCodeHandler.cs:750-774)</item>
+    /// <item>M999: resets the firmware and stops DCS after its reply (MCodeHandler.cs:1360-1394)</item>
+    /// <item>M997: updates the firmware, stops the plugins and DCS, or the DSF packages with S2 (MCodeHandler.cs:1204-1354)</item>
     /// <item>M291: a message box with S2 or S3 blocks the channel until it is acknowledged (wiki M291, FakeGCodes.DoMessageBox)</item>
-    /// <item>M581/M582: SBC triggers configured by DSF start trigger macros later on their own (MCodeHandler.cs:1050-1061, SbcTriggerService)</item>
-    /// <item>M586: P4 and M586.4 make DCS connect to an MQTT broker over the network, also if P is an expression (MCodeHandler.cs:1063-1097).
+    /// <item>M581/M582: SBC triggers configured by DSF start trigger macros later on their own (MCodeHandler.cs:1052-1063, SbcTriggerService)</item>
+    /// <item>M586: P4 and M586.4 make DCS connect to an MQTT broker over the network, also if P is an expression (MCodeHandler.cs:1065-1099).
     /// Without that M118 P6 cannot publish anything (SystemCodes tests), so it stays in</item>
-    /// <item>M111 P-1: changes the log level of DCS and O1 redirects its log into the object model for all later inputs (MCodeHandler.cs:687-746)</item>
+    /// <item>M111 P-1: changes the log level of DCS and O1 redirects its log into the object model for all later inputs (MCodeHandler.cs:689-748)</item>
     /// </list>
     /// </summary>
     private static bool IsExcluded(Code code) => code.Type == CodeType.MCode && code.MajorNumber is 112 or 999 or 997 or 291 or 581 or 582 or 586 or 111;
 
     /// <summary>
     /// Whether a code makes MCodeHandler.CodeExecutedAsync throw after a successful reply, which leaves the code unfinished
-    /// (ExecutedHandlerErrors.DiagnosticsWithExpressionParameter). The accessors are the ones of MCodeHandler.cs:1432, 1443, 1465 and 1473.
+    /// (ExecutedHandlerErrors.DiagnosticsWithExpressionParameter). The accessors are the ones of MCodeHandler.cs:1434, 1445, 1467 and 1475.
     /// The fake firmware accepts any parameter, so inputs with such codes would hang for a reason that is already known
     /// </summary>
     private static bool ThrowsInReplyHandler(Code code)
@@ -113,7 +113,7 @@ public class GCodeExecutionFuzz
     }
 
     /// <summary>
-    /// Codes that SimpleCode executes before the others (SimpleCode.cs:110-116), so they are left out of the order check
+    /// Codes that SimpleCode executes before the others (SimpleCode.cs:113-119), so they are left out of the order check
     /// </summary>
     private static bool IsPrioritized(CodeType type, int? majorNumber) => type == CodeType.MCode && majorNumber is 108 or 112 or 122 or 292 or 999;
 
@@ -246,7 +246,7 @@ public class GCodeExecutionFuzz
     }
 
     /// <summary>
-    /// Parse the codes of an input like SimpleCode (SimpleCode.cs:55-72) or CodeFile (CodeFile.cs:69-74) does
+    /// Parse the codes of an input like SimpleCode (SimpleCode.cs:58-75) or CodeFile (CodeFile.cs:69-74) does
     /// </summary>
     /// <param name="text">Input</param>
     /// <param name="isFile">Whether the input is parsed as a file</param>
@@ -284,9 +284,9 @@ public class GCodeExecutionFuzz
     {
         // SimpleCode.ExecuteAsync documents it for cancelled codes
         OperationCanceledException => true,
-        // M21 P1, M22, M36.3 and M998 are not supported in SBC mode (MCodeHandler.cs:218, 224, 471, 1339)
+        // M21 P1, M22, M36.3 and M998 are not supported in SBC mode (MCodeHandler.cs:218, 224, 473, 1341)
         NotSupportedException => true,
-        // Conditional keywords outside a file (Code.cs:212-222)
+        // Conditional keywords outside a file (Code.cs:188-198)
         InvalidOperationException when e.Message == "Conditional codes must not be executed" => true,
         // A file that fileread or echo cannot open or write (Functions.cs:111, KeywordHandler.cs:149). The wiki: "If the file cannot be opened
         // and read ... the command containing the fileread call will be aborted"
@@ -303,7 +303,7 @@ public class GCodeExecutionFuzz
         _host = await FakeFirmwareHost.StartAsync();
 
         // RRF reports job.lastDuration while it is not printing (PrintMonitor.cpp:75, set by StopPrint in GCodes.cpp:4953-5002).
-        // The fake firmware does not, and JobProcessor waits for it after a simulation with M37 (JobProcessor.cs:789-807)
+        // The fake firmware does not, and JobProcessor waits for it after a simulation with M37 (JobProcessor.cs:829-847)
         _host.Firmware.ObjectModel.Set("job.lastDuration", 1);
     }
 
@@ -330,7 +330,7 @@ public class GCodeExecutionFuzz
     /// </summary>
     private async Task ResetAsync()
     {
-        // SimpleCode passes on the exception of a code without waiting for the following codes of the same request (SimpleCode.cs:173-201),
+        // SimpleCode passes on the exception of a code without waiting for the following codes of the same request (SimpleCode.cs:199-227),
         // so wait for the channels to finish them before their state is reset
         CodeProcessor codeProcessor = _host.Services.GetRequiredService<CodeProcessor>();
         foreach (CodeChannel channel in Channels)
@@ -343,7 +343,7 @@ public class GCodeExecutionFuzz
 
         for (int i = 0; i < codeProcessor.FilesBeingWritten.Length; i++)
         {
-            // Same as M29 (MCodeHandler.cs:389-412)
+            // Same as M29 (MCodeHandler.cs:391-414)
             using (await codeProcessor.FileLocks[i].LockAsync())
             {
                 StreamWriter? writer = codeProcessor.FilesBeingWritten[i];
@@ -436,7 +436,7 @@ public class GCodeExecutionFuzz
         switch (input.Mode)
         {
             case Mode.Macro:
-                // Lone surrogates become replacement characters like in SimpleCode.ParseAsync (SimpleCode.cs:57)
+                // Lone surrogates become replacement characters like in SimpleCode.ParseAsync (SimpleCode.cs:60)
                 System.IO.File.WriteAllBytes(Path.Combine(_host.BaseDirectory, "sys", "fuzz.g"), Encoding.UTF8.GetBytes(input.Text));
                 execution = _host.StartCode("M98 P\"fuzz.g\"", CodeChannel.HTTP);
                 break;
@@ -502,7 +502,7 @@ public class GCodeExecutionFuzz
             }
         }
 
-        // Direct codes reach the firmware in the order of the input. A parse error stops SimpleCode before any code is executed (SimpleCode.cs:128-140)
+        // Direct codes reach the firmware in the order of the input. A parse error stops SimpleCode before any code is executed (SimpleCode.cs:131-143)
         if (input.Mode is Mode.Http or Mode.Sbc)
         {
             FakeCode[] received = [.. ExecutedSince(channel, executedBefore).Where(code => code.Type is CodeType.GCode or CodeType.MCode or CodeType.TCode && !IsPrioritized(code.Type, code.MajorNumber))];

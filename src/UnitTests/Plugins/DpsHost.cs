@@ -32,9 +32,10 @@ using Settings = DuetPluginService.Settings;
 /// connections it opens itself (ResolvePath, SetPluginProcess, WriteMessage, SetUpdateStatus).
 /// The settings point to a temporary directory: AppArmor profiles go to a directory of their own, apparmor_parser, the Python package installer and the
 /// package managers are replaced by <see cref="FakeTool"/> scripts that record their arguments, and the profile template is a copy of the one that DSF ships
-/// (pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf), systemd-run is a <see cref="FakeTool"/> as well. The template and a settings file are in a
-/// directory conf like the packages install them in /opt/dsf/conf, so that nobody but the user of the test may change them, which the root service checks
-/// (<see cref="ServicePrivileges.ForSettingsFile"/>, <see cref="RootSettingsFiles"/>). The tests run as a regular user. By default DPS is
+/// (pkg/common/duetpluginservice/opt/dsf/conf/apparmor.conf), systemd-run is a <see cref="FakeTool"/> as well and aa-exec a <see cref="FakeAppArmorExec"/>.
+/// The template and a settings file are in a directory conf like the packages install them in /opt/dsf/conf, so that nobody but the user of the test may
+/// change them, which the root service checks (<see cref="ServicePrivileges.ForSettingsFile"/>, <see cref="RootSettingsFiles"/>). The tests run as a regular
+/// user. By default DPS is
 /// the service that runs as dsf user (duetpluginservice.service); with privileged set, <see cref="ServicePrivileges"/> makes it take the code paths of the
 /// root service (duetpluginservice-root.service), which then run as the user of the test, with the fake tools
 /// </summary>
@@ -149,7 +150,8 @@ public sealed class DpsHost : IAsyncDisposable
             InstallPythonPackageCommand = FakeTool.Create(directory, "pipInstall2.py"),
             InstallLocalPackageCommand = FakeTool.Create(directory, "dpkg-install"),
             UninstallLocalPackageCommand = FakeTool.Create(directory, "dpkg-remove"),
-            SystemdRunCommand = FakeTool.Create(directory, "systemd-run")
+            SystemdRunCommand = FakeTool.Create(directory, "systemd-run"),
+            AppArmorExecCommand = FakeAppArmorExec.Create(directory)
         };
         configure?.Invoke(settings);
         changeSettingsFile?.Invoke(settingsFile);
@@ -462,6 +464,34 @@ public static class FakeTool
     /// <param name="path">Path of the tool</param>
     /// <param name="exitCode">Exit code</param>
     public static void SetExitCode(string path, int exitCode) => File.WriteAllText(path + ".exit", exitCode.ToString());
+}
+
+/// <summary>
+/// Shell script that stands in for aa-exec (Settings.AppArmorExecCommand), because a regular user cannot load or enter AppArmor profiles. It appends its
+/// arguments to aa-exec.calls like a <see cref="FakeTool"/>, passes the profile of -p in AA_EXEC_PROFILE to what it executes and executes the command
+/// after -- in its place, like aa-exec does after it has set the profile for the next exec (apparmor package, man aa-exec(1)). Any other option fails
+/// </summary>
+public static class FakeAppArmorExec
+{
+    /// <summary>
+    /// Environment variable that holds the profile the command was started with
+    /// </summary>
+    public const string ProfileVariable = "AA_EXEC_PROFILE";
+
+    /// <summary>
+    /// Create the fake aa-exec
+    /// </summary>
+    /// <param name="directory">Directory to create it in</param>
+    /// <returns>Path of the tool</returns>
+    public static string Create(string directory)
+    {
+        string path = Path.Combine(directory, "aa-exec");
+        File.WriteAllText(path, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.calls\"\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n" +
+            $"    -p) {ProfileVariable}=\"$2\"; export {ProfileVariable}; shift 2;;\n    --) shift; break;;\n    *) echo \"aa-exec: unexpected option $1\" >&2; exit 64;;\n" +
+            "  esac\ndone\nexec \"$@\"\n");
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return path;
+    }
 }
 
 /// <summary>

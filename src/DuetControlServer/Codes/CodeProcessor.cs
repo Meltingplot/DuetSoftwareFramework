@@ -173,7 +173,7 @@ public sealed class CodeProcessor(Expressions expressions, Model.ObjectModel mod
             // Wait for both file streams to reach the same position
             if (await DoSyncAsync(code, cancellationToken))
             {
-                await code.UpdateNextFilePositionAsync(cancellationToken);
+                code.UpdateNextFilePosition();
                 return true;
             }
             return false;
@@ -190,7 +190,7 @@ public sealed class CodeProcessor(Expressions expressions, Model.ObjectModel mod
         }
 
         // Done
-        await code.UpdateNextFilePositionAsync(cancellationToken);
+        code.UpdateNextFilePosition();
         return true;
     }
 

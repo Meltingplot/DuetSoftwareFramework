@@ -32,7 +32,7 @@ namespace UnitTests.Startup;
 /// offline only, the third also on the lab printer:
 /// <list type="number">
 /// <item>A code of a client that is still pending was never completed: the stages of the code pipeline stopped reading their queues on ApplicationStopping,
-/// and LinkService.StopAsync cancels the codes of the link into the Executed queue afterwards (LinkService.cs:249, LinkInterface.cs:696-702,
+/// and LinkService.StopAsync cancels the codes of the link into the Executed queue afterwards (LinkService.cs:249, LinkInterface.cs:699-705,
 /// Channel/Processor.cs:1444-1484, CodeProcessor.cs:277-285). The IPC connection waits for the code (SimpleCode.ExecuteAsync awaits it without a token),
 /// and the IPC server waits for its connections until ApplicationStopped (IPC/Server.cs:123), which the host signals only after all services have stopped
 /// (Host.cs:272 of Microsoft.Extensions.Hosting).
@@ -40,7 +40,7 @@ namespace UnitTests.Startup;
 /// the IPC server and the JobProcessor, so the codes they cancel are completed. In v3.6 the link was shut down before the token of the pipelines was cancelled
 /// as well (Program.ShutdownAsync there)</item>
 /// <item>After M999 the transfer thread has ended (LinkService.cs:351), so a code that a client sends in the second before DCS stops
-/// (MCodeHandler.cs:1363-1368) waits in the Firmware stage until LinkService.StopAsync cancels it (Channel/Processor.cs:1459-1463), and hung the same way.
+/// (MCodeHandler.cs:1365-1370) waits in the Firmware stage until LinkService.StopAsync cancels it (Channel/Processor.cs:1459-1463), and hung the same way.
 /// This fits "after the boot-time M999", when clients are busy. Fixed with case 1</item>
 /// <item>A transfer that does not complete keeps the transfer thread inside PerformFullTransfer until its token is cancelled (SPI.cs:324). It got
 /// ApplicationStopped, which the host signals only after all services have stopped, so LinkService.StopAsync waited for the stop token (BackgroundService.cs:73
@@ -83,7 +83,7 @@ public class ShutdownHang
     /// <summary>
     /// The pipeline part of case 1 without the generic host: a blocking message box from a client is pending when DCS stops, as with a dialog that waits
     /// for the user (M291 S2). The fake firmware host stops the services like the generic host, ApplicationStopping first, then in reverse order.
-    /// SimpleCode answers a cancelled code with an empty reply (SimpleCode.cs:183-186)
+    /// SimpleCode answers a cancelled code with an empty reply (SimpleCode.cs:209-212)
     /// </summary>
     [Test]
     public async Task PendingCodeIsCancelledWhenDcsStops()
@@ -192,7 +192,7 @@ public class ShutdownHang
     /// <summary>
     /// The other order than <see cref="LinkServiceStopsWhileRrfDoesNotAnswer"/>: RRF hangs just before DCS is stopped, so the lost connection is reported
     /// after ApplicationStopping. The transfer thread ends with the stop token as well. Before that was passed, it ended here only by chance: the "Lost
-    /// connection" message (SPI.cs:469-475) takes the lock of the event log with ApplicationStopping (Logger.cs:224), and the cancellation left the transfer loop
+    /// connection" message (SPI.cs:469-475) takes the lock of the event log with ApplicationStopping (Logger.cs:255), and the cancellation left the transfer loop
     /// </summary>
     [Test]
     public async Task LostConnectionAfterTheStopEndsTheThread()

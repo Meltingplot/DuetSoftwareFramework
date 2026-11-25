@@ -78,7 +78,7 @@ public sealed class Executed : PipelineBase
         if (code.Result is not null)
         {
             // Update the file position
-            await code.UpdateNextFilePositionAsync(code.CancellationToken);
+            code.UpdateNextFilePosition();
 
             // Notify code handlers
             switch (code.Type)
@@ -165,6 +165,13 @@ public sealed class Executed : PipelineBase
         {
             // Send it to the Executed processor
             await IPC.Processors.CodeInterception.InterceptAsync(code, InterceptionMode.Executed);
+
+            // RRF keeps the channel of a code it passed on busy until it gets the result, so answer it when the code failed or was cancelled,
+            // with the error that SimpleCode gives the other callers. A reply after RRF has dropped the code carries an old channel epoch
+            if (code.Result is null && code.Flags.HasFlag(CodeFlags.IsFromFirmware))
+            {
+                code.Result = (code.Task.Exception?.InnerException is Exception failure) ? new Message(MessageType.Error, failure.Message) : new Message();
+            }
 
             // Deal with its result if applicable
             if (code.Result is not null)

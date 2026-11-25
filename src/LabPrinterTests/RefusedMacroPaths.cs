@@ -63,7 +63,7 @@ public class RefusedMacroPaths : LabTest
     /// </summary>
     private async Task AssertDcsGoesOnAsync(string pid, string what)
     {
-        // R1 makes DSF pass the query on to RRF (MCodeHandler.cs:808-813), as in SpiFaultInjection
+        // R1 makes DSF pass the query on to RRF (MCodeHandler.cs:810-815), as in SpiFaultInjection
         string firmwareReply = await SendOrRecoverAsync("M409 K\"state.upTime\" R1", pid);
         string newPid = await Lab.GetControlServerPidAsync();
         Assert.Multiple(() =>

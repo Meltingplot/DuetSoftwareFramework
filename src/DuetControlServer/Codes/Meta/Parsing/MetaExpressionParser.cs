@@ -3,6 +3,7 @@ using DuetAPI.Utility;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace DuetControlServer.Codes.Meta.Parsing;
@@ -27,6 +28,20 @@ public sealed class MetaExpressionParser
     private const string Operators = "?^&|!=<>+-*/";
     private static readonly byte[] Priorities = [1, 2, 3, 3, 4, 4, 4, 4, 5, 5, 6, 6];
     private const byte UnaryPriority = 10;
+
+    /// <summary>
+    /// Largest number of elements of an array, as in the firmware. ArrayHandle::Allocate (RRF src/Platform/ArrayHandle.cpp) asks for
+    /// sizeof(ArrayStorageSpace) + n * sizeof(ExpressionValue) bytes and throws "Array too large" when the heap gives less, and
+    /// Heap::AllocateSpace gives at most HeapBlockSize = 2048 bytes (src/Platform/Heap.cpp). ArrayStorageSpace holds two uint16_t
+    /// before its elements, so 4 bytes. ExpressionValue (src/ObjectModel/ObjectModel.h) is a uint32_t bitfield and a union whose members
+    /// are 32-bit on the ARM target (the union's static_asserts against its uint32_t 'whole' member), so 8 bytes. (2048 - 4) / 8 = 255
+    /// </summary>
+    internal const int MaxArrayElements = (2048 - 4) / 8;
+
+    /// <summary>
+    /// Largest number of elements of an array literal, MaxLiteralArrayElements in RRF src/Config/Configuration.h
+    /// </summary>
+    internal const int MaxLiteralArrayElements = 40;
 
     private readonly string _text;
     private readonly IExpressionEvaluationContext _context;
@@ -101,6 +116,12 @@ public sealed class MetaExpressionParser
     // Evaluate an expression internally, stopping before any binary operator with priority 'priority' or lower
     private void ParseInternal(ref object? val, bool evaluate, byte priority)
     {
+        // Every recursion passes through here. Refuse an expression nested too deeply before it overflows the stack, as RRF does in CheckStack
+        if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        {
+            ThrowParseException("Expression nesting too deep");
+        }
+
         // Start by looking for a unary operator or opening bracket
         char c = SkipWhiteSpace();
         switch (c)
@@ -594,6 +615,11 @@ public sealed class MetaExpressionParser
         List<object?> elements = [firstElementAndResult];
         do
         {
+            // The firmware checks this before it skips the comma, so it also refuses a trailing comma after the last element it can take
+            if (elements.Count == MaxLiteralArrayElements)
+            {
+                ThrowParseException(ExpressionErrors.TooManyArrayElements);
+            }
             AdvancePointer();                       // skip the comma
             if (SkipWhiteSpace() == closingBracket)
             {
@@ -818,6 +844,7 @@ public sealed class MetaExpressionParser
     {
         if (val is object?[] array1 && val2 is object?[] array2)
         {
+            CheckArrayLength(array1.Length + array2.Length);
             object?[] result = new object?[array1.Length + array2.Length];
             Array.Copy(array1, 0, result, 0, array1.Length);
             Array.Copy(array2, 0, result, array1.Length, array2.Length);
@@ -936,6 +963,7 @@ public sealed class MetaExpressionParser
                     {
                         ThrowParseException(ExpressionErrors.ExpectedNonNegativeInt);
                     }
+                    CheckArrayLength((int)a[0]!);
                     object?[] vector = new object?[(int)a[0]!];
                     Array.Fill(vector, a[1]);
                     result = vector;
@@ -952,6 +980,10 @@ public sealed class MetaExpressionParser
                 break;
             case "datetime":
                 result = DateTimeFunction(Arg(args, name, 1)[0]);
+                if (result is null)
+                {
+                    return false;
+                }
                 break;
             default:
                 result = null;
@@ -1116,7 +1148,9 @@ public sealed class MetaExpressionParser
         };
     }
 
-    private object DateTimeFunction(object? value)
+    // Returns null for a string that .NET cannot parse, so the firmware decides: its strptime takes fields without leading zeros and
+    // leaves the day and the time of day to mktime, and it refuses other strings with its own message
+    private object? DateTimeFunction(object? value)
     {
         switch (value)
         {
@@ -1132,6 +1166,8 @@ public sealed class MetaExpressionParser
                 return dt;
             case string s when DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime parsed):
                 return parsed;
+            case string:
+                return null;
             default:
                 ThrowParseException("can't convert value to DateTime");
                 return DateTime.UnixEpoch;
@@ -1490,6 +1526,15 @@ public sealed class MetaExpressionParser
 
     #region Errors
     private void ThrowParseException(string message) => throw MakeParseException(message);
+
+    // ArrayHandle::Allocate throws a GCodeException without a position, so there is no column in this message
+    private static void CheckArrayLength(int numElements)
+    {
+        if (numElements > MaxArrayElements)
+        {
+            throw new CodeParserException(ExpressionErrors.ArrayTooLarge);
+        }
+    }
 
     private CodeParserException MakeParseException(string message) => new($"{message} (column {_pos + 1})");
     #endregion
