@@ -1075,12 +1075,6 @@ Line numbers refer to DSF `v3.7-dev` at 2ee61ca1d and to upstream `v3.7-dev` at 
     - A time before 1970. It wraps in the 56-bit store to 2^56 minus the difference in seconds (RRF `src/ObjectModel/ObjectModel.h:167-170`).
   - Every evaluation result of type DateTime takes this path: the answer to an expression that DSF passes to RRF (`Link/LinkService.cs:1137`) and the answer to a variable assignment (`:1272`). Which codes route such a value through RRF in SBC mode was not traced, and it was not run on the printer.
   - Upstream code. Fix sketch, not decided: the packet is well formed and only its value is out of range for .NET. So DSF could answer with an error result, as it already does for expression content it cannot read (`Link/Protocol/Reader.cs:437-440`), instead of ending the link. Whether RRF should refuse such dates is a question for upstream.
-- **LT2 (low). DSF has the bug that RRF #110 fixed: `floor`, `ceil`, `round` and `pow` give the int 2147483647 instead of the float 2147483648 for 2^31.**
-  - `FloatToIntOrFloat` checks `f <= int.MaxValue` (`Codes/Meta/Parsing/MetaExpressionParser.cs:1016`, used by floor, ceil and round at `:936-942`; upstream `:984`).
-  - `int.MaxValue` converts to the float 2147483648, so 2^31 passes the check and `(int)f` saturates to 2147483647. `pow` has the same bound (`:1052`, upstream `:1020`).
-  - Measured in a scratch program on .NET 10.0.12 x64: `(int)MathF.Floor(2147483648f)` and pow(2, 31) both give 2147483647. aarch64 was not measured.
-  - Reached by every expression that DSF evaluates itself, e.g. `echo {floor(2147483648.0)}`, where RRF answers 2147483648 since #110. Not run on the printer.
-  - Upstream code. Fix: the bound of RRF #110 (RRF 33e6a184e): convert only below 2^31 and from -2^31 on.
 - **LT3 (medium). A refused deeply nested expression floods the journal, so other lines of DCS are lost for up to 30 s.**
   - DSF #218 refuses an expression that is nested too deeply (`Codes/Meta/Parsing/MetaExpressionParser.cs:119-122`, `Codes/Meta/Expressions.cs:869-872`).
   - The exception passes up through every nesting level. The generic handlers then log it with its stack trace, one line per level: at error in `Codes/Pipelines/ProcessInternally.cs:36` and at warning in `Files/Parser/FileInfoParser.cs:112`. Both lines are upstream code; upstream overflows the stack there instead.
@@ -1089,3 +1083,4 @@ Line numbers refer to DSF `v3.7-dev` at 2ee61ca1d and to upstream `v3.7-dev` at 
     - The refusal of a job file's customInfo at 12:33:02 left about 4,000 warning lines and no such note. 16 s later the test of a watchdog reset missed the warning "Connection to controller has been reset". That suppression hid it is likely but not proven.
   - Effect: a single bad code, or a job file with a bad customInfo line, can drop further lines of DCS for the rest of journald's rate limit interval (journald.conf(5) RateLimitIntervalSec, default 30 s). The lab tests wait that out (PR #245).
   - Fork code (#218) together with upstream logging. Fix sketch, not decided: throw the refusal once more at the top of the parse, so the logged trace is short.
+- **Fixed and removed from this list (2026-11-25):** LT2 (`floor`, `ceil`, `round` and `pow` of an expression that DSF evaluates gave the int 2147483647 instead of the float 2147483648 for 2^31). `FloatToIntOrFloat` and `Pow` take the bound of RRF #110 (RRF 33e6a184e, `ExpressionParser.cpp:2038`, `:2293`): an int only below 2^31 and from -2^31 on. Upstream still has the old bound. Test: `Machine.MetaExpressionIntegerRange`.

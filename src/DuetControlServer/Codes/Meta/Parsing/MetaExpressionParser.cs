@@ -1013,7 +1013,7 @@ public sealed class MetaExpressionParser
         return (float)value!;
     }
 
-    private static object FloatToIntOrFloat(float f) => (f >= int.MinValue && f <= int.MaxValue) ? (object)(int)f : f;
+    private static object FloatToIntOrFloat(float f) => (f < int.MaxValue && f >= int.MinValue) ? (object)(int)f : f;     // (float)int.MaxValue is 2^31, which does not fit
 
     private object Abs(object? value)
     {
@@ -1049,7 +1049,7 @@ public sealed class MetaExpressionParser
         ConvertToFloat(ref a, true);
         ConvertToFloat(ref b, true);
         float res = MathF.Pow((float)a!, (float)b!);
-        return (integerResult && MathF.Abs(res) <= int.MaxValue) ? (object)(int)MathF.Round(res, MidpointRounding.ToEven) : res;
+        return (integerResult && res < int.MaxValue && res >= int.MinValue) ? (object)(int)MathF.Round(res, MidpointRounding.ToEven) : res;     // (float)int.MaxValue is 2^31, as in RRF
     }
 
     private object? MinMaxFunction(List<object?> args, bool isMax)
