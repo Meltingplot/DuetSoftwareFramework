@@ -232,4 +232,31 @@ public class ExpressionEvaluation : LabTest
             Assert.That(relativeWithFolder, Is.EqualTo("false"), "sys/config.g was not looked for below the system directory");
         });
     }
+
+    /// <summary>
+    /// A date and time beyond the year 9999 from RRF stopped DCS instead of failing the code (DSF #250, finding LT1)
+    /// </summary>
+    /// <remarks>
+    /// state.upTime makes RRF evaluate the expression, because DSF resolves only SBC fields and its own functions (G1Helpers, Expressions.cs:1015-1048,
+    /// Functions.cs:27-29); 0 * state.upTime is the int 0 (RRF RepRap.cpp:381). RRF parses the string with SafeStrptime and mktime (ExpressionParser.cpp,
+    /// ParseDateTime), adds an int to a DateTime without a range check (:508-517) and prints the year with %04u (ObjectModel.cpp:80-88), so
+    /// 10000-01-01T00:00:00 reaches DSF as an evaluation result of type DateTime (DataTransfer.cpp:1820-1829). Since #250 Reader answers a date that
+    /// DateTime cannot hold with a CodeParserException (Link/Protocol/Reader.cs:443-447), and only this code fails. The control without + 1 checks that
+    /// RRF handles the year 9999 at all. Unfixed: Reader threw, the exception left LinkService.ProcessPacket and ended the link (from reading, not run on
+    /// the printer); the test then restarts DCS and resets RRF before it fails (one E-stop). No restart with the fix
+    /// </remarks>
+    [Test]
+    public async Task DateBeyondYear9999IsAnError()
+    {
+        await G3Helpers.RequireControlServerWithNewFixesAsync("#250");
+        const string date = "datetime(\"9999-12-31T23:59:59\")";
+        string pid = await Lab.GetControlServerPidAsync();
+
+        string control = (await G1Helpers.SendOrRecoverAsync(Session, $"echo {{{date} + 0 * state.upTime}}", pid)).Trim();
+        Assume.That(control, Is.EqualTo("9999-12-31T23:59:59"), "RRF does not handle the year 9999, so it cannot produce a later date");
+
+        string reply = (await G1Helpers.SendOrRecoverAsync(Session, $"echo {{{date} + 1 + 0 * state.upTime}}", pid)).Trim();
+        await G1Helpers.AssertControlServerGoesOnAsync(Session, pid, "a date beyond the year 9999");
+        Assert.That(reply, Does.StartWith("Error").And.Contain("date and time 10000-01-01T00:00:00 is out of range"));
+    }
 }
