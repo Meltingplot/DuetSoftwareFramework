@@ -1066,15 +1066,10 @@ Findings of the second round that are not fixed:
 
 Line numbers refer to DSF `v3.7-dev` at 2ee61ca1d and to upstream `v3.7-dev` at dbf9b0447. Paths are relative to `src/`; a path without a project folder is in `DuetControlServer/`. RRF lines refer to the RRF fork `3.7-dev` at 0d4295065. "The lab run" is the run of PR #245 on 2026-11-25: image DSF 3.7.0+mp.15, RRF 3.7.0+1.mp.12-dev.2, DCS and DWS of `v3.7-dev` side-loaded.
 
-- **LT1 (medium). DCS stops when RRF answers with a date and time that .NET cannot parse.**
-  - RRF sends a DateTime as text in the format `%04u-%02u-%02uT%02u:%02u:%02u` (RRF `src/ObjectModel/ObjectModel.cpp:80-88`, `src/SBC/DataTransfer.cpp:1820-1829`).
-  - DSF reads it with `DateTime.TryParse` and throws `ArgumentOutOfRangeException` when that fails (`Link/Protocol/Reader.cs:443-446`). Upstream uses `DateTime.Parse`, which throws as well (upstream `:406-407`).
-  - The exception leaves `ProcessPacket` (`Link/LinkService.cs:447-458`, upstream `:352-363`). That ends the link thread, and with it DCS.
-  - RRF can produce such values:
-    - A year beyond 9999, e.g. `datetime("9999-12-31T23:59:59") + 1`. RRF adds an integer to a DateTime without a range check (RRF `src/GCodes/GCodeBuffer/ExpressionParser.cpp:508-517`, `:539-553`).
-    - A time before 1970. It wraps in the 56-bit store to 2^56 minus the difference in seconds (RRF `src/ObjectModel/ObjectModel.h:167-170`).
-  - Every evaluation result of type DateTime takes this path: the answer to an expression that DSF passes to RRF (`Link/LinkService.cs:1137`) and the answer to a variable assignment (`:1272`). Which codes route such a value through RRF in SBC mode was not traced, and it was not run on the printer.
-  - Upstream code. Fix sketch, not decided: the packet is well formed and only its value is out of range for .NET. So DSF could answer with an error result, as it already does for expression content it cannot read (`Link/Protocol/Reader.cs:437-440`), instead of ending the link. Whether RRF should refuse such dates is a question for upstream.
+- **LT1 (low, RRF part). RRF wraps a date and time before 1970 to one about 2^56 s after 1970.**
+  - RRF subtracts an integer from a DateTime without a range check (RRF `src/GCodes/GCodeBuffer/ExpressionParser.cpp:539-553`) and keeps it in 56 bits (RRF `src/ObjectModel/ObjectModel.h:167-170`). From reading: `datetime(0) - 1` gives 2^56 - 1 s. What RRF prints for that value (`gmtime_r`, RRF `src/ObjectModel/ObjectModel.cpp:80-88`) was not run.
+  - The DSF part is fixed (see the fixed list below): DSF answers such a value with an error instead of stopping.
+  - Upstream code. Upstream report candidate (Tim, 2026-11-25).
 - **LT3 (medium). A refused deeply nested expression floods the journal, so other lines of DCS are lost for up to 30 s.**
   - DSF #218 refuses an expression that is nested too deeply (`Codes/Meta/Parsing/MetaExpressionParser.cs:119-122`, `Codes/Meta/Expressions.cs:869-872`).
   - The exception passes up through every nesting level. The generic handlers then log it with its stack trace, one line per level: at error in `Codes/Pipelines/ProcessInternally.cs:36` and at warning in `Files/Parser/FileInfoParser.cs:112`. Both lines are upstream code; upstream overflows the stack there instead.
@@ -1084,3 +1079,4 @@ Line numbers refer to DSF `v3.7-dev` at 2ee61ca1d and to upstream `v3.7-dev` at 
   - Effect: a single bad code, or a job file with a bad customInfo line, can drop further lines of DCS for the rest of journald's rate limit interval (journald.conf(5) RateLimitIntervalSec, default 30 s). The lab tests wait that out (PR #245).
   - Fork code (#218) together with upstream logging. Fix sketch, not decided: throw the refusal once more at the top of the parse, so the logged trace is short.
 - **Fixed and removed from this list (2026-11-25):** LT2 (`floor`, `ceil`, `round` and `pow` of an expression that DSF evaluates gave the int 2147483647 instead of the float 2147483648 for 2^31). `FloatToIntOrFloat` and `Pow` take the bound of RRF #110 (RRF 33e6a184e, `ExpressionParser.cpp:2038`, `:2293`): an int only below 2^31 and from -2^31 on. Upstream still has the old bound. Test: `Machine.MetaExpressionIntegerRange`.
+- **Fixed and removed from this list (2026-11-25):** LT1, DSF part (DCS stopped when RRF answered with a date and time that .NET cannot parse, e.g. a year beyond 9999 from `datetime("9999-12-31T23:59:59") + 1`). Reader returns a CodeParserException as the result, as it does for expression content it cannot read (`Link/Protocol/Reader.cs:443-447`), so only the code that asked gets the error "date and time … is out of range" and the link goes on. Tests: `SPI.LinkServiceOverSpi.DateTimeOutOfRangeFailsOnlyItsRequest`, `SPI.ReaderRobustness.EvaluationResultDateTime`.
