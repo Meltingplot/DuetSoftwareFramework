@@ -25,6 +25,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 - `--plain-link` creates `/var/tmp/lab-tests/spi-plain-link` before DCS starts. The fault injection build then keeps the plain link: it supports no link capabilities, so it neither queries nor activates them, as with an RRF that offers none. The RRF on the printer offers them, and the production build always activates them. The file goes with the side-load directory at the end.
 - Examples: `--filter "TestCategory!=Restart"` skips the restarts. `--filter "FullyQualifiedName~LinkSoak"` runs the 30-minute soak.
 - `LAB_WATCHDOG_RESTARTS` sets the number of watchdog resets of `FirmwareRestart.LinkRecoversAfterWatchdogReset` (default 5), e.g. 40 to look for a reboot race that hits about one restart in 40.
+- `LAB_PRESSURE_SECONDS` sets how long `OutputBufferPressure` keeps RRF's output buffers busy (default 60).
 - `LAB_MACRO_CLOSE_MINUTES` sets the duration of `MacroCloseStress` (default 60), e.g. 3 to check its rate. Run it with `--filter "FullyQualifiedName~MacroCloseStress"`.
 - Without `LAB_PRINTER_URL` and `LAB_PRINTER_SHELL`, which the script sets, every test is skipped.
 
@@ -72,6 +73,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 | `CodeReplies.M39ReportsSizesAndClusterSize` | M39 reported sizes in "Gb" and no cluster size | DSF #82 |
 | `ControlServerCapabilities.*` | DCS had CAP_DAC_READ_SEARCH in its effective set, so M36.2 returned files only root may read from any volume, e.g. the SSH host keys of the `/etc/ssh` mount. Needs the DSF package with the fix: a side-load keeps the file capabilities of the installed one | DSF fix/dcs-file-capability |
 | `MacroCloseStress.NoResetWhileMacrosCloseOnTheTriggerChannel` (explicit) | RRF reset while idle with a MemoryProtectionFault in `Heap::DeleteSlot` just after a trigger macro closed, about once per 40,000 closes (RRF 3.7.0+1.mp.9 and older, upstream code) | RRF fork PR #50 (test build 3.7.0+1.mp.10-dev.1) |
+| `OutputBufferPressure.ObjectModelKeepsUpdatingUnderOutputBufferPressure` | A global too long to report stopped the object model of DSF: RRF treated the overflow of its output buffers as "try again", DSF resent `GetObjectModel` forever. The fix waits for 36 free buffers, so the test checks that the model keeps up while M409 R1 and M122 on three other channels keep the buffers busy and a global brings the response for `global` close to a full transfer | RRF fork PR #113 (test build 3.7.0+1.mp.12-dev.1) |
 | `VariableCopies.*` | A variable kept a raw pointer into the object model for an array of objects, a string or a port. On the CHX, `sys/daemon.g:37` keeps the filament name of extruder 0 and never saw a change. The tests use the text of a box of their own, the heaters and the port of a temperature sensor instead | RRF fork PR #57 (test build 3.7.0+1.mp.11-dev.1) |
 | `LinkSoak.NoLostConnectionWhileIdle` (explicit) | TfrRdy timeouts every 15 to 30 minutes (DSF 3.7.0-rc.1) | Upstream 46886f5d |
 | `SpiFaultRestarts.StuckLinkRestartsDcs` (explicit) | A stuck link needed a manual restart of DCS | DSF #102 |
