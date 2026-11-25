@@ -325,7 +325,7 @@ public class SettingsParsing
     /// The wiki says DCS restores the factory defaults when config.json is deleted (User_manual/Machine_configuration/DSF_Other.md:204).
     /// The file was written from the settings after the command-line options are applied (Settings.cs:539-568), so the first start after the
     /// deletion decided what was saved. `DuetControlServer -u`, which the postinst of the reprapfirmware package runs
-    /// (pkg/deb/reprapfirmware/DEBIAN/postinst:11), sets the log level to error (Program.cs:102-106), and every later start then logged only errors.
+    /// (pkg/deb/reprapfirmware/DEBIAN/postinst:20), sets the log level to error (Program.cs:102-106), and every later start then logged only errors.
     /// Now the defaults of <see cref="Settings"/> are written (Settings.cs:431-435)
     /// </summary>
     [Test]

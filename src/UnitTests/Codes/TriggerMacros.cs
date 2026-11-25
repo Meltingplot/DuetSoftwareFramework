@@ -236,7 +236,7 @@ public class TriggerMacros
     public async Task MissingTriggerMacroAfterCodeOfDsfOnTriggerChannel()
     {
         // DSF sends codes of its own on the trigger channel outside a macro: M552 with a new IP address, M905 after a change of the system time
-        // and M550 after a change of the host name (PeriodicUpdateService.cs:177-238). RRF executes them on the base level of the channel,
+        // and M550 after a change of the host name (PeriodicUpdateService.cs:183-244). RRF executes them on the base level of the channel,
         // which marks it as running codes from DSF (GCodeBuffer::PutBinary, lastCodeFromSbc)
         DuetControlServer.Commands.Code code = _host.Services.GetRequiredService<DuetControlServer.Codes.CodeFactory>().Create();
         code.Flags = DuetAPI.Commands.CodeFlags.IsInternallyProcessed | DuetAPI.Commands.CodeFlags.Asynchronous;

@@ -149,7 +149,7 @@ public class DpsThroughDcs : DpsTestBase
 
     /// <summary>
     /// "By default root plugins are not allowed" (PLUGINS.md:15-16): DCS refuses to install a plugin with SuperUser unless RootPluginSupport is set. The
-    /// plugin directory belongs to the dsf user, and plugins with ManagePlugins may write it (AppArmorPermissionManager.cs:55-58), ManagePlugins is also what
+    /// plugin directory belongs to the dsf user, and plugins with ManagePlugins may write it (AppArmorPermissionManager.cs:60-63), ManagePlugins is also what
     /// ReloadPlugin and StartPlugin require (DuetAPI/Commands/Plugins). So ReloadPlugin makes the check of the installation
     /// (DuetSharedLibrary/PluginManifestCheck.cs), and StartPlugin makes it again before it sends a plugin with SuperUser to the root service
     /// </summary>

@@ -2,11 +2,14 @@
 Description=Duet Web Server
 Wants=duetcontrolserver.service
 After=network.target duetcontrolserver.service
+StartLimitIntervalSec=0
 
 [Service]
 WorkingDirectory=/opt/dsf/bin
 ExecStart=/opt/dsf/bin/DuetWebServer
 TimeoutStopSec=15
+Restart=always
+RestartSec=5
 Type=notify
 User=dsf
 Group=dsf

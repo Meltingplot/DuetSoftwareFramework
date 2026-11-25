@@ -261,7 +261,7 @@ public class DpsInstallPlugin : DpsTestBase
     public async Task PythonPackagesAreInstalledLast()
     {
         // InstallPythonPackages (InstallPlugin.cs:357-388) runs the installer as regular user after the manifest has been written (InstallPlugin.cs:258-263),
-        // with the variables of InstallPackageEnvironment added to its environment (DEBIAN_FRONTEND=noninteractive by default, Settings.cs:84-87). A test
+        // with the variables of InstallPackageEnvironment added to its environment (DEBIAN_FRONTEND=noninteractive by default, Settings.cs:90-93). A test
         // variable is used here, so that the check does not depend on the environment of the test process (see VariableOfTheServiceIsOverridden)
         string installer = "";
         await StartDpsAsync(settings =>
@@ -286,7 +286,7 @@ public class DpsInstallPlugin : DpsTestBase
     /// <summary>
     /// A variable of InstallPackageEnvironment that DPS already has in its own environment is set for the installer instead of refused. Before,
     /// EnvironmentVariables.Add threw "Value does not fall within the expected range" (InstallPlugin.cs:338, :375), e.g. on GitHub's runners, which
-    /// have DEBIAN_FRONTEND, the default variable (Settings.cs:84-87), and the Python installation of a plugin failed
+    /// have DEBIAN_FRONTEND, the default variable (Settings.cs:90-93), and the Python installation of a plugin failed
     /// </summary>
     [Test]
     public async Task VariableOfTheServiceIsOverridden()
@@ -365,7 +365,7 @@ public class DpsInstallPlugin : DpsTestBase
     }
 
     /// <summary>
-    /// A plugin can write below its own directory (owner {pluginDirectory}/** rwmlk, apparmor.conf:27), so it can replace its dsf directory with a
+    /// A plugin can write below its own directory (owner {pluginDirectory}/** rwmlk, apparmor.conf:29), so it can replace its dsf directory with a
     /// symlink. When the same plugin is upgraded, DCS uninstalls it with ForUpgrade (DuetControlServer/Commands/Plugins/InstallPlugin.cs:139-146), which
     /// deletes only the files listed in the manifest and keeps the symlink, and InstallPlugin keeps the plugin directory (Upgrade). DPS runs without
     /// AppArmor profile, so writing through the symlink would reach wherever the dsf user may write, e.g. 0:/sys/config.g, which DCS refuses as sd/ entry.
