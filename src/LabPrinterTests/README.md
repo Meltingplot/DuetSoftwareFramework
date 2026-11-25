@@ -142,6 +142,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 | `ExpressionEvaluation.ParameterOutOfRangeIsAnError` | `M20 S31e9` ended with an OverflowException (HTTP 500) instead of an error reply | DSF #162 |
 | `ExpressionEvaluation.DeeplyNestedExpressionIsRefused` | An expression nested too deeply ended DCS with a stack overflow | DSF #218 |
 | `ExpressionEvaluation.DateTimeStringsGoToRrf` | datetime() of strings that RRF accepts was refused by DSF ("can't convert value to DateTime") | DSF #238 (month 99 also RRF fork PR #104) |
+| `ExpressionEvaluation.TwoToThe31IsAFloat` | floor(), ceil(), round() and pow() gave the int 2147483647 instead of the float 2147483648 for 2^31 | DSF #249 |
 | `ExpressionEvaluation.OversizedArraysAndGlobalsAreRefused` | Values whose JSON cannot come back over the link reached RRF when DSF could evaluate them | DSF #239 with RRF fork PR #114 |
 | `ExpressionEvaluation.FileExistsLooksInTheSystemDirectory` | A relative fileexists() looked in 0:/ instead of the system directory | DSF #240 |
 | `VariableAnswers.NonFiniteResultsDoNotStopDcs` | NaN, ±inf or floats beyond decimal from RRF stopped DCS | DSF #11 |

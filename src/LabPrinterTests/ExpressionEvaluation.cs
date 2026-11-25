@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Net.Http;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -123,6 +124,37 @@ public class ExpressionEvaluation : LabTest
         {
             Assert.That(reply, Is.EqualTo(expected));
         }
+    }
+
+    /// <summary>
+    /// floor(), ceil(), round() and pow() gave the int 2147483647 instead of the float 2147483648 for 2^31 (DSF #249, finding LT2; RRF #110 fixed the same
+    /// bound in the firmware)
+    /// </summary>
+    /// <remarks>
+    /// echo of literals is evaluated by DSF (class remarks). Since #249 FloatToIntOrFloat and Pow return an int only below 2^31 and from -2^31 on
+    /// (Codes/Meta/Parsing/MetaExpressionParser.cs:1016, :1052), like RRF ExpressionParser.cpp:2038, :2293. Before, the bound was f &lt;= int.MaxValue, which
+    /// is 2^31 as a float, so 2^31 passed and the conversion gave 2147483647 (measured on .NET 10 x64). DSF prints an int with digits only and a float in the
+    /// shortest round-trip form (Expressions.cs:545-556, finding CU7), so the test parses the reply instead of comparing its text. The controls just inside
+    /// the range stay ints. Unfixed: the four 2^31 replies are the int 2147483647. No restart
+    /// </remarks>
+    [TestCase("floor(2147483648.0)", null)]
+    [TestCase("ceil(2147483648.0)", null)]
+    [TestCase("round(2147483648.0)", null)]
+    [TestCase("pow(2, 31)", null)]
+    [TestCase("floor(2147483520.0)", "2147483520")]
+    [TestCase("pow(-2, 31)", "-2147483648")]
+    public async Task TwoToThe31IsAFloat(string expression, string? expectedInt)
+    {
+        await G3Helpers.RequireControlServerWithNewFixesAsync("#249");
+        string reply = (await SendCodeAsync($"echo {{{expression}}}")).Trim();
+        if (expectedInt is not null)
+        {
+            Assert.That(reply, Is.EqualTo(expectedInt));
+            return;
+        }
+        Assert.That(int.TryParse(reply, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _), Is.False, $"{expression} gave the int {reply}");
+        Assert.That(float.TryParse(reply, NumberStyles.Float, CultureInfo.InvariantCulture, out float value), Is.True, $"{expression} gave {reply}");
+        Assert.That(value, Is.EqualTo(2147483648f));
     }
 
     /// <summary>
