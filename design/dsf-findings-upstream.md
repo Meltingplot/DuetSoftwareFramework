@@ -83,6 +83,8 @@ Line numbers refer to these commits. PR numbers are those of Meltingplot/DuetSof
 
 H13 (`rr_delete` ignored `recursive=yes`) was fixed upstream in 5130ca43 and is left out. That commit also makes `rr_delete` one more path to H1.
 
+I1 and I8 were fixed upstream on 2026-11-25 in 227698cd6 and 4162305d8, the same way as the fork fixes #135 and #158. Upstream also lets only `ServicePlugins` run `InstallSystemPackage` and `UninstallSystemPackage`; the fork took that with the upstream sync of 2026-11-25.
+
 ## Codes, macros and channels
 
 ### G2. A macro path that FilePathResolver refuses stops DCS

@@ -816,7 +816,7 @@ A second round covered the classes that exist because DSF is a long-running .NET
   - Time base: the session timeout of `SessionStorage`, the wait of `FirmwareUpdater` for an expansion board and the detection of a time change for M905 in `PeriodicUpdateService` were measured with the wall clock (DSF #215).
   - DL1: M581.1 with SBC fields in a macro, config.g or job hung or failed (DSF #216).
   - SD1: the busy flag of a pipeline stage was lost, so flushes returned early (DSF #217).
-  - ST1: a deeply nested expression ended DCS with a stack overflow (DSF #218).
+  - ST1: a deeply nested expression ended DCS with a stack overflow (DSF #218). Upstream 7bdfc31c9 (2026-11-25) added the same check and text and the 255-element array limit of DSF #239; the fork took upstream's code and keeps the short trace of LT3 (DSF #251).
   - UB1, UB2, UB3 and SD6: job file info that does not fit the SetPrintFileInfo packet, the allocation for a filament index from the file, file positions over 4 GiB, and the unlocked read of the job file info (DSF #219).
   - DL4, DL5, AS1 and AS2: the job processor ended for good, or DCS stopped, after a cancelled or refused request in the rewind or the file selection, or after a failed write of the simulated time (DSF #221).
   - AS3: a code that RRF passes to DSF and that DSF cannot parse or that fails in DSF was never answered, so RRF's channel stayed busy (DSF #220).

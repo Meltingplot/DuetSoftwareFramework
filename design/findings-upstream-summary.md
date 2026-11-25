@@ -670,7 +670,7 @@ The sources do not say whose code these are (OF, sections "FW/plugin/startup" an
 ## Left out
 
 - **Fork code:** S1, S4, S5 (OF; the fork's extended link and sequence guard); the extended-link part of P4 (#138); K16 (the fork's key check); K29 (a gap in fork RRF #46; upstream has T10 and T11); U5 (OF; fork #154); D5 (OF; CHX image); the restart case of the extended link (LU); #144, #150 16ee43db, #154 and parts of #151 (DU "Left out", no ids).
-- **Fixed upstream:** H13 (5130ca43).
+- **Fixed upstream:** H13 (5130ca43); on 2026-11-25 I1 (227698cd6) and I8 (4162305d8), the same way as the fork fixes #135 and #158 (merged into the fork with the upstream sync of 2026-11-25).
 - **No finding:** T13 (OF: probably no finding); G and M as macro parameters (documented, OF).
 - **Merged into other rows:** F3 (case, DU) and P1 (OF) into F3; T10 and T11 of DU and OF into T10, T11 (resend) and T11 (daemon.g); O4 (OF) with the results of 2026-11-11.
 - **Held back until a test shows them (fork decision):** K12, K33.
