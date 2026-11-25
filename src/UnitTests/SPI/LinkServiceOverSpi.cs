@@ -247,6 +247,12 @@ public partial class LinkServiceOverSpi
             Concat([(byte)DataType.Expression, (byte)channel], U16(Text(expression).Length), U32(Text(content).Length), Text(expression), Text(content));
 
         /// <summary>
+        /// EvaluationResultHeader with a date and time as text: WriteEvaluationResult and WriteSetVariableResult for TypeCode::DateTime_tc
+        /// </summary>
+        public static byte[] DateTimeResult(CodeChannel channel, string expression, string text) =>
+            Concat([(byte)DataType.DateTime, (byte)channel], U16(Text(expression).Length), U32(Text(text).Length), Text(expression), Text(text));
+
+        /// <summary>
         /// MessageHeader and text: WriteCodeReply
         /// </summary>
         public static byte[] Message(MessageTypeFlags type, string text) => Concat(U32((uint)type), U16(Text(text).Length), U16(0), Text(text));
@@ -695,6 +701,37 @@ public partial class LinkServiceOverSpi
         string response = "{\"key\":\"state\",\"flags\":\"d99vn\",\"result\":{\"status\":\"idle\"}}";
         rrf.SendPacket(FirmwareRequest.ObjectModel, RrfPackets.String(response));
         Assert.That(Encoding.UTF8.GetString(await query.WaitAsync(Timeout)), Is.EqualTo(response));
+        Assert.That(host.Fault, Is.Null);
+    }
+
+    /// <summary>
+    /// A date and time that DateTime cannot hold fails only the request that asked for it, and the link goes on (finding LT1). RRF prints the
+    /// year with %04u (RRF ObjectModel.cpp:80-88, DataTransfer.cpp:1820-1829), so a result beyond 9999, e.g. datetime("9999-12-31T23:59:59") + 1,
+    /// has five digits. Before, Reader threw, the exception left LinkService.ProcessPacket and ended the link
+    /// </summary>
+    [Test]
+    public async Task DateTimeOutOfRangeFailsOnlyItsRequest()
+    {
+        await using Host host = await Host.StartAsync();
+        FakeRrfSpi rrf = host.Rrf;
+        LinkInterface link = host.Link;
+
+        Task<object?> evaluation = link.EvaluateExpressionAsync(CodeChannel.SBC, "global.date + 1");
+        host.WaitFor(SbcRequest.EvaluateExpression);
+        rrf.SendPacket(FirmwareRequest.EvaluationResult, RrfPackets.DateTimeResult(CodeChannel.SBC, "global.date + 1", "10000-01-01T00:00:00"));
+        CodeParserException? e = await Assert.ThrowsAsync<CodeParserException>(async () => await evaluation.WaitAsync(Timeout));
+        Assert.That(e!.Message, Is.EqualTo("date and time 10000-01-01T00:00:00 is out of range"));
+
+        Task<object?> assignment = link.SetVariableAsync(CodeChannel.SBC, true, "global.date", "global.date + 1");
+        host.WaitFor(SbcRequest.SetVariable);
+        rrf.SendPacket(FirmwareRequest.VariableResult, RrfPackets.DateTimeResult(CodeChannel.SBC, "global.date", "10000-01-01T00:00:00"));
+        await Assert.ThrowsAsync<CodeParserException>(async () => await assignment.WaitAsync(Timeout));
+
+        // The link goes on
+        evaluation = link.EvaluateExpressionAsync(CodeChannel.SBC, "global.date");
+        host.WaitFor(SbcRequest.EvaluateExpression);
+        rrf.SendPacket(FirmwareRequest.EvaluationResult, RrfPackets.DateTimeResult(CodeChannel.SBC, "global.date", "9999-12-31T23:59:59"));
+        Assert.That(await evaluation.WaitAsync(Timeout), Is.EqualTo(new DateTime(9999, 12, 31, 23, 59, 59)));
         Assert.That(host.Fault, Is.Null);
     }
 

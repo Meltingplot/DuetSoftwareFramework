@@ -145,6 +145,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 | `ExpressionEvaluation.TwoToThe31IsAFloat` | floor(), ceil(), round() and pow() gave the int 2147483647 instead of the float 2147483648 for 2^31 | DSF #249 |
 | `ExpressionEvaluation.OversizedArraysAndGlobalsAreRefused` | Values whose JSON cannot come back over the link reached RRF when DSF could evaluate them | DSF #239 with RRF fork PR #114 |
 | `ExpressionEvaluation.FileExistsLooksInTheSystemDirectory` | A relative fileexists() looked in 0:/ instead of the system directory | DSF #240 |
+| `ExpressionEvaluation.DateBeyondYear9999IsAnError` | A date and time beyond the year 9999 from RRF stopped DCS instead of failing the code | DSF #250 |
 | `VariableAnswers.NonFiniteResultsDoNotStopDcs` | NaN, ±inf or floats beyond decimal from RRF stopped DCS | DSF #11 |
 | `VariableAnswers.GlobalTooLongToReportIsDiscardedOnce` | A global too long to report stopped DSF's object model (GetObjectModel resent for ever) | RRF fork PR #113 |
 | `VariableAnswers.GlobalWhoseAnswerDoesNotFitIsRefused` | A global or echo whose answer exceeds a transfer was resent: "already exists", hung channel | RRF fork PR #114 |

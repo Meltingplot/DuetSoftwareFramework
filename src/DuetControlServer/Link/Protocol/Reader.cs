@@ -441,8 +441,9 @@ public static class Reader
                 }
                 break;
             case DataType.DateTime:
+                // RRF can send dates that DateTime cannot hold, e.g. a year beyond 9999. Fail only the request that asked for it, like unreadable expression content
                 string dateTime = Encoding.UTF8.GetString(from.Slice(bytesRead, header.IntValue));
-                result = DateTime.TryParse(dateTime, out DateTime dateTimeValue) ? dateTimeValue : throw new ArgumentOutOfRangeException(nameof(from), dateTime, "Invalid date and time");
+                result = DateTime.TryParse(dateTime, out DateTime dateTimeValue) ? dateTimeValue : new CodeParserException($"date and time {dateTime} is out of range");
                 bytesRead += header.IntValue;
                 break;
             case DataType.Char:

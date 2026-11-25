@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
+using DuetAPI;
 using DuetControlServer.Link.Protocol;
 using DuetControlServer.Link.Protocol.FirmwareRequests;
 using DuetControlServer.Link.Protocol.Shared;
@@ -78,8 +79,11 @@ public class ReaderRobustness
         // RepRapFirmware formats dates as yyyy-MM-ddTHH:mm:ss (ExpressionValue::AppendAsString in ObjectModel.cpp)
         Assert.That(ReadEvaluationResult(DataType.DateTime, "2026-11-01T12:34:56"), Is.EqualTo(new DateTime(2026, 11, 1, 12, 34, 56)));
 
-        // A value that is not a date is a malformed packet
-        Assert.Throws<ArgumentOutOfRangeException>(() => ReadEvaluationResult(DataType.DateTime, "2026-11-01T\u00002:34:56"));
+        // A date that DateTime cannot hold fails only the request (finding LT1). RRF prints the year with %04u (ObjectModel.cpp:80-88),
+        // so datetime("9999-12-31T23:59:59") + 1 gives a five-digit year; the packet itself is well formed
+        Assert.That(ReadEvaluationResult(DataType.DateTime, "10000-01-01T00:00:00"),
+            Is.InstanceOf<CodeParserException>().With.Message.EqualTo("date and time 10000-01-01T00:00:00 is out of range"));
+        Assert.That(ReadEvaluationResult(DataType.DateTime, "2026-11-01T\u00002:34:56"), Is.InstanceOf<CodeParserException>());
     }
 
     private static object? ReadEvaluationResult(DataType type, string value) => ReadEvaluationResult(type, Encoding.UTF8.GetByteCount(value), Encoding.UTF8.GetBytes(value));
