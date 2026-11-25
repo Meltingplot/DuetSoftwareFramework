@@ -637,7 +637,8 @@ public class MCodeHandler(
 
             // Flag current macro file as (not) pausable or start a macro on another code channel.
             // M98.1 S<n> starts it on the code channel with index n in inputs[], all other parameters except W are the same as for M98.
-            // M98.1 returns at once, also when the channel is busy. Then the macro waits for the channel, W<ms> limits that wait (default W0 = no limit)
+            // With W<ms> M98.1 waits up to that long for a busy channel and then returns a warning, so that calls cannot pile up.
+            // With W0 (default) M98.1 returns at once, also when the channel is busy, and the macro waits for the channel without limit
             case 98:
                 {
                     if (code.MinorNumber == 1)
@@ -705,12 +706,26 @@ public class MCodeHandler(
                             macroCode.MajorNumber = 98;
                             macroCode.Parameters = parameters;
 
-                            // From now on the macro belongs to the other channel, so a reset of that channel cancels it like its other pending codes
-                            macroCode.ResetCancellationToken();
-
-                            if (!await TryStartMacroAsync(macroCode))
+                            if (waitTime > 0)
                             {
-                                _ = StartMacroWhenChannelIsFreeAsync(macroCode, fileName, (waitTime > 0) ? TimeSpan.FromMilliseconds(waitTime) : null);
+                                // The caller waits, so it learns whether the macro has started
+                                long waitStart = Stopwatch.GetTimestamp();
+                                while (!await TryStartMacroAsync(macroCode, cancellationToken))
+                                {
+                                    if (Stopwatch.GetElapsedTime(waitStart) >= TimeSpan.FromMilliseconds(waitTime))
+                                    {
+                                        return new Message(MessageType.Warning, $"Macro file {fileName} not started because code channel {channel} is busy");
+                                    }
+                                    await Task.Delay(10, cancellationToken);
+                                }
+                                return new Message();
+                            }
+
+                            // The macro waits instead of the caller. From now on it belongs to the other channel, so a reset of that channel cancels it like its other pending codes
+                            macroCode.ResetCancellationToken();
+                            if (!await TryStartMacroAsync(macroCode, macroCode.CancellationToken))
+                            {
+                                _ = StartMacroWhenChannelIsFreeAsync(macroCode, fileName);
                             }
                             return new Message();
                         }
@@ -1558,10 +1573,11 @@ public class MCodeHandler(
     /// Start the macro of M98.1 if its code channel is free
     /// </summary>
     /// <param name="macroCode">M98 for the other code channel</param>
+    /// <param name="cancellationToken">Cancellation token of whoever waits for the channel</param>
     /// <returns>Whether the macro has been started</returns>
-    private async ValueTask<bool> TryStartMacroAsync(Commands.Code macroCode)
+    private async ValueTask<bool> TryStartMacroAsync(Commands.Code macroCode, CancellationToken cancellationToken)
     {
-        await _macroStartLock.WaitAsync(macroCode.CancellationToken);
+        await _macroStartLock.WaitAsync(cancellationToken);
         try
         {
             if (!IsChannelFree(macroCode))
@@ -1589,28 +1605,20 @@ public class MCodeHandler(
         !channelManager.IsWaitingForAcknowledgment(macroCode.Channel) && codeProcessor.Processors.Value[(int)macroCode.Channel].IsIdle(macroCode);
 
     /// <summary>
-    /// Let the macro of M98.1 wait for its busy code channel after M98.1 has returned, and drop it with a warning when the channel is still busy after the wait time
+    /// Let the macro of M98.1 W0 wait for its busy code channel after M98.1 has returned, until the channel is free or reset
     /// </summary>
     /// <param name="macroCode">M98 for the other code channel</param>
-    /// <param name="fileName">Macro file for the warning</param>
-    /// <param name="waitTime">How long to wait for the channel or null to wait until it is free</param>
+    /// <param name="fileName">Macro file for the log</param>
     /// <returns>Asynchronous task</returns>
-    private async Task StartMacroWhenChannelIsFreeAsync(Commands.Code macroCode, string fileName, TimeSpan? waitTime)
+    private async Task StartMacroWhenChannelIsFreeAsync(Commands.Code macroCode, string fileName)
     {
         try
         {
-            long waitStart = Stopwatch.GetTimestamp();
             do
             {
                 await Task.Delay(10, macroCode.CancellationToken);
-                if (IsChannelFree(macroCode) && await TryStartMacroAsync(macroCode))
-                {
-                    return;
-                }
             }
-            while (waitTime is null || Stopwatch.GetElapsedTime(waitStart) < waitTime);
-
-            await eventLogger.LogOutputAsync(MessageType.Warning, $"Macro file {fileName} not started because code channel {macroCode.Channel} is busy", lifetime.ApplicationStopping);
+            while (!IsChannelFree(macroCode) || !await TryStartMacroAsync(macroCode, macroCode.CancellationToken));
         }
         catch (OperationCanceledException)
         {
