@@ -34,6 +34,11 @@ The projects are git submodules of the Meltingplot forks. They were first pinned
   - RRFLibraries 888b479: Meltingplot/RRFLibraries#2 (a new ReadWriteLock lock record while another task is inside malloc).
   - The version strings still read `3.7.0+1.mp.10` and `3.7.0+1.mp.4`.
 - **RRF release `3.7.0+1.mp.11`** (2e31913b0) and **Duet3Expansion release `3.7.0+1.mp.5`** (16c3abf3): the fork branches of 2026-11-23 with the version strings (Meltingplot/RepRapFirmware#89, Meltingplot/Duet3Expansion#27), nothing else. The libraries are unchanged.
+- **Fork branches and Duet3D sync of 2026-11-25:**
+  - RRF: the fork PRs Meltingplot/RepRapFirmware#90 to #115 on top of `3.7.0+1.mp.11`, then Duet3D `3.7-ch` up to 30af4fc9c, which contains Duet3D `3.7-dev` 371c71412 with the dual CAN-FD buses (Meltingplot/RepRapFirmware#116). #112 sends codes that call `fileexists()` or `fileread()` to DSF and needs DSF #237, which v3.7-dev has.
+  - Duet3Expansion: Meltingplot/Duet3Expansion#28 to #32, then Duet3D `3.7-dev` 778c3a1d and `3.7-ch` bf954367 (Meltingplot/Duet3Expansion#33).
+  - CoreN2G: Meltingplot/CoreN2G#4 to #7. RRFLibraries: Meltingplot/RRFLibraries#3 and #4. CANlib: Duet3D `3.7-dev` 2131ae7 (Meltingplot/CANlib#2).
+  - The version strings still read `3.7.0+1.mp.11` and `3.7.0+1.mp.5`.
 
 | Submodule | Branch | Used by |
 |---|---|---|
