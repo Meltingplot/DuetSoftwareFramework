@@ -150,7 +150,7 @@ public class DpsRootService : DpsTestBase
     [Test]
     public async Task ProfileThatCannotBeLoadedIsRemoved()
     {
-        // AppArmorPermissionManager.cs:155-163: StartPlugin checks only that the profile exists, so a profile that the kernel refused must not stay
+        // AppArmorPermissionManager.cs:160-168: StartPlugin checks only that the profile exists, so a profile that the kernel refused must not stay
         await StartRootDpsAsync();
         FakeTool.SetExitCode(Dps!.Settings.AppArmorParser, 1);
         ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(Manifest("Refused"), ("dsf/file", "x")))))!;
@@ -237,6 +237,7 @@ public class DpsRootService : DpsTestBase
         int pid = Dps.Store.Processes["Root"].Id;
         Assert.That((await GetFromDcsAsync("Root"))!.Pid, Is.EqualTo(pid));
         Assert.That(await WaitForDcsMessageAsync("[Root]: root"), Is.True);
+        Assert.That(FakeTool.Calls(Dps.Settings.AppArmorExecCommand), Is.Empty, "A plugin with SuperUser has no profile to start in");
 
         await StopAsync("Root");
         Assert.That(Dps.Log.Contains("Process stopped by SIGTERM"), Is.True);

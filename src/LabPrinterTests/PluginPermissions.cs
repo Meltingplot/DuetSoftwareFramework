@@ -114,7 +114,7 @@ public class PluginPermissions : LabTest
     /// <summary>
     /// A package name that no package can have: Debian package names consist of lower case letters, digits, '+', '-' and '.' (Debian Policy Manual,
     /// control fields Source and Package), so '_' cannot occur.
-    /// It is a single word without a leading '-', because DPS puts it into the arguments of dpkg -r as it is (DuetPluginService/Settings.cs:102-107,
+    /// It is a single word without a leading '-', because DPS puts it into the arguments of dpkg -r as it is (DuetPluginService/Settings.cs:108-113,
     /// Commands/UninstallSystemPackage.cs)
     /// </summary>
     private const string NoSuchPackage = "labtest_no_such_package";
