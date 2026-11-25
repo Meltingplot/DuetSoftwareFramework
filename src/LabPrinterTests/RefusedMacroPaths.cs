@@ -76,7 +76,12 @@ public class RefusedMacroPaths : LabTest
 
     /// <summary>
     /// M98 with a refused path from a client gets the reply of a missing file (GCodes2.cpp:1720) and DCS goes on. The fix logs the reason as an error
-    /// "Failed to start macro file" (Processor.DoMacroFile), which proves that the request went the new way
+    /// "Failed to start macro file" (Processor.DoMacroFile), which proves that the request went the new way.
+    /// The error must reach the journal with priority error (#118): while a stuck link flooded the journal with warnings, journald dropped errors such as
+    /// "No transfer with RepRapFirmware completed", because DSF wrote every line with priority 6 and journald limits the rate per priority. With
+    /// JOURNAL_STREAM set by systemd, DSF now puts the priority in front of each line and leaves out the colors (CommonLogFormatter.cs:23, :51-52, :92-100,
+    /// LogError gives 3 at :117). The test reads the journal with -p err, which shows priorities 0 to 3. Unfixed: the line has priority 6 and -p err does
+    /// not show it. Deterministic, the line comes from Processor.cs:1712
     /// </summary>
     [TestCase("99:/macros/lab-tests/refused/unknown-drive.g", TestName = "M98WithUnknownDriveIsNotFound")]
     [TestCase("0:/../lab-tests-refused-escape.g", TestName = "M98LeavingTheVolumeIsNotFound")]
@@ -86,12 +91,13 @@ public class RefusedMacroPaths : LabTest
         string reply = await SendOrRecoverAsync($"M98 P\"{fileName}\"", pid);
         await AssertDcsGoesOnAsync(pid, $"M98 P\"{fileName}\"");
 
-        string journal = await Lab.ReadJournalAsync(cursor);
+        string journal = await Lab.ReadJournalAsync(cursor), errors = await RestartHelpers.ReadJournalErrorsAsync(cursor);
         TestContext.Progress.WriteLine($"M98 P\"{fileName}\": {reply.Trim()}");
         Assert.Multiple(() =>
         {
             Assert.That(reply, Does.Contain($"Macro file {fileName} not found"));
             Assert.That(journal, Does.Contain($"Failed to start macro file {fileName}"), "DCS did not log the refused path");
+            Assert.That(errors, Does.Contain($"Failed to start macro file {fileName}"), "The error is not in the journal with priority error (#118)");
         });
     }
 
