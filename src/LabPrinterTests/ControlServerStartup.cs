@@ -75,7 +75,8 @@ public class ControlServerStartup : LabTest
     {
         string report = await Lab.RunOnSbcAsync($$"""
             dir={{Directory}}
-            for tool in unshare runuser; do command -v $tool > /dev/null || { echo "MISSING $tool"; exit 0; }; done
+            # Looked up as root, which runs both below: runuser is in /usr/sbin, which the PATH of the SBC user lacks (lab run 2026-11-25)
+            for tool in unshare runuser; do sudo -n sh -c "command -v $tool" > /dev/null || { echo "MISSING $tool"; exit 0; }; done
             [ -x /opt/dsf/bin/DuetControlServer ] || { echo "MISSING /opt/dsf/bin/DuetControlServer"; exit 0; }
             state() {
               err=$(sudo -n sha256sum /run/dsf/dcs.err 2> /dev/null) || err=none

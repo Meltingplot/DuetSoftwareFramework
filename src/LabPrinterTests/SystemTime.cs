@@ -14,7 +14,10 @@ namespace LabPrinterTests;
 /// </summary>
 /// <remarks>
 /// The clock is stepped by python3 as root relative to CLOCK_MONOTONIC and set back the same way, so the restore does not depend on how long the test took.
-/// NTP may correct it as well, the test prints whether the clock is synchronized afterwards. RRF gets its time from DSF with M905 when DSF notices a change
+/// systemd-timesyncd is stopped for the step and started again after the restore: it watches for changes of the clock, asks its server at once and sets
+/// an offset of 0.4 s or more right away (systemd v257 src/timesync/timesyncd-manager.c:206-222, :240-275), so with the HMI as server on the LAN it undid
+/// the step within milliseconds and DCS, which checks every 4 s, never saw it (Approval run 2026-11-25). The test prints whether the clock is synchronized
+/// afterwards. RRF gets its time from DSF with M905 when DSF notices a change
 /// (PeriodicUpdateService.cs:186-207); the restore checks that RRF follows and warns if not, RRF gets the time again from config.g at its next start
 /// (MacroFile.cs:320-329). The CHX config reads no wall-clock time (no state.time or datetime() in sys/ and macros/ of chx350-config 3100431); plugins may log
 /// times that are off by the step for the length of a test
@@ -54,7 +57,7 @@ public class SystemTime : LabTest
         }
 
         string cursor = await Lab.GetJournalCursorAsync();
-        string offset = await StepClockAsync(step);
+        (string offset, bool ntpStopped) = await StepClockAsync(step);
         bool noticed, followed;
         try
         {
@@ -63,7 +66,7 @@ public class SystemTime : LabTest
         }
         finally
         {
-            await RestoreClockAsync(offset, start, elapsed);
+            await RestoreClockAsync(offset, ntpStopped, start, elapsed);
         }
 
         Assert.That(noticed, Is.True, "DCS did not notice that the clock was set back");
@@ -103,7 +106,7 @@ public class SystemTime : LabTest
         Assert.That(before, Is.EqualTo(HttpStatusCode.NoContent), "The noop before the step failed");
         Stopwatch sinceRequest = Stopwatch.StartNew();
 
-        string offset = await StepClockAsync(step);
+        (string offset, bool ntpStopped) = await StepClockAsync(step);
         HttpStatusCode after;
         TimeSpan idle;
         try
@@ -115,7 +118,7 @@ public class SystemTime : LabTest
         }
         finally
         {
-            await RestoreClockAsync(offset, start, elapsed);
+            await RestoreClockAsync(offset, ntpStopped, start, elapsed);
         }
 
         if (idle >= sessionTimeout - TimeSpan.FromSeconds(1))
@@ -127,33 +130,40 @@ public class SystemTime : LabTest
     }
 
     /// <summary>
-    /// Step the clock of the SBC
+    /// Stop systemd-timesyncd if it runs and step the clock of the SBC. If the step fails, systemd-timesyncd is started again
     /// </summary>
-    /// <returns>Offset of CLOCK_REALTIME from CLOCK_MONOTONIC before the step, to set the clock back with</returns>
-    private static async Task<string> StepClockAsync(TimeSpan step)
+    /// <returns>Offset of CLOCK_REALTIME from CLOCK_MONOTONIC before the step, to set the clock back with, and whether systemd-timesyncd was stopped</returns>
+    private static async Task<(string Offset, bool NtpStopped)> StepClockAsync(TimeSpan step)
     {
-        string offset = (await Lab.RunOnSbcAsync($$"""
-            sudo -n python3 -I - {{step.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture)}} <<'EOF'
+        string[] lines = (await Lab.RunOnSbcAsync($$"""
+            stopped=no
+            if systemctl is-active --quiet systemd-timesyncd; then
+              sudo -n systemctl stop systemd-timesyncd && stopped=yes
+            fi
+            echo "$stopped"
+            sudo -n python3 -I - {{step.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture)}} <<'EOF' || { [ $stopped = no ] || sudo -n systemctl start systemd-timesyncd; exit 1; }
             import sys, time
             offset = time.clock_gettime(time.CLOCK_REALTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
             time.clock_settime(time.CLOCK_REALTIME, time.clock_gettime(time.CLOCK_REALTIME) + float(sys.argv[1]))
             print(repr(offset))
             EOF
-            """)).Trim();
-        TestContext.Progress.WriteLine($"Stepped the SBC clock by {step.TotalSeconds:0} s");
-        return offset;
+            """)).Trim().Split('\n');
+        bool ntpStopped = lines[0].Trim() == "yes";
+        TestContext.Progress.WriteLine($"Stepped the SBC clock by {step.TotalSeconds:0} s{(ntpStopped ? ", systemd-timesyncd stopped" : string.Empty)}");
+        return (lines[^1].Trim(), ntpStopped);
     }
 
     /// <summary>
     /// Set the clock of the SBC back to its offset from CLOCK_MONOTONIC before the step and check that RRF follows
     /// </summary>
-    private async Task RestoreClockAsync(string offset, DateTime? firmwareStart, Stopwatch elapsed)
+    private async Task RestoreClockAsync(string offset, bool ntpStopped, DateTime? firmwareStart, Stopwatch elapsed)
     {
         await Lab.RunOnSbcAsync($$"""
             sudo -n python3 -I - {{offset}} <<'EOF'
             import sys, time
             time.clock_settime(time.CLOCK_REALTIME, time.clock_gettime(time.CLOCK_MONOTONIC) + float(sys.argv[1]))
             EOF
+            {{(ntpStopped ? "sudo -n systemctl start systemd-timesyncd" : ": systemd-timesyncd was not running")}}
             """);
         string ntp = (await Lab.RunOnSbcAsync("timedatectl show -p NTPSynchronized --value 2>/dev/null || echo unknown")).Trim();
         TestContext.Progress.WriteLine($"Set the SBC clock back, NTP synchronized: {ntp}");
