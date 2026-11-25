@@ -19,7 +19,7 @@ namespace UnitTests.Codes;
 /// evaluates the functions itself, they are custom functions of DSF (Functions.cs:26-28):
 /// <list type="bullet">
 /// <item>a G/M/T-code with them goes through Code.ProcessInternally, which substitutes only the SBC fields and custom functions
-/// (Code.cs:238 -> CodeProcessor.cs:168 -> Expressions.EvaluateAsync with evaluateAll = false, Expressions.cs:459-475, :884-906, :1028-1031)
+/// (Code.cs:214 -> CodeProcessor.cs:168 -> Expressions.EvaluateAsync with evaluateAll = false, Expressions.cs:459-475, :884-906, :1028-1031)
 /// and then goes to RRF as a binary code of the same channel</item>
 /// <item>global, var and set substitute the functions and send RRF a SetVariable request (KeywordHandler.cs:261, :273)</item>
 /// <item>echo evaluates everything (KeywordHandler.cs:166), so RRF gets EvaluateExpression requests with the substituted rest</item>
@@ -258,7 +258,7 @@ public class FirmwareCodeFileFunctions
     [Test]
     public void IfIsAnsweredWithAnError()
     {
-        // Code.ProcessInternally throws for if/elif/else/while outside a file (Code.cs:208-218). RRF does not pass them on, but DWC can send them
+        // Code.ProcessInternally throws for if/elif/else/while outside a file (Code.cs:184-194). RRF does not pass them on, but DWC can send them
         const string code = "if fileexists(\"0:/sys/present.g\")";
         int requestsBefore = PassCodeToSbc(CodeChannel.USB, code);
         AssertFinishedWithError(CodeChannel.USB, code, "Conditional codes must not be executed");

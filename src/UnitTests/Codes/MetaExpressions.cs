@@ -165,7 +165,7 @@ public class MetaExpressions
     [Test]
     public async Task FileExistsInCodeForFirmware()
     {
-        // DSF substitutes the call in a code it sends to RRF (Code.cs:238), with the same resolution
+        // DSF substitutes the call in a code it sends to RRF (Code.cs:214), with the same resolution
         WriteFile("sys/a.g", "G1 X1\n");
         Assert.That(await SubstituteAsync("fileexists(\"a.g\")"), Is.EqualTo("true"));
         Assert.That(await SubstituteAsync("fileexists(\"sys/a.g\")"), Is.EqualTo("false"));

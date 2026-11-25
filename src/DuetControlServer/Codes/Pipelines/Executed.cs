@@ -78,7 +78,7 @@ public sealed class Executed : PipelineBase
         if (code.Result is not null)
         {
             // Update the file position
-            await code.UpdateNextFilePositionAsync(code.CancellationToken);
+            code.UpdateNextFilePosition();
 
             // Notify code handlers
             switch (code.Type)

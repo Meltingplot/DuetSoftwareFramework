@@ -286,7 +286,7 @@ public class GCodeExecutionFuzz
         OperationCanceledException => true,
         // M21 P1, M22, M36.3 and M998 are not supported in SBC mode (MCodeHandler.cs:218, 224, 473, 1341)
         NotSupportedException => true,
-        // Conditional keywords outside a file (Code.cs:212-222)
+        // Conditional keywords outside a file (Code.cs:188-198)
         InvalidOperationException when e.Message == "Conditional codes must not be executed" => true,
         // A file that fileread or echo cannot open or write (Functions.cs:111, KeywordHandler.cs:149). The wiki: "If the file cannot be opened
         // and read ... the command containing the fileread call will be aborted"

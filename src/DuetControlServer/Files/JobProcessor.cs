@@ -427,7 +427,7 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
             if (_file is not null && _file2 is null)
             {
                 // Start printing using the second file channel if applicable.
-                // Lock the file here because the copy constructor accesses file.NextFilePosition
+                // Lock the file here because the copy constructor copies the parser state, which the reader changes while it holds this lock
                 using (await _file.LockAsync(cancellationToken))
                 {
                     _file2 = _fileFactory.Create(_file, CodeChannel.File2);
