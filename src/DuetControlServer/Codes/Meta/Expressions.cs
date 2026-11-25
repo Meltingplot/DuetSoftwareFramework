@@ -1067,6 +1067,26 @@ public sealed class Expressions(Model.Filter filter, Model.ObjectModel model, Li
     }
 
     /// <summary>
+    /// Try to evaluate an expression on the SBC only, as the fast path of <see cref="EvaluateExpressionToValueAsync"/> does, without asking the
+    /// firmware (Meltingplot)
+    /// </summary>
+    /// <param name="code">Code holding the expression</param>
+    /// <param name="expression">Expression to evaluate</param>
+    /// <param name="cancellationToken">Optional cancellation token</param>
+    /// <returns>Whether the SBC could evaluate the expression, and its value</returns>
+    /// <exception cref="CodeParserException">Failed to parse the expression</exception>
+    /// <exception cref="OperationCanceledException">Code was cancelled</exception>
+    public async Task<(bool resolved, object? value)> TryEvaluateLocallyAsync(Code code, string expression, CancellationToken cancellationToken = default)
+    {
+        Parsing.IExpressionEvaluationContext context = new ExpressionContext(this, () => code.File?.GetIterations(code), (int)(code.LineNumber ?? 0), filter, false);
+        using (await model.AccessReadOnlyAsync(cancellationToken))
+        {
+            bool resolved = Parsing.MetaExpressionParser.TryEvaluate(expression, context, out object? value);
+            return (resolved, value);
+        }
+    }
+
+    /// <summary>
     /// Evaluation context backing the SBC-side expression evaluator with the running code and the object model mirror
     /// </summary>
     /// <param name="owner">Owning expression evaluator (for SBC field detection)</param>

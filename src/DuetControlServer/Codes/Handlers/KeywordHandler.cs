@@ -269,6 +269,12 @@ public sealed class KeywordHandler(CodeProcessor codeProcessor, Expressions expr
                     fullVarName = (code.Keyword == KeywordType.Global ? "global." : "var.") + varName;
                 }
 
+                // Refuse a value that the firmware could never send back, before the firmware assigns it
+                if (await IsValueTooLongAsync(code, expression, fullVarName, code.Keyword == KeywordType.Global || fullVarName.StartsWith("global.", StringComparison.Ordinal), cancellationToken))
+                {
+                    throw new CodeParserException(VariableValueLength.TooLongMessage, code);
+                }
+
                 // Assign the variable
                 object? value = await linkInterface.SetVariableAsync(code.Channel, code.Keyword != KeywordType.Set, fullVarName, expression, cancellationToken);
                 _logger.LogDebug("Set variable {Variable} to {Value}", fullVarName, value);
@@ -285,6 +291,31 @@ public sealed class KeywordHandler(CodeProcessor codeProcessor, Expressions expr
         }
 
         throw new NotSupportedException($"Unsupported keyword '{code.Keyword}'");
+    }
+
+    /// <summary>
+    /// Check if the SBC can evaluate the value of a variable and its JSON is too long for the firmware to send back (Meltingplot).
+    /// An expression that the SBC cannot evaluate goes to the firmware unchanged, which decides itself
+    /// </summary>
+    /// <param name="code">Code that assigns the variable</param>
+    /// <param name="expression">Expression with the SBC fields replaced</param>
+    /// <param name="varName">Name of the variable as it goes to the firmware</param>
+    /// <param name="isGlobal">Whether the value becomes (part of) a global variable</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>True if the value is too long</returns>
+    private async Task<bool> IsValueTooLongAsync(Commands.Code code, string expression, string varName, bool isGlobal, CancellationToken cancellationToken)
+    {
+        try
+        {
+            (bool resolved, object? value) = await expressions.TryEvaluateLocallyAsync(code, expression, cancellationToken);
+            return resolved && VariableValueLength.IsTooLong(value, varName, isGlobal);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            // The firmware reports its own error for an expression that the SBC cannot evaluate. Besides CodeParserException the port
+            // of its parser can throw others for some literals (UnitTests/Machine/MetaExpressionParserErrors.cs)
+            return false;
+        }
     }
 
     /// <summary>
