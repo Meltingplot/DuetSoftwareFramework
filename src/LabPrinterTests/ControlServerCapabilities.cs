@@ -84,7 +84,7 @@ public class ControlServerCapabilities : LabTest
 
         await Lab.RunOnSbcAsync($"""
             set -e
-            sudo -n install -d -m 0755 {TestDirectory}
+            {SbcDirectories.CreateRootDirectoryScript(TestDirectory)}
             printf 'lab test: readable by dsf\n' | sudo -n tee {TestDirectory}/readable >/dev/null
             sudo -n chmod 0644 {TestDirectory}/readable
             printf 'lab test: root only\n' | sudo -n tee {TestDirectory}/root-only >/dev/null

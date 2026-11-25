@@ -25,7 +25,7 @@ public class ControlServerStartup : LabTest
     /// <summary>
     /// Directory of the probe, removed after each case
     /// </summary>
-    private const string Directory = "/var/tmp/lab-tests/dcs-probe";
+    private const string Directory = $"{SbcDirectories.LabTests}/dcs-probe";
 
     private const string GpioChipDevice = $"{Directory}/no-gpiochip";
     private const string OtherGpioChipDevice = $"{Directory}/other-gpiochip";
@@ -81,15 +81,19 @@ public class ControlServerStartup : LabTest
               err=$(sudo -n sha256sum /run/dsf/dcs.err 2> /dev/null) || err=none
               echo "pid $(systemctl show -p MainPID --value duetcontrolserver), socket $(sudo -n stat -c %i /run/dsf/dcs.sock 2> /dev/null || echo none), dcs.err ${err%% *}"
             }
-            [ -d /var/tmp/lab-tests ] && parent=keep || parent=remove
+            [ -d {{SbcDirectories.LabTests}} ] && parent=keep || parent=remove
+            {{SbcDirectories.CreateRootDirectoryScript(SbcDirectories.LabTests)}}
             before=$(state)
             sudo -n rm -rf "$dir"
-            sudo -n mkdir -p "$dir/sd" "$dir/run"
+            {{SbcDirectories.CreateRootDirectoryScript(Directory)}}
+            sudo -n mkdir "$dir/sd" "$dir/run"
             sudo -n tee "$dir/config.json" > /dev/null <<'JSON'
             {{config}}
             JSON
             echo '{ "LogLevel": ' | sudo -n tee "$dir/invalid.json" > /dev/null
-            sudo -n chown -R dsf:dsf "$dir"
+            # The probe directory stays root's, because root writes the output file and the blank device stand-in into it; dsf gets only the
+            # directories and the settings files that DCS writes
+            sudo -n chown dsf:dsf "$dir/sd" "$dir/run" "$dir/config.json" "$dir/invalid.json"
             sudo -n unshare --mount --propagation private /bin/bash -s -- "$dir" {{args}} <<'PROBE'
             dir=$1
             shift
@@ -123,7 +127,7 @@ public class ControlServerStartup : LabTest
             echo "BEFORE $before"
             echo "AFTER $(state)"
             sudo -n rm -rf "$dir"
-            [ $parent = keep ] || sudo -n rmdir /var/tmp/lab-tests 2> /dev/null || true
+            [ $parent = keep ] || sudo -n rmdir {{SbcDirectories.LabTests}} 2> /dev/null || true
             """);
 
         string[] lines = report.Split('\n');

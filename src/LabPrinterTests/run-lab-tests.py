@@ -38,6 +38,11 @@ SIDE_LOAD_DLLS = ['DuetAPI.dll', 'DuetControlServer.dll', 'DuetSharedLibrary.dll
 SIDE_LOAD_WEB_DLLS = ['DuetAPIClient.dll', 'DuetWebServer.dll']
 # Read by the fault injection build when DCS starts, see SPI.PlainLinkFile
 PLAIN_LINK_FILE = f'{SIDE_LOAD_DIR}/spi-plain-link'
+# Root writes into the side-load directory below the world-writable /var/tmp, so it must be a directory of root and no symbolic link. The sticky
+# bit of /var/tmp keeps other users from replacing it once it is checked (SbcDirectories.cs)
+CREATE_SIDE_LOAD_DIR = (f"sudo -n mkdir -m 0755 {SIDE_LOAD_DIR} 2> /dev/null || true\n"
+                        f"[ \"$(stat -c '%u %F %a' {SIDE_LOAD_DIR} 2> /dev/null)\" = '0 directory 755' ] || "
+                        f"{{ echo '{SIDE_LOAD_DIR} is not a directory of root with mode 755' >&2; exit 1; }}")
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -450,7 +455,7 @@ def main() -> int:
                 for dll in SIDE_LOAD_DLLS + SIDE_LOAD_WEB_DLLS:
                     say(f'Uploading {dll}')
                     data = base64.b64encode((Path(out) / ('web' if dll in SIDE_LOAD_WEB_DLLS else '') / dll).read_bytes()).decode()
-                    if not sbc_ok(f"sudo -n mkdir -p {SIDE_LOAD_DIR}\nbase64 -d <<'DLL' | sudo -n tee {SIDE_LOAD_DIR}/{dll} > /dev/null\n{data}\nDLL\n"):
+                    if not sbc_ok(f"{CREATE_SIDE_LOAD_DIR}\nbase64 -d <<'DLL' | sudo -n tee {SIDE_LOAD_DIR}/{dll} > /dev/null\n{data}\nDLL\n"):
                         raise RuntimeError(f'Uploading {dll} failed')
             # The flag must be there before DCS starts, and a run without it must not find one that an interrupted run left behind
             sbc_ok(''.join(f'sudo -n mount --bind {SIDE_LOAD_DIR}/{dll} /opt/dsf/bin/{dll}\n' for dll in SIDE_LOAD_DLLS + SIDE_LOAD_WEB_DLLS) +
