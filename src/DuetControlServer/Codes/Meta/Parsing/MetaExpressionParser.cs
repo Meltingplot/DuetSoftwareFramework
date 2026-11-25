@@ -92,7 +92,15 @@ public sealed class MetaExpressionParser
     public object? Parse(bool evaluate = true)
     {
         object? result = null;
-        ParseInternal(ref result, evaluate, 0);
+        try
+        {
+            ParseInternal(ref result, evaluate, 0);
+        }
+        catch (CodeParserException e) when (e.Message.StartsWith(ExpressionErrors.NestingTooDeep, StringComparison.Ordinal))
+        {
+            // Throw the refusal again from here, so that its stack trace does not list every nesting level
+            throw new CodeParserException(e.Message);
+        }
         return result;
     }
 
@@ -119,7 +127,7 @@ public sealed class MetaExpressionParser
         // Every recursion passes through here. Refuse an expression nested too deeply before it overflows the stack, as RRF does in CheckStack
         if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
         {
-            ThrowParseException("Expression nesting too deep");
+            ThrowParseException(ExpressionErrors.NestingTooDeep);
         }
 
         // Start by looking for a unary operator or opening bracket

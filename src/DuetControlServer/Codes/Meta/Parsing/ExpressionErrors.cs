@@ -30,4 +30,9 @@ internal static class ExpressionErrors
     /// An array literal has more elements than the firmware parses (RRF src/GCodes/GCodeBuffer/ExpressionParser.cpp, ParseGeneralArray)
     /// </summary>
     public const string TooManyArrayElements = "too many array elements";
+
+    /// <summary>
+    /// An expression is nested deeper than the stack allows (RRF src/GCodes/GCodeBuffer/ExpressionParser.cpp, CheckStack)
+    /// </summary>
+    public const string NestingTooDeep = "Expression nesting too deep";
 }
