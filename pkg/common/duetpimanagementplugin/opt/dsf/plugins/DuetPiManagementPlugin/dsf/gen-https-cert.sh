@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# The files go to /opt/dsf/conf, where the dsf user may put a symlink in place of each of them. They belong to dsf in the end anyway,
+# so they are made with the rights of dsf and root neither writes nor changes anything there
+if [ "$(id -u)" -eq 0 ]; then
+	exec setpriv --reuid=dsf --regid=dsf --clear-groups -- "$0" "$@"
+fi
+
 openssl req \
 	-x509 \
 	-newkey rsa:4096 \
@@ -33,5 +39,4 @@ openssl req \
 openssl x509 -noout -text -in /opt/dsf/conf/https.crt
 openssl pkcs12 -export -out /opt/dsf/conf/https.pfx --inkey /opt/dsf/conf/https.key -in /opt/dsf/conf/https.crt -passout pass:
 
-chown dsf.dsf /opt/dsf/conf/https.*
 chmod 660 /opt/dsf/conf/https.*
