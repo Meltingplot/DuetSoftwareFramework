@@ -2,7 +2,7 @@
 """Run the lab printer tests through a plink tunnel, show each result as it comes and evaluate the run at the end, see README.md
 
 Usage: run-lab-tests.py [--side-load [--fault-injection [--plain-link]]] [dotnet test arguments...]
-  --side-load        publish DCS from this tree and bind-mount its DLLs over the image's copies for the run
+  --side-load        publish DCS and DWS from this tree and bind-mount their DLLs over the image's copies for the run
   --fault-injection  publish the test-only build that corrupts single SPI exchanges on request (SpiFaultInjection.cs)
   --plain-link       make that build keep the plain link: it does not ask RRF for the link capabilities (SPI.PlainLinkFile)
   Example:           run-lab-tests.py --side-load --filter "TestCategory!=Restart"
@@ -34,8 +34,15 @@ SBC_USER = os.environ.get('SBC_USER', 'mpadmin')
 TUNNEL_PORT = int(os.environ.get('TUNNEL_PORT', '18080'))
 SIDE_LOAD_DIR = '/var/tmp/lab-tests'
 SIDE_LOAD_DLLS = ['DuetAPI.dll', 'DuetControlServer.dll', 'DuetSharedLibrary.dll']
+# The web server of the image must match DCS: since upstream 61df011ec it, not DCS, refuses to delete a volume root
+SIDE_LOAD_WEB_DLLS = ['DuetAPIClient.dll', 'DuetWebServer.dll']
 # Read by the fault injection build when DCS starts, see SPI.PlainLinkFile
 PLAIN_LINK_FILE = f'{SIDE_LOAD_DIR}/spi-plain-link'
+# Root writes into the side-load directory below the world-writable /var/tmp, so it must be a directory of root and no symbolic link. The sticky
+# bit of /var/tmp keeps other users from replacing it once it is checked (SbcDirectories.cs)
+CREATE_SIDE_LOAD_DIR = (f"sudo -n mkdir -m 0755 {SIDE_LOAD_DIR} 2> /dev/null || true\n"
+                        f"[ \"$(stat -c '%u %F %a' {SIDE_LOAD_DIR} 2> /dev/null)\" = '0 directory 755' ] || "
+                        f"{{ echo '{SIDE_LOAD_DIR} is not a directory of root with mode 755' >&2; exit 1; }}")
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -133,6 +140,9 @@ result["sideLoadDir"] = os.path.exists("/var/tmp/lab-tests")
 result["ota"] = run("systemctl", "is-active", "mp-ota-gate.timer").strip()
 result["trigger30"] = subprocess.run(["sudo", "-n", "test", "-e", "/opt/dsf/sd/sys/trigger30.g"]).returncode == 0
 result["testMacros"] = subprocess.run(["sudo", "-n", "test", "-e", "/opt/dsf/sd/macros/lab-tests"]).returncode == 0
+result["testJobs"] = subprocess.run(["sudo", "-n", "test", "-e", "/opt/dsf/sd/gcodes/lab-tests"]).returncode == 0
+result["runOnce"] = subprocess.run(["sudo", "-n", "test", "-e", "/opt/dsf/sd/sys/runonce.g"]).returncode == 0
+result["testDirs"] = [path for path in ("/var/tmp/lab-capabilities", "/run/lab-sbc-files") if os.path.lexists(path)]
 try:
     key = json.load(urllib.request.urlopen("http://localhost/machine/connect?password=reprap", timeout=5))["sessionKey"]
     request = urllib.request.Request("http://localhost/machine/code", data=b"M122", headers={"X-Session-Key": key}, method="POST")
@@ -250,18 +260,20 @@ def read_trx(trx: Path) -> list:
 FINDINGS = [
     'Lost connection to Duet', 'Maximum number of SPI transfer retries exceeded', 'timeout while waiting for TfrRdy pin',
     'No transfer with RepRapFirmware completed', 'Failed to start macro file', 'Out-of-order reply', 'Failed to process code in stage',
-    'DivideByZeroException', 'transferDump',
+    'DivideByZeroException', 'transferDump', 'Internal Error in', "State 'stop-sigterm' timed out",
 ]
 # Expected once per RRF reboot
 PER_REBOOT = ['Connection to controller has been reset', 'RepRapFirmware has left the extended link', 'Restarting full transfer because']
 # Expected in some test cases
 IN_SOME_TESTS = ['Failed to find corresponding state for code M291 P"never"', 'Machine is halted', 'SPI fault injected', 'Bad header CRC',
-                 'Bad data CRC', 'Sending transfer #', 'keeping the plain link', 'RepRapFirmware is exchanging the data']
+                 'Bad data CRC', 'Sending transfer #', 'keeping the plain link', 'RepRapFirmware is exchanging the data',
+                 'Cannot store excessively long object model response', 'Invalid key global in the object model',
+                 'Expression nesting too deep']
 # Known, cause or assessment open
-KNOWN_OPEN = ["State 'stop-sigterm' timed out", 'Failed to find query for object model response', 'Aborting orphaned macro file daemon.g',
+KNOWN_OPEN = ['Failed to find query for object model response', 'Aborting orphaned macro file daemon.g',
               "Daemon: Out-of-order reply"]
 # Outside the plan, only noted
-NOTED = ['Client with outdated protocol version', 'has no value', 'predicted maximum temperature']
+NOTED = ['Client with outdated protocol version', 'Resending packet #', 'has no value', 'predicted maximum temperature']
 # Expected in some test cases as well: lines that RefusedMacroPaths causes on purpose, with the refused paths it uses. They are left out of
 # the findings
 REFUSED_PATH_TESTS = ['Failed to start macro file 99:/macros/lab-tests/refused/', 'Failed to start macro file 0:/../lab-tests-refused-']
@@ -378,6 +390,9 @@ def evaluate(start: dict, end: dict, journal: str, results: list, output_log: Pa
         ('mp-ota-gate.timer active', end.get('ota') == 'active'),
         ('sys/trigger30.g removed', not end.get('trigger30', True)),
         ('0:/macros/lab-tests removed', not end.get('testMacros', True)),
+        ('0:/gcodes/lab-tests removed', not end.get('testJobs', True)),
+        ('sys/runonce.g as before', end.get('runOnce') == start.get('runOnce')),
+        ('SBC test directories removed', end.get('testDirs', ['?']) == []),
         ('printer idle, no job', end.get('status') == 'idle' and not end.get('job')),
         ('expansion boards running', bool(end.get('boards')) and all(state == 'running' for state in end.get('boards', []))),
         (f'versions as before (DSF {end.get("dsf")}, RRF {end.get("rrf")})', end.get('dsf') == start.get('dsf') and end.get('rrf') == start.get('rrf')),
@@ -440,21 +455,24 @@ def main() -> int:
                 subprocess.run(['dotnet', 'publish', str(ROOT / 'src/DuetControlServer/DuetControlServer.csproj'), '-c', 'Release', '-r', 'linux-arm64',
                                 '--self-contained', 'false', '-o', out, '--nologo', '-v', 'quiet',
                                 f'-p:SpiFaultInjection={"true" if fault else "false"}'], check=True, env=env)
-                for dll in SIDE_LOAD_DLLS:
+                say(f'Publishing DWS from {ROOT}')
+                subprocess.run(['dotnet', 'publish', str(ROOT / 'src/DuetWebServer/DuetWebServer.csproj'), '-c', 'Release', '-r', 'linux-arm64',
+                                '--self-contained', 'false', '-o', f'{out}/web', '--nologo', '-v', 'quiet'], check=True, env=env)
+                for dll in SIDE_LOAD_DLLS + SIDE_LOAD_WEB_DLLS:
                     say(f'Uploading {dll}')
-                    data = base64.b64encode((Path(out) / dll).read_bytes()).decode()
-                    if not sbc_ok(f"sudo -n mkdir -p {SIDE_LOAD_DIR}\nbase64 -d <<'DLL' | sudo -n tee {SIDE_LOAD_DIR}/{dll} > /dev/null\n{data}\nDLL\n"):
+                    data = base64.b64encode((Path(out) / ('web' if dll in SIDE_LOAD_WEB_DLLS else '') / dll).read_bytes()).decode()
+                    if not sbc_ok(f"{CREATE_SIDE_LOAD_DIR}\nbase64 -d <<'DLL' | sudo -n tee {SIDE_LOAD_DIR}/{dll} > /dev/null\n{data}\nDLL\n"):
                         raise RuntimeError(f'Uploading {dll} failed')
             # The flag must be there before DCS starts, and a run without it must not find one that an interrupted run left behind
-            sbc_ok(''.join(f'sudo -n mount --bind {SIDE_LOAD_DIR}/{dll} /opt/dsf/bin/{dll}\n' for dll in SIDE_LOAD_DLLS) +
+            sbc_ok(''.join(f'sudo -n mount --bind {SIDE_LOAD_DIR}/{dll} /opt/dsf/bin/{dll}\n' for dll in SIDE_LOAD_DLLS + SIDE_LOAD_WEB_DLLS) +
                    (f'sudo -n touch {PLAIN_LINK_FILE}\n' if plain else f'sudo -n rm -f {PLAIN_LINK_FILE}\n') +
-                   'sudo -n systemctl restart duetcontrolserver || true\n')
+                   'sudo -n systemctl restart duetcontrolserver || true\nsudo -n systemctl restart duetwebserver || true\n')
             side_loaded = True
             if not sbc_ok(RESET_FIRMWARE):
                 raise RuntimeError('The printer did not become idle after the side-load')
             revision = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True).stdout.strip()
             dirty = subprocess.run(['git', '-C', str(ROOT), 'diff', '--quiet', 'HEAD', '--', 'src']).returncode != 0
-            say(f'Side-loaded {" ".join(SIDE_LOAD_DLLS)} from {revision}{" with uncommitted changes" if dirty else ""}{", fault injection build" if fault else ""}'
+            say(f'Side-loaded {" ".join(SIDE_LOAD_DLLS + SIDE_LOAD_WEB_DLLS)} from {revision}{" with uncommitted changes" if dirty else ""}{", fault injection build" if fault else ""}'
                 f'{" on the plain link" if plain else ""}')
 
         tunnel = subprocess.Popen([sys.executable, '-I', str(HERE / 'tunnel.py'), PLINK, JUMP_HOST, f'{SBC}:80', str(TUNNEL_PORT)])
@@ -484,8 +502,8 @@ def main() -> int:
             say('Removing the side-loaded DLLs')
             # A plain umount reports the DLLs as busy. The first new instance may fail to connect, e.g. while RRF still waits for the
             # old one, and systemd starts it again
-            sbc_ok(''.join(f'findmnt -n /opt/dsf/bin/{dll} > /dev/null && sudo -n umount -l /opt/dsf/bin/{dll}\n' for dll in SIDE_LOAD_DLLS) +
-                   f'sudo -n rm -rf {SIDE_LOAD_DIR}\nsudo -n systemctl restart duetcontrolserver || true\n')
+            sbc_ok(''.join(f'findmnt -n /opt/dsf/bin/{dll} > /dev/null && sudo -n umount -l /opt/dsf/bin/{dll}\n' for dll in SIDE_LOAD_DLLS + SIDE_LOAD_WEB_DLLS) +
+                   f'sudo -n rm -rf {SIDE_LOAD_DIR}\nsudo -n systemctl restart duetcontrolserver || true\nsudo -n systemctl restart duetwebserver || true\n')
             if not sbc_ok(RESET_FIRMWARE):
                 rc = rc or 1
         if ota_stopped:

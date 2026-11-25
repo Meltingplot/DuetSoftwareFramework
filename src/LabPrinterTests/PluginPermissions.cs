@@ -14,13 +14,14 @@ using NUnit.Framework;
 namespace LabPrinterTests;
 
 /// <summary>
-/// IPC permissions of the installed plugins and of DuetWebServer
+/// IPC permissions of the installed plugins, of DuetWebServer and of other programs on the SBC
 /// </summary>
 /// <remarks>
 /// Before #135 RequiredPermissionsAttribute.Check granted every command, because Enum.HasFlag(SbcPermissions.None) is always true. Now a plugin gets only
 /// the commands and connection modes its manifest covers, and DCS refuses the rest with "Insufficient permissions" (Connection.cs:319-326, IPC/Server.cs:235-267).
-/// These tests guard the fix: they fail if it refuses something that the plugins on the lab printer or DuetWebServer need. They cannot fail without the
-/// fix, which refuses nothing
+/// PluginsStartWithTheirManifestPermissions and WebServerPassesPermissionCheckOfSystemPackages guard the fix: they fail if it refuses something that the
+/// plugins on the lab printer or DuetWebServer need. They cannot fail without the fix, which refuses nothing. ExternalProgramIsRefusedPackageCommands
+/// fails without it
 /// </remarks>
 [TestFixture]
 public class PluginPermissions : LabTest
@@ -143,6 +144,57 @@ public class PluginPermissions : LabTest
             Assert.That(status, Is.EqualTo(HttpStatusCode.InternalServerError));
             Assert.That(body, Does.StartWith("Failed to uninstall system package (exit code").Or.EqualTo("Cannot perform command because the plugin service (root) is not started"));
         }
+    }
+
+    /// <summary>
+    /// IPC client that runs as root only to drop its rights: it becomes nobody with nobody's group, and dsf as its only supplementary group. That group
+    /// lets it reach the socket: /run/dsf is 2770 dsf:dsf (pkg/common/duetcontrolserver/usr/lib/tmpfiles.d/duetcontrolserver.conf:1) and DCS creates
+    /// the socket there with UMask=0002 (duetcontrolserver.service:14). DCS takes uid and gid of the peer from SO_PEERCRED (Connection.cs:81), which are
+    /// neither root (:84) nor dsf (:162), and the process is no plugin and has no plugin as ancestor (:130-156), so it gets the permissions of an external
+    /// program: all but SuperUser and ServicePlugins (:176, :230-239). ResolvePath needs CommandExecution or FileSystemAccess
+    /// (DuetAPI/Commands/Files/ResolvePath.cs:8), so it shows that the client is connected as such a program
+    /// </summary>
+    private const string ExternalProgramScript = """
+        dsf = grp.getgrnam("dsf").gr_gid
+        nobody = pwd.getpwnam("nobody")
+        os.setgroups([dsf])
+        os.setgid(nobody.pw_gid)
+        os.setuid(nobody.pw_uid)
+        ids = {"uid": os.getuid(), "gid": os.getgid(), "groups": os.getgroups(), "dsfGid": dsf}
+        ipc = Ipc()
+        control = ipc.request({"command": "ResolvePath", "path": "0:/sys"}, 10)
+        refused = ipc.request({"command": "UninstallSystemPackage", "package": ARGS["package"]}, 60)
+        finish({"ids": ids, "control": control, "refused": refused})
+        """;
+
+    /// <summary>
+    /// An external program, i.e. an IPC client that is neither root, nor dsf, nor a plugin, is refused UninstallSystemPackage, which needs SuperUser or
+    /// ServicePlugins (DuetAPI/Commands/Packages/UninstallSystemPackage.cs:8). DCS checks the permission before it creates the command
+    /// (IPC/Connection.cs:670, :320-326) and answers <c>UnauthorizedAccessException</c> "Insufficient permissions"; it logs "IPC#n: Failed to receive
+    /// command" as an error (IPC/Processors/Command.cs:150).
+    /// Without #135 <c>RequiredPermissionsAttribute.Check</c> looped over every SbcPermissions value including None and returned true at None
+    /// (PR #135 diff of RequiredPermissionsAttribute.cs; :25 now), so the command ran: with root plugin support off, as on the CHX, DCS answered
+    /// <c>NotSupportedException</c> "Root plugin support has been disabled" (Commands/Packages/UninstallSystemPackage.cs:23-26); with it on, the root
+    /// plugin service ran dpkg -r with a name no package can have (see <see cref="NoSuchPackage"/>). Nothing changes on the machine either way.
+    /// Upstream still has the loop. The plugin path of the same check cannot be reached from a test, it would have to run inside a plugin's process tree.
+    /// Deterministic, one run catches it
+    /// </summary>
+    [Test]
+    public async Task ExternalProgramIsRefusedPackageCommands()
+    {
+        JsonElement result = await G3Helpers.RunPythonAsync(ExternalProgramScript, new { package = NoSuchPackage }, 120);
+        TestContext.Progress.WriteLine($"Script: {result}");
+
+        JsonElement ids = result.GetProperty("ids"), control = result.GetProperty("control"), refused = result.GetProperty("refused");
+        Assert.That(ids.GetProperty("uid").GetInt32(), Is.Not.Zero, "The client did not drop root");
+        Assert.That(ids.GetProperty("gid").GetInt32(), Is.Not.Zero.And.Not.EqualTo(ids.GetProperty("dsfGid").GetInt32()), "The client runs with group root or dsf");
+        Assert.That(G3Helpers.IsSuccess(control), Is.True, $"ResolvePath of an external program: {control}");
+        Assert.Multiple(() =>
+        {
+            Assert.That(G3Helpers.IsSuccess(refused), Is.False, $"UninstallSystemPackage of an external program succeeded: {refused}");
+            Assert.That((G3Helpers.GetString(refused, "errorType"), G3Helpers.GetString(refused, "errorMessage")),
+                Is.EqualTo(("UnauthorizedAccessException", "Insufficient permissions")), $"UninstallSystemPackage of an external program: {refused}");
+        });
     }
 
     /// <summary>
