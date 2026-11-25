@@ -12,7 +12,7 @@ namespace LabPrinterTests;
 /// <summary>
 /// M98.1 S<n> starts a macro on the code channel with index n in inputs[], so that a trigger macro can start something blocking without holding
 /// the trigger channel (Duet3D/RepRapFirmware#1337). The caller checks inputs[] before. If a code took the channel in the meantime, M98.1 W5000
-/// waits up to 5 s for it and then returns a warning ('result' 1). Without W the macro would wait for the channel instead of the caller
+/// waits up to 5 s for it and then returns a warning ('result' 1). Without W (W0) it would wait until the channel is free
 /// </summary>
 /// <remarks>
 /// Uses a temporary trigger that the machine configuration does not use and deletes it again. The macro only waits, nothing moves or heats

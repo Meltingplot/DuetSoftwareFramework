@@ -67,7 +67,7 @@ public class MCodeHandler(
 {
     /// <summary>
     /// Makes the check whether a code channel is free and the start of the macro of M98.1 one step,
-    /// so that two macros waiting for the same channel cannot both find it free
+    /// so that two callers waiting for the same channel cannot both find it free
     /// </summary>
     private readonly SemaphoreSlim _macroStartLock = new(1, 1);
 
@@ -637,8 +637,7 @@ public class MCodeHandler(
 
             // Flag current macro file as (not) pausable or start a macro on another code channel.
             // M98.1 S<n> starts it on the code channel with index n in inputs[], all other parameters except W are the same as for M98.
-            // With W<ms> M98.1 waits up to that long for a busy channel and then returns a warning, so that calls cannot pile up.
-            // With W0 (default) M98.1 returns at once, also when the channel is busy, and the macro waits for the channel without limit
+            // M98.1 does not wait for the macro, but for a busy channel: with W0 (default) until it is free, with W<ms> up to that long, then it returns a warning
             case 98:
                 {
                     if (code.MinorNumber == 1)
@@ -706,26 +705,15 @@ public class MCodeHandler(
                             macroCode.MajorNumber = 98;
                             macroCode.Parameters = parameters;
 
-                            if (waitTime > 0)
+                            // The caller waits for a busy channel, so it learns whether the macro has started and its calls cannot pile up
+                            long waitStart = Stopwatch.GetTimestamp();
+                            while (!await TryStartMacroAsync(macroCode, cancellationToken))
                             {
-                                // The caller waits, so it learns whether the macro has started
-                                long waitStart = Stopwatch.GetTimestamp();
-                                while (!await TryStartMacroAsync(macroCode, cancellationToken))
+                                if (waitTime > 0 && Stopwatch.GetElapsedTime(waitStart) >= TimeSpan.FromMilliseconds(waitTime))
                                 {
-                                    if (Stopwatch.GetElapsedTime(waitStart) >= TimeSpan.FromMilliseconds(waitTime))
-                                    {
-                                        return new Message(MessageType.Warning, $"Macro file {fileName} not started because code channel {channel} is busy");
-                                    }
-                                    await Task.Delay(10, cancellationToken);
+                                    return new Message(MessageType.Warning, $"Macro file {fileName} not started because code channel {channel} is busy");
                                 }
-                                return new Message();
-                            }
-
-                            // The macro waits instead of the caller. From now on it belongs to the other channel, so a reset of that channel cancels it like its other pending codes
-                            macroCode.ResetCancellationToken();
-                            if (!await TryStartMacroAsync(macroCode, macroCode.CancellationToken))
-                            {
-                                _ = StartMacroWhenChannelIsFreeAsync(macroCode, fileName);
+                                await Task.Delay(10, cancellationToken);
                             }
                             return new Message();
                         }
@@ -1573,14 +1561,15 @@ public class MCodeHandler(
     /// Start the macro of M98.1 if its code channel is free
     /// </summary>
     /// <param name="macroCode">M98 for the other code channel</param>
-    /// <param name="cancellationToken">Cancellation token of whoever waits for the channel</param>
+    /// <param name="cancellationToken">Cancellation token of the caller</param>
     /// <returns>Whether the macro has been started</returns>
     private async ValueTask<bool> TryStartMacroAsync(Commands.Code macroCode, CancellationToken cancellationToken)
     {
         await _macroStartLock.WaitAsync(cancellationToken);
         try
         {
-            if (!IsChannelFree(macroCode))
+            // IsIdle alone does not do because a message box waiting for acknowledgement is on a stack level without a file
+            if (channelManager.IsWaitingForAcknowledgment(macroCode.Channel) || !codeProcessor.Processors.Value[(int)macroCode.Channel].IsIdle(macroCode))
             {
                 return false;
             }
@@ -1592,41 +1581,6 @@ public class MCodeHandler(
         finally
         {
             _macroStartLock.Release();
-        }
-    }
-
-    /// <summary>
-    /// Whether the code channel of a macro started by M98.1 is free.
-    /// IsIdle alone does not do because a message box waiting for acknowledgement is on a stack level without a file
-    /// </summary>
-    /// <param name="macroCode">M98 for the other code channel</param>
-    /// <returns>Whether the channel is free</returns>
-    private bool IsChannelFree(Commands.Code macroCode) =>
-        !channelManager.IsWaitingForAcknowledgment(macroCode.Channel) && codeProcessor.Processors.Value[(int)macroCode.Channel].IsIdle(macroCode);
-
-    /// <summary>
-    /// Let the macro of M98.1 W0 wait for its busy code channel after M98.1 has returned, until the channel is free or reset
-    /// </summary>
-    /// <param name="macroCode">M98 for the other code channel</param>
-    /// <param name="fileName">Macro file for the log</param>
-    /// <returns>Asynchronous task</returns>
-    private async Task StartMacroWhenChannelIsFreeAsync(Commands.Code macroCode, string fileName)
-    {
-        try
-        {
-            do
-            {
-                await Task.Delay(10, macroCode.CancellationToken);
-            }
-            while (!IsChannelFree(macroCode) || !await TryStartMacroAsync(macroCode, macroCode.CancellationToken));
-        }
-        catch (OperationCanceledException)
-        {
-            logger.LogDebug("Macro file {File} for code channel {Channel} has been cancelled before it started", fileName, macroCode.Channel);
-        }
-        catch (Exception e)
-        {
-            logger.LogError(e, "Failed to start macro file {File} on code channel {Channel}", fileName, macroCode.Channel);
         }
     }
 
