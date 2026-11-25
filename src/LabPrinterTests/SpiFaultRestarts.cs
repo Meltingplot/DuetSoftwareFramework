@@ -15,10 +15,8 @@ namespace LabPrinterTests;
 /// Each test costs a DCS restart and M999, which Tim allows unattended
 /// </remarks>
 [TestFixture, Category("FaultInjection"), Explicit("Needs the fault injection build of DCS")]
-public class SpiFaultRestarts : LabTest
+public class SpiFaultRestarts : SpiFaultTest
 {
-    private const string ControlFile = "/var/tmp/lab-tests/spi-fault";
-
     /// <summary>
     /// Leaves the link stuck when it hits the transfer that activates the link capabilities, see UnitTests LinkRecovery.LabFaultInActivationRestartsDcs
     /// </summary>
@@ -123,6 +121,109 @@ public class SpiFaultRestarts : LabTest
             Assert.That(stoppedAt, Is.Not.Null, "systemd did not report that DCS stopped");
             Assert.That(stoppedAt - injectedAt, Is.InRange(55.0, 70.0), "DCS did not stop after SbcRestartTimeout (60 s)");
             Assert.That(Regex.Count(journal, "Link capabilities All are active"), Is.GreaterThanOrEqualTo(1), "The new DCS did not activate the link capabilities");
+        });
+    }
+
+    /// <summary>
+    /// Time the link stays stuck before DCS is stopped, as in the probe of 2026-11-08 (design/lab-test-plan.md:589). It is far below SbcRestartTimeout
+    /// (60 s, Settings.cs:188), after which DCS would stop on its own
+    /// </summary>
+    private const int StuckSeconds = 5;
+
+    /// <summary>
+    /// Longest stop of DCS that counts as ending with the stop. The transfer ends at its next round or after a wait for TfrRdy in progress, which is at most
+    /// SbcConnectionTimeout + SbcTransferTimeout (4.5 s, SPI.cs:1776, Settings.cs:178, :183); measured 0.03 s with the fix (design/lab-test-plan.md:592).
+    /// A regression takes 10 s or 15 s
+    /// </summary>
+    private const double MaxStopSeconds = 6;
+
+    /// <summary>
+    /// A stop of DCS while the SPI link is stuck ends at once. The transfer loop used to wait for ApplicationStopped, which the host fires only after every
+    /// service has stopped, so the stuck transfer kept LinkService from stopping: systemctl restart took 15.14 s and 15.18 s and ended with
+    /// "State 'stop-sigterm' timed out. Killing." and SIGKILL (design/lab-test-plan.md:591). DSF #149 passes the stopping token of the service to
+    /// PerformFullTransfer (LinkService.cs:336, :652), whose loop ends with it (SPI.cs:325). It also sets the shutdown timeout of the host to 10 s
+    /// (Program.cs:177), below TimeoutStopSec=15 (duetcontrolserver.service:8), so a regression of the token alone ends after about 10 s without SIGKILL, and
+    /// one of both after 15 s with SIGKILL. The test therefore asserts the time of the stop, not only the missing SIGKILL, and names which one it was.
+    /// The link is made stuck as by <see cref="StuckLinkRestartsDcs"/>: the activation fault and a watchdog reset; it is stopped <see cref="StuckSeconds"/> s
+    /// after the injection, long before DCS would stop on its own. The time is the one DCS spent deactivating, from ActiveExitTimestampMonotonic to
+    /// InactiveEnterTimestampMonotonic of the unit; the time systemctl stop took is the fallback.
+    /// StuckLinkRestartsDcs does not show this, because there DCS stops itself after SbcRestartTimeout (SPI.cs:329-332) before systemd stops it.
+    /// Deterministic as far as the link gets stuck (2 of 2 on 2026-11-07, census LabFaultInActivationRestartsDcs); a run in which it does not is inconclusive.
+    /// Costs a watchdog reset (M122 P1001), a DCS stop and start and M999, each lost link an emergency stop with ATX off on the fork: 2 in all
+    /// </summary>
+    [Test]
+    public async Task StopWhileTheLinkIsStuck()
+    {
+        string cursor = await Lab.GetJournalCursorAsync(), pid = await Lab.GetControlServerPidAsync();
+        await ArmAsync(ActivationFault);
+        try
+        {
+            await SendCodeAsync("M122 P1001");
+        }
+        catch (Exception e) when (e is OperationCanceledException or HttpRequestException)
+        {
+            // RRF may restart before it replies
+        }
+
+        // One round trip: wait for the injection, let the link stay stuck, then time the stop and start DCS again. Stopping DCS stops the plugin services
+        string report = await Lab.RunOnSbcAsync($"""
+            j="sudo -n journalctl -u duetcontrolserver --after-cursor={cursor} -o cat --no-pager"
+            injected=0
+            for i in $(seq 300); do
+              if $j | grep -qF 'SPI fault injected: {ActivationFault},'; then injected=1; break; fi
+              sleep 0.1
+            done
+            : | sudo -n tee {ControlFile} > /dev/null
+            if [ $injected != 1 ]; then echo NOTINJECTED; exit 0; fi
+            sleep {StuckSeconds}
+            echo "PID $(systemctl show -p MainPID --value duetcontrolserver)"
+            $j | sed -n '/SPI fault injected/,$p' | grep -E 'Lost connection to Duet|Connection to Duet established|Link capabilities .* are active' | head -5
+            start=$(date +%s.%N)
+            sudo -n systemctl stop duetcontrolserver
+            echo "STOPPED $start $(date +%s.%N)"
+            systemctl show -p ActiveExitTimestampMonotonic -p InactiveEnterTimestampMonotonic duetcontrolserver
+            $j | grep -E "stop-sigterm|SIGKILL" | head -5
+            sudo -n systemctl start duetcontrolserver || echo STARTFAILED
+            sudo -n systemctl start duetpluginservice duetpluginservice-root
+            exit 0
+            """);
+        TestContext.Progress.WriteLine(report);
+
+        if (report.Contains("NOTINJECTED"))
+        {
+            await Lab.RecoverAsync();
+            Assert.Fail("The fault did not hit the transfer that activates the link capabilities");
+        }
+        await Lab.ResetHaltedFirmwareAsync();
+        await ReconnectSessionAsync();
+
+        // Stuck means: the same DCS, and after the injection it lost the connection and neither connected again nor activated the capabilities
+        string pidBeforeStop = Regex.Match(report, @"^PID (\d+)", RegexOptions.Multiline).Groups[1].Value;
+        string afterInjection = report[report.IndexOf("PID ", StringComparison.Ordinal)..];
+        if (pidBeforeStop != pid || !afterInjection.Contains("Lost connection to Duet", StringComparison.Ordinal) ||
+            afterInjection.Contains("Connection to Duet established", StringComparison.Ordinal) || Regex.IsMatch(afterInjection, "Link capabilities .* are active"))
+        {
+            Assert.Inconclusive($"The link was not stuck when DCS was stopped (PID {pid} before, {pidBeforeStop} at the stop), so this run shows nothing");
+        }
+
+        // The time DCS spent deactivating, from systemd's timestamps of the unit (microseconds). systemctl stop also waits for the plugin services,
+        // which stop with DCS (PartOf=duetcontrolserver.service, duetpluginservice.service:3), so its own time is only the fallback
+        Match stopped = Regex.Match(report, @"^STOPPED (\d+\.\d+) (\d+\.\d+)", RegexOptions.Multiline);
+        Assert.That(stopped.Success, Is.True, "systemctl stop did not return");
+        double wallSeconds = double.Parse(stopped.Groups[2].Value, CultureInfo.InvariantCulture) - double.Parse(stopped.Groups[1].Value, CultureInfo.InvariantCulture);
+        long.TryParse(Regex.Match(report, @"^ActiveExitTimestampMonotonic=(\d+)", RegexOptions.Multiline).Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out long activeExit);
+        long.TryParse(Regex.Match(report, @"^InactiveEnterTimestampMonotonic=(\d+)", RegexOptions.Multiline).Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out long inactiveEnter);
+        double stopSeconds = (activeExit > 0 && inactiveEnter >= activeExit) ? (inactiveEnter - activeExit) / 1e6 : wallSeconds;
+        bool killed = report.Contains("stop-sigterm", StringComparison.Ordinal) || report.Contains("SIGKILL", StringComparison.Ordinal);
+        TestContext.Progress.WriteLine($"DCS stopped {stopSeconds:F2} s after systemctl stop while the link was stuck (systemctl stop returned after {wallSeconds:F2} s)" +
+            (killed ? ", systemd killed it" : ""));
+        Assert.Multiple(() =>
+        {
+            Assert.That(stopSeconds, Is.LessThanOrEqualTo(MaxStopSeconds),
+                "DCS did not stop at once while the link was stuck, the transfer did not end with the stopping token (#149). " +
+                (killed ? "systemd killed it, so the shutdown timeout of 10 s of the host (Program.cs:177) did not end it either"
+                    : "About 10 s means that the shutdown timeout of the host ended it (Program.cs:177)"));
+            Assert.That(killed, Is.False, "systemd killed DCS: State 'stop-sigterm' timed out or SIGKILL in the journal");
         });
     }
 
