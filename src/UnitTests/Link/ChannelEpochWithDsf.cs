@@ -466,6 +466,12 @@ public class ChannelEpochWithDsf
         Assert.That(Messages(host), Has.One.EqualTo("after the abort"));
     }
 
+    /// <summary>
+    /// The message of a G28 whose homing file an abort popped: the routine of the abort has cleared toBeHomed, so homing2 names no axis
+    /// (GCodes4.cpp:398-405), and DSF shows the stale reply without its trailing space (Processor.ShowStaleReply)
+    /// </summary>
+    private const string FailedToHomeAfterAbort = "Error: Failed to home axes";
+
     private static string[] Messages(FakeFirmwareHost host)
     {
         using (host.Model.AccessReadOnly())
@@ -486,13 +492,13 @@ public class ChannelEpochWithDsf
 
     [TestCase(true)]
     [TestCase(false)]
-    public async Task ToolChangeThatSurvivesAnAbortRunsItsOtherMacros(bool codeReplySurplus)
+    public async Task ToolChangeEndsWhenAnAbortPopsItsMacro(bool codeReplySurplus)
     {
-        // Decision of 2026-11-10 on LA-25 (C): a T-code at the base level survives an abort inside tfree, as in standalone RRF, and RRF asks for tpre and
-        // tpost as system macros with the new epoch. DSF runs them in order. G4 P1, which ran in tfree at the abort, goes on in RRF and ends on the
-        // level of tpre. A code sent after the abort runs after the T-code has ended and gets its own reply: RRF holds it in its ring while the state
-        // machine runs and drops it with the next macro request, DSF suspends it under the system macro and sends it again (v7). No reply completes
-        // another code. The late reply of G4 P1 carries the old epoch, so RRF #46 (codeReplySurplus) does not suppress it and DSF decides by its tag
+        // Owner decision of 2026-11-25 (takes upstream 0ca1dff6c, reverses LA-25 (C) of 2026-11-10): the routine of the abort cleans up the state
+        // machine, which sets the T-code at the base level to toolChangeComplete, so the T-code ends without asking for tpre and tpost. G4 P1, which ran
+        // in tfree at the abort, goes on in RRF and ends on the base level. A code sent after the abort runs after the T-code has ended and gets its own
+        // reply. No reply completes another code. The late reply of G4 P1 carries the old epoch, so RRF #46 (codeReplySurplus) does not suppress it and
+        // DSF decides by its tag
         bool release = false;
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
         {
@@ -507,15 +513,13 @@ public class ChannelEpochWithDsf
         Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetCurrentCode(CodeChannel.HTTP)?.Text == "G4 P1", Timeout), Is.True, "tfree0.g did not run");
         await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
         Task<string> next = host.StartCode("G4 P5");
-        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetSentPackets().Count(packet => packet.Request == FirmwareRequest.ExecuteMacro) == 2, Timeout), Is.True,
-            "T1 did not go on with tpre1.g");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetReceivedCodes(CodeChannel.HTTP).Any(code => code.Text == "G4 P5"), Timeout), Is.True);
         release = true;
 
         Assert.That(await next.WaitAsync(Timeout), Is.EqualTo("reply of G4 P5\n"));
-        Assert.That(ExecutedTexts(host, CodeChannel.HTTP), Is.EqualTo(new[] { "T1", "G4 P1", "G4 P3", "G4 P4", "G4 P5" }));
+        Assert.That(ExecutedTexts(host, CodeChannel.HTTP), Is.EqualTo(new[] { "T1", "G4 P1", "G4 P5" }));
         FakePacket[] requests = [.. host.Firmware.GetSentPackets().Where(packet => packet.Request == FirmwareRequest.ExecuteMacro && packet.Channel == CodeChannel.HTTP)];
-        Assert.That(requests.Select(packet => (packet.Text, packet.IsFromCode, packet.Epoch)),
-            Is.EqualTo(new[] { ("tfree0.g", true, 0), ("tpre1.g", false, 1), ("tpost1.g", false, 1) }));
+        Assert.That(requests.Select(packet => (packet.Text, packet.IsFromCode, packet.Epoch)), Is.EqualTo(new[] { ("tfree0.g", true, 0) }), "T1 went on with tpre1.g");
         Assert.That(host.Firmware.GetSentPackets().Any(packet => packet.IsCodeReply && packet.Text.Length == 0 && packet.RelatedCode?.Text == "T1" && packet.Epoch == 0), Is.True,
             "T1 did not end in RRF with a reply of its own epoch");
 
@@ -532,20 +536,19 @@ public class ChannelEpochWithDsf
         Assert.That(t1Reply ?? string.Empty, Does.Not.Contain("reply of"));
         Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.Zero);
 
-        // The late reply of G4 P1 is of the old epoch and is shown as a message, with and without RRF #46, the empty final reply of T1 is not shown. The
-        // replies of the codes of tpre and tpost are shown as well, as DSF shows the output of every system macro
-        Assert.That(Messages(host).Count(message => message == "reply of G4 P1"), Is.EqualTo(1));
-        Assert.That(Messages(host).Where(message => message != "reply of G4 P1"), Is.EquivalentTo(new[] { "reply of G4 P3", "reply of G4 P4" }));
+        // The late reply of G4 P1 is of the old epoch and is shown as a message, with and without RRF #46, the empty final reply of T1 is not shown
+        Assert.That(Messages(host), Is.EqualTo(new[] { "reply of G4 P1" }));
         Assert.That(host.Firmware.MovementLockOwner, Is.Null);
     }
 
     [TestCase(true)]
     [TestCase(false)]
-    public async Task HomingCodeThatSurvivesAnAbortWithoutHomingAnAxisEndsWithAnError(bool codeReplySurplus)
+    public async Task HomingCodeEndsWithAnErrorWhenAnAbortPopsItsHomingFile(bool codeReplySurplus)
     {
-        // Owner decision D-A: the routine of the abort leaves the state machine alone, so a G28 whose homing file the abort popped goes on in homing2
-        // (GCodes4.cpp:394-413). homex.g did not home X before the abort, so G28 ends with "Failed to home axes XY", a reply of the old epoch. DSF shows
-        // it as an error message that belongs to no code, and the next code gets its own reply. RRF #46 does not suppress it, because it carries a tag
+        // Owner decision of 2026-11-25 (takes upstream 0ca1dff6c, reverses D-A of 2026-11-10): the routine of the abort cleans up the state machine,
+        // which clears toBeHomed (GCodes4.cpp:2059-2062), so a G28 whose homing file the abort popped fails in homing2 (GCodes4.cpp:394-413) with
+        // "Failed to home axes " and no axis, a reply of the old epoch. DSF shows it as an error message that belongs to no code, and the next code gets
+        // its own reply. RRF #46 does not suppress it, because it carries a tag
         bool release = false;
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
         {
@@ -566,17 +569,16 @@ public class ChannelEpochWithDsf
         Assert.That(await next.WaitAsync(Timeout), Does.Not.Contain("home"));
         FakePacket error = host.Firmware.GetSentPackets().Single(packet => packet.IsCodeReply && packet.Text.StartsWith("Failed to home axes"));
         Assert.That(error.Epoch, Is.Zero);
-        Assert.That(Messages(host), Has.One.EqualTo("Error: Failed to home axes XY"), "The error of the old G28 did not reach the user");
+        Assert.That(Messages(host), Has.One.EqualTo(FailedToHomeAfterAbort), "The error of the old G28 did not reach the user");
         Assert.That(host.Firmware.GetSentPackets().Count(packet => packet.Request == FirmwareRequest.ExecuteMacro), Is.EqualTo(1), "G28 asked for homey.g");
         Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.Zero);
     }
 
     [Test]
-    public async Task HomingCodeThatSurvivesAnAbortAfterHomingAnAxisGoesOn()
+    public async Task HomingCodeAbortedAfterHomingAnAxisEndsWithAnError()
     {
-        // Owner decision D-A: homex.g homed X before the abort, so G28 goes on in homing2 and asks for homey.g, as a system macro request of the new
-        // epoch (C2). DSF runs homey.g, G28 ends with an empty reply of the old epoch, which DSF drops, and the code sent after the abort gets its own
-        // reply. No error is shown
+        // As HomingCodeEndsWithAnErrorWhenAnAbortPopsItsHomingFile, but homex.g homed X before the abort. toBeHomed is empty all the same, so G28 fails
+        // in homing2 instead of asking for homey.g, and the code sent after the abort gets its own reply
         bool release = false;
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware =>
         {
@@ -590,23 +592,22 @@ public class ChannelEpochWithDsf
         await host.Services.GetRequiredService<LinkInterface>().AbortAllAsync(CodeChannel.HTTP);
         await IgnoreCancellation(g28);
         Task<string> next = host.StartCode("M115");
-        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetSentPackets().Count(packet => packet.Request == FirmwareRequest.ExecuteMacro) == 2, Timeout), Is.True,
-            "G28 did not go on with homey.g");
+        Assert.That(host.Firmware.WaitUntil(firmware => firmware.GetReceivedCodes(CodeChannel.HTTP).Any(code => code.Text == "M115"), Timeout), Is.True);
         release = true;
 
         Assert.That(await next.WaitAsync(Timeout), Is.EqualTo("\n"));
         FakePacket[] requests = [.. host.Firmware.GetSentPackets().Where(packet => packet.Request == FirmwareRequest.ExecuteMacro)];
-        Assert.That(requests.Select(packet => (packet.Text, packet.IsFromCode, packet.Epoch)), Is.EqualTo(new[] { ("homex.g", true, 0), ("homey.g", false, 1) }));
-        Assert.That(host.Firmware.WaitUntil(firmware => firmware.AxesHomed.Count == 2, Timeout), Is.True, "homey.g did not home Y");
-        Assert.That(host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.Member("G1 H1 Y-300"));
-        Assert.That(Messages(host), Has.None.Contains("home"));
+        Assert.That(requests.Select(packet => (packet.Text, packet.IsFromCode, packet.Epoch)), Is.EqualTo(new[] { ("homex.g", true, 0) }), "G28 asked for homey.g");
+        Assert.That(host.Firmware.AxesHomed, Is.EquivalentTo(new[] { 'X' }));
+        Assert.That(host.Firmware.GetExecutedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.None.EqualTo("G1 H1 Y-300"));
+        Assert.That(Messages(host), Has.One.EqualTo(FailedToHomeAfterAbort), "The error of the old G28 did not reach the user");
         Assert.That(OutOfOrderReplies(host, CodeChannel.HTTP), Is.Zero);
     }
 
     [Test]
     public async Task HomingCodeAbortedBeforeTheFirstCodeOfItsFileEndsWithOneErrorMessage()
     {
-        // As HomingCodeThatSurvivesAnAbortWithoutHomingAnAxisEndsWithAnError, but DSF aborts the channel after it has written MacroStarted for homex.g and before the first
+        // As HomingCodeEndsWithAnErrorWhenAnAbortPopsItsHomingFile, but DSF aborts the channel after it has written MacroStarted for homex.g and before the first
         // code of homex.g. RRF clears macroJustStarted when the abort pops the macro (RRF 67e3c69f0), so the error is a final reply and reaches the user
         // complete as one message, not as the head of a push message that never ends
         await using FakeFirmwareHost host = await FakeFirmwareHost.StartAsync(firmware => firmware.OnCode("G28", _ => FakeReply.Home('X', 'Y')));
@@ -632,7 +633,7 @@ public class ChannelEpochWithDsf
         Assert.That(host.Firmware.GetReceivedCodes(CodeChannel.HTTP).Select(code => code.Text), Has.None.EqualTo("G1 H1 X-300"), "A code of homex.g reached RRF");
         FakePacket error = host.Firmware.GetSentPackets().Single(packet => packet.IsCodeReply && packet.Text.StartsWith("Failed to home axes"));
         Assert.That(error.MessageType.HasFlag(MessageTypeFlags.PushFlag), Is.False);
-        Assert.That(Messages(host), Has.One.EqualTo("Error: Failed to home axes XY"));
+        Assert.That(Messages(host), Has.One.EqualTo(FailedToHomeAfterAbort));
     }
 
     [Test]

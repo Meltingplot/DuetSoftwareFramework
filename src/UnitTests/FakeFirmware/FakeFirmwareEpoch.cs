@@ -338,12 +338,11 @@ public class FakeFirmwareEpoch
     }
 
     [Test]
-    public void ToolChangeGoesOnAfterAnAbortWithSystemMacros()
+    public void ToolChangeEndsAfterAnAbortOfItsMacro()
     {
-        // Decision of 2026-11-10 on LA-25 (C2, C3) and D-A: the routine of the abort leaves the state machine alone (doingToolChange stays set until
-        // toolChangeComplete), so a T-code whose tfree the abort popped goes on as in standalone RRF and asks for tpre and tpost. Both
-        // go out as system macro requests with the new epoch. The codes of tpre carry the new epoch and do not overwrite the stamp of the T-code on
-        // the level below, so the tpost request after tpre is still a system macro request and the final reply of the T-code carries its old epoch
+        // Owner decision of 2026-11-25 (takes upstream 0ca1dff6c, reverses LA-25 (C2, C3) and D-A of 2026-11-10): the routine of the abort cleans up
+        // the state machine, which clears doingToolChange and sets the T-code to toolChangeComplete, so a T-code whose tfree the abort popped ends
+        // without asking for tpre and tpost. Its final reply carries its old epoch and it releases the movement lock
         _firmware.CodeReplySurplus = false;
         _firmware.OnCode("T1", _ => FakeReply.ToolChange("tfree0.g", "tpre1.g", "tpost1.g"));
         _firmware.OnCode("G4", code => FakeReply.Ok($"reply of {code.Text}"));
@@ -357,31 +356,17 @@ public class FakeFirmwareEpoch
         TransferUntil(() => Replies("reply of G4 P1").Length == 1, "tfree0.g did not run");
         Assert.That(_firmware.IsDoingToolChange, Is.True);
 
-        // Abort inside tfree0.g
-        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, T(2)), Is.True);
-        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 2, "T1 did not go on with tpre1.g");
-        Assert.That(_firmware.IsDoingToolChange, Is.True, "The routine cleaned up the state machine, which it must not (owner decision D-A)");
-        FakePacket tpre = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[1];
-        Assert.That((tpre.Text, tpre.IsFromCode, tpre.Tag), Is.EqualTo(("tpre1.g", false, T(2))));
-
-        // tpre1.g runs a code of the new epoch
-        Assert.That(_firmware.WriteMacroStarted(CodeChannel.HTTP, T(2)), Is.True);
-        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P2"), T(2)), Is.True);
-        TransferUntil(() => Replies("reply of G4 P2").Length == 1, "tpre1.g did not run");
-        Assert.That(Replies("reply of G4 P2")[0].Tag, Is.EqualTo(T(2)));
-        Assert.That(_firmware.WriteMacroCompleted(CodeChannel.HTTP, false, T(2)), Is.True);
-        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 3, "T1 did not go on with tpost1.g");
-        FakePacket tpost = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[2];
-        Assert.That((tpost.Text, tpost.IsFromCode, tpost.Tag), Is.EqualTo(("tpost1.g", false, T(2))), "The codes of tpre1.g overwrote the stamp of T1");
-
-        // tpost1.g is empty, then T1 ends with a reply of its own epoch and releases the movement lock
+        // Abort inside tfree0.g: T1 ends with a reply of its own epoch and releases the movement lock
         int replies = _delivered.Count(packet => packet.IsCodeReply);
-        Assert.That(_firmware.WriteMacroCompleted(CodeChannel.HTTP, false, T(2)), Is.True);
+        Assert.That(_firmware.WriteInvalidateChannel(CodeChannel.HTTP, T(2)), Is.True);
         TransferUntil(() => _delivered.Count(packet => packet.IsCodeReply) > replies, "T1 did not end");
         Assert.That(_firmware.IsIdle(CodeChannel.HTTP), Is.True);
+        Assert.That(_firmware.IsDoingToolChange, Is.False, "The routine did not clean up the state machine");
         FakePacket final = _delivered.Last(packet => packet.IsCodeReply);
         Assert.That((final.Text, final.Tag), Is.EqualTo((string.Empty, T(1))));
         Assert.That(_firmware.MovementLockOwner, Is.Null);
+        Transfers(3);
+        Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.HTTP), Has.Length.EqualTo(1), "T1 went on with tpre1.g");
     }
 
     [TestCase(true)]
@@ -642,13 +627,12 @@ public class FakeFirmwareEpoch
     }
 
     [Test]
-    public void ToolChangeOfAnEndedConnectionRunsItsMacrosWithoutAReplyOfItsOwn()
+    public void ToolChangeOfAnEndedConnectionEndsWithoutAReplyOfItsOwn()
     {
         // RRF 78a997f74: the mark of the ended connection lives on the level of the code. DSF ends the connection while RRF runs it, inside tfree0.g of
-        // T1 (D-B, so RRF stays connected). The emergency stop of EndConnection pops tfree0.g and leaves the state of T1, which goes on with tpre1.g and
-        // tpost1.g as system macros of the new connection. Their levels start with the mark of T1, PutBinary clears it on the level that takes a code
-        // of the new connection, so the code of tpre1.g replies as usual (a status request, which runs after the stop). The pop brings back the mark
-        // of T1, whose own final reply does not go to DSF
+        // T1 (D-B, so RRF stays connected). The emergency stop of EndConnection pops tfree0.g, and its AbortStateMachine sets T1 to toolChangeComplete
+        // (upstream 0ca1dff6c), so T1 ends without asking for tpre1.g and tpost1.g. Its final reply does not go to DSF, and a code of the new
+        // connection replies as usual (a status request, which runs after the stop)
         _firmware.OnCode("T1", _ => FakeReply.ToolChange("tfree0.g", "tpre1.g", "tpost1.g"));
         _firmware.OnCode("G4", code => FakeReply.Ok($"reply of {code.Text}"));
         _firmware.OnCode("M115", _ => FakeReply.Ok("reply of M115"));
@@ -659,30 +643,20 @@ public class FakeFirmwareEpoch
         Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "G4 P1"), T(1)), Is.True);
         TransferUntil(() => Replies("reply of G4 P1").Length == 1, "tfree0.g did not run");
 
-        // DSF's first marker on the running connection
-        Assert.That(_firmware.WriteGetObjectModel("state", "v", FakeTag.FirstMarker), Is.True);
-        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 2, "T1 did not go on with tpre1.g");
-        Assert.That(_firmware.IsEmergencyStopped, Is.True, "The marker on the running connection did not end it");
-        FakePacket tpre = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[1];
-        Assert.That((tpre.Text, tpre.IsFromCode, tpre.Tag), Is.EqualTo(("tpre1.g", false, T(0))));
-
-        // tpre1.g runs a code of the new connection, which replies
-        Assert.That(_firmware.WriteMacroStarted(CodeChannel.HTTP, T(0)), Is.True);
-        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M115"), T(0)), Is.True);
-        TransferUntil(() => Replies("reply of M115").Length == 1, "The code of tpre1.g did not reply");
-        Assert.That(Replies("reply of M115")[0].Tag, Is.EqualTo(T(0)));
-        Assert.That(_firmware.WriteMacroCompleted(CodeChannel.HTTP, false, T(0)), Is.True);
-        TransferUntil(() => Delivered(Request.ExecuteMacro, CodeChannel.HTTP).Length == 3, "T1 did not go on with tpost1.g");
-        FakePacket tpost = Delivered(Request.ExecuteMacro, CodeChannel.HTTP)[2];
-        Assert.That((tpost.Text, tpost.IsFromCode, tpost.Tag), Is.EqualTo(("tpost1.g", false, T(0))));
-
-        // tpost1.g is empty, then T1 ends without a reply to DSF
+        // DSF's first marker on the running connection: T1 ends without a reply to DSF
         int delivered = _delivered.Count;
-        Assert.That(_firmware.WriteMacroCompleted(CodeChannel.HTTP, false, T(0)), Is.True);
+        Assert.That(_firmware.WriteGetObjectModel("state", "v", FakeTag.FirstMarker), Is.True);
         TransferUntil(() => _firmware.IsIdle(CodeChannel.HTTP), "T1 did not end");
-        Transfers(2);
+        Assert.That(_firmware.IsEmergencyStopped, Is.True, "The marker on the running connection did not end it");
+        Transfers(3);
+        Assert.That(Delivered(Request.ExecuteMacro, CodeChannel.HTTP), Has.Length.EqualTo(1), "T1 went on with tpre1.g");
         Assert.That(_delivered.Skip(delivered).Where(packet => packet.IsCodeReply), Is.Empty, "The final reply of T1 went out");
         Assert.That(_delivered.Where(packet => packet.IsCodeReply && packet.RelatedCode?.Text == "T1"), Is.Empty);
+
+        // A code of the new connection replies
+        Assert.That(_firmware.WriteCode(MakeCode(CodeChannel.HTTP, "M115"), T(0)), Is.True);
+        TransferUntil(() => Replies("reply of M115").Length == 1, "The code of the new connection did not reply");
+        Assert.That(Replies("reply of M115")[0].Tag, Is.EqualTo(T(0)));
     }
 
     [Test]
