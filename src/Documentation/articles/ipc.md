@@ -85,7 +85,7 @@ under `src/DuetControlServer/Commands/`:
 | Plugins | `InstallPlugin`, `StartPlugin(s)`, `StopPlugin(s)`, `ReloadPlugin`, `UninstallPlugin`, `SetPluginData`, `SetPluginProcess`, `NotifyPluginStarted` | `ManagePlugins` |
 | HttpEndpoints | `AddHttpEndpoint`, `RemoveHttpEndpoint` | `RegisterHttpEndpoints` |
 | UserSessions | `AddUserSession`, `RemoveUserSession` | `ManageUserSessions` |
-| Packages | `InstallSystemPackage`, `UninstallSystemPackage` | `SuperUser` / `ServicePlugins` |
+| Packages | `InstallSystemPackage`, `UninstallSystemPackage` | `ServicePlugins` |
 
 A `Code` command runs a full [`Code`](gcode-flow.md#the-code-object) object; `SimpleCode` parses one
 or more codes from a text string. Both enter the [code pipeline](gcode-flow.md).

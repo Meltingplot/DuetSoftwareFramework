@@ -30,13 +30,14 @@ public sealed class MetaExpressionParser
     private const byte UnaryPriority = 10;
 
     /// <summary>
-    /// Largest number of elements of an array, as in the firmware. ArrayHandle::Allocate (RRF src/Platform/ArrayHandle.cpp) asks for
-    /// sizeof(ArrayStorageSpace) + n * sizeof(ExpressionValue) bytes and throws "Array too large" when the heap gives less, and
-    /// Heap::AllocateSpace gives at most HeapBlockSize = 2048 bytes (src/Platform/Heap.cpp). ArrayStorageSpace holds two uint16_t
-    /// before its elements, so 4 bytes. ExpressionValue (src/ObjectModel/ObjectModel.h) is a uint32_t bitfield and a union whose members
-    /// are 32-bit on the ARM target (the union's static_asserts against its uint32_t 'whole' member), so 8 bytes. (2048 - 4) / 8 = 255
+    /// Maximum number of elements in an array, same as in the firmware
     /// </summary>
-    internal const int MaxArrayElements = (2048 - 4) / 8;
+    public const int MaxArrayElements = 255;
+
+    /// <summary>
+    /// Maximum length of the string representation of a value. Nested arrays would otherwise expand without limit
+    /// </summary>
+    public const int MaxStringLength = 65535;
 
     /// <summary>
     /// Largest number of elements of an array literal, MaxLiteralArrayElements in RRF src/Config/Configuration.h
@@ -116,7 +117,7 @@ public sealed class MetaExpressionParser
     {
         if (SkipWhiteSpace() != '\0')
         {
-            ThrowParseException("Unexpected characters after expression");
+            ThrowParseException("unexpected characters after expression");
         }
     }
 
@@ -124,7 +125,7 @@ public sealed class MetaExpressionParser
     // Evaluate an expression internally, stopping before any binary operator with priority 'priority' or lower
     private void ParseInternal(ref object? val, bool evaluate, byte priority)
     {
-        // Every recursion passes through here. Refuse an expression nested too deeply before it overflows the stack, as RRF does in CheckStack
+        // A stack overflow cannot be caught and would terminate the process
         if (!RuntimeHelpers.TryEnsureSufficientExecutionStack())
         {
             ThrowParseException(ExpressionErrors.NestingTooDeep);
@@ -280,19 +281,33 @@ public sealed class MetaExpressionParser
             switch (val)
             {
                 case object?[] array:
-                    if (indexValue >= array.Length)
+                    if (indexValue < array.Length)
+                    {
+                        val = array[indexValue];
+                    }
+                    else if (evaluate)
                     {
                         ThrowParseException(ExpressionErrors.ArrayIndexOutOfRange);
                     }
-                    val = array[indexValue];
+                    else
+                    {
+                        val = null;
+                    }
                     break;
 
                 case string s:
-                    if (indexValue >= s.Length)
+                    if (indexValue < s.Length)
+                    {
+                        val = s[(int)indexValue];
+                    }
+                    else if (evaluate)
                     {
                         ThrowParseException(ExpressionErrors.ArrayIndexOutOfRange);
                     }
-                    val = s[(int)indexValue];
+                    else
+                    {
+                        val = null;
+                    }
                     break;
 
                 default:
@@ -564,6 +579,9 @@ public sealed class MetaExpressionParser
                             case string s:
                                 result = s == (string)val2!;
                                 break;
+                            case char c:
+                                result = c == (char)val2!;
+                                break;
                             default:
                                 if (evaluate)
                                 {
@@ -718,6 +736,10 @@ public sealed class MetaExpressionParser
         // Check for the names of constants
         if (TryGetNamedConstant(identifier, applyExists, out rslt))
         {
+            if (applyLengthOperator)
+            {
+                ApplyLengthOperator(ref rslt, evaluate);
+            }
             return;
         }
 
@@ -801,6 +823,11 @@ public sealed class MetaExpressionParser
                 _mustForward = true;
                 rslt = null;
             }
+            else if (rslt is double d)
+            {
+                // The firmware has no double type, so every operator and function here works on float
+                rslt = (float)d;
+            }
         }
         else
         {
@@ -852,7 +879,10 @@ public sealed class MetaExpressionParser
     {
         if (val is object?[] array1 && val2 is object?[] array2)
         {
-            CheckArrayLength(array1.Length + array2.Length);
+            if (array1.Length + array2.Length > MaxArrayElements)
+            {
+                throw new CodeParserException(ExpressionErrors.ArrayTooLarge);
+            }
             object?[] result = new object?[array1.Length + array2.Length];
             Array.Copy(array1, 0, result, 0, array1.Length);
             Array.Copy(array2, 0, result, array1.Length, array2.Length);
@@ -874,7 +904,7 @@ public sealed class MetaExpressionParser
             default:
                 if (evaluate)
                 {
-                    ThrowParseException("expected object model value or string after '#");
+                    ThrowParseException("operand of # is not an array or string");
                 }
                 val = 0;
                 break;
@@ -971,7 +1001,10 @@ public sealed class MetaExpressionParser
                     {
                         ThrowParseException(ExpressionErrors.ExpectedNonNegativeInt);
                     }
-                    CheckArrayLength((int)a[0]!);
+                    if ((int)a[0]! > MaxArrayElements)
+                    {
+                        ThrowParseException(ExpressionErrors.ArrayTooLarge);
+                    }
                     object?[] vector = new object?[(int)a[0]!];
                     Array.Fill(vector, a[1]);
                     result = vector;
@@ -1357,6 +1390,10 @@ public sealed class MetaExpressionParser
                             sb.Append(',');
                         }
                         sb.Append(AppendAsString(array[i]));
+                        if (sb.Length > MaxStringLength)
+                        {
+                            throw new CodeParserException("string too long");
+                        }
                     }
                     sb.Append('}');
                     return sb.ToString();
@@ -1534,15 +1571,6 @@ public sealed class MetaExpressionParser
 
     #region Errors
     private void ThrowParseException(string message) => throw MakeParseException(message);
-
-    // ArrayHandle::Allocate throws a GCodeException without a position, so there is no column in this message
-    private static void CheckArrayLength(int numElements)
-    {
-        if (numElements > MaxArrayElements)
-        {
-            throw new CodeParserException(ExpressionErrors.ArrayTooLarge);
-        }
-    }
 
     private CodeParserException MakeParseException(string message) => new($"{message} (column {_pos + 1})");
     #endregion

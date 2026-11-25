@@ -21,6 +21,6 @@ public sealed class RequiredPermissionsAttribute(SbcPermissions requiredPermissi
     /// Check if the given permissions are sufficient
     /// </summary>
     /// <param name="permissions">Permissions to check</param>
-    /// <returns>True if at least one of the required permissions is granted</returns>
+    /// <returns>True if permission is granted</returns>
     public bool Check(SbcPermissions permissions) => (_requiredPermissions & permissions) != SbcPermissions.None;
 }

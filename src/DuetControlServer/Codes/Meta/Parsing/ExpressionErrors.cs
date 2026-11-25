@@ -22,7 +22,7 @@ internal static class ExpressionErrors
     public const string ExpectedNonNegativeInt = "expected non-negative integer";
 
     /// <summary>
-    /// An array does not fit into one heap block of the firmware (RRF src/Platform/ArrayHandle.cpp, ArrayHandle::Allocate)
+    /// An array would have more elements than the firmware can hold
     /// </summary>
     public const string ArrayTooLarge = "Array too large";
 
@@ -32,7 +32,7 @@ internal static class ExpressionErrors
     public const string TooManyArrayElements = "too many array elements";
 
     /// <summary>
-    /// An expression is nested deeper than the stack allows (RRF src/GCodes/GCodeBuffer/ExpressionParser.cpp, CheckStack)
+    /// Brackets, unary operators or function calls were nested too deeply
     /// </summary>
     public const string NestingTooDeep = "Expression nesting too deep";
 }
