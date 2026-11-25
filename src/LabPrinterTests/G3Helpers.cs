@@ -287,8 +287,8 @@ public static class G3Helpers
     }
 
     /// <summary>
-    /// Find out which DuetWebServer runs. run-lab-tests.py side-loads only DuetAPI, DuetControlServer and DuetSharedLibrary today
-    /// (run-lab-tests.py:36), a DWS side-load would bind-mount DuetWebServer.dll in the same way and restart DWS
+    /// Find out which DuetWebServer runs. run-lab-tests.py --side-load bind-mounts DuetWebServer.dll and DuetAPIClient.dll next to the DCS
+    /// assemblies and restarts DWS (SIDE_LOAD_WEB_DLLS, run-lab-tests.py:38)
     /// </summary>
     public static async Task<WebServerBuild> GetWebServerBuildAsync()
     {
