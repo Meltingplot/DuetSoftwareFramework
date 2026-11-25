@@ -70,6 +70,10 @@ fi
 %{_exec_prefix}/lib/sysusers.d/duetcontrolserver.conf
 %{_exec_prefix}/lib/tmpfiles.d/duetcontrolserver.conf
 
+# The configuration directory belongs to root, the dsf group may create entries in it, and the sticky bit lets dsf remove or rename only the
+# entries it owns, so dsf cannot replace the settings of the root plugin service there (plugins.json and apparmor.conf of duetpluginservice)
+%dir %attr(1775,root,dsf) %{dsfoptdir}/conf
+
 %defattr(-,dsf,dsf,-)
 %{dsfoptdir}/bin/DuetControlServer
 %{dsfoptdir}/bin/DuetControlServer.*

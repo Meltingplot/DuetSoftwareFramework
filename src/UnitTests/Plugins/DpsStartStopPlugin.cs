@@ -72,21 +72,21 @@ public class DpsStartStopPlugin : DpsTestBase
         Plugin plugin = await AddPluginAsync("Runner", "echo \"started in $(pwd)\"\necho \"socket $DSF_SOCKET_PATH\"\necho problem >&2\nexec sleep 30");
         await StartAsync("Runner");
 
-        // The process is tracked and DCS got its PID before StartPlugin returned (StartPlugin.cs:147-155)
+        // The process is tracked and DCS got its PID before StartPlugin returned (StartPlugin.cs:149-157)
         int pid = Dps!.Store.Processes["Runner"].Id;
         Assert.That(pid, Is.GreaterThan(0));
         Assert.That(plugin.Pid, Is.EqualTo(pid));
         Assert.That((await GetFromDcsAsync("Runner"))!.Pid, Is.EqualTo(pid));
 
-        // It runs in its dsf directory with the socket of DCS in DSF_SOCKET_PATH (StartPlugin.cs:158-162), and stdout/stderr become messages of DCS
-        // prefixed with the plugin id (StartPlugin.cs:177-185, 256-278)
+        // It runs in its dsf directory with the socket of DCS in DSF_SOCKET_PATH (StartPlugin.cs:160-164), and stdout/stderr become messages of DCS
+        // prefixed with the plugin id (StartPlugin.cs:179-187, 258-280)
         Assert.That(await WaitForDcsMessageAsync($"[Runner]: started in {Path.Combine(PluginDirectory, "Runner", "dsf")}"), Is.True);
         Assert.That(await WaitForDcsMessageAsync($"[Runner]: socket {Dps.Settings.SocketPath}"), Is.True);
         Assert.That(await WaitForDcsMessageAsync("[Runner]: problem"), Is.True);
         Assert.That(DcsLog.Entries.Single(entry => entry.Message == "[Runner]: problem").Level, Is.EqualTo(LogLevel.Error), "stderr is an error message");
         Assert.That(DcsLog.Entries.Single(entry => entry.Message.StartsWith("[Runner]: started")).Level, Is.EqualTo(LogLevel.Information));
 
-        // SIGTERM stops it, the PID is reset in DPS and DCS and the process is forgotten (StopPlugin.cs:56-71, StartPlugin.cs:192-232)
+        // SIGTERM stops it, the PID is reset in DPS and DCS and the process is forgotten (StopPlugin.cs:56-71, StartPlugin.cs:194-234)
         await StopAsync("Runner");
         Assert.That(Dps.Log.Contains("Process stopped by SIGTERM"), Is.True);
         Assert.That(await WaitForStoppedAsync(plugin), Is.True);
@@ -290,7 +290,7 @@ public class DpsStartStopPlugin : DpsTestBase
     [Test]
     public async Task OutputIsDroppedWhileDcsIsUnreachable()
     {
-        // Every output line opens a new connection to DCS (StartPlugin.cs:265-276); without DCS the line is dropped with a warning, as seen in the
+        // Every output line opens a new connection to DCS (StartPlugin.cs:267-278); without DCS the line is dropped with a warning, as seen in the
         // journal of the lab printer while DCS was stopped
         await StartDpsAsync(register: false);
         await AddPluginAsync("Talker", "sleep 1\necho late\nexec sleep 30");
@@ -323,7 +323,7 @@ public class DpsStartStopPlugin : DpsTestBase
     /// PythonLaunchCommand and PythonLaunchArguments (Settings.cs): bash with a fixed script that executes the interpreter of the venv with the executable and
     /// the arguments. Neither bash nor the interpreter, which the venv links to /usr/bin/python3.x, lies below the plugin directory, so a profile that attached
     /// by path to the plugin directory never confined them. DPS starts the plugin through aa-exec with the name of its profile instead
-    /// (StartPlugin.cs:167-173), which then confines bash and the interpreter that bash executes
+    /// (StartPlugin.cs:169-175), which then confines bash and the interpreter that bash executes
     /// </summary>
     [Test]
     public async Task PythonPluginIsLaunchedThroughItsVirtualEnvironmentInItsProfile()
@@ -342,7 +342,7 @@ public class DpsStartStopPlugin : DpsTestBase
     [Test]
     public async Task PluginIsStartedInItsProfile()
     {
-        // The executable of a plugin without Python dependencies is below the plugin directory, it enters its profile the same way (StartPlugin.cs:167-173)
+        // The executable of a plugin without Python dependencies is below the plugin directory, it enters its profile the same way (StartPlugin.cs:169-175)
         await StartDpsAsync(register: false);
         await AddPluginAsync("Native", $"echo \"profile ${FakeAppArmorExec.ProfileVariable}: $*\"\nexec sleep 30", plugin => plugin.SbcExecutableArguments = "--port 8080");
         await StartAsync("Native");
@@ -485,7 +485,7 @@ public class DpsStartStopPlugin : DpsTestBase
     [Test]
     public async Task ServiceStopStopsThePlugins()
     {
-        // PluginService.StopAsync stops every plugin with a process (PluginService.cs:120-138)
+        // PluginService.StopAsync stops every plugin with a process (PluginService.cs:125-143)
         await StartDpsAsync(register: false);
         await AddPluginAsync("First", "exec sleep 30");
         await AddPluginAsync("Second", "exec sleep 30");

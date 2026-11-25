@@ -14,9 +14,9 @@ namespace UnitTests.Plugins;
 using File = System.IO.File;
 
 /// <summary>
-/// Installation of plugin packages by the DuetPluginService instance that runs as dsf user (DuetPluginService/Commands/InstallPlugin.cs:80-264).
+/// Installation of plugin packages by the DuetPluginService instance that runs as dsf user (DuetPluginService/Commands/InstallPlugin.cs:81-270).
 /// The command is created and run like CommandService does for a command from DCS, DCS resolves 0:/ for it.
-/// The part of the root service (InstallPlugin.cs:54-79: the preinstall command, the installation of SbcPackageDependencies and the AppArmor profile at
+/// The part of the root service (InstallPlugin.cs:54-80: the preinstall command, the installation of SbcPackageDependencies and the AppArmor profile at
 /// installation time) is covered by <see cref="DpsRootService"/>, <see cref="DpsAppArmorProfiles"/> covers the profile itself
 /// </summary>
 [TestFixture]
@@ -65,7 +65,7 @@ public class DpsInstallPlugin : DpsTestBase
             ("README.md", "readme"));
         await InstallAsync(package);
 
-        // dsf/ and dwc/ go to <PluginDirectory>/<id>, sd/ to 0:/, everything else is skipped (InstallPlugin.cs:132-158)
+        // dsf/ and dwc/ go to <PluginDirectory>/<id>, sd/ to 0:/, everything else is skipped (InstallPlugin.cs:138-164)
         string pluginBase = Path.Combine(PluginDirectory, "Demo");
         Assert.That(File.ReadAllText(Path.Combine(pluginBase, "dsf/demo")), Is.EqualTo("binary"));
         Assert.That(File.ReadAllText(Path.Combine(pluginBase, "dsf/sub/data.txt")), Is.EqualTo("data"));
@@ -76,20 +76,20 @@ public class DpsInstallPlugin : DpsTestBase
         Assert.That(File.Exists(Path.Combine(SdDirectory, "README.md")), Is.False);
         Assert.That(Dps!.Log.Contains("Skipping installation of file README.md"), Is.True);
 
-        // plugin.json is not extracted, the refreshed manifest is written next to the plugin directory instead (InstallPlugin.cs:123-128, 250-256)
+        // plugin.json is not extracted, the refreshed manifest is written next to the plugin directory instead (InstallPlugin.cs:129-134, 256-262)
         Assert.That(File.Exists(Path.Combine(pluginBase, "plugin.json")), Is.False);
         Plugin manifest = ReadManifest("Demo");
         Assert.That(manifest.DsfFiles, Is.EqualTo(new[] { "demo", "tool", "settings.json", "sub/data.txt" }));
         Assert.That(manifest.DwcFiles, Is.EqualTo(new[] { "Demo.js", "css/Demo.css" }));
         Assert.That(manifest.SdFiles, Is.EqualTo(new[] { "macros/demo.g", "sys/demo.conf" }));
 
-        // The executable and the extra executables get mode 770, other files keep the default (InstallPlugin.cs:189-198)
+        // The executable and the extra executables get mode 770, other files keep the default (InstallPlugin.cs:195-204)
         Assert.That(File.GetUnixFileMode(Path.Combine(pluginBase, "dsf/demo")), Is.EqualTo(Executable));
         Assert.That(File.GetUnixFileMode(Path.Combine(pluginBase, "dsf/tool")), Is.EqualTo(Executable));
         Assert.That(File.GetUnixFileMode(Path.Combine(pluginBase, "dsf/settings.json")).HasFlag(UnixFileMode.UserExecute), Is.False);
 
-        // Web files are symlinked from 0:/www to the plugin directory (InstallPlugin.cs:217-248). PLUGINS.md:27 says they go to 0:/www/<PluginName>,
-        // the code puts them directly below 0:/www (Path.Combine(sdPath, "www", dwcFile), InstallPlugin.cs:221)
+        // Web files are symlinked from 0:/www to the plugin directory (InstallPlugin.cs:223-254). PLUGINS.md:27 says they go to 0:/www/<PluginName>,
+        // the code puts them directly below 0:/www (Path.Combine(sdPath, "www", dwcFile), InstallPlugin.cs:227)
         Assert.That(new FileInfo(Path.Combine(SdDirectory, "www/Demo.js")).LinkTarget, Is.EqualTo(Path.Combine(pluginBase, "dwc/Demo.js")));
         Assert.That(new FileInfo(Path.Combine(SdDirectory, "www/css/Demo.css")).LinkTarget, Is.EqualTo(Path.Combine(pluginBase, "dwc/css/Demo.css")));
 
@@ -98,7 +98,7 @@ public class DpsInstallPlugin : DpsTestBase
         Assert.That(plugin, Is.Not.Null);
         Assert.That(plugin!.Pid, Is.EqualTo(-1));
 
-        // The regular service neither writes an AppArmor profile nor runs a package manager, that is up to the root service (InstallPlugin.cs:54-79)
+        // The regular service neither writes an AppArmor profile nor runs a package manager, that is up to the root service (InstallPlugin.cs:54-80)
         Assert.That(File.Exists(Dps.ProfilePath("Demo")), Is.False);
         Assert.That(FakeTool.Calls(Dps.Settings.AppArmorParser), Is.Empty);
         Assert.That(FakeTool.Calls(Dps.Settings.InstallPackageCommand), Is.Empty);
@@ -141,7 +141,7 @@ public class DpsInstallPlugin : DpsTestBase
     [TestCase("{\"id\":\"Return\",\"name\":\"Return\",\"sbcExecutableArguments\":\"a\\rb\"}", "SbcExecutableArguments must not contain shell metacharacters")]
     public async Task ManifestIsChecked(string? manifest, string error)
     {
-        // InstallPlugin.ExtractManifest (InstallPlugin.cs:282-310) runs before anything is installed or DCS is asked for 0:/
+        // InstallPlugin.ExtractManifest (InstallPlugin.cs:288-316) runs before anything is installed or DCS is asked for 0:/
         await StartDpsAsync(register: false);
         ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(manifest, ("dsf/file", "x")))))!;
         Assert.That(e.Message, Does.StartWith(error));
@@ -165,7 +165,7 @@ public class DpsInstallPlugin : DpsTestBase
     [TestCase("sd//tmp/Escaped/file")]
     public async Task EntriesOutsideTheirDirectoryAreRefused(string entry)
     {
-        // Zip-slip guard (InstallPlugin.cs:160-167). DCS refuses names with ".." before (DuetControlServer/Commands/Plugins/InstallPlugin.cs:47-56)
+        // Zip-slip guard (InstallPlugin.cs:166-173). DCS refuses names with ".." before (DuetControlServer/Commands/Plugins/InstallPlugin.cs:47-56)
         await StartDpsAsync(register: false);
         ArgumentException e = (await Assert.ThrowsAsync<ArgumentException>(async () => await InstallAsync(Package(Manifest("Slip"), (entry, "escaped")))))!;
         Assert.That(e.Message, Is.EqualTo($"Refusing to install entry {entry}: path escapes plugin directory"));
@@ -188,7 +188,7 @@ public class DpsInstallPlugin : DpsTestBase
     [Test]
     public async Task ConfigFilesAreNotOverwritten()
     {
-        // SbcConfigFiles may be given relative to 0:/sys or to 0:/ (PluginManifest.cs:229-236, InstallPlugin.cs:178)
+        // SbcConfigFiles may be given relative to 0:/sys or to 0:/ (PluginManifest.cs:229-236, InstallPlugin.cs:184)
         await StartDpsAsync(register: false);
         File.WriteAllText(Path.Combine(SdDirectory, "sys/kept.conf"), "user");
         File.WriteAllText(Path.Combine(SdDirectory, "macros/kept.g"), "user");
@@ -208,7 +208,7 @@ public class DpsInstallPlugin : DpsTestBase
     [Test]
     public async Task PreviousInstallationIsDeletedUnlessItIsAnUpgrade()
     {
-        // InstallPlugin.cs:82-96
+        // InstallPlugin.cs:83-102
         await StartDpsAsync(register: false);
         string leftOver = Path.Combine(PluginDirectory, "Again/dsf/left-over");
         Directory.CreateDirectory(Path.GetDirectoryName(leftOver)!);
@@ -226,7 +226,7 @@ public class DpsInstallPlugin : DpsTestBase
     [Test]
     public async Task PreviousInstallationThatCannotBeDeletedIsReported()
     {
-        // InstallPlugin.cs:86-95
+        // InstallPlugin.cs:87-101
         await StartDpsAsync(register: false);
         string locked = Path.Combine(PluginDirectory, "Locked/dsf");
         Directory.CreateDirectory(locked);
@@ -247,7 +247,7 @@ public class DpsInstallPlugin : DpsTestBase
     [Test]
     public async Task StaleWebFilesAreReplaced()
     {
-        // A left-over file or a dead symlink is deleted before the new symlink is created (InstallPlugin.cs:230-235)
+        // A left-over file or a dead symlink is deleted before the new symlink is created (InstallPlugin.cs:236-241)
         await StartDpsAsync(register: false);
         File.WriteAllText(Path.Combine(SdDirectory, "www/File.js"), "stale");
         File.CreateSymbolicLink(Path.Combine(SdDirectory, "www/Dead.js"), Path.Combine(PluginDirectory, "Gone/dwc/Dead.js"));
@@ -260,7 +260,7 @@ public class DpsInstallPlugin : DpsTestBase
     [Test]
     public async Task PythonPackagesAreInstalledLast()
     {
-        // InstallPythonPackages (InstallPlugin.cs:357-388) runs the installer as regular user after the manifest has been written (InstallPlugin.cs:258-263),
+        // InstallPythonPackages (InstallPlugin.cs:363-395) runs the installer as regular user after the manifest has been written (InstallPlugin.cs:264-269),
         // with the variables of InstallPackageEnvironment added to its environment (DEBIAN_FRONTEND=noninteractive by default, Settings.cs:90-93). A test
         // variable is used here, so that the check does not depend on the environment of the test process (see VariableOfTheServiceIsOverridden)
         string installer = "";
@@ -285,7 +285,7 @@ public class DpsInstallPlugin : DpsTestBase
 
     /// <summary>
     /// A variable of InstallPackageEnvironment that DPS already has in its own environment is set for the installer instead of refused. Before,
-    /// EnvironmentVariables.Add threw "Value does not fall within the expected range" (InstallPlugin.cs:338, :375), e.g. on GitHub's runners, which
+    /// EnvironmentVariables.Add threw "Value does not fall within the expected range" (InstallPlugin.cs:344, :382), e.g. on GitHub's runners, which
     /// have DEBIAN_FRONTEND, the default variable (Settings.cs:90-93), and the Python installation of a plugin failed
     /// </summary>
     [Test]
@@ -328,7 +328,7 @@ public class DpsInstallPlugin : DpsTestBase
     [Test]
     public async Task PackageDependenciesAreLeftToTheRootService()
     {
-        // The regular service skips SbcPackageDependencies (InstallPlugin.cs:54-69), DCS forwards InstallPlugin to the root service as well
+        // The regular service skips SbcPackageDependencies (InstallPlugin.cs:54-70), DCS forwards InstallPlugin to the root service as well
         // (DuetControlServer/Commands/Plugins/InstallPlugin.cs:148-152)
         await StartDpsAsync(register: false);
         await InstallAsync(Package(Manifest("Packages", manifest => manifest["sbcPackageDependencies"] = new JsonArray("nano")), ("dsf/file", "x")));
@@ -448,7 +448,7 @@ public class DpsInstallPlugin : DpsTestBase
 
     /// <summary>
     /// The id is optional in PluginManifest (PluginManifest.cs:25-26). With an empty id the plugin base would be the plugin directory itself
-    /// (InstallPlugin.cs:83), which would be deleted with all installed plugins (InstallPlugin.cs:84-96). DPS refuses such a manifest with the check that
+    /// (InstallPlugin.cs:84), which would be deleted with all installed plugins (InstallPlugin.cs:85-102). DPS refuses such a manifest with the check that
     /// DCS makes before it forwards InstallPlugin (DuetSharedLibrary/PluginManifestCheck.cs, DuetControlServer/Commands/Plugins/InstallPlugin.cs)
     /// </summary>
     [Test]
