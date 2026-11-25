@@ -157,21 +157,25 @@ internal static partial class G1Helpers
     }
 
     /// <summary>
-    /// Wait until journald takes the lines of DCS again after a flood of them. An exception that DCS logs with a deep stack trace has thousands of
-    /// lines, and journald drops further lines of the unit for the rest of its rate limit interval once a unit exceeds its burst (systemd defaults
-    /// RateLimitIntervalSec=30s, RateLimitBurst=10000, journald.conf(5); it notes "Suppressed N messages"). Later tests would miss the lines
-    /// they look for
+    /// Wait until journald takes the lines of DCS again after a flood of them. An exception that DCS logs with a deep stack trace has one line per
+    /// nesting level, and once a unit exceeds the burst of its rate limit interval journald drops its further lines of that priority for the rest of the
+    /// interval (journald.conf(5) RateLimitIntervalSec, default 30 s; the lab image keeps about 4000 lines of one refusal). Later tests would miss the
+    /// lines they look for: on 2026-11-25 FirmwareRestart started 16 s after a refusal and missed "Connection to controller has been reset".
+    /// The wait is unconditional: when the reply comes, DCS may still be writing the trace, and journald notes "Suppressed N messages" only once the
+    /// unit logs again after the interval. So the helper waits until the number of kept lines stops growing, then for one interval
     /// </summary>
     public static async Task LetJournaldRateLimitPassAsync(string cursor)
     {
-        int lines = await CountJournalLinesAsync(cursor);
-        string suppressed = await Lab.RunOnSbcAsync(
-            $"sudo -n journalctl -u systemd-journald --after-cursor='{cursor}' -o cat --no-pager | grep -F Suppressed | grep -c -F duetcontrolserver || true");
-        TestContext.Progress.WriteLine($"DCS logged {lines} lines, journald suppression notes: {suppressed.Trim()}");
-        if (lines > 2000 || suppressed.Trim() != "0")
+        int lines = await CountJournalLinesAsync(cursor), last;
+        do
         {
-            await Task.Delay(TimeSpan.FromSeconds(31));
+            last = lines;
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            lines = await CountJournalLinesAsync(cursor);
         }
+        while (lines != last);
+        TestContext.Progress.WriteLine($"journald kept {lines} lines of DCS, waiting 31 s for its rate limit interval");
+        await Task.Delay(TimeSpan.FromSeconds(31));
     }
 
     /// <summary>

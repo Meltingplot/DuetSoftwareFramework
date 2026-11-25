@@ -121,7 +121,8 @@ public partial class JournalPriorities : LabTest
         string text = entry.Message.Replace("\x1b", "\\e");
         Assert.That(entry.Priority, Is.EqualTo(priority), $"Priority of '{text}'");
         Assert.That(entry.Binary, Is.False, $"journald stored '{text}' as bytes");
-        Assert.That(entry.Message, Does.Not.Contain("\x1b"), "Color codes");
+        // Ordinal: NUnit's Contain compares with the current culture, and ICU ignores ESC there, so it finds ESC in every string (lab run 2026-11-25)
+        Assert.That(entry.Message.Contains('\x1b'), Is.False, $"Color codes in '{text}'");
         if (start is not null)
         {
             Assert.That(entry.Message, Does.StartWith(start));

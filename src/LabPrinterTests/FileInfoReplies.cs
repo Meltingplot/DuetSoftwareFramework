@@ -117,6 +117,23 @@ public class FileInfoReplies : LabTest
     {
         await G3Helpers.RequireControlServerWithNewFixesAsync("#218");
         string nested = new string('(', DeepNesting) + "1" + new string(')', DeepNesting);
+        string cursor = await Lab.GetJournalCursorAsync();
+        try
+        {
+            await CheckNestedCustomInfoAsync(nested);
+        }
+        finally
+        {
+            // The refusal is logged with a stack trace of thousands of lines (lab run 2026-11-25), which journald limits
+            await G1Helpers.LetJournaldRateLimitPassAsync(cursor);
+        }
+    }
+
+    /// <summary>
+    /// Read the file info of a file whose customInfo value is nested too deeply and check it
+    /// </summary>
+    private async Task CheckNestedCustomInfoAsync(string nested)
+    {
         using JsonDocument info = await ReadFileInfoAsync("nested-custom-info.g", G2Helpers.JobFileHeader + $";customInfo deep = {{{nested}}}\n;customInfo ok = 1\nG1 X1\n");
         JsonElement root = info.RootElement;
         Assert.That(root.GetProperty("err").GetInt32(), Is.Zero, "The file info could not be read");

@@ -65,7 +65,7 @@ public class ExpressionEvaluation : LabTest
     /// </list>
     /// The unfixed build ends DCS (the PR's counter-check ended the unit test host for both paths with "Stack overflow"), and the test restarts DCS
     /// and resets RRF before it fails. Each refusal logs the exception with a stack trace of thousands of lines, so the test waits for the rate limit
-    /// of journald afterwards when needed (G1Helpers.LetJournaldRateLimitPassAsync)
+    /// of journald afterwards, also when the test fails (G1Helpers.LetJournaldRateLimitPassAsync)
     /// </remarks>
     [TestCase("M20 P\"0:/sys\" S", "1", TestName = "DeeplyNestedExpressionIsRefused(parser)")]
     [TestCase("G4 P", "sbc.dsf.pluginSupport ? 0 : 0", TestName = "DeeplyNestedExpressionIsRefused(SBC fields)")]
@@ -77,12 +77,17 @@ public class ExpressionEvaluation : LabTest
         string pid = await Lab.GetControlServerPidAsync();
         string cursor = await Lab.GetJournalCursorAsync();
 
-        string reply = await G1Helpers.SendOrRecoverAsync(Session, code, pid, 60);
-        TestContext.Progress.WriteLine($"Reply: {G1Helpers.Shorten(reply.Trim())}");
-        await G1Helpers.AssertControlServerGoesOnAsync(Session, pid, $"{depth} nested brackets");
-        Assert.That(reply, Does.StartWith("Error").And.Contain(G1Helpers.NestingTooDeep));
-
-        await G1Helpers.LetJournaldRateLimitPassAsync(cursor);
+        try
+        {
+            string reply = await G1Helpers.SendOrRecoverAsync(Session, code, pid, 60);
+            TestContext.Progress.WriteLine($"Reply: {G1Helpers.Shorten(reply.Trim())}");
+            await G1Helpers.AssertControlServerGoesOnAsync(Session, pid, $"{depth} nested brackets");
+            Assert.That(reply, Does.StartWith("Error").And.Contain(G1Helpers.NestingTooDeep));
+        }
+        finally
+        {
+            await G1Helpers.LetJournaldRateLimitPassAsync(cursor);
+        }
     }
 
     /// <summary>

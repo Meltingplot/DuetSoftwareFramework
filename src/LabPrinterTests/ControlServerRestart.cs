@@ -132,13 +132,18 @@ public class ControlServerRestart : LabTest
             // RRF before M999, seen by a new session
             MachineStatus status;
             int upTimeAfter;
-            bool? atxAfter;
+            bool? atxAfter, atxAfterInModel;
             string g4Reply;
             double elapsed;
             await using (DuetHttpSession after = await Lab.ReconnectAsync(TimeSpan.FromMinutes(2)))
             {
                 await Lab.WaitForModelAsync(after, model => model.State.Status is MachineStatus.Halted or MachineStatus.Idle, TimeSpan.FromMinutes(2), "DCS to report the firmware state");
-                (status, upTimeAfter, atxAfter) = Lab.Read(after, model => (model.State.Status, model.State.UpTime, model.State.AtxPower));
+                (status, upTimeAfter, atxAfterInModel) = Lab.Read(after, model => (model.State.Status, model.State.UpTime, model.State.AtxPower));
+
+                // RRF's own value: the model of the new DCS showed null once (lab run 2026-11-25) while RRF keeps the pin after the stop
+                // (Platform.cpp:3561-3577). M409 is a status request, which RRF carries out while halted (GCodes2.cpp:676, IsStatusRequestMCode)
+                JsonElement atxReply = await G1Helpers.QueryFirmwareAsync(after, "state.atxPower");
+                atxAfter = atxReply.ValueKind switch { JsonValueKind.True => true, JsonValueKind.False => false, _ => null };
                 elapsed = sinceUpTime.Elapsed.TotalSeconds;
                 g4Reply = await Lab.SendCodeAsync(after, "G4 P1", TimeSpan.FromSeconds(10));
             }
@@ -156,7 +161,8 @@ public class ControlServerRestart : LabTest
             double? ended = (stopping is null) ? null : RestartHelpers.FirstTime(journal, stopping.Value, RestartHelpers.ControlServerEndedLines);
             TestContext.Progress.WriteLine($"Box {(boxOpen ? "open" : "not open")} at the stop, M291 ended with {boxOutcome}; M122 loop: {loop.Trim()}; " +
                 $"stop {(ended - stopping)?.ToString("0.00") ?? "not found"} s; after the start {status}, up time {upTimeBefore} -> {upTimeAfter} s in {elapsed:0} s, " +
-                $"ATX power {atxBefore?.ToString() ?? "not controlled"} -> {atxAfter?.ToString() ?? "not controlled"}, G4: {g4Reply.Trim()}");
+                $"ATX power {atxBefore?.ToString() ?? "not controlled"} -> {atxAfter?.ToString() ?? "not controlled"} in RRF, " +
+                $"{atxAfterInModel?.ToString() ?? "not controlled"} in the model of the new DCS, G4: {g4Reply.Trim()}");
 
             Assert.Multiple(() =>
             {
@@ -172,7 +178,8 @@ public class ControlServerRestart : LabTest
                 Assert.That(g4Reply, Does.Contain("Machine is halted"), "RRF carried out a code before M999 (RRF #21)");
                 if (atxBefore == true)
                 {
-                    Assert.That(atxAfter, Is.False, "The emergency stop left ATX power on (RRF #23)");
+                    Assert.That(atxAfter, Is.Not.True, "The emergency stop left ATX power on (RRF #23)");
+                    Assert.That(atxAfter, Is.False, "RRF no longer controls ATX power after the emergency stop");
                 }
             });
         }
@@ -217,10 +224,11 @@ public class ControlServerRestart : LabTest
     /// (pkg/common/duetpluginservice/usr/lib/systemd/system/*.service). Before DSF #151 (fix 6) a plugin service only left its command loop when DCS closed
     /// the connection and stayed up without a connection, so its plugins were not started under the new DCS (upstream IPC/CommandService.cs only breaks the
     /// loop). Fixed: it logs "Connection to DCS has been closed" and stops (DuetPluginService IPC/CommandService.cs:66-71), systemd starts it again
-    /// (Restart=always) and it registers with the new DCS. The test samples the main PIDs of DCS and both plugin services every 0.1 s and requires each plugin
-    /// service to have a new process at least 2 s before the new DCS (systemd starts DCS RestartSec=5 s after it ended), the line in the log of each
-    /// service and every SBC plugin that ran before to run again under the new DCS. Unfixed: no line, and the plugin services keep their PIDs at least until
-    /// systemd restarts DCS (whether systemd passes that restart on to the PartOf units was not checked; the 2 s rule does not depend on it).
+    /// (Restart=always) and it registers with the new DCS. The test samples the main PIDs of DCS and both plugin services every 0.1 s until all three have
+    /// a new process, for at most about a minute, and requires a new process of each plugin service, the line in the log of each service and every SBC
+    /// plugin that ran before to run again under the new DCS. A plugin service stops its plugins before it ends, so it may restart after DCS: on 2026-11-25
+    /// that took 8 s, because CHX350 and Vigil ended only on SIGKILL after 4 s each, while DCS was back after 6 s. Unfixed: no line, and the plugin
+    /// services keep their processes unless systemd passes its restart of DCS on to the PartOf units (not checked), so the line is the part that tells.
     /// Deterministic. The plugin services come with the image, #151 is in 3.7.0+mp.14 and later. This check replaces a separate test with
     /// systemctl kill, which would have cost one more emergency stop and M999
     /// </summary>
@@ -232,16 +240,18 @@ public class ControlServerRestart : LabTest
         string output = await Lab.RunOnSbcAsync($$"""
             command -v python3 > /dev/null || { echo '{"error": "python3 is missing"}'; exit 0; }
             units="{{string.Join(' ', ServiceUnits)}}"
-            echo "BEFORE $(systemctl show -p MainPID --value $units | tr '\n' ' ')"
-            old=$(systemctl show -p MainPID --value duetcontrolserver)
+            set -- $(systemctl show -p MainPID --value $units)
+            echo "BEFORE $*"
+            b1=$1 b2=$2 b3=$3
             sudo -n timeout 60 python3 - 2>&1 <<'EOF' || echo '{"error": "the IPC client failed"}'
             {{RestartHelpers.IpcClient}}
             {{ResetThenCode}}
             EOF
-            for i in $(seq 300); do
+            # Until DCS and both plugin services have new processes (ServiceUnits has three units)
+            for i in $(seq 600); do
               set -- $(systemctl show -p MainPID --value $units)
               echo "PIDS $(date +%s.%N) $*"
-              [ "$1" != 0 ] && [ "$1" != "$old" ] && break
+              [ "$1" != 0 ] && [ "$1" != "$b1" ] && [ "$2" != 0 ] && [ "$2" != "$b2" ] && [ "$3" != 0 ] && [ "$3" != "$b3" ] && break
               sleep 0.1
             done
             exit 0
@@ -274,6 +284,11 @@ public class ControlServerRestart : LabTest
         TestContext.Progress.WriteLine($"DCS ended {(ended - reset)?.ToString("0.00") ?? "?"} s after the reset, plugins {string.Join(", ", runningPlugins)} " +
             $"{(pluginsBack ? "back" : "not back")}");
 
+        for (int i = 1; i < ServiceUnits.Length; i++)
+        {
+            TestContext.Progress.WriteLine($"{ServiceUnits[i]}: new process {(NewProcessTime(samples, before, i) - newControlServer)?.ToString("+0.0;-0.0") ?? "none"} s from the new DCS");
+        }
+
         Assert.Multiple(() =>
         {
             Assert.That(reset, Is.Not.Null, "\"Resetting controller\" is not in the journal");
@@ -290,13 +305,20 @@ public class ControlServerRestart : LabTest
             }
             for (int i = 1; i < ServiceUnits.Length; i++)
             {
-                double? changed = samples.Where(sample => before.Length == ServiceUnits.Length && sample.Pids[i] != before[i]).Select(sample => (double?)sample.Time).FirstOrDefault();
-                Assert.That(newControlServer - changed, Is.Not.Null.And.GreaterThanOrEqualTo(2.0), $"{ServiceUnits[i]} did not restart when DCS closed its connection (#151)");
+                double? changed = NewProcessTime(samples, before, i);
+                Assert.That(changed, Is.Not.Null, $"{ServiceUnits[i]} kept its process after DCS closed its connection (#151)");
                 Assert.That(pluginServiceLogs[i - 1], Does.Contain("Connection to DCS has been closed"), $"{ServiceUnits[i]} (#151)");
             }
             Assert.That(pluginsBack, Is.True, "Not every plugin that ran before runs again under the new DCS (#151)");
         });
     }
+
+    /// <summary>
+    /// Time of the first sample in which a unit runs another process than before, or null
+    /// </summary>
+    private static double? NewProcessTime((double Time, string[] Pids)[] samples, string[] before, int unit) =>
+        samples.Where(sample => before.Length == ServiceUnits.Length && sample.Pids[unit] != "0" && sample.Pids[unit] != before[unit])
+            .Select(sample => (double?)sample.Time).FirstOrDefault();
 
     /// <summary>
     /// Units whose main PIDs <see cref="ResetDoesNotHangShutdown"/> samples, DCS first
