@@ -1061,3 +1061,31 @@ Findings of the second round that are not fixed:
   - H1: M471 D1 (`Codes/Handlers/MCodeHandler.cs:907-912`) and `POST /machine/file/move` with force (`DuetWebServer/Endpoints/MachineEndpoints.cs:438-450`) delete the destination before the move, so with the same source and destination the file is lost. RRF does the same (RRF `MassStorage.cpp:1231-1244`).
   - E: counters that wrap only after years or 2^31 events: `Connection.Id` (`IPC/Connection.cs:41-46`), the session id (`Commands/UserSessions/AddUserSession.cs:16`), the file handle counter (`Link/LinkService.cs:61`, which skips `NoFileHandle`, `:1500-1503`) and `CodeBlock.Iterations` (`Files/CodeFile.cs:426`).
   - G: an integer array parameter given as floats is converted without a range check and rounded half to even, where RRF truncates (`DuetAPI/Commands/Code/Parameter.cs:620`, `:624`); no code that reads such a parameter with fractions was found.
+
+## Found while writing the lab tests of the fork fixes (2026-11-25)
+
+Line numbers refer to DSF `v3.7-dev` at 2ee61ca1d and to upstream `v3.7-dev` at dbf9b0447. Paths are relative to `src/`; a path without a project folder is in `DuetControlServer/`. RRF lines refer to the RRF fork `3.7-dev` at 0d4295065. "The lab run" is the run of PR #245 on 2026-11-25: image DSF 3.7.0+mp.15, RRF 3.7.0+1.mp.12-dev.2, DCS and DWS of `v3.7-dev` side-loaded.
+
+- **LT1 (medium). DCS stops when RRF answers with a date and time that .NET cannot parse.**
+  - RRF sends a DateTime as text in the format `%04u-%02u-%02uT%02u:%02u:%02u` (RRF `src/ObjectModel/ObjectModel.cpp:80-88`, `src/SBC/DataTransfer.cpp:1820-1829`).
+  - DSF reads it with `DateTime.TryParse` and throws `ArgumentOutOfRangeException` when that fails (`Link/Protocol/Reader.cs:443-446`). Upstream uses `DateTime.Parse`, which throws as well (upstream `:406-407`).
+  - The exception leaves `ProcessPacket` (`Link/LinkService.cs:447-458`, upstream `:352-363`). That ends the link thread, and with it DCS.
+  - RRF can produce such values:
+    - A year beyond 9999, e.g. `datetime("9999-12-31T23:59:59") + 1`. RRF adds an integer to a DateTime without a range check (RRF `src/GCodes/GCodeBuffer/ExpressionParser.cpp:508-517`, `:539-553`).
+    - A time before 1970. It wraps in the 56-bit store to 2^56 minus the difference in seconds (RRF `src/ObjectModel/ObjectModel.h:167-170`).
+  - Every evaluation result of type DateTime takes this path: the answer to an expression that DSF passes to RRF (`Link/LinkService.cs:1137`) and the answer to a variable assignment (`:1272`). Which codes route such a value through RRF in SBC mode was not traced, and it was not run on the printer.
+  - Upstream code. Fix sketch, not decided: the packet is well formed and only its value is out of range for .NET. So DSF could answer with an error result, as it already does for expression content it cannot read (`Link/Protocol/Reader.cs:437-440`), instead of ending the link. Whether RRF should refuse such dates is a question for upstream.
+- **LT2 (low). DSF has the bug that RRF #110 fixed: `floor`, `ceil`, `round` and `pow` give the int 2147483647 instead of the float 2147483648 for 2^31.**
+  - `FloatToIntOrFloat` checks `f <= int.MaxValue` (`Codes/Meta/Parsing/MetaExpressionParser.cs:1016`, used by floor, ceil and round at `:936-942`; upstream `:984`).
+  - `int.MaxValue` converts to the float 2147483648, so 2^31 passes the check and `(int)f` saturates to 2147483647. `pow` has the same bound (`:1052`, upstream `:1020`).
+  - Measured in a scratch program on .NET 10.0.12 x64: `(int)MathF.Floor(2147483648f)` and pow(2, 31) both give 2147483647. aarch64 was not measured.
+  - Reached by every expression that DSF evaluates itself, e.g. `echo {floor(2147483648.0)}`, where RRF answers 2147483648 since #110. Not run on the printer.
+  - Upstream code. Fix: the bound of RRF #110 (RRF 33e6a184e): convert only below 2^31 and from -2^31 on.
+- **LT3 (medium). A refused deeply nested expression floods the journal, so other lines of DCS are lost for up to 30 s.**
+  - DSF #218 refuses an expression that is nested too deeply (`Codes/Meta/Parsing/MetaExpressionParser.cs:119-122`, `Codes/Meta/Expressions.cs:869-872`).
+  - The exception passes up through every nesting level. The generic handlers then log it with its stack trace, one line per level: at error in `Codes/Pipelines/ProcessInternally.cs:36` and at warning in `Files/Parser/FileInfoParser.cs:112`. Both lines are upstream code; upstream overflows the stack there instead.
+  - Lab run: journald kept about 4,000 lines of each refusal.
+    - After the refusals at 12:31:18 and 12:32:19 UTC it noted "Suppressed 64720 messages" and "Suppressed 35658 messages" from duetcontrolserver.service.
+    - The refusal of a job file's customInfo at 12:33:02 left about 4,000 warning lines and no such note. 16 s later the test of a watchdog reset missed the warning "Connection to controller has been reset". That suppression hid it is likely but not proven.
+  - Effect: a single bad code, or a job file with a bad customInfo line, can drop further lines of DCS for the rest of journald's rate limit interval (journald.conf(5) RateLimitIntervalSec, default 30 s). The lab tests wait that out (PR #245).
+  - Fork code (#218) together with upstream logging. Fix sketch, not decided: throw the refusal once more at the top of the parse, so the logged trace is short.
