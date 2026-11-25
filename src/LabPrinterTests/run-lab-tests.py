@@ -138,6 +138,7 @@ except Exception as e:
 result["sideLoad"] = run("findmnt", "-n", "-o", "SOURCE", "/opt/dsf/bin/DuetControlServer.dll").strip() or None
 result["sideLoadDir"] = os.path.exists("/var/tmp/lab-tests")
 result["ota"] = run("systemctl", "is-active", "mp-ota-gate.timer").strip()
+result["timesyncd"] = run("systemctl", "is-active", "systemd-timesyncd").strip()
 result["trigger30"] = subprocess.run(["sudo", "-n", "test", "-e", "/opt/dsf/sd/sys/trigger30.g"]).returncode == 0
 result["testMacros"] = subprocess.run(["sudo", "-n", "test", "-e", "/opt/dsf/sd/macros/lab-tests"]).returncode == 0
 result["testJobs"] = subprocess.run(["sudo", "-n", "test", "-e", "/opt/dsf/sd/gcodes/lab-tests"]).returncode == 0
@@ -388,6 +389,7 @@ def evaluate(start: dict, end: dict, journal: str, results: list, output_log: Pa
         ('no side-load mounted', end.get('sideLoad') is None),
         (f'{SIDE_LOAD_DIR} removed', not end.get('sideLoadDir', True)),
         ('mp-ota-gate.timer active', end.get('ota') == 'active'),
+        (f'systemd-timesyncd {end.get("timesyncd")} as before', end.get('timesyncd') == start.get('timesyncd')),
         ('sys/trigger30.g removed', not end.get('trigger30', True)),
         ('0:/macros/lab-tests removed', not end.get('testMacros', True)),
         ('0:/gcodes/lab-tests removed', not end.get('testJobs', True)),

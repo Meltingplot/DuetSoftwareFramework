@@ -16,6 +16,38 @@ namespace LabPrinterTests;
 public class IntrusiveCodes : LabTest
 {
     /// <summary>
+    /// Files and folders that the tests of this fixture create below the macro directory, deepest first. The run removes the macro directory without
+    /// recursion at its end (LabTest.cs:37-45), which failed with "Directory not empty" when these were left (Approval run 2026-11-25)
+    /// </summary>
+    private static readonly string[] CreatedPaths =
+    [
+        $"{Lab.MacroDirectory}/m111-info-line.g",
+        $"{Lab.MacroDirectory}/web/a/sub/lab-test.txt",
+        $"{Lab.MacroDirectory}/web/a/sub",
+        $"{Lab.MacroDirectory}/web/a",
+        $"{Lab.MacroDirectory}/web",
+        $"{Lab.MacroDirectory}/firmware/labtest.uf2",
+        $"{Lab.MacroDirectory}/firmware"
+    ];
+
+    /// <summary>
+    /// Delete what the tests created, with a session of its own, because a test may have restarted DCS
+    /// </summary>
+    [TearDown]
+    public async Task DeleteCreatedFilesAsync()
+    {
+        if (!Lab.IsConfigured)
+        {
+            return;
+        }
+        await using DuetHttpClient.DuetHttpSession session = await Lab.ConnectAsync();
+        foreach (string path in CreatedPaths)
+        {
+            await Lab.DeleteAsync(session, path);
+        }
+    }
+
+    /// <summary>
     /// M112 completed before the emergency stop reached RRF, so an object model update could replace the halted status (#88). Only M999 ends the stop
     /// </summary>
     [Test]

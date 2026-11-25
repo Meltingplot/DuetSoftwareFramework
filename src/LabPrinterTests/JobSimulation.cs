@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
@@ -55,15 +56,35 @@ public class JobSimulation : LabTest
 
     private readonly List<string> _files = [];
 
+    /// <summary>
+    /// How long to wait for automatic mode before a test, set with LAB_AUTOMATIC_MODE_WAIT in seconds (default: no wait). A side-load restarts DCS, RRF
+    /// is halted then, and the M999 of the runner runs config.g again, which leaves automatic mode (run-lab-tests.py:91-110, :469-473). So with a side-load
+    /// the mode can only be set on the machine after the run has started (Approval run 2026-11-25)
+    /// </summary>
+    private static readonly TimeSpan AutomaticModeWait =
+        TimeSpan.FromSeconds(int.TryParse(Environment.GetEnvironmentVariable("LAB_AUTOMATIC_MODE_WAIT"), out int seconds) && seconds > 0 ? seconds : 0);
+
     [SetUp]
     public async Task RequireAutomaticModeAsync()
     {
         JsonElement mode = await QueryAsync("global.machine_mode");
-        if (mode.ValueKind != JsonValueKind.String || mode.GetString() != "automatic")
+        if (!IsAutomatic(mode) && AutomaticModeWait > TimeSpan.Zero)
+        {
+            TestContext.Progress.WriteLine($"global.machine_mode is {mode}: close both doors and switch the machine to automatic mode, waiting up to {AutomaticModeWait.TotalSeconds:0} s");
+            Stopwatch waited = Stopwatch.StartNew();
+            while (!IsAutomatic(mode) && waited.Elapsed < AutomaticModeWait)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2));
+                mode = await QueryAsync("global.machine_mode");
+            }
+        }
+        if (!IsAutomatic(mode))
         {
             Assert.Ignore($"global.machine_mode is {mode}, not \"automatic\": the CHX start.g ends a simulation in any other mode (sys/start.g:5-11)");
         }
     }
+
+    private static bool IsAutomatic(JsonElement mode) => mode.ValueKind == JsonValueKind.String && mode.GetString() == "automatic";
 
     [TearDown]
     public async Task DeleteFilesAsync()
@@ -180,7 +201,9 @@ public class JobSimulation : LabTest
     /// SelectFileAsync refuses a file of more than uint.MaxValue bytes with "File too big (max 4294967295 bytes)" (JobProcessor.cs:322-326). Without the fix
     /// the file is simulated, and its first code M2 cancels the simulation at once (allowed in simulation by MCodeHandler.cs:82-86 and GCodes2.cpp:687-700,
     /// no macros on a cancelled simulation, GCodes2.cpp:848-861), so the reply has no error. Deterministic.
-    /// The file is sparse, the SBC creates it on the file system of the SD directory, which must support holes. It is written as dsf, which owns the
+    /// The file is sparse, the SBC creates it on the file system of the job folder, which must support holes. The check looks at the file itself: on the
+    /// CHX the SD directory is part of the read-only root (erofs) and only its folders are writable mounts (ext4), so a check of the SD directory skipped
+    /// the test (Approval run 2026-11-25). It is written as dsf, which owns the
     /// uploaded placeholder (DuetWebServer runs as dsf, duetwebserver.service:14, and writes uploads itself, MachineEndpoints.cs:269-279), so a symlink
     /// in its place could not make the test change a file that dsf cannot change anyway. As in the unit test
     /// Codes.PrintFileInfo.FileOf4GiBIsRefused, 100000 short codes at both ends keep the zeros of the hole away from what DSF reads: FileInfoParser
@@ -199,7 +222,7 @@ public class JobSimulation : LabTest
         string physicalFile = sdDirectory + file["0:".Length..];
         string output = await Lab.RunOnSbcAsync($$"""
             set -e
-            fs=$({{AsDsf}} stat -f -c %T '{{sdDirectory}}')
+            fs=$({{AsDsf}} stat -f -c %T '{{physicalFile}}')
             case "$fs" in
               ext2/ext3|xfs|btrfs|tmpfs) ;;
               *) echo "unsupported $fs"; exit 0 ;;
@@ -219,7 +242,7 @@ public class JobSimulation : LabTest
             """);
         if (output.StartsWith("unsupported"))
         {
-            Assert.Ignore($"The SD directory is on a file system without holes ({output.Trim()}), a file of 4 GiB would fill it");
+            Assert.Ignore($"The job folder is on a file system without holes ({output.Trim()}), a file of 4 GiB would fill it");
         }
         TestContext.Progress.WriteLine($"Sparse file {physicalFile}: {output.Trim()}");
 

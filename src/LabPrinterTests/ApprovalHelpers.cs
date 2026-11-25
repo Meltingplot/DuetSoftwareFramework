@@ -71,12 +71,21 @@ public static partial class ApprovalHelpers
         """;
 
     /// <summary>
-    /// Create or reset globals with a macro in the test macro directory. Echo output of a macro does not reach the reply of its M98, so the tests read globals
+    /// Create or reset globals with a macro in the test macro directory and delete the macro again, so the run can remove the directory at its end
+    /// (LabTest.cs:37-45). Echo output of a macro does not reach the reply of its M98, so the tests read globals
     /// </summary>
     public static async Task SetGlobalsAsync(DuetHttpSession session, string macro, params (string Name, string Value)[] globals)
     {
         await Lab.UploadAsync(session, macro, string.Concat(globals.Select(item => Global(item.Name, item.Value))));
-        string reply = await Lab.SendCodeAsync(session, $"M98 P\"{macro}\"", TimeSpan.FromSeconds(10));
+        string reply;
+        try
+        {
+            reply = await Lab.SendCodeAsync(session, $"M98 P\"{macro}\"", TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            await Lab.DeleteAsync(session, macro);
+        }
         Assert.That(reply, Does.Not.Contain("Error"), $"Setting the globals failed: {reply}");
     }
 
