@@ -80,6 +80,24 @@ A partial line can only be a text line, because `GCodeBuffer::Put` clears `isBin
 2. Add `CodeChannel.USB` and `CodeChannel.USB2` (`S3` and `S14`) back to the channels `M98.1` accepts in `MCodeHandler.cs`. Do this only together with an RRF release that has the fix, otherwise a call without a host returns success and the channel stays busy.
 3. Report it to Duet3D with the versions above, as the files are unchanged against upstream.
 
+## M98.1 from PanelDue or a trigger action does not reach DSF
+
+**Problem:** DSF implements `M98.1`, so only codes that pass through DSF can use it: macros that DSF runs (trigger macros and `daemon.g` in SBC mode) and codes from DSF clients such as DWC. A code that RRF reads itself never gets there, e.g. one typed on a PanelDue (Aux) or written as the action of an `M581.1` trigger. RRF then answers `M98.1: Command is not supported` with `result` 1, while the macro starts nowhere.
+
+**From the code** (RRF fork `3.7-dev` at 0d4295065):
+- RRF passes M98 to DSF only with `R` (`GCodes2.cpp:766`).
+- Any other M-code with a fraction that RRF does not implement goes to `TryMacroFile` (`GCodes2.cpp:797-810`). That looks for `sys/M98.1.g` and otherwise returns `warningNotSupported` (`GCodes2.cpp:4946-4966`).
+- `warningNotSupported` replies `Command is not supported` (`GCodes2.cpp:5122`) and gives `result` 1 (`ExpressionParser.cpp:1863`).
+
+Upstream `3.7-dev` at 371c71412 has the same lines (`GCodes2.cpp:710`, `:753`, `:4848-4868`, `:5024`).
+
+**Wanted:** Duet3D/RepRapFirmware#1337 asks for RRF to forward `M98.1` to DSF in SBC mode "the same way `M98 R` is today". Tim (2026-11-25): do it later in its own RRF PR, not together with `M98.1 W`.
+
+**Next steps:**
+1. In the RRF fork, add `M98.1` to the codes passed to DSF in `GCodes2.cpp:766`.
+2. Check that a forwarded code from a trigger action or from Aux keeps its caller context. Its expressions must be evaluated in that context.
+3. Lab test from PanelDue and from an `M581.1` action.
+
 ## Findings of the fuzz and coverage tests (2026-11-07)
 
 The fuzz and coverage tests of #121 to #127 found 48 bugs and deviations, the trigger tests of #129 found 9 more, and the stop path tests of #130 another 4.
