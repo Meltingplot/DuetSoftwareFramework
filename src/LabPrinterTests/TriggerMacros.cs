@@ -283,6 +283,7 @@ public class TriggerMacros : LabTest
     [Test]
     public async Task SbcTriggerConfiguredFromMacro()
     {
+        await G3Helpers.RequireControlServerWithNewFixesAsync("#216");
         await RequireFreeTriggerAsync();
         await SendCodeAsync($"M98 P\"{ResetMacro}\"");
         try

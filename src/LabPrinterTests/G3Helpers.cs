@@ -18,8 +18,8 @@ namespace LabPrinterTests;
 public static class G3Helpers
 {
     /// <summary>
-    /// Last fork release that has none of the DWS, DPS and packaging fixes #222, #225, #229 and #234: `git tag --contains` lists no tag for their
-    /// merge commits bd051f9a6, 9eebc5180, e4e865a7c and 520765373. v3.7-dev builds report this version too until the next version bump
+    /// Last fork release that has none of the DWS, DPS and packaging fixes #222, #225, #229 and #234 (merge commits bd051f9a6, 9eebc5180, e4e865a7c
+    /// and 520765373) and none of the DCS fixes #216, #218, #219 and #223 (46adca585, cf21ac188, 77a9ed697, 186e86ce5): no tag contains them. v3.7-dev builds report this version too until the next version bump
     /// (src/Directory.Build.props), so a package with exactly this version may have them or not
     /// </summary>
     public const string LastReleaseBeforeNewFixes = "3.7.0+mp.15";
@@ -264,18 +264,19 @@ public static class G3Helpers
     }
 
     /// <summary>
-    /// The DuetWebServer that serves the tests
+    /// The build of a running DSF service whose package, systemd unit and assembly share one name (duetcontrolserver and DuetControlServer.dll,
+    /// duetwebserver and DuetWebServer.dll)
     /// </summary>
-    /// <param name="PackageVersion">Version of the installed duetwebserver package</param>
+    /// <param name="PackageVersion">Version of the installed package</param>
     /// <param name="PackageIsNewer">Whether that version is newer than <see cref="LastReleaseBeforeNewFixes"/></param>
-    /// <param name="SideLoaded">Whether /opt/dsf/bin/DuetWebServer.dll is a bind mount, i.e. a side-load of the tree the tests come from</param>
-    /// <param name="RunsMountedFile">Whether the running DWS has mapped the file that is at that path now (same device and inode in
-    /// /proc/PID/maps), so it was started after the side-load. Null if DWS is not running or maps no DuetWebServer.dll</param>
-    public sealed record WebServerBuild(string? PackageVersion, bool PackageIsNewer, bool SideLoaded, bool? RunsMountedFile)
+    /// <param name="SideLoaded">Whether /opt/dsf/bin/&lt;assembly&gt;.dll is a bind mount, i.e. a side-load of the tree the tests come from</param>
+    /// <param name="RunsMountedFile">Whether the running service has mapped the file that is at that path now (same device and inode in
+    /// /proc/PID/maps), so it was started after the side-load. Null if the service is not running or maps no such file</param>
+    public sealed record ServiceBuild(string? PackageVersion, bool PackageIsNewer, bool SideLoaded, bool? RunsMountedFile)
     {
         /// <summary>
-        /// Whether the running DWS is known to have the DWS fixes after <see cref="LastReleaseBeforeNewFixes"/>. A DWS that runs the file at the path
-        /// has them if that file is the side-load or a newer package. A DWS that runs another file runs the package file under a side-load, or a
+        /// Whether the running service is known to have the fixes after <see cref="LastReleaseBeforeNewFixes"/>. A service that runs the file at the path
+        /// has them if that file is the side-load or a newer package. A service that runs another file runs the package file under a side-load, or a
         /// file that was replaced after it started, whose version is unknown. Without a mapping (not running, or no separate DLL) only a newer package tells
         /// </summary>
         public bool HasNewFixes => RunsMountedFile switch
@@ -287,20 +288,23 @@ public static class G3Helpers
     }
 
     /// <summary>
-    /// Find out which DuetWebServer runs. run-lab-tests.py --side-load bind-mounts DuetWebServer.dll and DuetAPIClient.dll next to the DCS
-    /// assemblies and restarts DWS (SIDE_LOAD_WEB_DLLS, run-lab-tests.py:38)
+    /// Find out which build of a DSF service runs. run-lab-tests.py --side-load bind-mounts DuetControlServer.dll with DuetAPI.dll and
+    /// DuetSharedLibrary.dll, and DuetWebServer.dll with DuetAPIClient.dll, and restarts both services (SIDE_LOAD_DLLS, SIDE_LOAD_WEB_DLLS,
+    /// run-lab-tests.py:37-38)
     /// </summary>
-    public static async Task<WebServerBuild> GetWebServerBuildAsync()
+    /// <param name="service">Name of the package and the systemd unit, e.g. duetwebserver</param>
+    /// <param name="assembly">Name of the main assembly in /opt/dsf/bin without .dll, e.g. DuetWebServer</param>
+    public static async Task<ServiceBuild> GetServiceBuildAsync(string service, string assembly)
     {
         JsonElement result = await RunPythonAsync("""
             def run(*command):
                 return subprocess.run(command, capture_output=True, text=True).stdout.strip()
 
-            version = run("dpkg-query", "-W", "-f", "${Version}", "duetwebserver")
+            version = run("dpkg-query", "-W", "-f", "${Version}", ARGS["service"])
             newer = bool(version) and subprocess.run(["dpkg", "--compare-versions", version, "gt", ARGS["release"]]).returncode == 0
-            dll = "/opt/dsf/bin/DuetWebServer.dll"
+            dll = "/opt/dsf/bin/%s.dll" % ARGS["assembly"]
             mounted = subprocess.run(["findmnt", "-n", dll], capture_output=True).returncode == 0
-            pid = int(run("systemctl", "show", "-p", "MainPID", "--value", "duetwebserver") or 0)
+            pid = int(run("systemctl", "show", "-p", "MainPID", "--value", ARGS["service"]) or 0)
             runs = None
             if pid > 0 and os.path.exists(dll):
                 st = os.stat(dll)
@@ -312,28 +316,43 @@ public static class G3Helpers
                             runs = fields[3] == device and int(fields[4]) == st.st_ino
                             break
             finish({"version": version or None, "newer": newer, "sideLoaded": mounted, "runsMountedFile": runs})
-            """, new { release = LastReleaseBeforeNewFixes }, 60);
+            """, new { service, assembly, release = LastReleaseBeforeNewFixes }, 60);
 
         JsonElement runs = result.GetProperty("runsMountedFile");
-        return new WebServerBuild(GetString(result, "version"), result.GetProperty("newer").GetBoolean(), result.GetProperty("sideLoaded").GetBoolean(),
+        return new ServiceBuild(GetString(result, "version"), result.GetProperty("newer").GetBoolean(), result.GetProperty("sideLoaded").GetBoolean(),
             runs.ValueKind == JsonValueKind.Null ? null : runs.GetBoolean());
     }
 
     /// <summary>
-    /// Skip a test of a DWS fix after <see cref="LastReleaseBeforeNewFixes"/> unless the running DWS is known to have it: either it was side-loaded
-    /// from the tree the tests come from and started from that file, or the installed package is newer than that release
+    /// Skip a test of a fix after <see cref="LastReleaseBeforeNewFixes"/> unless the running service is known to have it: either it was side-loaded
+    /// from the tree the tests come from and started from that file, or the installed package is newer than that release. This also keeps a test
+    /// whose bug ends or hangs DCS from costing an emergency stop on an image that predates the fix
     /// </summary>
+    /// <param name="service">Name of the package and the systemd unit</param>
+    /// <param name="assembly">Name of the main assembly without .dll</param>
     /// <param name="fix">Fix, e.g. "#222"</param>
-    public static async Task RequireWebServerWithNewFixesAsync(string fix)
+    private static async Task RequireNewFixesAsync(string service, string assembly, string fix)
     {
-        WebServerBuild build = await GetWebServerBuildAsync();
-        TestContext.Progress.WriteLine($"DuetWebServer: package {build.PackageVersion ?? "not installed"}, side-loaded {build.SideLoaded}, runs the mounted file {build.RunsMountedFile?.ToString() ?? "unknown"}");
+        ServiceBuild build = await GetServiceBuildAsync(service, assembly);
+        TestContext.Progress.WriteLine($"{assembly}: package {build.PackageVersion ?? "not installed"}, side-loaded {build.SideLoaded}, runs the mounted file {build.RunsMountedFile?.ToString() ?? "unknown"}");
         if (!build.HasNewFixes)
         {
-            Assert.Ignore($"Cannot tell whether the running DuetWebServer has {fix}: it is not side-loaded from this tree and the duetwebserver package is " +
+            Assert.Ignore($"Cannot tell whether the running {assembly} has {fix}: it is not side-loaded from this tree and the {service} package is " +
                 $"{build.PackageVersion ?? "not installed"}. {fix} is in no release up to {LastReleaseBeforeNewFixes}, and v3.7-dev builds report that version too");
         }
     }
+
+    /// <summary>
+    /// Skip a test of a DWS fix after <see cref="LastReleaseBeforeNewFixes"/> unless the running DWS is known to have it
+    /// </summary>
+    /// <param name="fix">Fix, e.g. "#222"</param>
+    public static Task RequireWebServerWithNewFixesAsync(string fix) => RequireNewFixesAsync("duetwebserver", "DuetWebServer", fix);
+
+    /// <summary>
+    /// Skip a test of a DCS fix after <see cref="LastReleaseBeforeNewFixes"/> unless the running DCS is known to have it
+    /// </summary>
+    /// <param name="fix">Fix, e.g. "#218"</param>
+    public static Task RequireControlServerWithNewFixesAsync(string fix) => RequireNewFixesAsync("duetcontrolserver", "DuetControlServer", fix);
 
     /// <summary>
     /// CRC-32 as DWS checks it for rr_upload (DuetWebServer/Utility/CRC32.cs: polynomial 0xedb88320, start and final XOR 0xffffffff)

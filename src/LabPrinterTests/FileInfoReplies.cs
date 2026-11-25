@@ -63,6 +63,7 @@ public class FileInfoReplies : LabTest
     [Test]
     public async Task FilamentIndexIsBounded()
     {
+        await G3Helpers.RequireControlServerWithNewFixesAsync("#219");
         using JsonDocument info = await ReadFileInfoAsync("filament-index.g", G2Helpers.JobFileHeader + ";Material#0 Used: 5.0\n;Material#100000 Used: 1.0\nG1 X1\n");
         JsonElement root = info.RootElement;
         Assert.That(root.GetProperty("err").GetInt32(), Is.Zero);
@@ -82,6 +83,7 @@ public class FileInfoReplies : LabTest
     [Test]
     public async Task NonFiniteValuesKeepFileInfoReadable()
     {
+        await G3Helpers.RequireControlServerWithNewFixesAsync("#223");
         string tooBigForMm = "1" + new string('0', 36);
         using JsonDocument info = await ReadFileInfoAsync("non-finite.g",
             G2Helpers.JobFileHeader + $";Filament used: {tooBigForMm}m, 1.5m\nG1 X1 Z0.3\nG1 X2 Z0.6\nG1 Z1e39\n");
@@ -113,6 +115,7 @@ public class FileInfoReplies : LabTest
     [Test]
     public async Task DeeplyNestedCustomInfoIsSkipped()
     {
+        await G3Helpers.RequireControlServerWithNewFixesAsync("#218");
         string nested = new string('(', DeepNesting) + "1" + new string(')', DeepNesting);
         using JsonDocument info = await ReadFileInfoAsync("nested-custom-info.g", G2Helpers.JobFileHeader + $";customInfo deep = {{{nested}}}\n;customInfo ok = 1\nG1 X1\n");
         JsonElement root = info.RootElement;
