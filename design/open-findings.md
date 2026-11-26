@@ -1150,3 +1150,15 @@ Line numbers refer to the CoreN2G fork `3.7-dev` at 9dc5b6acd and to the Duet3Ex
     - the silicon revision of the lab board;
     - whether spikes still occur on 3.7.
   - Record only.
+
+## Found in the release check of 2026-11-26
+
+Line numbers refer to DSF `v3.7-dev` at a7211cf33 and to the RRF fork `3.7-dev` at 323b5b185. Paths are relative to `src/DuetControlServer/`. The run: DCS and DWS of #255 (e28eb04ce) side-loaded on image DSF 3.7.0+mp.15, RRF 3.7.0+1.mp.12-dev.3, expansion boards 3.7.0+1.mp.6-dev.1.
+
+- **LT4 (low, upstream code). When DSF evaluates an expression itself, a DateTime plus or minus seconds beyond the range of .NET fails the code with the .NET text, where RRF gives a date.**
+  - DSF first tries to evaluate the whole expression on the SBC and forwards it only when it reaches something it cannot resolve (`Codes/Meta/Expressions.cs:1021-1036`, `Codes/Meta/Parsing/MetaExpressionParser.cs:74-86`). The parser works from left to right and applies an operator as soon as both operands are known (`MetaExpressionParser.cs:433-443`). So in `datetime("9999-12-31T23:59:59") + 1 + 0 * state.upTime` it adds the 1 before it reaches `state.upTime`, and in `datetime("9999-12-31T23:59:59") + 1` there is nothing to forward at all.
+  - `DateTime.AddSeconds` (`MetaExpressionParser.cs:455-464`, minus `:478-491`) throws an ArgumentOutOfRangeException, and the code fails with "The added or subtracted value results in an un-representable DateTime. (Parameter 'value')". DCS goes on.
+  - RRF adds and subtracts without a range check (RRF `src/GCodes/GCodeBuffer/ExpressionParser.cpp:508-522`, `:539-553`) and answers `10000-01-01T00:00:00`. When that answer reaches DSF, Reader refuses it with "date and time 10000-01-01T00:00:00 is out of range" (LT1, DSF part, `Link/Protocol/Reader.cs:443-447`). The same expression thus fails with two different texts, depending on whether DSF or RRF evaluates it.
+  - Seen in the lab test `ExpressionEvaluation.DateBeyondYear9999IsAnError`, whose expression DSF evaluated itself; the test now puts `state.upTime` before the `+ 1`.
+  - Fix options: (a) the parser forwards an operation whose result DateTime cannot hold, so the code gets the answer of the forwarded path, as #238 forwards datetime() strings DSF cannot read exactly; (b) the parser throws a CodeParserException with the text of LT1. (a) follows the rule of aligning with RRF (Tim, 2026-11-24). Not decided.
+  - Upstream code (`MetaExpressionParser` came with upstream e3a136b27). Upstream report candidate.
