@@ -946,3 +946,7 @@ Bewertung:
 - CPU: AIN 7,5 % mit Mutex, 9,0 % ohne, 10,2 % auf dev.3. TMC 5,2 % mit Mutex, 4,2 % ohne, 4,1 % auf dev.3. AIN und TMC zusammen 12,7 % mit Mutex, 13,2 % ohne, 14,3 % auf dev.3.
 - temp0 las ohne Mutex 0,4 °C weniger als mit, und der Unterschied verschwand beim Zurückschalten wieder. Die Ursache ist nicht geklärt, denn mit dem Mutex ändert sich auch die Sweep-Rate. Das Referenzthermometer wurde nicht abgelesen.
 - Der TOOL1LC bleibt bis zum nächsten Neustart des SBC auf dev.4, mit Mutex an.
+- Entscheidungen Tim, 2026-11-26, nach dem Lauf:
+  - Der Fix bleibt wie in CoreN2G#11 und Duet3Expansion#38, mit Takten und Mutex ("ja").
+  - Für den Versatz von 0,4 °C braucht es keine Referenzmessung, denn temp0 wird pro Drucker kalibriert ("passt, wird per drucker kalibriert").
+  - Es folgt eine Stunde Dauermessung, nur lesend, mit Mutex an ("ja").

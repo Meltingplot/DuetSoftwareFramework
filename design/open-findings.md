@@ -1219,3 +1219,7 @@ Line numbers refer to the CoreN2G fork at 821c4ea12 and to the Duet3Expansion fo
     - So the pacing alone already removes most or all of the timeouts. Three minutes cannot show whether they stay at zero without the mutex: mp.6-dev.1, also at about 1000 sweeps per second, had one in hours. The mutex removes the concurrency that erratum 1.10.4 names.
     - With the mutex the sweeps run in step with the TMC reads, at about 250 per converter per second.
     - The 0.4 °C lower temp0 without the mutex came back to the old value when the mutex was switched on again. Its cause (the mutex or the doubled sweep rate) is not established, and the reference thermometer was not read.
+  - Tim, 2026-11-26 after the A/B check:
+    - The fix stays as in CoreN2G#11 and Duet3Expansion#38, with both the pacing and the mutex.
+    - The 0.4 °C shift needs no reference reading, because temp0 is calibrated per printer ("wird per drucker kalibriert").
+    - A one-hour read-only soak with the mutex on follows.
