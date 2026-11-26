@@ -1189,4 +1189,8 @@ Line numbers refer to the CoreN2G fork at 821c4ea12 and to the Duet3Expansion fo
     - whether the timeouts occur on the other SAMC21 boards (EXP1HCL, SZP);
     - whether the TMC read errors also occur on mp.6-dev.1.
   - Tim, 2026-11-26: this is a bug, and the Duet3Expansion release waits for its fix and a lab check of the fix (`design/lab-test-plan.md`, section 14).
-  - Fix not decided.
+  - Fix decided by Tim on 2026-11-26, keeping the DMA because the TOOL1LC is short of CPU:
+    - Pace the SAMC21 `TaskLoop` to at most 1000 sweeps per second of both converters together ("no need for more than 1000 sweeps/s"). #9 doubled the share of the AIN task: 4.9 % on mp.3 and 5.0 % on 3.6.3, 10.2 % on mp.6-dev.3.
+    - Synchronise the ADC and the TMC UART (Tim: "do not start an adc when tmc is talking and do not run an tmc when adc is talking"). On the SAMC21 a lock in `DmacManager` is taken by each ADC sweep, from the start to its end or timeout, and by each TMC transaction. So no ADC channel is enabled while a TMC transfer runs.
+    - The lab check uses a dev build with a RAM flag that switches the lock on and off, so both cases run in the same image. The release code has no switch.
+    - Not covered: the LED channel and the shared SPI channels of other SAMC21 boards, and the TMC transmit and receive channels against each other within one transaction.
