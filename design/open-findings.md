@@ -1138,19 +1138,15 @@ Line numbers refer to the CoreN2G fork `3.7-dev` at 9dc5b6acd and to the Duet3Ex
     - Behaviour change: both converters convert less often. The rate on the board has not been measured.
     - Both were merged on 2026-11-26 (CoreN2G 4f368daf2, Duet3Expansion ebb3251d4). DSF #260 pins CoreN2G 821c4ea12, which contains #9.
     - Tim decided on 2026-11-26 that Duet3Expansion 3.7.0+1.mp.6 ships with this pin, and that a lab run comes before the tag (protocol of 2026-11-26 in `design/lab-test-plan.md`, section 14).
-    - The fix has not run on hardware yet.
-  - Open:
-    - a lab run of the fixed build (the same readout plus the conversion rate), which needs Tim's go;
-    - 24.5 C with the SDADC stopped against the 18-20 C room: check with a reference thermometer;
-    - an upstream report. Duet3D CoreN2G `3.7-dev` c9b23d7 has the same loop.
+    - Lab run on 2026-11-26 with the release build (Duet3Expansion 70e52f01, CoreN2G 821c4ea12, version string 3.7.0+1.mp.6), at 13:53:00 UTC: Vssa 270 counts, Vref 42136 (filter sum / 8), 20.temp0 21.7 C against 21 C on Tim's reference thermometer (mp.6-dev.1: 8.8 C). The offset is gone.
+    - The same build has conversion timeouts at about 3.5 per minute, see TL3.
+  - Open: an upstream report. Duet3D CoreN2G `3.7-dev` c9b23d7 has the same loop.
 - **TL2. Candidate cause for the spikes of forum thread 39227: SAMC21 errata DS80000740T 1.10.4, "Concurrent channels triggers".**
   - The errata says the DMAC write-back descriptors may get corrupted when channels are triggered concurrently. The workaround it gives is to sequence multiple transfers only with linked descriptors on a single channel. It lists the E/G/J devices as affected in silicon revisions E, F and H.
   - The TOOL1LC uses five DMA channels (Duet3Expansion `src/Config/TOOL1LC.h:52-56`).
-  - Not checked:
-    - whether the erratum applies to channels without linked descriptors;
-    - the silicon revision of the lab board;
-    - whether spikes still occur on 3.7.
-  - Record only.
+  - The lab board reads DSU DID 0x11010505 (`M122 B20 P1007` of 0x41002018), an ATSAMC21G18A of silicon revision F (DS80000740E, table 2). DS80000740E lists 1.10.4 for the E/G/J devices of revisions E and F.
+  - The corruption itself was seen on the lab board without linked descriptors, see TL3.
+  - Not checked: whether spikes still occur on 3.7.
 
 ## Found in the release check of 2026-11-26
 
@@ -1163,3 +1159,34 @@ Line numbers refer to DSF `v3.7-dev` at a7211cf33 and to the RRF fork `3.7-dev` 
   - Seen in the lab test `ExpressionEvaluation.DateBeyondYear9999IsAnError`, whose expression DSF evaluated itself; the test now puts `state.upTime` before the `+ 1`.
   - Fix options: (a) the parser forwards an operation whose result DateTime cannot hold, so the code gets the answer of the forwarded path, as #238 forwards datetime() strings DSF cannot read exactly; (b) the parser throws a CodeParserException with the text of LT1. (a) follows the rule of aligning with RRF (Tim, 2026-11-24). Not decided.
   - Upstream code (`MetaExpressionParser` came with upstream e3a136b27). Upstream report candidate.
+
+## Found in the lab run of the release builds (2026-11-26 afternoon)
+
+Line numbers refer to the CoreN2G fork at 821c4ea12 and to the Duet3Expansion fork at 70e52f01. The board is the TOOL1LC (CAN address 20) of the lab printer, an ATSAMC21G18A of silicon revision F (TL2).
+
+- **TL3. On the TOOL1LC the DMAC overwrites part of the write-back descriptor of an ADC channel with the state of the TMC UART transmit channel; the conversion then times out. Since CoreN2G #9 this happens about 3.5 times per minute.**
+  - Seen on the release build of Duet3Expansion 3.7.0+1.mp.6 (70e52f01 with CoreN2G 821c4ea12): 11 conversion timeouts after 3 min 6 s of uptime (AnalogIn counters read with `M122 B20 P1007`, 14:21:52 UTC). On mp.6-dev.1, without #9, the TL1 measurements had 0 timeouts, and a run of hours had 1.
+  - On a timeout the loop stops the channel after 5 ms and starts the other converter (CoreN2G `src/SAME5x_C21/SAMC21/AnalogIn.cpp:32`, `:200-212`, `:560-615`). The readings of that sweep are lost.
+  - Two diagnostic builds, side-loaded with Tim's go and not committed: CoreN2G 821c4ea12 plus records in `AbandonConversionIfTimedOut` and a capture of the DMAC state, Duet3Expansion version strings mp.6-dev.2 and mp.6-dev.3.
+    - dev.2, 11 of 11 timeouts (ADC0 7, SDADC 4): the converter had finished its sequence and its last result was unread (INTFLAG.RESRDY 1). The DMA channel was still enabled, and its CHINTFLAG, CHSTATUS (PEND, BUSY) and BUSYCH were 0. So the DMA request for the last result was never served.
+    - dev.3, 6 timeouts in 5 minutes (ADC0 5, SDADC 1): RESRDY was 0 after the flush read and before START, and SEQBUSY was 0 at the start. No result was pending when the DMA channel was armed.
+    - dev.3 capture at all 6 timeouts: the first 8 bytes of the channel's write-back descriptor held BTCTRL 0x1401, BTCNT 1 and SRCADDR 0x20001da8. These are the values of channel 0, TMC UART transmit: its descriptor has BTCTRL 0x1401, and 0x20001da8 is the end of the 4-byte read request in `TmcDriverState::sendData` (Duet3Expansion `src/Movement/StepperDrivers/TMC22xx.cpp:777`, `:1017`). DSTADDR was still the channel's own (0x200031e8 for ADC0, 0x200032fa for the SDADC). The channel's descriptor was intact (BTCTRL 0x0909, BTCNT 4 or 1). Only the timed-out channel was enabled, and no channel was pending or busy.
+    - Read on the same board outside a timeout (three reads 0.8 s apart, 15:17 UTC), the write-back descriptors of channels 2 and 3 held their own state: SRCADDR 0x42004424 (ADC0 RESULT) and 0x42004c24 (SDADC RESULT), BTCTRL 0x0909 while waiting, 0x0908 after the block.
+    - The software never writes the write-back section. `write_back_section` is static (CoreN2G `src/SAME5x_C21/DmacManager.cpp:28`), it is handed to the DMAC (`:64`) and only read (`:349-353`). All writes go to `descriptor_section` (`:87-119`, `:185-187`). The DMAC itself wrote the values of channel 0 into the slot of channel 2 or 3.
+  - This is the behaviour of erratum 1.10.4 of the SAM C20/C21 errata (DS80000740E, "Concurrent channels triggers"): "When using concurrent channels triggers, the DMAC write-back descriptors may get corrupted." Its workaround: "Multiple transfers must only be sequenced using linked descriptors on a single channel." The board is of an affected revision (TL2). Errata 1.10.2 and 1.10.3 need linked descriptors, which CoreN2G does not use (`DESCADDR` 0, `DmacManager.cpp:118`, `:185`).
+  - TMC UART on the same build:
+    - The TMC2209 had 16 read errors in 5 minutes (15:27 to 15:32 UTC), with 0 write errors and 0 DMA errors. Before that the counter showed 20 timeouts.
+    - Earlier lab readouts showed read errors 0 and timeouts 0: mp.3 with 62397 reads, mp.5-dev.1 with 12199 reads.
+    - In 1259 polling intervals of 0.24 s, none held both a TMC read error and an ADC timeout. There were 16 read errors and 10 timeouts. So they are separate events.
+    - Whether the read errors come from the same erratum is not shown.
+  - Side effect in M122, upstream code:
+    - After 20 timeouts with no successful write since the last M122, the driver shows as "not present" (`TMC22xx.cpp:80`, `:606`).
+    - From then on M122 no longer resets the counters, because the reset in `AppendDriverStatus` (`:1766`) runs only for a present driver (`src/CommandProcessing/CommandProcessor.cpp:631`).
+    - The driver still answered reads.
+  - ADC0 OVERRUN was set at the start of 4 sweeps that had completed (dev.3), so a completed sweep can contain a result that ADC0 overwrote before the DMA read it. Which results of such a sweep are wrong was not checked.
+  - Why #9 raises the rate is not established. With #9 the loop starts one converter right after the other finishes, about 1500 sweeps per second of both together (mp.6-dev.1: about 1000).
+  - Not checked:
+    - whether the timeouts occur on the other SAMC21 boards (EXP1HCL, SZP);
+    - whether the TMC read errors also occur on mp.6-dev.1.
+  - Tim, 2026-11-26: this is a bug, and the Duet3Expansion release waits for its fix and a lab check of the fix (`design/lab-test-plan.md`, section 14).
+  - Fix not decided.
