@@ -1136,11 +1136,12 @@ Line numbers refer to the CoreN2G fork `3.7-dev` at 9dc5b6acd and to the Duet3Ex
     - Not recorded yet: the temperature it reads, compared with the room.
   - Fix in CoreN2G #9: the converters take turns. Host test in Duet3Expansion #36 passes 5 of 5 scenarios with the fix and 1 of 5 without it.
     - Behaviour change: both converters convert less often. The rate on the board has not been measured.
-    - Neither PR is merged, and the fix has not run on hardware.
+    - Both were merged on 2026-11-26 (CoreN2G 4f368daf2, Duet3Expansion ebb3251d4). DSF #260 pins CoreN2G 821c4ea12, which contains #9.
+    - Tim decided on 2026-11-26 that Duet3Expansion 3.7.0+1.mp.6 ships with this pin, and that a lab run comes before the tag (protocol of 2026-11-26 in `design/lab-test-plan.md`, section 14).
+    - The fix has not run on hardware yet.
   - Open:
     - a lab run of the fixed build (the same readout plus the conversion rate), which needs Tim's go;
     - 24.5 C with the SDADC stopped against the 18-20 C room: check with a reference thermometer;
-    - the DSF firmware pin after the merge, and the Duet3Expansion release;
     - an upstream report. Duet3D CoreN2G `3.7-dev` c9b23d7 has the same loop.
 - **TL2. Candidate cause for the spikes of forum thread 39227: SAMC21 errata DS80000740T 1.10.4, "Concurrent channels triggers".**
   - The errata says the DMAC write-back descriptors may get corrupted when channels are triggered concurrently. The workaround it gives is to sequence multiple transfers only with linked descriptors on a single channel. It lists the E/G/J devices as affected in silicon revisions E, F and H.
