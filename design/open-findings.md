@@ -1186,7 +1186,7 @@ Line numbers refer to the CoreN2G fork at 821c4ea12 and to the Duet3Expansion fo
   - ADC0 OVERRUN was set at the start of 4 sweeps that had completed (dev.3), so a completed sweep can contain a result that ADC0 overwrote before the DMA read it. Which results of such a sweep are wrong was not checked.
   - Why #9 raises the rate is not established. With #9 the loop starts one converter right after the other finishes, about 1500 sweeps per second of both together (mp.6-dev.1: about 1000).
   - Not checked:
-    - whether the timeouts occur on the other SAMC21 boards (EXP1HCL, SZP);
+    - whether the timeouts occur on the SZP, the other SAMC21 board of the release (the EXP1HCL is a SAME5x board, Duet3Expansion `src/Config/EXP1HCL.h:12`);
     - whether the TMC read errors also occur on mp.6-dev.1.
   - Tim, 2026-11-26: this is a bug, and the Duet3Expansion release waits for its fix and a lab check of the fix (`design/lab-test-plan.md`, section 14).
   - Fix decided by Tim on 2026-11-26, keeping the DMA because the TOOL1LC is short of CPU:
@@ -1194,3 +1194,17 @@ Line numbers refer to the CoreN2G fork at 821c4ea12 and to the Duet3Expansion fo
     - Synchronise the ADC and the TMC UART (Tim: "do not start an adc when tmc is talking and do not run an tmc when adc is talking"). On the SAMC21 a lock in `DmacManager` is taken by each ADC sweep, from the start to its end or timeout, and by each TMC transaction. So no ADC channel is enabled while a TMC transfer runs.
     - The lab check uses a dev build with a RAM flag that switches the lock on and off, so both cases run in the same image. The release code has no switch.
     - Not covered: the LED channel and the shared SPI channels of other SAMC21 boards, and the TMC transmit and receive channels against each other within one transaction.
+  - Implemented on 2026-11-26 in Meltingplot/CoreN2G#11 (33f1329) and Meltingplot/Duet3Expansion#38 (cb86a703). Merge CoreN2G#11 first, because the TOOL1LC does not build #38 without it.
+    - CoreN2G:
+      - `DmacManager::GetTransferMutex()` (SAMC21 only) is created in `DmacManager::Init`.
+      - The SAMC21 `TaskLoop` converts one sweep per pass and starts each pass with `delay(1)`. It holds the mutex from `StartConversion` until the sweep has finished or timed out, and runs the callbacks after it has released the mutex.
+    - Duet3Expansion: `DoTransaction` holds the mutex from before `StartTransfer` until the TMC channels are off. It releases the mutex before `UartTmcHandler` and `delay(2)`.
+    - Host tests:
+      - `Tools/adc-take-turns-test` is extended with a model of the TMC task. It passes 5/5 and fails 5/5 on CoreN2G 821c4ea: in `turns`, 2240 extra sweep starts within a tick, 4000 ADC channel starts without the mutex and 1632 TMC transfers during an ADC transfer.
+      - The new `Tools/tmc-dma-lock-test` passes 4/4 and fails 4/4 on Duet3Expansion 974e1645a.
+      - In the model the sweeps run at 1000 per second, and the TMC task waits at most 370 µs for the mutex (6 ms with a hung converter).
+    - Gates with both branches:
+      - TOOL1LC, EXP1HCL and SZP build without warnings;
+      - pointer check 51/0 new, alloc check 88/0 new, unmask check 6/0 new;
+      - all 7 `Tools/*-test` pass.
+    - Lab image for the A/B check (not committed): Duet3Expansion `3.7.0+1.mp.6-dev.4`, the two branches plus a RAM flag `dmaLockOff` (0x20002bcc, 0 = mutex used). `M122 B20 P1007 A536882124 V1` switches the mutex off. TOOL1LC binary sha256 a7b93449f80c8389bff1aefe1eea38723451a9cdcd9fa74be4fc34b6dd6f05b2. The lab check is pending.
