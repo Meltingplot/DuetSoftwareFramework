@@ -1207,7 +1207,7 @@ Line numbers refer to the CoreN2G fork at 821c4ea12 and to the Duet3Expansion fo
       - TOOL1LC, EXP1HCL and SZP build without warnings;
       - pointer check 51/0 new, alloc check 88/0 new, unmask check 6/0 new;
       - all 7 `Tools/*-test` pass.
-    - Lab image for the A/B check (not committed): Duet3Expansion `3.7.0+1.mp.6-dev.4`, the two branches plus a RAM flag `dmaLockOff` (0x20002bcc, 0 = mutex used). `M122 B20 P1007 A536882124 V1` switches the mutex off. TOOL1LC binary sha256 a7b93449f80c8389bff1aefe1eea38723451a9cdcd9fa74be4fc34b6dd6f05b2. The lab check is pending.
+    - Lab image for the A/B check (not committed): Duet3Expansion `3.7.0+1.mp.6-dev.4`, the two branches plus a RAM flag `dmaLockOff` (0x20002bcc, 0 = mutex used). `M122 B20 P1007 A536882124 V1` switches the mutex off. TOOL1LC binary sha256 a7b93449f80c8389bff1aefe1eea38723451a9cdcd9fa74be4fc34b6dd6f05b2. Its lab check follows.
   - Lab A/B check of dev.4, 2026-11-26 16:35 to 16:45 UTC, 3 minutes per phase (Tim: "3/3/3"). Protocol in `design/lab-test-plan.md`, section 14.
     - Results with the mutex on, off, and on again:
       - 0 ADC timeouts and 0 errors in every phase. The release build has about 3.5 per minute, so about 10 per phase were to be expected.
