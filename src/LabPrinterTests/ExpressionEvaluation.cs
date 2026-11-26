@@ -240,13 +240,17 @@ public class ExpressionEvaluation : LabTest
     /// A date and time beyond the year 9999 from RRF stopped DCS instead of failing the code (DSF #250, finding LT1)
     /// </summary>
     /// <remarks>
-    /// state.upTime makes RRF evaluate the expression, because DSF resolves only SBC fields and its own functions (G1Helpers, Expressions.cs:1015-1048,
-    /// Functions.cs:27-29); 0 * state.upTime is the int 0 (RRF RepRap.cpp:381). RRF parses the string with SafeStrptime and mktime (ExpressionParser.cpp,
-    /// ParseDateTime), adds an int to a DateTime without a range check (:508-517) and prints the year with %04u (ObjectModel.cpp:80-88), so
-    /// 10000-01-01T00:00:00 reaches DSF as an evaluation result of type DateTime (DataTransfer.cpp:1820-1829). Since #250 Reader answers a date that
-    /// DateTime cannot hold with a CodeParserException (Link/Protocol/Reader.cs:443-447), and only this code fails. The control without + 1 checks that
-    /// RRF handles the year 9999 at all. Unfixed: Reader threw, the exception left LinkService.ProcessPacket and ended the link (from reading, not run on
-    /// the printer); the test then restarts DCS and resets RRF before it fails (one E-stop). No restart with the fix
+    /// state.upTime makes RRF evaluate the expression, because DSF resolves only SBC fields and its own functions (Codes/Meta/Expressions.cs:1146,
+    /// Functions.cs:27-29); 0 * state.upTime is the int 0 (RRF RepRap.cpp:381). DSF first tries the whole expression itself from left to right and
+    /// forwards it only when it reaches state.upTime (Expressions.cs:1021-1036, MetaExpressionParser.cs:74-86, :433-443), so state.upTime has to come
+    /// before the + 1: in "date + 1 + 0 * state.upTime" DSF adds the 1 itself and fails the code with the .NET text of DateTime.AddSeconds (finding LT4,
+    /// lab run of 2026-11-26). In "date + 0 * state.upTime + 1" the first right operand holds state.upTime, because * binds closer than +
+    /// (MetaExpressionParser.cs:28-29). RRF parses the string with SafeStrptime and mktime (ExpressionParser.cpp, ParseDateTime), adds an int to a
+    /// DateTime without a range check (:508-522) and prints the year with %04u (ObjectModel.cpp:80-88), so 10000-01-01T00:00:00 reaches DSF as an
+    /// evaluation result of type DateTime (DataTransfer.cpp:1820-1829). Since #250 Reader answers a date that DateTime cannot hold with a
+    /// CodeParserException (Link/Protocol/Reader.cs:443-447), and only this code fails. The control without + 1 checks that RRF handles the year 9999
+    /// at all. Unfixed: Reader threw, the exception left LinkService.ProcessPacket and ended the link (from reading, not run on the printer); the test
+    /// then restarts DCS and resets RRF before it fails (one E-stop). No restart with the fix
     /// </remarks>
     [Test]
     public async Task DateBeyondYear9999IsAnError()
@@ -258,7 +262,7 @@ public class ExpressionEvaluation : LabTest
         string control = (await G1Helpers.SendOrRecoverAsync(Session, $"echo {{{date} + 0 * state.upTime}}", pid)).Trim();
         Assume.That(control, Is.EqualTo("9999-12-31T23:59:59"), "RRF does not handle the year 9999, so it cannot produce a later date");
 
-        string reply = (await G1Helpers.SendOrRecoverAsync(Session, $"echo {{{date} + 1 + 0 * state.upTime}}", pid)).Trim();
+        string reply = (await G1Helpers.SendOrRecoverAsync(Session, $"echo {{{date} + 0 * state.upTime + 1}}", pid)).Trim();
         await G1Helpers.AssertControlServerGoesOnAsync(Session, pid, "a date beyond the year 9999");
         Assert.That(reply, Does.StartWith("Error").And.Contain("date and time 10000-01-01T00:00:00 is out of range"));
     }
