@@ -1223,3 +1223,9 @@ Line numbers refer to the CoreN2G fork at 821c4ea12 and to the Duet3Expansion fo
     - The fix stays as in CoreN2G#11 and Duet3Expansion#38, with both the pacing and the mutex.
     - The 0.4 °C shift needs no reference reading, because temp0 is calibrated per printer ("wird per drucker kalibriert").
     - A one-hour read-only soak with the mutex on follows.
+  - Soak on dev.4 with the mutex on, 2026-11-26 22:03 to 23:07 UTC, 3627 s in two halves (protocol in `design/lab-test-plan.md`, section 14):
+    - ADC: 0 timeouts and 0 errors at 500 sweeps per second. Since dev.4 started at 16:34 UTC there have been 11,859,181 sweeps without a timeout, including the 3 minutes without the mutex.
+    - TMC2209: 1,806,635 reads without a read, write, timeout or DMA error.
+    - CPU: AIN 7.5 %, TMC 5.2 %.
+    - Stack: the TMC task (100 words) had at least 36 words free, against 46 on dev.3, and that value stayed the same over the hour.
+    - The fix is lab-checked.

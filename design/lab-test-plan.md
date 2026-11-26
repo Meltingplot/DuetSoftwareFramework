@@ -950,3 +950,20 @@ Bewertung:
   - Der Fix bleibt wie in CoreN2G#11 und Duet3Expansion#38, mit Takten und Mutex ("ja").
   - Für den Versatz von 0,4 °C braucht es keine Referenzmessung, denn temp0 wird pro Drucker kalibriert ("passt, wird per drucker kalibriert").
   - Es folgt eine Stunde Dauermessung, nur lesend, mit Mutex an ("ja").
+
+### 2026-11-26 nachts: Dauermessung des TL3-Fixes am TOOL1LC (dev.4, Mutex an), ohne Timeouts
+
+```
+Datum, Zeit (UTC): 2026-11-26, 22:03:57 bis 22:34:11 und 22:36:36 bis 23:06:49 (Abbruch der ersten Hälfte durch das Ende der Claude-Sitzung, kein Prozess blieb auf dem SBC zurück; die zweite Hälfte ergänzt die fehlenden 30 Minuten)
+Stand: wie im A/B-Lauf, TOOL1LC 3.7.0+1.mp.6-dev.4 seit 16:34, dmaLockOff 0 (Mutex an) in jeder Auslesung
+Freigabe: Tim ("3, ja"), nur lesend: RAM-Zähler mit M122 B20 P1007 ohne V, dann M122 B20, eine Auslesung pro Minute
+```
+
+Ergebnis, 3627 s in zwei Hälften:
+- ADC: 0 Timeouts, 0 Fehler, 500 Sweeps/s. Seit dem Start von dev.4 um 16:34 bis 23:06:49 sind es 11.859.181 Sweeps ohne Timeout und ohne Fehler, darin die 3 Minuten ohne Mutex.
+- TMC2209: 1.806.635 Lesungen (498/s), 0 Lese-, 0 Schreibfehler, 0 Timeouts, 0 DMA-Fehler.
+- CPU: AIN 7,5 %, TMC 5,2 %, in jeder Auslesung gleich.
+- Stack: Die TMC-Task (100 Worte, `TmcTaskStackWords`) hatte zuletzt höchstens 36 Worte frei. Um 16:35 waren es noch 44, auf dev.3 46. Der Wert ist das Minimum seit dem Start und blieb über die ganze Messung bei 36. Der Weg über den Mutex braucht also etwa 10 Worte mehr. AIN 98 und HEAT 108 Worte frei.
+- temp0: 22,65 bis 22,81 °C.
+
+Bewertung: Der Fix ist im Labor geprüft. Die Release-Bäume von D3E #35 brauchen CoreN2G#11 und Duet3Expansion#38; deren Merge macht Tim.
