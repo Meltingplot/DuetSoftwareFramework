@@ -921,3 +921,28 @@ Bewertung:
   - TL3 ist ein Fehler. Stufe 4 entfällt für dieses Release: "we don't need to run stage 4 if we already have found a bug in the tool1lc".
   - Es kommen keine Tags, bis der Fix für TL3 im Labor geprüft ist ("Wait for the D3E fix"). Danach kommen DSF v3.7.0+mp.16, RRF 3.7.0+1.mp.12 und D3E 3.7.0+1.mp.6 zusammen.
 - Offen für den Release-Umfang: der Fix für TL3 und seine Laborprüfung, `HugeJobFileIsRefused` (Approval).
+
+### 2026-11-26 abends: A/B-Prüfung des TL3-Fixes am TOOL1LC (dev.4), ohne Timeouts
+
+```
+Datum, Zeit (UTC): 2026-11-26, 16:33:35 bis 16:34:48 Firmware-Side-Load TOOL1LC, 16:35:18 Kontrolle der Adressen, 16:35:43 bis 16:44:48 A/B-Lauf: Mutex an bis 16:38:45, aus bis 16:41:47, wieder an bis 16:44:48
+Anlass, PR, Commit: Fix TL3, Meltingplot/CoreN2G#11 (33f1329) und Meltingplot/Duet3Expansion#38 (cb86a703)
+DSF, RRF, EXP1HCL, SZP: wie nach dem vorigen Lauf, nicht geändert (RRF 3.7.0+1.mp.12, Erweiterungen 3.7.0+1.mp.6)
+TOOL1LC: 3.7.0+1.mp.6-dev.4, die beiden Fix-Zweige plus RAM-Schalter dmaLockOff (0x20002bcc, 0 = Mutex an; nicht committet), sha256 a7b93449f80c8389..., Firmware-Side-Load mit firmware/sideload/fw-sideload.sh
+Stufen und Freigabe durch: Tim ("yes"; "3/3/3", "do not have 30 mins right now"). Schalter mit M122 B20 P1007 A536882124 V1 und V0
+Messung: je Phase 181 s, eine Auslesung pro Minute: RAM-Zähler (AnalogIn kumuliert, TMC seit dem vorigen M122), dann M122 B20
+```
+
+| Phase | ADC-Timeouts | ADC-Fehler | Sweeps/s | TMC-Lesungen/s | TMC-Lese-, Schreibfehler, Timeouts | CPU AIN | CPU TMC | temp0 |
+|---|---|---|---|---|---|---|---|---|
+| Mutex an | 0 | 0 | 501 | 499 | 0, 0, 0 | 7,5 % | 5,2 % | 22,86 °C |
+| Mutex aus | 0 | 0 | 992 | 499 | 0, 0, 0 | 9,0 % | 4,2 % | 22,42 bis 22,47 °C |
+| Mutex wieder an | 0 | 0 | 501 | 499 | 0, 0, 0 | 7,5 % | 5,2 % | 22,78 bis 22,84 °C |
+
+Bewertung:
+- In keiner Phase gab es einen ADC-Timeout, auch ohne Mutex nicht. Auf dem Release-Build (etwa 3,5 pro Minute) wären je Phase etwa 10 zu erwarten gewesen. Schon das Takten auf höchstens einen Sweep pro Tick senkt die Rate also stark. Ob sie ohne Mutex bei null bleibt, zeigen 3 Minuten nicht: mp.6-dev.1 lief ebenfalls mit etwa 1000 Sweeps/s und hatte einen Timeout in Stunden.
+- Der TMC2209 hatte in den 9 Minuten keinen Lesefehler, auch ohne Mutex. Auf dev.3 waren es etwa 3 pro Minute.
+- Mit Mutex halbiert sich die Sweep-Rate auf 501/s, im Gleichtakt mit den 499 TMC-Lesungen pro Sekunde. Jeder Wandler macht damit etwa 250 Sweeps/s.
+- CPU: AIN 7,5 % mit Mutex, 9,0 % ohne, 10,2 % auf dev.3. TMC 5,2 % mit Mutex, 4,2 % ohne, 4,1 % auf dev.3. AIN und TMC zusammen 12,7 % mit Mutex, 13,2 % ohne, 14,3 % auf dev.3.
+- temp0 las ohne Mutex 0,4 °C weniger als mit, und der Unterschied verschwand beim Zurückschalten wieder. Die Ursache ist nicht geklärt, denn mit dem Mutex ändert sich auch die Sweep-Rate. Das Referenzthermometer wurde nicht abgelesen.
+- Der TOOL1LC bleibt bis zum nächsten Neustart des SBC auf dev.4, mit Mutex an.
