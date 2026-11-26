@@ -1103,3 +1103,44 @@ Line numbers refer to DSF `v3.7-dev` at 2ee61ca1d and to upstream `v3.7-dev` at 
 - **Fixed and removed from this list (2026-11-25):** LT2 (`floor`, `ceil`, `round` and `pow` of an expression that DSF evaluates gave the int 2147483647 instead of the float 2147483648 for 2^31). `FloatToIntOrFloat` and `Pow` take the bound of RRF #110 (RRF 33e6a184e, `ExpressionParser.cpp:2038`, `:2293`): an int only below 2^31 and from -2^31 on. Upstream still has the old bound. Test: `Machine.MetaExpressionIntegerRange`.
 - **Fixed and removed from this list (2026-11-25):** LT1, DSF part (DCS stopped when RRF answered with a date and time that .NET cannot parse, e.g. a year beyond 9999 from `datetime("9999-12-31T23:59:59") + 1`). Reader returns a CodeParserException as the result, as it does for expression content it cannot read (`Link/Protocol/Reader.cs:443-447`), so only the code that asked gets the error "date and time … is out of range" and the link goes on. Tests: `SPI.LinkServiceOverSpi.DateTimeOutOfRangeFailsOnlyItsRequest`, `SPI.ReaderRobustness.EvaluationResultDateTime`.
 - **Fixed and removed from this list (2026-11-25):** LT3 (a refused deeply nested expression was logged with a stack frame per nesting level, about 4,000 journal lines per refusal, so journald dropped further lines of DCS for up to 30 s). Both parsers throw the refusal again at their top (`MetaExpressionParser.Parse`, the first `eatExpression` call in `Expressions.EvaluateExpressionToValueAsync`), so the logged trace has 5 to 8 frames instead of 1,285 to 1,878 on the 1 MB test stack. The text is `ExpressionErrors.NestingTooDeep`, as RRF's `CheckStack`. Tests: `Machine.ExpressionNesting` (frame limit); lab tests `ExpressionEvaluation.DeeplyNestedExpressionIsRefused` and `FileInfoReplies.DeeplyNestedCustomInfoIsSkipped` (journal line limit).
+
+## Found on the lab printer: TOOL1LC thermistor offset (2026-11-26)
+
+Line numbers refer to the CoreN2G fork `3.7-dev` at 9dc5b6acd and to the Duet3Expansion fork `3.7-dev` at 7dc11034. The board is the TOOL1LC (CAN address 20) of the lab printer, running Duet3Expansion 3.7.0+1.mp.6-dev.1 (78127f2e with CoreN2G 9dc5b6acd). The test was on 2026-11-26 with heaters off and was agreed with the sync session.
+
+- **TL1. The TOOL1LC thermistor reading is several degrees low in some builds, because ADC0 and the SDADC convert the Vref and Vssa pins at the same time.** Forum thread [39227](https://forum.duet3d.com/topic/39227) reported it on 3.6.3.
+  - On mp.6-dev.1 the PT1000 on 20.temp0 read 8.8 C while the room was about 18-20 C (Tim). The ADC0 filters read Vssa 1087 counts and Vref 41700 (filter sum / 8, read with `M122 B20 P1007`).
+  - The SDADC always converts PA07/PA06 (Duet3Expansion `src/Platform/Platform.cpp:888`, `src/Config/TOOL1LC.h:202-203`). ADC0 converts the same pins as Vref and Vssa. The SAMC21 `AnalogIn::TaskLoop` started each converter whenever it was free (CoreN2G `src/SAME5x_C21/SAMC21/AnalogIn.cpp:559-606`).
+  - A/B test in the same image:
+
+    | | Vssa | Vref | Temperature |
+    |---|---|---|---|
+    | SDADC restarts stopped (`numChannelsEnabled` of the SDADC object cleared with `M122 B20 P1007`) | 104 | 42147 | 24.5 C |
+    | Restarts restored | 1087 | 41700 | 8.8 C |
+
+    Two runs gave the same result. AnalogIn reported 0 timeouts and 0 errors.
+  - It is not the DMA and not the barriers:
+    - every transfer completed;
+    - the SAMC21 has no data cache (CoreN2G `src/Cache.h:35-42`);
+    - 054412b and ad2f483 are in the build.
+  - Why ADC0 reads wrong while the SDADC converts the same pins is not established.
+  - The fault depends on the layout. Both converters run from the 48 MHz clock (`AnalogIn.cpp:619`, `:624`), so the software start timing decides how the two conversions line up.
+    - The forum thread shows that builds without the fault exist. Which builds have it was not surveyed.
+    - The tagged Duet3Expansion mp.6 has a different layout from mp.6-dev.1, so this result does not carry over to it.
+  - Tim decided on 2026-11-26 to build the fix as a CoreN2G branch and PR, first without hardware.
+  - Fix in CoreN2G #9: the converters take turns. Host test in Duet3Expansion #36 passes 5 of 5 scenarios with the fix and 1 of 5 without it.
+    - Behaviour change: both converters convert less often. The rate on the board has not been measured.
+    - Neither PR is merged, and the fix has not run on hardware.
+  - Open:
+    - a lab run of the fixed build (the same readout plus the conversion rate), which needs Tim's go;
+    - 24.5 C with the SDADC stopped against the 18-20 C room: check with a reference thermometer;
+    - the DSF firmware pin after the merge, and the Duet3Expansion release;
+    - an upstream report. Duet3D CoreN2G `3.7-dev` c9b23d7 has the same loop.
+- **TL2. Candidate cause for the spikes of forum thread 39227: SAMC21 errata DS80000740T 1.10.4, "Concurrent channels triggers".**
+  - The errata says the DMAC write-back descriptors may get corrupted when channels are triggered concurrently. The workaround it gives is to sequence multiple transfers only with linked descriptors on a single channel. It lists the E/G/J devices as affected in silicon revisions E, F and H.
+  - The TOOL1LC uses five DMA channels (Duet3Expansion `src/Config/TOOL1LC.h:52-56`).
+  - Not checked:
+    - whether the erratum applies to channels without linked descriptors;
+    - the silicon revision of the lab board;
+    - whether spikes still occur on 3.7.
+  - Record only.
