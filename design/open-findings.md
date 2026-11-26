@@ -1128,6 +1128,12 @@ Line numbers refer to the CoreN2G fork `3.7-dev` at 9dc5b6acd and to the Duet3Ex
     - The forum thread shows that builds without the fault exist. Which builds have it was not surveyed.
     - The tagged Duet3Expansion mp.6 has a different layout from mp.6-dev.1, so this result does not carry over to it.
   - Tim decided on 2026-11-26 to build the fix as a CoreN2G branch and PR, first without hardware.
+  - Workaround seen on the lab printer (Tim, 2026-11-26): `M308 S2 P"*20.temp0" Y"pt1000" A"left"` removes the offset. The `*` goes before the board address.
+    - It puts temp0 on SDADC channel 1: PB09 (INP1) against PB08 (INN1), `TOOL1LC.h:238-239`, through `alternateConfig` (Duet3Expansion `src/Hardware/IoPorts.cpp:302-305`, `Platform.cpp:1340-1346`).
+    - The reading then uses the SDADC Vref filter and no Vssa filter (`Platform.cpp:1381-1398`), so the ADC0 Vref and Vssa readings no longer enter it.
+    - It does not help temp1. PA02 has no SDADC input (`TOOL1LC.h:198`), so temp1 still uses the ADC0 Vref and Vssa filters.
+    - The SDADC path has its own calibration slot, filter 4 (`Thermistor.cpp:97-99`), so the L:-11 H:-1 of slot 0 does not apply to it.
+    - Not recorded yet: the temperature it reads, compared with the room.
   - Fix in CoreN2G #9: the converters take turns. Host test in Duet3Expansion #36 passes 5 of 5 scenarios with the fix and 1 of 5 without it.
     - Behaviour change: both converters convert less often. The rate on the board has not been measured.
     - Neither PR is merged, and the fix has not run on hardware.
