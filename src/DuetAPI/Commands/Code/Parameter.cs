@@ -237,15 +237,11 @@ public class CodeParameter
     public bool IsNull { get => Type is null; }
 
     #region Explicit cast operators
-    /// <summary>
-    /// Check if a float rounds to a whole number in the given range, as Convert.ToInt32, ToUInt32 and ToInt64 require.
-    /// A value that does not fit is refused like a long or uint that won't fit, NaN and infinite values never fit
-    /// </summary>
-    /// <param name="value">Value to check</param>
-    /// <param name="min">Smallest whole number of the target type</param>
-    /// <param name="max">Largest whole number of the target type</param>
-    /// <returns>Whether the value can be converted</returns>
-    private static bool Fits(float value, double min, double max) => value >= min - 0.5 && value < max + 0.5;
+    // Whether a float can be converted to the given integer type. The upper bounds are the first values that do not fit,
+    // because the largest integers are not exactly representable as floats. Convert rounds, so -0.5 still converts to zero
+    private static bool FitsInt32(float value) => value >= int.MinValue && value < 2147483648F;
+    private static bool FitsUInt32(float value) => value >= -0.5F && value < 4294967296F;
+    private static bool FitsInt64(float value) => value >= long.MinValue && value < 9223372036854775808F;
 
     /// <summary>
     /// Explicit conversion operator to float
@@ -316,7 +312,7 @@ public class CodeParameter
             {
                 return intValue;
             }
-            if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, int.MinValue, int.MaxValue))
+            if (codeParameter.ParsedValue is float floatValue && FitsInt32(floatValue))
             {
                 return Convert.ToInt32(floatValue);
             }
@@ -341,7 +337,7 @@ public class CodeParameter
         {
             return intValue;
         }
-        if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, int.MinValue, int.MaxValue))
+        if (codeParameter.ParsedValue is float floatValue && FitsInt32(floatValue))
         {
             return Convert.ToInt32(floatValue);
         }
@@ -371,7 +367,7 @@ public class CodeParameter
             {
                 return Convert.ToUInt32(intValue);
             }
-            if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, uint.MinValue, uint.MaxValue))
+            if (codeParameter.ParsedValue is float floatValue && FitsUInt32(floatValue))
             {
                 return Convert.ToUInt32(floatValue);
             }
@@ -404,7 +400,7 @@ public class CodeParameter
         {
             return Convert.ToUInt32(intValue);
         }
-        if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, uint.MinValue, uint.MaxValue))
+        if (codeParameter.ParsedValue is float floatValue && FitsUInt32(floatValue))
         {
             return Convert.ToUInt32(floatValue);
         }
@@ -434,7 +430,7 @@ public class CodeParameter
             {
                 return Convert.ToInt64(uintValue);
             }
-            if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, long.MinValue, long.MaxValue))
+            if (codeParameter.ParsedValue is float floatValue && FitsInt64(floatValue))
             {
                 return Convert.ToInt64(floatValue);
             }
@@ -466,7 +462,7 @@ public class CodeParameter
         {
             return Convert.ToInt64(uintValue);
         }
-        if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, long.MinValue, long.MaxValue))
+        if (codeParameter.ParsedValue is float floatValue && FitsInt64(floatValue))
         {
             return Convert.ToInt64(floatValue);
         }
@@ -615,11 +611,11 @@ public class CodeParameter
         {
             return [intValue];
         }
-        if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, int.MinValue, int.MaxValue))
+        if (codeParameter.ParsedValue is float floatValue && FitsInt32(floatValue))
         {
             return [Convert.ToInt32(floatValue)];
         }
-        if (codeParameter.ParsedValue is float[] floatArray && floatArray.All(value => Fits(value, int.MinValue, int.MaxValue)))
+        if (codeParameter.ParsedValue is float[] floatArray && floatArray.All(FitsInt32))
         {
             return floatArray.Select(Convert.ToInt32).ToArray();
         }
@@ -664,11 +660,11 @@ public class CodeParameter
         {
             return intArray.Select(Convert.ToUInt32).ToArray();
         }
-        if (codeParameter.ParsedValue is float floatValue && floatValue >= 0F && Fits(floatValue, uint.MinValue, uint.MaxValue))
+        if (codeParameter.ParsedValue is float floatValue && floatValue >= 0F && FitsUInt32(floatValue))
         {
             return [Convert.ToUInt32(floatValue)];
         }
-        if (codeParameter.ParsedValue is float[] floatArray && floatArray.All(value => value >= 0F && Fits(value, uint.MinValue, uint.MaxValue)))
+        if (codeParameter.ParsedValue is float[] floatArray && floatArray.All(value => value >= 0F && FitsUInt32(value)))
         {
             return floatArray.Select(Convert.ToUInt32).ToArray();
         }
@@ -705,7 +701,7 @@ public class CodeParameter
         {
             return [Convert.ToInt64(uintValue)];
         }
-        if (codeParameter.ParsedValue is float floatValue && Fits(floatValue, long.MinValue, long.MaxValue))
+        if (codeParameter.ParsedValue is float floatValue && FitsInt64(floatValue))
         {
             return [Convert.ToInt64(floatValue)];
         }
@@ -717,7 +713,7 @@ public class CodeParameter
         {
             return uintArray.Select(Convert.ToInt64).ToArray();
         }
-        if (codeParameter.ParsedValue is float[] floatArray && floatArray.All(value => Fits(value, long.MinValue, long.MaxValue)))
+        if (codeParameter.ParsedValue is float[] floatArray && floatArray.All(FitsInt64))
         {
             return floatArray.Select(Convert.ToInt64).ToArray();
         }

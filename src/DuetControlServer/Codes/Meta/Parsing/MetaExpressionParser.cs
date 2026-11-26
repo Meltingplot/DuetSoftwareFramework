@@ -1063,7 +1063,8 @@ public sealed class MetaExpressionParser
         switch (value)
         {
             case int i:
-                return Math.Abs(i);
+                // The firmware wraps int.MinValue around to itself instead of failing
+                return (i == int.MinValue) ? i : Math.Abs(i);
             case float f:
                 return MathF.Abs(f);
             default:
@@ -1081,7 +1082,8 @@ public sealed class MetaExpressionParser
             return fa % (float)b!;
         }
         int ib = (int)b!;
-        return (ib == 0) ? 0 : (int)a! % ib;
+        // int.MinValue % -1 overflows in .NET although the remainder is 0
+        return (ib == 0 || ib == -1) ? 0 : (int)a! % ib;
     }
 
     private object Pow(object?[] args)
@@ -1425,8 +1427,31 @@ public sealed class MetaExpressionParser
             {
                 ThrowParseException("expected hexadecimal digits");
             }
-            ulong hexValue = Convert.ToUInt64(_text[hexStart.._pos], 16);
+            if (!ulong.TryParse(_text.AsSpan(hexStart, _pos - hexStart), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out ulong hexValue))
+            {
+                ThrowParseException("hexadecimal number too large");
+            }
             return FitInteger(hexValue);
+        }
+
+        if (CurrentCharacter() == '0' && (PeekCharacter() == 'b' || PeekCharacter() == 'B'))
+        {
+            AdvancePointer();
+            AdvancePointer();
+            int binaryStart = _pos;
+            while (CurrentCharacter() == '0' || CurrentCharacter() == '1')
+            {
+                AdvancePointer();
+            }
+            if (_pos == binaryStart)
+            {
+                ThrowParseException("expected binary digits");
+            }
+            if (!ulong.TryParse(_text.AsSpan(binaryStart, _pos - binaryStart), NumberStyles.AllowBinarySpecifier, CultureInfo.InvariantCulture, out ulong binaryValue))
+            {
+                ThrowParseException("binary number too large");
+            }
+            return FitInteger(binaryValue);
         }
 
         while (IsDigit(CurrentCharacter()))
@@ -1449,6 +1474,10 @@ public sealed class MetaExpressionParser
             if (CurrentCharacter() == '+' || CurrentCharacter() == '-')
             {
                 AdvancePointer();
+            }
+            if (!IsDigit(CurrentCharacter()))
+            {
+                ThrowParseException("expected exponent digits");
             }
             while (IsDigit(CurrentCharacter()))
             {
