@@ -147,6 +147,12 @@ public sealed class FakeFirmwareHost : IAsyncDisposable
     private async Task StartServicesAsync()
     {
         using CancellationTokenSource cts = new(DefaultTimeout);
+
+        // Wait for the object model to be read from the firmware. The wait starts before UpdateService does, because it ends only with an update that
+        // starts after it (ObjectModel.cs:627-637), and the update after the first one may not come in time: a test can set a long ModelUpdateInterval
+        // (UpdateService.cs:360), and in update-only mode DCS updates the firmware after the first update and then stops (UpdateService.cs:336-357).
+        // The update lock is free here, so WaitForFullUpdateAsync takes it before it returns and the update it waits for is the first one
+        Task firstUpdate = Model.WaitForFullUpdateAsync(cts.Token);
         foreach (IHostedService service in _provider.GetServices<IHostedService>())
         {
             if (!ServicesNotStarted.Contains(service.GetType()))
@@ -157,8 +163,7 @@ public sealed class FakeFirmwareHost : IAsyncDisposable
         }
         _lifetime.NotifyStarted();
 
-        // Wait for the object model to be read from the firmware
-        await Model.WaitForFullUpdateAsync(cts.Token);
+        await firstUpdate;
     }
 
     /// <summary>
