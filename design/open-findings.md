@@ -1136,20 +1136,17 @@ Line numbers refer to the CoreN2G fork `3.7-dev` at 9dc5b6acd and to the Duet3Ex
     - Not recorded yet: the temperature it reads, compared with the room.
   - Fix in CoreN2G #9: the converters take turns. Host test in Duet3Expansion #36 passes 5 of 5 scenarios with the fix and 1 of 5 without it.
     - Behaviour change: both converters convert less often. The rate on the board has not been measured.
-    - Neither PR is merged, and the fix has not run on hardware.
-  - Open:
-    - a lab run of the fixed build (the same readout plus the conversion rate), which needs Tim's go;
-    - 24.5 C with the SDADC stopped against the 18-20 C room: check with a reference thermometer;
-    - the DSF firmware pin after the merge, and the Duet3Expansion release;
-    - an upstream report. Duet3D CoreN2G `3.7-dev` c9b23d7 has the same loop.
+    - Both were merged on 2026-11-26 (CoreN2G 4f368daf2, Duet3Expansion ebb3251d4). DSF #260 pins CoreN2G 821c4ea12, which contains #9.
+    - Tim decided on 2026-11-26 that Duet3Expansion 3.7.0+1.mp.6 ships with this pin, and that a lab run comes before the tag (protocol of 2026-11-26 in `design/lab-test-plan.md`, section 14).
+    - Lab run on 2026-11-26 with the release build (Duet3Expansion 70e52f01, CoreN2G 821c4ea12, version string 3.7.0+1.mp.6), at 13:53:00 UTC: Vssa 270 counts, Vref 42136 (filter sum / 8), 20.temp0 21.7 C against 21 C on Tim's reference thermometer (mp.6-dev.1: 8.8 C). The offset is gone.
+    - The same build has conversion timeouts at about 3.5 per minute, see TL3.
+  - Open: an upstream report. Duet3D CoreN2G `3.7-dev` c9b23d7 has the same loop.
 - **TL2. Candidate cause for the spikes of forum thread 39227: SAMC21 errata DS80000740T 1.10.4, "Concurrent channels triggers".**
   - The errata says the DMAC write-back descriptors may get corrupted when channels are triggered concurrently. The workaround it gives is to sequence multiple transfers only with linked descriptors on a single channel. It lists the E/G/J devices as affected in silicon revisions E, F and H.
   - The TOOL1LC uses five DMA channels (Duet3Expansion `src/Config/TOOL1LC.h:52-56`).
-  - Not checked:
-    - whether the erratum applies to channels without linked descriptors;
-    - the silicon revision of the lab board;
-    - whether spikes still occur on 3.7.
-  - Record only.
+  - The lab board reads DSU DID 0x11010505 (`M122 B20 P1007` of 0x41002018), an ATSAMC21G18A of silicon revision F (DS80000740T, table 2, page 2: device ID 0x1101xx05, REVISION 0x5 = F). DS80000740T lists 1.10.4 for the E/G/J devices of revisions E, F and H (page 40).
+  - The corruption itself was seen on the lab board without linked descriptors, see TL3.
+  - Not checked: whether spikes still occur on 3.7.
 
 ## Found in the release check of 2026-11-26
 
@@ -1162,6 +1159,88 @@ Line numbers refer to DSF `v3.7-dev` at a7211cf33 and to the RRF fork `3.7-dev` 
   - Seen in the lab test `ExpressionEvaluation.DateBeyondYear9999IsAnError`, whose expression DSF evaluated itself; the test now puts `state.upTime` before the `+ 1`.
   - Fix options: (a) the parser forwards an operation whose result DateTime cannot hold, so the code gets the answer of the forwarded path, as #238 forwards datetime() strings DSF cannot read exactly; (b) the parser throws a CodeParserException with the text of LT1. (a) follows the rule of aligning with RRF (Tim, 2026-11-24). Not decided.
   - Upstream code (`MetaExpressionParser` came with upstream e3a136b27). Upstream report candidate.
+
+## Found in the lab run of the release builds (2026-11-26 afternoon)
+
+Line numbers refer to the CoreN2G fork at 821c4ea12 and to the Duet3Expansion fork at 70e52f01. The board is the TOOL1LC (CAN address 20) of the lab printer, an ATSAMC21G18A of silicon revision F (TL2).
+
+- **TL3. On the TOOL1LC the DMAC overwrites part of the write-back descriptor of an ADC channel with the state of the TMC UART transmit channel; the conversion then times out. Since CoreN2G #9 this happens about 3.5 times per minute.**
+  - Seen on the release build of Duet3Expansion 3.7.0+1.mp.6 (70e52f01 with CoreN2G 821c4ea12): 11 conversion timeouts after 3 min 6 s of uptime (AnalogIn counters read with `M122 B20 P1007`, 14:21:52 UTC). On mp.6-dev.1, without #9, the TL1 measurements had 0 timeouts, and a run of hours had 1.
+  - On a timeout the loop stops the channel after 5 ms and starts the other converter (CoreN2G `src/SAME5x_C21/SAMC21/AnalogIn.cpp:32`, `:200-212`, `:560-615`). The readings of that sweep are lost.
+  - Two diagnostic builds, side-loaded with Tim's go and not committed: CoreN2G 821c4ea12 plus records in `AbandonConversionIfTimedOut` and a capture of the DMAC state, Duet3Expansion version strings mp.6-dev.2 and mp.6-dev.3.
+    - dev.2, 11 of 11 timeouts (ADC0 7, SDADC 4): the converter had finished its sequence and its last result was unread (INTFLAG.RESRDY 1). The DMA channel was still enabled, and its CHINTFLAG, CHSTATUS (PEND, BUSY) and BUSYCH were 0. So the DMA request for the last result was never served.
+    - dev.3, 6 timeouts in 5 minutes (ADC0 5, SDADC 1): RESRDY was 0 after the flush read and before START, and SEQBUSY was 0 at the start. No result was pending when the DMA channel was armed.
+    - dev.3 capture at all 6 timeouts: the first 8 bytes of the channel's write-back descriptor held BTCTRL 0x1401, BTCNT 1 and SRCADDR 0x20001da8. These are the values of channel 0, TMC UART transmit: its descriptor has BTCTRL 0x1401, and 0x20001da8 is the end of the 4-byte read request in `TmcDriverState::sendData` (Duet3Expansion `src/Movement/StepperDrivers/TMC22xx.cpp:777`, `:1017`). DSTADDR was still the channel's own (0x200031e8 for ADC0, 0x200032fa for the SDADC). The channel's descriptor was intact (BTCTRL 0x0909, BTCNT 4 or 1). Only the timed-out channel was enabled, and no channel was pending or busy.
+    - Read on the same board outside a timeout (three reads 0.8 s apart, 15:17 UTC), the write-back descriptors of channels 2 and 3 held their own state: SRCADDR 0x42004424 (ADC0 RESULT) and 0x42004c24 (SDADC RESULT), BTCTRL 0x0909 while waiting, 0x0908 after the block.
+    - The software never writes the write-back section. `write_back_section` is static (CoreN2G `src/SAME5x_C21/DmacManager.cpp:28`), it is handed to the DMAC (`:64`) and only read (`:349-353`). All writes go to `descriptor_section` (`:87-119`, `:185-187`). The DMAC itself wrote the values of channel 0 into the slot of channel 2 or 3.
+  - This is the behaviour of erratum 1.10.4 of the SAM C20/C21 errata (DS80000740T, page 40, "Concurrent channels triggers"): "When using concurrent channels triggers, the DMAC write-back descriptors may get corrupted." Its workaround: "Multiple transfers must only be sequenced using linked descriptors on a single channel." The board is of an affected revision (TL2). Errata 1.10.2 and 1.10.3 need linked descriptors, which CoreN2G does not use (`DESCADDR` 0, `DmacManager.cpp:118`, `:185`). The ADC, SDADC, EVSYS and SERCOM USART errata of DS80000740T (1.4, 1.12, 1.17.4, 1.18) concern sleep modes, events into the ADC or debug mode, none of which this path uses.
+  - TMC UART on the same build:
+    - The TMC2209 had 16 read errors in 5 minutes (15:27 to 15:32 UTC), with 0 write errors and 0 DMA errors. Before that the counter showed 20 timeouts.
+    - Earlier lab readouts showed read errors 0 and timeouts 0: mp.3 with 62397 reads, mp.5-dev.1 with 12199 reads.
+    - In 1259 polling intervals of 0.24 s, none held both a TMC read error and an ADC timeout. There were 16 read errors and 10 timeouts. So they are separate events.
+    - Whether the read errors come from the same erratum is not shown.
+  - Side effect in M122, upstream code:
+    - After 20 timeouts with no successful write since the last M122, the driver shows as "not present" (`TMC22xx.cpp:80`, `:606`).
+    - From then on M122 no longer resets the counters, because the reset in `AppendDriverStatus` (`:1766`) runs only for a present driver (`src/CommandProcessing/CommandProcessor.cpp:631`).
+    - The driver still answered reads.
+  - ADC0 OVERRUN was set at the start of 4 sweeps that had completed (dev.3), so a completed sweep can contain a result that ADC0 overwrote before the DMA read it. Which results of such a sweep are wrong was not checked.
+  - Why #9 raises the rate is not established. With #9 the loop starts one converter right after the other finishes, about 1500 sweeps per second of both together (mp.6-dev.1: about 1000).
+  - Not checked:
+    - whether the timeouts occur on the SZP, the other SAMC21 board of the release (the EXP1HCL is a SAME5x board, Duet3Expansion `src/Config/EXP1HCL.h:12`);
+    - whether the TMC read errors also occur on mp.6-dev.1.
+  - Tim, 2026-11-26: this is a bug, and the Duet3Expansion release waits for its fix and a lab check of the fix (`design/lab-test-plan.md`, section 14).
+  - Fix decided by Tim on 2026-11-26, keeping the DMA because the TOOL1LC is short of CPU:
+    - Pace the SAMC21 `TaskLoop` to at most 1000 sweeps per second of both converters together ("no need for more than 1000 sweeps/s"). #9 doubled the share of the AIN task: 4.9 % on mp.3 and 5.0 % on 3.6.3, 10.2 % on mp.6-dev.3.
+    - Synchronise the ADC and the TMC UART (Tim: "do not start an adc when tmc is talking and do not run an tmc when adc is talking"). On the SAMC21 a lock in `DmacManager` is taken by each ADC sweep, from the start to its end or timeout, and by each TMC transaction. So no ADC channel is enabled while a TMC transfer runs.
+    - The lab check uses a dev build with a RAM flag that switches the lock on and off, so both cases run in the same image. The release code has no switch.
+    - Not covered: the LED channel and the shared SPI channels of other SAMC21 boards, and the TMC transmit and receive channels against each other within one transaction.
+  - Implemented on 2026-11-26 in Meltingplot/CoreN2G#11 (33f1329) and Meltingplot/Duet3Expansion#38 (cb86a703). Merge CoreN2G#11 first, because the TOOL1LC does not build #38 without it.
+    - CoreN2G:
+      - `DmacManager::GetTransferMutex()` (SAMC21 only) is created in `DmacManager::Init`.
+      - The SAMC21 `TaskLoop` converts one sweep per pass and starts each pass with `delay(1)`. It holds the mutex from `StartConversion` until the sweep has finished or timed out, and runs the callbacks after it has released the mutex.
+    - Duet3Expansion: `DoTransaction` holds the mutex from before `StartTransfer` until the TMC channels are off. It releases the mutex before `UartTmcHandler` and `delay(2)`.
+    - Host tests:
+      - `Tools/adc-take-turns-test` is extended with a model of the TMC task. It passes 5/5 and fails 5/5 on CoreN2G 821c4ea: in `turns`, 2240 extra sweep starts within a tick, 4000 ADC channel starts without the mutex and 1632 TMC transfers during an ADC transfer.
+      - The new `Tools/tmc-dma-lock-test` passes 4/4 and fails 4/4 on Duet3Expansion 974e1645a.
+      - In the model the sweeps run at 1000 per second, and the TMC task waits at most 370 µs for the mutex (6 ms with a hung converter).
+    - Gates with both branches:
+      - TOOL1LC, EXP1HCL and SZP build without warnings;
+      - pointer check 51/0 new, alloc check 88/0 new, unmask check 6/0 new;
+      - all 7 `Tools/*-test` pass.
+    - Lab image for the A/B check (not committed): Duet3Expansion `3.7.0+1.mp.6-dev.4`, the two branches plus a RAM flag `dmaLockOff` (0x20002bcc, 0 = mutex used). `M122 B20 P1007 A536882124 V1` switches the mutex off. TOOL1LC binary sha256 a7b93449f80c8389bff1aefe1eea38723451a9cdcd9fa74be4fc34b6dd6f05b2. Its lab check follows.
+  - Lab A/B check of dev.4, 2026-11-26 16:35 to 16:45 UTC, 3 minutes per phase (Tim: "3/3/3"). Protocol in `design/lab-test-plan.md`, section 14.
+    - Results with the mutex on, off, and on again:
+      - 0 ADC timeouts and 0 errors in every phase. The release build has about 3.5 per minute, so about 10 per phase were to be expected.
+      - 0 TMC read, write and timeout errors (dev.3: about 3 read errors per minute).
+      - 501, 992 and 501 sweeps per second, against 499 TMC reads per second.
+      - AIN CPU 7.5 %, 9.0 % and 7.5 % (dev.3: 10.2 %).
+      - TMC CPU 5.2 %, 4.2 % and 5.2 % (dev.3: 4.1 %).
+      - temp0 22.86 °C, 22.42 to 22.47 °C, and 22.78 to 22.84 °C.
+    - So the pacing alone already removes most or all of the timeouts. Three minutes cannot show whether they stay at zero without the mutex: mp.6-dev.1, also at about 1000 sweeps per second, had one in hours. The mutex removes the concurrency that erratum 1.10.4 names.
+    - With the mutex the sweeps run in step with the TMC reads, at about 250 per converter per second.
+    - The 0.4 °C lower temp0 without the mutex came back to the old value when the mutex was switched on again. Its cause (the mutex or the doubled sweep rate) is not established, and the reference thermometer was not read.
+  - Tim, 2026-11-26 after the A/B check:
+    - The fix stays as in CoreN2G#11 and Duet3Expansion#38, with both the pacing and the mutex.
+    - The 0.4 °C shift needs no reference reading, because temp0 is calibrated per printer ("wird per drucker kalibriert").
+    - A one-hour read-only soak with the mutex on follows.
+  - Soak on dev.4 with the mutex on, 2026-11-26 22:03 to 23:07 UTC, 3627 s in two halves (protocol in `design/lab-test-plan.md`, section 14):
+    - ADC: 0 timeouts and 0 errors at 500 sweeps per second. Since dev.4 started at 16:34 UTC there have been 11,859,181 sweeps without a timeout, including the 3 minutes without the mutex.
+    - TMC2209: 1,806,635 reads without a read, write, timeout or DMA error.
+    - CPU: AIN 7.5 %, TMC 5.2 %.
+    - Stack: the TMC task (100 words) had at least 36 words free, against 46 on dev.3, and that value stayed the same over the hour.
+    - The fix is lab-checked.
+  - **Tim, 2026-11-27: drop the pacing when the mutex is used.** The sweeps run back to back and wait only for the mutex ("Remove the delay from coren2g when the mutex is used, so that they can run back to back without delay and just wait for the mutex ... As this already reduces the pace").
+    - Meltingplot/CoreN2G#11 d74fd89: no `delay(1)` any more. The AIN task yields after each sweep, and a pass without channels waits 2 ticks, as before the fix. `DmacManager.h` states the rule for every holder of the mutex.
+    - Why the yield: on the TOOL1LC the AIN and TMC tasks both have priority 2 (Duet3Expansion `src/Platform/TaskPriorities.h:20-21`). Releasing a FreeRTOS mutex switches to a waiting task only if it has a higher priority (FreeRTOS d3ce7a3 `tasks.c:5460`, `queue.c:1014-1020`). Without the yield the AIN task takes the mutex again before the TMC task runs; in the host model the TMC task then makes no transfer at all.
+    - Meltingplot/Duet3Expansion#38 71a7bf48, found on the way and not part of Tim's request: `DoTransaction` also yields after a timed-out transfer. That path has no `delay(2)`, and the `ready` state calls it again at once (`src/Movement/StepperDrivers/TMC22xx.cpp:2124-2127`, `:2333-2335`). While the driver did not answer, the AIN task would hardly have got the mutex. Not seen on the board, because the lab runs had no TMC timeouts. It can be dropped on its own.
+    - Host tests (Duet3Expansion 09593ef72): the model now releases the mutex as FreeRTOS does.
+      - `adc-take-turns-test` 6/6 with the new scenario `idle`. Without the yield it is 2/6, the TMC task starved; without the wait of a pass without channels 5/6; the first version 33f1329 still passes 6/6.
+      - `tmc-dma-lock-test` 4/4, and 3/4 on cb86a7039.
+      - Model rate: about 1750 sweeps per second, against 1000 with `delay(1)`.
+    - Gates: TOOL1LC, EXP1HCL and SZP build without warnings; pointer check 51/0 new, alloc check 88/0 new, unmask check 6/0 new, selftest passed; all 7 `Tools/*-test` pass.
+    - Open: a lab check of this version, with the counters, sweep rate and CPU of section 14 of `design/lab-test-plan.md`, and a soak. It needs Tim's go for the side-load, and the Duet3Expansion release (#35) waits for it.
+      - On the board the rate will be above dev.4's 500 per second. dev.3, back to back without the mutex, made about 1480 per second with AIN at 10.2 % CPU, against 7.5 % on dev.4.
+      - The 2026-11-26 runs do not cover this version. The A/B check showed no timeouts with the pacing alone; with the mutex alone and no pacing nothing has been measured yet.
 
 ## Found in the upstream sync of 2026-11-27
 
