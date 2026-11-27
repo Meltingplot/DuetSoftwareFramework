@@ -30,7 +30,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 - `LAB_PRESSURE_SECONDS` sets how long `OutputBufferPressure` keeps RRF's output buffers busy (default 60).
 - `LAB_MACRO_CLOSE_MINUTES` sets the duration of `MacroCloseStress` (default 60), e.g. 3 to check its rate. Run it with `--filter "FullyQualifiedName~MacroCloseStress"`.
 - `LAB_SZP_RUNS` sets the number of accelerometer runs of `ExpansionBoards.SzpCoilKeepsUpdatingDuringAccelerometerRuns` (default 700).
-- `LAB_AUTOMATIC_MODE_WAIT` makes the `JobSimulation` tests wait up to that many seconds for automatic mode instead of skipping. With `--side-load` the mode has to be set after the run started: the side-load restarts DCS, and the M999 that follows runs `config.g`, which leaves automatic mode.
+- `LAB_AUTOMATIC_MODE_WAIT` makes the `JobSimulation` tests wait up to that many seconds for automatic mode instead of skipping, and the `Motion` tests for automatic mode with X, Y, Z and U homed. With `--side-load` this has to happen after the run started: the side-load restarts DCS, and the M999 that follows resets RRF, so the axes are no longer homed, and runs `config.g`, which leaves automatic mode.
 - Without `LAB_PRINTER_URL` and `LAB_PRINTER_SHELL`, which the script sets, every test is skipped.
 - **Tests of fixes the printer may not have yet** skip instead of failing, so that a run on an older image or firmware shows no false failures and costs no emergency stop where the bug would end DCS or hang a channel:
   - DSF fixes after 3.7.0+mp.15 (`G3Helpers.RequireControlServerWithNewFixesAsync`, `RequireWebServerWithNewFixesAsync`): the test runs if the service is side-loaded from this tree and runs that file, or if its package is newer. v3.7-dev builds report 3.7.0+mp.15 too until the next version bump.
@@ -55,6 +55,10 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
   - `FullDisk`: points `sys/config-override.g` or the event log at `/dev/full` or a small tmpfs. `config-override.g` is never deleted or written: it is backed up with its checksum to `/run/lab-sbc-files`, renamed aside and back as dsf, and the checksum is checked afterwards.
   - `IntrusiveCodes.M997*`: M997 with a 100-byte UF2 file and with `S0:4` and a missing file; both are refused before anything is flashed. `IntrusiveCodes.RunOnceRunsAfterConfig` (also `Restart`) writes `0:/sys/runonce.g` and sends M999.
 - Explicit only: the 30-minute soak and the 60-minute `MacroCloseStress` (category `Trigger`).
+- Category `Motion` (explicit, stage 4 of `design/lab-test-plan.md`, only with Tim on site): X and Y moves of the CHX, and one job started with M32 (`Motion.cs`, Tim 2026-11-27). Run them with `--filter "TestCategory=Motion"`.
+  - The tests skip unless the machine is in automatic mode with both doors closed and X, Y, Z and U are homed. They do not home.
+  - Only X and Y move, in machine coordinates on a 40 mm square next to X max/2, Y max/2 - 40, with U at its maximum and Z at 20 mm or more, as the machine's own macros move. No extrusion, heaters, fans or outputs: the only other code is M117, and the display message is set back afterwards.
+  - `QueuedCodesRunInAJob` runs the CHX `start.g` and `stop.g` like any job. It skips while the weekly self-test is due, which would heat before the job. At the end `stop.g` lifts Z to its maximum, parks the gantry and clears the door checks, so the machine is in default mode until both doors have been opened and closed again. It runs last.
 - `MacroCloseStress` runs trigger 30 up to five times a second, and its macro nests four more. DCS logs two lines for each macro on the trigger channel, so the journal gets about 50 lines a second for an hour. The machine's own triggers keep priority (see the test).
 - `AbortsCrossingMacroRequests` (explicit, `Restart`) runs a Python IPC client as root on the SBC, which aborts Telnet with the IPC command `InvalidateChannel`, and sets the DCS log level to debug for about a minute (`M111 P-1 S"debug"`, set back afterwards). `LAB_ABORT_ITERATIONS` sets the number of aborts (default 600).
 - `PluginPermissions.WebServerPassesPermissionCheckOfSystemPackages` sends `DELETE /machine/systemPackage` for `labtest_no_such_package`, a name no Debian package can have. With root plugin support, DPS runs `dpkg -r` with it.
@@ -64,7 +68,7 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 - `ObjectModelLifetime.DeletingCommandsDoNotStallAssignments` opens and closes non-blocking message boxes (`M291 S1`) for about a minute, which flicker on the HMI.
 - `ExpressionEvaluation.DeeplyNestedExpressionIsRefused` sends codes of about 400 KB. Before DSF #251 each refusal logged a stack trace of thousands of lines; the test waits for journald's rate limit and checks that the refusal now leaves only a few lines.
 - `CodeBufferReserve` keeps Telnet and Aux2 waiting for 12 s with RRF's code buffer full. Without the fix, no trigger macro, including those of the doors and the E-stop input, gets a code to RRF in that time.
-- Never: print jobs, motion or heaters.
+- Never: heaters or extrusion, and motion or a job started with M32 outside the category `Motion`.
 - A test that leaves a channel stuck restarts DCS and sends M999 before it fails.
 
 ## Tests and the bugs they cover
@@ -178,6 +182,8 @@ src/LabPrinterTests/run-lab-tests.sh [--side-load [--fault-injection [--plain-li
 | `IntrusiveCodes.M997RefusesAnInvalidUf2File` (explicit, Approval) | M997 of an invalid UF2 stopped plugins and restarted DCS | DSF #197 |
 | `IntrusiveCodes.M997RefusesModule0WithOtherModules` (explicit, Approval) | M997 S0:4 dropped module 4 | DSF #148 |
 | `IntrusiveCodes.RunOnceRunsAfterConfig` (explicit, Approval, Restart) | runonce.g never ran in SBC mode on 3.7 | DSF #224 |
+| `Motion.JogsLikeTheDashboard` (explicit, Motion) | No bug: moves sent from HTTP the way DWC and the CHX panel send them (M120, G90 or G91, G1, M121) end where they should, and M121 leaves the HTTP channel absolute | Guards the HTTP path of moves |
+| `Motion.QueuedCodesRunInAMacro`, `Motion.QueuedCodesRunInAJob` (explicit, Motion) | In SBC mode every code that RRF queues behind moves, such as M117, M106 or M42 in a macro or job, failed with "GCode command too long": the queue channel had no binary buffer since upstream e520116e9 (RRF fork sync #117, fork `3.7-dev` only, in no release) | RRF fork PR #123 (upstream 187840328) |
 
 ## SPI fault injection
 
