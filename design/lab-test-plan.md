@@ -43,7 +43,7 @@ Gelesen am 2026-11-06 gegen 18:50 UTC, nur lesend.
 | 1 | Lesen: Status, Journal, `M122`, `M409` und andere nur lesende Codes. Dazu `M291`/`M292`, Testmakros in `0:/macros/lab-tests`, Globals `labTest...` | Tim wird vor dem Lauf informiert | `src/LabPrinterTests/README.md:22` |
 | 2 | Ohne Aufsicht erlaubt: `M122 P1001`, DCS-Neustart mit `M999`, Testtrigger 30, Side-Load, Fehlerinjektion | Tim gibt den Lauf frei | README `:23-25`, `SpiFaultInjection.cs:21` |
 | 3 | Alles außerhalb dieser Liste: `M112`, `M111`, `M929`, `M606`, Testdateien in `0:/gcodes` | Tim pro Punkt | nicht von README `:22-26` abgedeckt |
-| 4 | Druckjob, Bewegung, Heizen, Panel, ESD | Nur mit Tim vor Ort | README `:27` |
+| 4 | Druckjob, Bewegung, Heizen, Panel, ESD. Automatisiert davon nur RG-20 bis RG-22: Fahrten von X und Y und ein Job mit `M32`, ohne Heizen | Nur mit Tim vor Ort | README, Kategorie `Motion` |
 
 Regeln für jeden Lauf:
 - Die Suite läuft immer gegen die aktuelle Firmware des Prüflings, weil sie ein Ende-zu-Ende-Test ist (Tim, 2026-11-06). Für einen Test wird keine andere RRF-Version geflasht. Side-Loads betreffen nur DSF-Builds.
@@ -58,7 +58,7 @@ Regeln für jeden Lauf:
 | Anlass | Umfang |
 |---|---|
 | PR im Link-, Code- oder Trigger-Pfad | Block 0, E, RG mit `--side-load`, dazu die betroffenen A- und F-Prüfungen |
-| Neues DSF-Release oder Image | Block 0, E, RG ohne Side-Load, F-1, F-2 |
+| Neues DSF-Release oder Image | Block 0, E, RG ohne Side-Load, F-1, F-2, mit Tim vor Ort RG-20 bis RG-22 |
 | Neues RRF-Release | Wie neues Release, dazu `PortMatchesRealFirmware` durch die RRF-Sitzung (`LinkRecovery.cs:838`) |
 | Änderung am Warten auf TfrRdy in DSF (`Link/Adapter/SPI.cs`), Feldbericht eines Verbindungsverlusts im Leerlauf | RG-17 |
 | Änderung an `Heap`, String- oder Array-Handles oder am Schließen von Makros, Feldbericht eines Resets in `Heap::DeleteSlot` | RG-18 |
@@ -76,7 +76,7 @@ RG-17 und RG-18 laufen nur auf Abruf und gehören nicht zum Release-Umfang (Tim,
 | 3 | F-1, F-2 | 2 | keine | 45 min |
 | 4 | A-1 bis A-7, A-10 | 1 und 2 | Tests aus `feature/lab-tests-for-changes` | Suite 11,2 min, A-1 und A-2 etwa 5 min |
 | 5 | A-8, A-9, A-11 bis A-13 | 3 | Tests aus `feature/lab-tests-for-changes`, Einzelfreigabe | offen |
-| 6 | M-1 bis M-4 | 4 | Termin mit Tim | M-1 75 min (Testdruck am 2026-11-23), M-2 bis M-4 offen |
+| 6 | RG-20 bis RG-22, M-1 bis M-4 | 4 | Termin mit Tim, Achsen referenziert | RG-20 bis RG-22 noch nicht gemessen, dazu `G28` (2:34 min am 2026-11-23). M-1 75 min (Testdruck am 2026-11-23), M-2 bis M-4 offen |
 
 Gemessen am 2026-11-06: Suite in Block 1 8,3 min, Block 3 44 min einschließlich Side-Load (F-1 3 min, F-2 41 min).
 
@@ -140,6 +140,7 @@ src/LabPrinterTests/run-lab-tests.sh                                          # 
 src/LabPrinterTests/run-lab-tests.sh --side-load                              # dasselbe mit dem Stand dieses Baums
 src/LabPrinterTests/run-lab-tests.sh --filter "FullyQualifiedName~LinkSoak"   # RG-17
 src/LabPrinterTests/run-lab-tests.sh --filter "FullyQualifiedName~MacroCloseStress"   # RG-18, Dauer mit LAB_MACRO_CLOSE_MINUTES
+src/LabPrinterTests/run-lab-tests.sh --filter "TestCategory=Motion"   # RG-20 bis RG-22, Stufe 4, Tim vor Ort
 ```
 
 | ID | Test | Altes Fehlerbild | Soll |
@@ -158,6 +159,12 @@ src/LabPrinterTests/run-lab-tests.sh --filter "FullyQualifiedName~MacroCloseStre
 | RG-13 bis RG-16 | `MacrosOnOtherChannels.TriggerKeepsFiringWhileMacroRuns` für `M98.1 S4`, `S0`, `S1`, `S10`, seit `M98.1 W` auch `S8` (noch nicht am Drucker gelaufen) | Neue Funktion #108, `M98.1 S`, `M98.1 W` | Kriterien in `MacrosOnOtherChannels.cs`, unter anderem richtiger Kanal, Parameter `5,2,5,true,false,false` (ohne `S` und `W`), Trigger feuert weiter |
 | RG-17 | `LinkSoak.NoLostConnectionWhileIdle` | TfrRdy-Timeouts alle 15 bis 30 min | 30 min ohne `Lost connection to Duet`, kein RRF-Neustart |
 | RG-18 | `MacroCloseStress.NoResetWhileMacrosCloseOnTheTriggerChannel` | RRF-Reset im Leerlauf, `MemoryProtectionFault` in `Heap::DeleteSlot` kurz nach dem Schließen eines Trigger-Makros, etwa einmal je 40.000 Schließvorgänge (RRF mp.9, Upstream-Code) | 60 min mit mindestens 10 Schließvorgängen je Sekunde: `state.upTime` fällt nie, `Last software reset` in `M122` unverändert, `Heap OK`, keine Neustartzeile aus `PER_REBOOT` im Journal |
+| RG-19 | `TriggerActions` (4 Tests, noch nicht am Drucker gelaufen) | `M581 K` von Upstream (RRF 3.7.1) zusammen mit der Aktionszeile `U` der Fork, Fix dd2aab996 im RRF-Sync vom 2026-11-27 | Bericht mit `(K2, run macro)`, `U` bei K3 abgelehnt, `U"M112"` als `(K0, emergency stop)` berichtet, K3 löscht die Aktionszeile, `P-1` setzt K zurück. Nichts feuert, Trigger 30 ist danach `is not configured`. Ohne K (RRF bis 3.7.0) werden die Tests übersprungen |
+| RG-20 | `Motion.JogsLikeTheDashboard` (Stufe 4, noch nicht am Drucker gelaufen) | Kein Fehler bekannt, schützt Fahrten über HTTP | Anfahrt und vier Jogs, gesendet wie von DWC und vom CHX-Panel (`M120`, `G90` oder `G91`, `G1`, `M121`): nach jedem `M400` steht X oder Y 40 mm weiter, der HTTP-Kanal ist danach wieder absolut |
+| RG-21 | `Motion.QueuedCodesRunInAMacro` (Stufe 4, noch nicht am Drucker gelaufen) | Codes, die RRF hinter Fahrten einreiht (etwa `M117`, `M106`, `M42`), schlugen im SBC-Modus mit "GCode command too long" fehl. Seit dem RRF-Sync #117 (Upstream e520116e9) in `3.7-dev`, in keinem Release. Behoben durch Upstream 187840328 (RRF #123) | Makro mit den vier Seiten eines Quadrats von 40 mm und je einem `M117` dahinter: die Displaymeldung ist die des letzten `M117`, kein "GCode command too long" im Journal, X und Y wieder am Start |
+| RG-22 | `Motion.QueuedCodesRunInAJob` (Stufe 4, noch nicht am Drucker gelaufen) | Wie RG-21 | Dieselben Codes als Job mit `M32`, mit `start.g` und `stop.g` des CHX: Job nicht abgebrochen, sonst wie RG-21. Übersprungen, solange der Wochentest fällig ist. Danach ist die Maschine im Standardmodus, bis beide Türen einmal geöffnet und geschlossen wurden |
+
+Vor RG-20 bis RG-22: X, Y, Z und U referenziert (`G28`), Automatikmodus, beide Türen zu, Z mindestens 20 mm, U an seinem Maximum. Sonst werden die Tests übersprungen, mit `LAB_AUTOMATIC_MODE_WAIT` warten sie. Nach einem Side-Load sind die Achsen nicht mehr referenziert, weil der Runner `M999` sendet. Nur X und Y fahren, auf einem Quadrat neben X max/2, Y max/2 − 40 in Maschinenkoordinaten. Keine Extrusion, keine Heizung, als einziger anderer Code `M117`. RG-22 läuft als letzter: `stop.g` hebt Z an sein Maximum, parkt das Portal und löscht die Türprüfung (`Motion.cs`, Klassenkommentar).
 
 Zusatzauswertung für RG-6, weil der Test selbst erst nach 90 s fehlschlägt:
 - **Erholzeit je Reboot:** Referenz 11,8 bis 12,2 s (RRF #36, 15 Reboots; Abnahme vom 2026-11-03: 11,8 bis 12,2 s). Mehr als das ist eine Abweichung und wird analysiert, auch wenn der Test besteht. Der Wert wird auf dem Client über den Tunnel gestoppt.
@@ -423,7 +430,7 @@ Rückbau geprüft:
   - RRF #79 (Binärcode über 256 Bytes nach einem Text-Code): Text-Codes kommen im SBC-Modus nur von USB, Aux und von RRF selbst, am CHX nur aus Trigger-Aktionen (`M581.1 … U`, RRF `GCodes.cpp:1044-1054`). Der CHX hat keine, seine Trigger starten Makrodateien. Geprüft durch `Tools/sbc-code-length-test` in RepRapFirmware.
   - RRF #58 (fehlgeschlagenes Makro, auf das kein Kanal wartet): Nur der Daemon-Kanal wartet nicht auf ein angefordertes Makro (RRF `GCodeBuffer.cpp:1334`), und DSF meldet einen Makrofehler nur für eine fehlende Datei (`Processor.cs:1730`). Der CHX hat eine `daemon.g`. Ein Test müsste sie entfernen, das wäre Stufe 3 und träfe den Fehler bei einem Versuch alle 10 s nur statistisch.
   - Races mit `malloc` und dem Objektmodell (RRF #70, #72 bis #77, RRFLibraries #2, Duet3Expansion #20): Nur durch Host-Tests und alloc-check deterministisch geprüft, am DUT nur als "kein Reset".
-  - Bewegung, Feed Hold, Endstops, Z-Sonde und Emergency Pause (RRF #56, #63, #66, #83, #84, Duet3Expansion #24) brauchen Stufe 4. Am 2026-11-23 liefen davon #66 (als Regressionsprüfung) und #83 (Abschnitt 14). #84 braucht Power-Fail oder Stall-Pause, #56 eine Antastfahrt ohne Auslösung mit `M558 P` und einer Änderung eines CAN-Eingangs, #63 `M672`, das der CHX nicht nutzt.
+  - Fahrten aus HTTP, Makro und Job mit eingereihten Codes prüfen RG-20 bis RG-22 (Stufe 4). Feed Hold, Endstops, Z-Sonde und Emergency Pause (RRF #56, #63, #66, #83, #84, Duet3Expansion #24) brauchen weiter eine Prüfung von Hand in Stufe 4. Am 2026-11-23 liefen davon #66 (als Regressionsprüfung) und #83 (Abschnitt 14). #84 braucht Power-Fail oder Stall-Pause, #56 eine Antastfahrt ohne Auslösung mit `M558 P` und einer Änderung eines CAN-Eingangs, #63 `M672`, das der CHX nicht nutzt.
 - **Andere Repos:** Inhalt des Self-Tests (chx350-config) und USB-Guard, OTA sowie Panel-Fehlerbilder (rpi-image-gen) brauchen eigene Prüfpläne. Hier wird nur die Schnittstelle geprüft.
 
 ## 13. Offene Entscheidungen
@@ -433,6 +440,8 @@ Rückbau geprüft:
 | 1 | Wann ist der Termin für die Stufe-4-Prüfungen? | Nach Block 1 bis 3 |
 
 Entschieden (Tim, 2026-11-06): Alle Stufe-3-Tests werden gebaut (A-8, A-9, A-11, A-12, A-13).
+
+Entschieden (Tim, 2026-11-27): Ein Lab-Test fährt Achsen, mit normalen G-Codes und aus einer Jobdatei. Anlass: Upstream 187840328 behebt eingereihte Codes im SBC-Modus, die seit dem RRF-Sync #117 fehlschlugen. Der Lauf vom 2026-11-26 konnte das nicht zeigen, weil kein Test fuhr. Umgesetzt als RG-20 bis RG-22 (Stufe 4) und für DSF- und RRF-Releases in den Umfang aufgenommen.
 
 ## 14. Durchgeführte Läufe
 
@@ -890,3 +899,121 @@ Bewertung:
 - Der erste F-2-Lauf zeigte eine Lücke im Runner: Fällt der SSH-Zugang weg, bleibt der Side-Load eingehängt, und ein neuer Lauf hängt darüber ein und löst am Ende nur eine Lage (`src/LabPrinterTests/run-lab-tests.py:469`, `:507`). Deshalb vor dem zweiten Lauf der Rückbau von Hand.
 - Die Release-Binärdateien unterscheiden sich von den geprüften Builds nur in der Versionszeile, die 6 Bytes kürzer ist.
 - Offen für den Release-Umfang: Stufe 4 mit Tim vor Ort (Referenzfahrt, Feed Hold und Stopp in der Referenzfahrt und in einer G1-Bewegung, EP-17) und `HugeJobFileIsRefused` (Approval, Automatikmodus). Tim meldet, dass das TOOL1LC 8,3 °C bei 18 bis 20 °C Raumtemperatur liest. Eine andere Sitzung hat das um 09:46 UTC auf mp.6-dev.1 gemessen: Vssa-Filter 1087 Counts statt etwa 190, Vref 41700 statt etwa 42100, Kalibrierung klein (M308 S2 L-11 H-1). Mit gestoppten SDADC-Neustarts (ein 32-Bit-Wort per M122 P1007, danach zurückgeschrieben und geprüft) Vssa 104, Vref 42147, Sensor 2 bei 24,5 °C, zweimal reproduziert. Ursache nach dieser Messung: Der SDADC wandelt PA07/PA06 (Vref/Vssa, Duet3Expansion `src/Platform/Platform.cpp:888`), während ADC0 dieselben Pins abtastet, und die Phase zwischen beiden hängt vom Code-Timing ab, also vom Layout (gleiche Signatur wie Forum-Thread 39227 auf 3.6.3). Keine funktionale Änderung seit mp.5 im Analogpfad. Ob mp.5 es auf dem CHX zeigte, ist nicht gemessen. Ein Ergebnis auf mp.6-dev.1 sagt nichts über das Release-Binary, dessen Versionszeile 6 Bytes kürzer ist.
+- Entscheidung Tim, 2026-11-26 nach dem Sync vom selben Tag: Das Release enthält den Sync (DSF #259 und #260, Meltingplot/RepRapFirmware#119, Meltingplot/Duet3Expansion#37, Meltingplot/CoreN2G#10, Meltingplot/RRFLibraries#6). Die Tags v3.7.0+mp.16, 3.7.0+1.mp.12 und 3.7.0+1.mp.6 kommen erst nach einer neuen Laborprüfung, denn diese Prüfung hier lief auf Bäumen ohne den Sync. Zwei Änderungen des Syncs brauchen die Hardware:
+  - `GetMallocMutex` nimmt die Mutex jetzt, sobald der Scheduler gestartet ist (RRF `src/Platform/Tasks.cpp:115`, D3E `src/Platform/Tasks.cpp:144`, aus Duet3D d85662412 und 0f63349f). Heap-Nutzung bei angehaltenem Scheduler endet damit in der Assertion von FreeRTOS `src/queue.c:1682` und einem Reset mit `assertCalled` (RRF `src/Hardware/ExceptionHandlers.cpp:228`) statt in einem unbemerkt beschädigten Heap.
+  - Meltingplot/CoreN2G#9 (TL1 in `design/open-findings.md`: ADC0 und SDADC wandeln nicht mehr gleichzeitig) kommt mit diesem Pin zum ersten Mal in ein Release.
+  - Geplant für die Prüfung: Builds der Release-Bäume RRF aba5ca711 und D3E 70e52f01 mit den Versionszeilen des Releases, damit das Layout dem Release-Binary gleicht (siehe den Punkt zum TOOL1LC oben). `DuetControlServer -u` flasht sie, weil die Boards eine andere Version haben.
+
+### 2026-11-26 nachmittags: Release-Prüfung auf den Release-Bäumen, automatischer Teil bestanden, neuer Befund TL3 am TOOL1LC
+
+```
+Datum, Zeit (UTC): 2026-11-26, 13:49:46 TOOL1LC-Auslesung vor dem Flash, um 13:50 Firmware-Side-Load D3E, um 13:52 Firmware-Side-Load RRF, 13:53:00 TOOL1LC-Auslesung (TL1), 13:54:49 bis 14:18:53 Standardlauf, 14:19:34 bis 14:21:52 Zähler AnalogIn, 14:22:22 bis 14:24:47 F-1, 14:24:50 bis 14:58:47 F-2, danach bis 15:32:40 Diagnose am TOOL1LC (TL3)
+Anlass, PR, Commit: Release RRF 3.7.0+1.mp.12 (Meltingplot/RepRapFirmware#118 auf aba5ca711), D3E 3.7.0+1.mp.6 (Meltingplot/Duet3Expansion#35 auf 70e52f01) und DSF 3.7.0+mp.16 (#255, 5f0c0ff46), Umfang "Neues RRF-Release", mit dem Sync vom 2026-11-26 (Entscheidung Tim, siehe den vorigen Lauf)
+DSF: 3.7.0+mp.15 im Image. Side-Load von DCS und DWS aus 5f0c0ff46, für F-1 und F-2 mit Fehlerinjektion
+RRF: 3.7.0+1.mp.12 (Baum aba5ca711 mit der Versionszeile des Releases, sha256 e479fe28f84f0896...), Firmware-Side-Load. Erweiterungen 3.7.0+1.mp.6 (Baum 70e52f01 mit der Versionszeile des Releases; TOOL1LC sha256 0df88812e4f3d729..., EXP1HCL 86278329e9dbe32f..., SZP 6e2f061b65e0bd95...), Firmware-Side-Load, zuerst D3E, dann RRF, beide mit firmware/sideload/fw-sideload.sh. Danach am TOOL1LC allein die Diagnose-Builds 3.7.0+1.mp.6-dev.2 (sha256 8949c57f...) und dev.3 (sha256 1fd47acb...), Firmware-Side-Load
+Stufen und Freigabe durch: 2, Tim vor Ort ("go i'm on site"), Diagnose-Builds ("2nd diag build now")
+Standardlauf (E, RG-1 bis RG-16, A-14 bis A-16, Tests der Fork-Fixes): 102 bestanden, 0 fehlgeschlagen, 9 übersprungen, 38 explizit nicht gelaufen. Watchdog-Neustarts 5 x, wieder da nach 12,1 bis 12,2 s (Median 12,2 s)
+Übersprungen im Standardlauf: 4 x, weil die Pakete des Images vor #225, #232 und #234 liegen (WebServerUnitRestartsIt, ControlServerRunsWithoutEffectiveCapabilities, FileReadsHaveTheRightsOfTheDsfUser, RootPluginServiceSettingsBelongToRoot); 3 x Freigabe je Lauf (SzpCoilKeepsUpdatingDuringAccelerometerRuns, RestartDuringAccelerometerRunKeepsLinkAndResetData, WebServerComesBackAfterAKill); 2 x viele Neustarts oder Abbrüche (NoReplyOfTheOldConnectionAfterRestart, ChannelWorksAfterAbortsCrossingMacroRequests). Diese neun sind nicht geprüft
+F-1: 15 von 15 ESD-Fällen, 15 x Retry, 0 nicht injiziert, 0 Abweichungen vom Census
+F-2: 672 von 3234 Fällen auf dem erweiterten Link, 672 x Retry, 0 nicht injiziert, 0 Abweichungen, 33 min 57 s
+M122: RRF-Link-Zähler und DSF-Zähler in allen Blöcken 0 -> 0
+Self-Test im Laufzeitraum: Standardlauf 5 Läufe, F-1 1 Lauf, F-2 1 Lauf, alle passed
+Journalbefunde: Standardlauf in keiner Befundkategorie. Erwartet: je 6 x "Connection to controller has been reset", "RepRapFirmware has left the extended link", "Restarting full transfer because"; 10 x "Machine is halted", 17 x "Cannot store excessively long object model response", 3 x "Expression nesting too deep", 3 x "Failed to start macro file" der Refused-Tests. Bekannt: 1 x "Failed to find query for object model response", 7 x "Aborting orphaned macro file daemon.g". Nur notiert: 433 x "Resending packet #", 42 x "Client with outdated protocol version", 37 x "has no value", 33 x "predicted maximum temperature". F-1: 15 x injiziert, 5 x Bad header CRC, 10 x Bad data CRC, 2 x Machine is halted. F-2: 672 x injiziert, 118 x Restarting full transfer, 22 x Bad header CRC, 8 x Bad data CRC, 26 x Sending transfer # again, 2 x Machine is halted
+Rückbau geprüft: ja, nach jedem Block. Der Firmware-Side-Load bleibt bis zum nächsten Neustart des SBC drauf, am TOOL1LC mit dem Diagnose-Build dev.3
+```
+
+Bewertung:
+- Der automatische Teil des Release-Umfangs ist auf den Release-Bäumen ohne Befund gegen DSF, RRF und den Link durchgelaufen: Block E, RG ohne RG-17 und RG-18, A-14 bis A-16, die Tests der Fork-Fixes, F-1 und F-2. Die Journalkategorien gleichen dem Lauf vom Vormittag. Die beiden Änderungen des Syncs, die die Hardware brauchten (`GetMallocMutex` und CoreN2G #9), liefen in allen Blöcken mit, und die Erweiterungen liefen nach jedem Block. Ob ein Board zwischendurch mit `assertCalled` neu startete, zeigt der Runner nicht, denn er gibt nur "cause software" aus, das auch das M999 des Rückbaus erzeugt.
+- TL1 auf dem Release-Build behoben (`design/open-findings.md`, TL1): 20.temp0 21,7 °C gegen 21 °C am Referenzthermometer von Tim, Vssa-Filter 270 Counts, Vref 42136. Vor dem Flash las mp.6-dev.1 um 13:49:46 17,15 °C.
+- Neuer Befund TL3 (`design/open-findings.md`): Auf dem Release-Build laufen am TOOL1LC etwa 3,5 Wandlungen pro Minute in den Timeout, auf mp.6-dev.1 eine in Stunden. Die Diagnose-Builds zeigen, dass der DMAC die ersten 8 Bytes des Write-Back-Deskriptors des ADC-Kanals mit dem Zustand des TMC-Sendekanals überschreibt, wie Erratum 1.10.4 (DS80000740T, Seite 40) es beschreibt. Die Platine ist ein ATSAMC21G18A der Revision F (DSU DID 0x11010505), die das Erratum nennt. Im selben Build hat der TMC2209 des TOOL1LC etwa 3 Lesefehler pro Minute, nicht zeitgleich mit den Timeouts.
+- Entscheidungen Tim, 2026-11-26:
+  - TL3 ist ein Fehler. Stufe 4 entfällt für dieses Release: "we don't need to run stage 4 if we already have found a bug in the tool1lc".
+  - Es kommen keine Tags, bis der Fix für TL3 im Labor geprüft ist ("Wait for the D3E fix"). Danach kommen DSF v3.7.0+mp.16, RRF 3.7.0+1.mp.12 und D3E 3.7.0+1.mp.6 zusammen.
+- Offen für den Release-Umfang: der Fix für TL3 und seine Laborprüfung, `HugeJobFileIsRefused` (Approval).
+
+### 2026-11-26 abends: A/B-Prüfung des TL3-Fixes am TOOL1LC (dev.4), ohne Timeouts
+
+```
+Datum, Zeit (UTC): 2026-11-26, 16:33:35 bis 16:34:48 Firmware-Side-Load TOOL1LC, 16:35:18 Kontrolle der Adressen, 16:35:43 bis 16:44:48 A/B-Lauf: Mutex an bis 16:38:45, aus bis 16:41:47, wieder an bis 16:44:48
+Anlass, PR, Commit: Fix TL3, Meltingplot/CoreN2G#11 (33f1329) und Meltingplot/Duet3Expansion#38 (cb86a703)
+DSF, RRF, EXP1HCL, SZP: wie nach dem vorigen Lauf, nicht geändert (RRF 3.7.0+1.mp.12, Erweiterungen 3.7.0+1.mp.6)
+TOOL1LC: 3.7.0+1.mp.6-dev.4, die beiden Fix-Zweige plus RAM-Schalter dmaLockOff (0x20002bcc, 0 = Mutex an; nicht committet), sha256 a7b93449f80c8389..., Firmware-Side-Load mit firmware/sideload/fw-sideload.sh
+Stufen und Freigabe durch: Tim ("yes"; "3/3/3", "do not have 30 mins right now"). Schalter mit M122 B20 P1007 A536882124 V1 und V0
+Messung: je Phase 181 s, eine Auslesung pro Minute: RAM-Zähler (AnalogIn kumuliert, TMC seit dem vorigen M122), dann M122 B20
+```
+
+| Phase | ADC-Timeouts | ADC-Fehler | Sweeps/s | TMC-Lesungen/s | TMC-Lese-, Schreibfehler, Timeouts | CPU AIN | CPU TMC | temp0 |
+|---|---|---|---|---|---|---|---|---|
+| Mutex an | 0 | 0 | 501 | 499 | 0, 0, 0 | 7,5 % | 5,2 % | 22,86 °C |
+| Mutex aus | 0 | 0 | 992 | 499 | 0, 0, 0 | 9,0 % | 4,2 % | 22,42 bis 22,47 °C |
+| Mutex wieder an | 0 | 0 | 501 | 499 | 0, 0, 0 | 7,5 % | 5,2 % | 22,78 bis 22,84 °C |
+
+Bewertung:
+- In keiner Phase gab es einen ADC-Timeout, auch ohne Mutex nicht. Auf dem Release-Build (etwa 3,5 pro Minute) wären je Phase etwa 10 zu erwarten gewesen. Schon das Takten auf höchstens einen Sweep pro Tick senkt die Rate also stark. Ob sie ohne Mutex bei null bleibt, zeigen 3 Minuten nicht: mp.6-dev.1 lief ebenfalls mit etwa 1000 Sweeps/s und hatte einen Timeout in Stunden.
+- Der TMC2209 hatte in den 9 Minuten keinen Lesefehler, auch ohne Mutex. Auf dev.3 waren es etwa 3 pro Minute.
+- Mit Mutex halbiert sich die Sweep-Rate auf 501/s, im Gleichtakt mit den 499 TMC-Lesungen pro Sekunde. Jeder Wandler macht damit etwa 250 Sweeps/s.
+- CPU: AIN 7,5 % mit Mutex, 9,0 % ohne, 10,2 % auf dev.3. TMC 5,2 % mit Mutex, 4,2 % ohne, 4,1 % auf dev.3. AIN und TMC zusammen 12,7 % mit Mutex, 13,2 % ohne, 14,3 % auf dev.3.
+- temp0 las ohne Mutex 0,4 °C weniger als mit, und der Unterschied verschwand beim Zurückschalten wieder. Die Ursache ist nicht geklärt, denn mit dem Mutex ändert sich auch die Sweep-Rate. Das Referenzthermometer wurde nicht abgelesen.
+- Der TOOL1LC bleibt bis zum nächsten Neustart des SBC auf dev.4, mit Mutex an.
+- Entscheidungen Tim, 2026-11-26, nach dem Lauf:
+  - Der Fix bleibt wie in CoreN2G#11 und Duet3Expansion#38, mit Takten und Mutex ("ja").
+  - Für den Versatz von 0,4 °C braucht es keine Referenzmessung, denn temp0 wird pro Drucker kalibriert ("passt, wird per drucker kalibriert").
+  - Es folgt eine Stunde Dauermessung, nur lesend, mit Mutex an ("ja").
+
+### 2026-11-26 nachts: Dauermessung des TL3-Fixes am TOOL1LC (dev.4, Mutex an), ohne Timeouts
+
+```
+Datum, Zeit (UTC): 2026-11-26, 22:03:57 bis 22:34:11 und 22:36:36 bis 23:06:49 (Abbruch der ersten Hälfte durch das Ende der Claude-Sitzung, kein Prozess blieb auf dem SBC zurück; die zweite Hälfte ergänzt die fehlenden 30 Minuten)
+Stand: wie im A/B-Lauf, TOOL1LC 3.7.0+1.mp.6-dev.4 seit 16:34, dmaLockOff 0 (Mutex an) in jeder Auslesung
+Freigabe: Tim ("3, ja"), nur lesend: RAM-Zähler mit M122 B20 P1007 ohne V, dann M122 B20, eine Auslesung pro Minute
+```
+
+Ergebnis, 3627 s in zwei Hälften:
+- ADC: 0 Timeouts, 0 Fehler, 500 Sweeps/s. Seit dem Start von dev.4 um 16:34 bis 23:06:49 sind es 11.859.181 Sweeps ohne Timeout und ohne Fehler, darin die 3 Minuten ohne Mutex.
+- TMC2209: 1.806.635 Lesungen (498/s), 0 Lese-, 0 Schreibfehler, 0 Timeouts, 0 DMA-Fehler.
+- CPU: AIN 7,5 %, TMC 5,2 %, in jeder Auslesung gleich.
+- Stack: Die TMC-Task (100 Worte, `TmcTaskStackWords`) hatte zuletzt höchstens 36 Worte frei. Um 16:35 waren es noch 44, auf dev.3 46. Der Wert ist das Minimum seit dem Start und blieb über die ganze Messung bei 36. Der Weg über den Mutex braucht also etwa 10 Worte mehr. AIN 98 und HEAT 108 Worte frei.
+- temp0: 22,65 bis 22,81 °C.
+
+Bewertung: Der Fix ist im Labor geprüft. Die Release-Bäume von D3E #35 brauchen CoreN2G#11 und Duet3Expansion#38; deren Merge macht Tim.
+
+### 2026-11-27 vormittags: TL3-Fix ohne Takten am TOOL1LC (dev.5), ohne Timeouts
+
+```
+Datum, Zeit (UTC): 2026-11-27, 09:35:53 bis 09:36:25 Firmware-Side-Load TOOL1LC, 09:36:34 bis 09:39:35 Kurzmessung, 09:41:34 bis 10:41:56 Dauermessung (61 Auslesungen)
+Anlass, PR, Commit: Fix TL3 in der Fassung ohne Takten (Tim, 2026-11-27), Meltingplot/CoreN2G#11 (d74fd893c) und Meltingplot/Duet3Expansion#38 (09593ef72)
+DSF, RRF, EXP1HCL, SZP: wie nach dem vorigen Lauf, nicht geändert (RRF 3.7.0+1.mp.12, Erweiterungen 3.7.0+1.mp.6)
+TOOL1LC: 3.7.0+1.mp.6-dev.5, die beiden Fix-Zweige mit geänderter Versionszeile, ohne RAM-Schalter, sha256 e9fac4d42c7f3729..., Firmware-Side-Load mit firmware/sideload/fw-sideload.sh. Die Symboladressen gleichen dev.4 (AnalogIn-Zähler 0x20002d18, TMC-Zähler driverStates+0x5c = 0x20002684)
+Stufen und Freigabe durch: Tim ("make the lab test per side load"), nur lesend: RAM-Zähler mit M122 B20 P1007 ohne V, dann M122 B20, eine Auslesung pro Minute
+Messung: AnalogIn kumuliert, TMC seit dem vorigen M122 B20 (AppendDriverStatus setzt die Zähler eines vorhandenen Treibers zurück)
+```
+
+| Messung | ADC-Timeouts | ADC-Fehler | Sweeps/s | TMC-Lesungen/s | TMC-Lese-, Schreibfehler, Timeouts, DMA-Fehler | CPU AIN | CPU TMC | TMC-Stack frei | temp0 |
+|---|---|---|---|---|---|---|---|---|---|
+| dev.4, Mutex an, Dauermessung (2026-11-26) | 0 | 0 | 500 | 498 | 0, 0, 0, 0 | 7,5 % | 5,2 % | 36 Worte | 22,65 bis 22,81 °C |
+| dev.5, Kurzmessung, 181 s | 0 | 0 | 1019 | 394 | 0, 0, 0, 0 | 11,7 bis 11,8 % | 5,6 bis 5,7 % | 36 Worte | 21,6 bis 21,65 °C |
+| dev.5, Dauermessung, 3622 s | 0 | 0 | 1019 | 394 (ohne die erste Minute, siehe unten) | 0, 0, 0, 0 | 11,6 bis 11,7 % | 5,7 % | 36 Worte | 21,57 bis 21,88 °C |
+
+Bewertung:
+- Kein ADC-Timeout, kein ADC-Fehler und kein TMC-Fehler, weder in der Kurzmessung noch in der Dauermessung. In der Dauermessung waren es 3.689.815 Sweeps und 1.409.594 TMC-Lesungen. Seit dem Start von dev.5 um 09:36 bis 10:41:56 sind es 4.016.518 Sweeps ohne Timeout und ohne Fehler.
+- Ohne Takten verdoppelt sich die Sweep-Rate gegenüber dev.4 (500 auf 1019/s). Die TMC-Lesungen gehen um etwa 20 % zurück (498 auf 394/s), weil eine TMC-Übertragung auf den laufenden Sweep wartet. Den Mutex hielt in der Kurzmessung in 4 von 4 Auslesungen der AIN-Task. In der Dauermessung war es in 44 von 61 Auslesungen der AIN-Task, in 17 die TMC-Task.
+- Das Wirtsmodell (Duet3Expansion `Tools/adc-take-turns-test`, Sweep 450 µs, TMC-Übertragung 650 µs) sagte etwa 1750 Sweeps/s voraus. Auch für dev.4 traf seine Rate nicht zu (Modell 1000 Sweeps/s und eine Übertragung alle 3 ms, Board 501/s und 499/s). Das Modell prüft die Invarianten, die Raten zählen vom Board. Zum Vergleich dev.3, ohne Mutex und ohne Takten: etwa 1480 Sweeps/s.
+- CPU: AIN 11,7 % gegen 7,5 % auf dev.4 und 10,2 % auf dev.3. TMC 5,7 % gegen 5,2 %. MAIN (Leerlauf) 82,3 bis 82,4 %.
+- Reichen 394 TMC-Lesungen/s? Tims Frage nach der Kurzmessung. Antwort aus dem Code:
+  - Die Stall-Erkennung des TOOL1LC hängt am DIAG-Pin (Duet3Expansion `src/Config/TOOL1LC.h:107`, `src/Movement/StepperDrivers/TMC22xx.cpp:2451`), nicht an den Lesungen.
+  - DRV_STATUS wird bei jeder Lesung in `accumulatedDriveStatus` verodert (`TMC22xx.cpp:1890-1893`), und Move holt den Sammelwert beim Treiber-Poll ab (`src/Movement/Move.cpp:366-437`). Eine Warnung oder ein Fehler geht also nicht verloren, sie kommt nur etwas später an.
+  - Die 7 Register (`TMC22xx.cpp:902-915`) kommen alle 18 statt alle 14 ms an die Reihe. Schreibzugriffe gehen vor und warten höchstens auf den laufenden Sweep.
+  - Upstream liest beim Duet 3 Mini 5+ bis zu 7 TMC2209 an einem UART mit 100 kBaud (RRF `src/Config/Pins_Duet3Mini.h:83`, `:197-208`): höchstens etwa 830 Lesungen/s für den ganzen Bus, also etwa 120 bis 170 je Treiber.
+  - Tim: "ok - sounds good".
+- In der ersten Minute der Dauermessung (09:41:34 bis 09:42:35) zeigten die TMC-Zähler nur 7747 Lesungen statt etwa 23.750. Die Sweeps dieser Minute (61.486) lagen im Bereich aller anderen Minuten (61.433 bis 61.556), der AIN-Task bekam also keine zusätzliche Mutex-Zeit, und die TMC-Task hat sehr wahrscheinlich normal übertragen. Ursache: Ein anderer Client sandte um 09:42:15 `M122 b20` (Journal von DWS, "[DoCode] Executing code"), das die Zähler zurücksetzte. 20 s mal etwa 390 Lesungen/s passen zu den 7747. Die 394/s der Tabelle zählen deshalb ohne diese Minute: 1.401.847 Lesungen in 3561 s.
+- Tim sandte während der Dauermessung Codes an den Drucker ("it was me"), laut Journal von DWS:
+  - Überlauf-Codes: `T18446744073709551616` (10:34:50), `G4294967296 X10`, `M4294967296`, `T9999...`, `G0.001 X10`;
+  - `M98 P"0:/macros/service-mode"` um 10:37:09, `G28 X` um 10:37:23 und `G1 X9999... F100` um 10:39:16.
+  - In diese Zeit fallen die einzigen 2 TMC-Schreibzugriffe der Stunde (10:36:54 bis 10:37:54), ohne Fehler.
+- Der TOOL1LC bleibt bis zum nächsten Neustart des SBC auf dev.5.
+
+Entscheidungen Tim, 2026-11-27, nach der Kurzmessung:
+- Release 3.7.1-rc.1 für alle vier Komponenten statt der 3.7.0-Releases ("3.7.1-rc.1 for all four"): DSF, DWC, RRF und Duet3Expansion als `3.7.1-rc.1+mp.1`. DSF `3.7.0+mp.16` (#255), RRF `3.7.0+1.mp.12` (Meltingplot/RepRapFirmware#118) und Duet3Expansion `3.7.0+1.mp.6` (Meltingplot/Duet3Expansion#35) werden nicht veröffentlicht, ihr Inhalt kommt mit diesem Release.
+- Tim hat dafür CoreN2G #11 und #12, Duet3Expansion #38 und #39 und RRF #120 und #121 gemerged (10:00 bis 10:15 UTC). Die Bäume gleichen den geprüften Ständen: CoreN2G `3.7-dev` 9588b1378 hat den Baum von d74fd893c (dev.5), Duet3Expansion `3.7-dev` d1dbd26a7 den von 09593ef72 bis auf die Versionszeile, RRF `3.7-dev` d06ffdb5d den von #121 und #120 zusammen.
+- Versionsform `+mp.1` für alle vier, auch für RRF und Duet3Expansion. Die Frage an Tim nannte für die Firmware noch `-mp.1` (wie `3.7.0-rc.2-mp.1`). Das ginge aber nicht: `mp-release.yml` beider Firmware-Forks startet nur auf `*+mp.*` oder `*.mp.*`. Und DWC nähme `-mp.1` für einen Teil des Pre-Release (DuetWebControl `src/utils/version.ts:15-50`) und meldete gegen DSF `3.7.1-rc.1+mp.1` "incompatible versions". Die Lab-Gates lesen die Form seit #262 (`src/LabPrinterTests/G7Helpers.cs`).
+- Vor den Tags kommt ein Laborlauf auf den Release-Builds. Er braucht Tims Freigabe.
