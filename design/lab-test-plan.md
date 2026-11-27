@@ -968,3 +968,44 @@ Ergebnis, 3627 s in zwei Hälften:
 - temp0: 22,65 bis 22,81 °C.
 
 Bewertung: Der Fix ist im Labor geprüft. Die Release-Bäume von D3E #35 brauchen CoreN2G#11 und Duet3Expansion#38; deren Merge macht Tim.
+
+### 2026-11-27 vormittags: TL3-Fix ohne Takten am TOOL1LC (dev.5), ohne Timeouts
+
+```
+Datum, Zeit (UTC): 2026-11-27, 09:35:53 bis 09:36:25 Firmware-Side-Load TOOL1LC, 09:36:34 bis 09:39:35 Kurzmessung, 09:41:34 bis 10:41:56 Dauermessung (61 Auslesungen)
+Anlass, PR, Commit: Fix TL3 in der Fassung ohne Takten (Tim, 2026-11-27), Meltingplot/CoreN2G#11 (d74fd893c) und Meltingplot/Duet3Expansion#38 (09593ef72)
+DSF, RRF, EXP1HCL, SZP: wie nach dem vorigen Lauf, nicht geändert (RRF 3.7.0+1.mp.12, Erweiterungen 3.7.0+1.mp.6)
+TOOL1LC: 3.7.0+1.mp.6-dev.5, die beiden Fix-Zweige mit geänderter Versionszeile, ohne RAM-Schalter, sha256 e9fac4d42c7f3729..., Firmware-Side-Load mit firmware/sideload/fw-sideload.sh. Die Symboladressen gleichen dev.4 (AnalogIn-Zähler 0x20002d18, TMC-Zähler driverStates+0x5c = 0x20002684)
+Stufen und Freigabe durch: Tim ("make the lab test per side load"), nur lesend: RAM-Zähler mit M122 B20 P1007 ohne V, dann M122 B20, eine Auslesung pro Minute
+Messung: AnalogIn kumuliert, TMC seit dem vorigen M122 B20 (AppendDriverStatus setzt die Zähler eines vorhandenen Treibers zurück)
+```
+
+| Messung | ADC-Timeouts | ADC-Fehler | Sweeps/s | TMC-Lesungen/s | TMC-Lese-, Schreibfehler, Timeouts, DMA-Fehler | CPU AIN | CPU TMC | TMC-Stack frei | temp0 |
+|---|---|---|---|---|---|---|---|---|---|
+| dev.4, Mutex an, Dauermessung (2026-11-26) | 0 | 0 | 500 | 498 | 0, 0, 0, 0 | 7,5 % | 5,2 % | 36 Worte | 22,65 bis 22,81 °C |
+| dev.5, Kurzmessung, 181 s | 0 | 0 | 1019 | 394 | 0, 0, 0, 0 | 11,7 bis 11,8 % | 5,6 bis 5,7 % | 36 Worte | 21,6 bis 21,65 °C |
+| dev.5, Dauermessung, 3622 s | 0 | 0 | 1019 | 394 (ohne die erste Minute, siehe unten) | 0, 0, 0, 0 | 11,6 bis 11,7 % | 5,7 % | 36 Worte | 21,57 bis 21,88 °C |
+
+Bewertung:
+- Kein ADC-Timeout, kein ADC-Fehler und kein TMC-Fehler, weder in der Kurzmessung noch in der Dauermessung. In der Dauermessung waren es 3.689.815 Sweeps und 1.409.594 TMC-Lesungen. Seit dem Start von dev.5 um 09:36 bis 10:41:56 sind es 4.016.518 Sweeps ohne Timeout und ohne Fehler.
+- Ohne Takten verdoppelt sich die Sweep-Rate gegenüber dev.4 (500 auf 1019/s). Die TMC-Lesungen gehen um etwa 20 % zurück (498 auf 394/s), weil eine TMC-Übertragung auf den laufenden Sweep wartet. Den Mutex hielt in der Kurzmessung in 4 von 4 Auslesungen der AIN-Task. In der Dauermessung war es in 44 von 61 Auslesungen der AIN-Task, in 17 die TMC-Task.
+- Das Wirtsmodell (Duet3Expansion `Tools/adc-take-turns-test`, Sweep 450 µs, TMC-Übertragung 650 µs) sagte etwa 1750 Sweeps/s voraus. Auch für dev.4 traf seine Rate nicht zu (Modell 1000 Sweeps/s und eine Übertragung alle 3 ms, Board 501/s und 499/s). Das Modell prüft die Invarianten, die Raten zählen vom Board. Zum Vergleich dev.3, ohne Mutex und ohne Takten: etwa 1480 Sweeps/s.
+- CPU: AIN 11,7 % gegen 7,5 % auf dev.4 und 10,2 % auf dev.3. TMC 5,7 % gegen 5,2 %. MAIN (Leerlauf) 82,3 bis 82,4 %.
+- Reichen 394 TMC-Lesungen/s? Tims Frage nach der Kurzmessung. Antwort aus dem Code:
+  - Die Stall-Erkennung des TOOL1LC hängt am DIAG-Pin (Duet3Expansion `src/Config/TOOL1LC.h:107`, `src/Movement/StepperDrivers/TMC22xx.cpp:2451`), nicht an den Lesungen.
+  - DRV_STATUS wird bei jeder Lesung in `accumulatedDriveStatus` verodert (`TMC22xx.cpp:1890-1893`), und Move holt den Sammelwert beim Treiber-Poll ab (`src/Movement/Move.cpp:366-437`). Eine Warnung oder ein Fehler geht also nicht verloren, sie kommt nur etwas später an.
+  - Die 7 Register (`TMC22xx.cpp:902-915`) kommen alle 18 statt alle 14 ms an die Reihe. Schreibzugriffe gehen vor und warten höchstens auf den laufenden Sweep.
+  - Upstream liest beim Duet 3 Mini 5+ bis zu 7 TMC2209 an einem UART mit 100 kBaud (RRF `src/Config/Pins_Duet3Mini.h:83`, `:197-208`): höchstens etwa 830 Lesungen/s für den ganzen Bus, also etwa 120 bis 170 je Treiber.
+  - Tim: "ok - sounds good".
+- In der ersten Minute der Dauermessung (09:41:34 bis 09:42:35) zeigten die TMC-Zähler nur 7747 Lesungen statt etwa 23.750. Die Sweeps dieser Minute (61.486) lagen im Bereich aller anderen Minuten (61.433 bis 61.556), der AIN-Task bekam also keine zusätzliche Mutex-Zeit, und die TMC-Task hat sehr wahrscheinlich normal übertragen. Ursache: Ein anderer Client sandte um 09:42:15 `M122 b20` (Journal von DWS, "[DoCode] Executing code"), das die Zähler zurücksetzte. 20 s mal etwa 390 Lesungen/s passen zu den 7747. Die 394/s der Tabelle zählen deshalb ohne diese Minute: 1.401.847 Lesungen in 3561 s.
+- Tim sandte während der Dauermessung Codes an den Drucker ("it was me"), laut Journal von DWS:
+  - Überlauf-Codes: `T18446744073709551616` (10:34:50), `G4294967296 X10`, `M4294967296`, `T9999...`, `G0.001 X10`;
+  - `M98 P"0:/macros/service-mode"` um 10:37:09, `G28 X` um 10:37:23 und `G1 X9999... F100` um 10:39:16.
+  - In diese Zeit fallen die einzigen 2 TMC-Schreibzugriffe der Stunde (10:36:54 bis 10:37:54), ohne Fehler.
+- Der TOOL1LC bleibt bis zum nächsten Neustart des SBC auf dev.5.
+
+Entscheidungen Tim, 2026-11-27, nach der Kurzmessung:
+- Release 3.7.1-rc.1 für alle vier Komponenten statt der 3.7.0-Releases ("3.7.1-rc.1 for all four"): DSF, DWC, RRF und Duet3Expansion als `3.7.1-rc.1+mp.1`. DSF `3.7.0+mp.16` (#255), RRF `3.7.0+1.mp.12` (Meltingplot/RepRapFirmware#118) und Duet3Expansion `3.7.0+1.mp.6` (Meltingplot/Duet3Expansion#35) werden nicht veröffentlicht, ihr Inhalt kommt mit diesem Release.
+- Tim hat dafür CoreN2G #11 und #12, Duet3Expansion #38 und #39 und RRF #120 und #121 gemerged (10:00 bis 10:15 UTC). Die Bäume gleichen den geprüften Ständen: CoreN2G `3.7-dev` 9588b1378 hat den Baum von d74fd893c (dev.5), Duet3Expansion `3.7-dev` d1dbd26a7 den von 09593ef72 bis auf die Versionszeile, RRF `3.7-dev` d06ffdb5d den von #121 und #120 zusammen.
+- Versionsform `+mp.1` für alle vier, auch für RRF und Duet3Expansion. Die Frage an Tim nannte für die Firmware noch `-mp.1` (wie `3.7.0-rc.2-mp.1`). Das ginge aber nicht: `mp-release.yml` beider Firmware-Forks startet nur auf `*+mp.*` oder `*.mp.*`. Und DWC nähme `-mp.1` für einen Teil des Pre-Release (DuetWebControl `src/utils/version.ts:15-50`) und meldete gegen DSF `3.7.1-rc.1+mp.1` "incompatible versions". Die Lab-Gates lesen die Form seit #262 (`src/LabPrinterTests/G7Helpers.cs`).
+- Vor den Tags kommt ein Laborlauf auf den Release-Builds. Er braucht Tims Freigabe.

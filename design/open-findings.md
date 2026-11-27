@@ -1238,9 +1238,13 @@ Line numbers refer to the CoreN2G fork at 821c4ea12 and to the Duet3Expansion fo
       - `tmc-dma-lock-test` 4/4, and 3/4 on cb86a7039.
       - Model rate: about 1750 sweeps per second, against 1000 with `delay(1)`.
     - Gates: TOOL1LC, EXP1HCL and SZP build without warnings; pointer check 51/0 new, alloc check 88/0 new, unmask check 6/0 new, selftest passed; all 7 `Tools/*-test` pass.
-    - Open: a lab check of this version, with the counters, sweep rate and CPU of section 14 of `design/lab-test-plan.md`, and a soak. It needs Tim's go for the side-load, and the Duet3Expansion release (#35) waits for it.
-      - On the board the rate will be above dev.4's 500 per second. dev.3, back to back without the mutex, made about 1480 per second with AIN at 10.2 % CPU, against 7.5 % on dev.4.
-      - The 2026-11-26 runs do not cover this version. The A/B check showed no timeouts with the pacing alone; with the mutex alone and no pacing nothing has been measured yet.
+    - Lab check of this version, 2026-11-27, on `3.7.0+1.mp.6-dev.5` (CoreN2G d74fd893c, Duet3Expansion 09593ef72, side-loaded with Tim's go; protocol in `design/lab-test-plan.md`, section 14):
+      - ADC: 0 timeouts and 0 errors at 1019 sweeps per second, in a 3-minute reading and a one-hour soak. Since dev.5 started there have been 4,016,518 sweeps without a timeout.
+      - TMC2209: 394 reads per second with 0 read, write, timeout or DMA errors, about 20 % fewer than the 498 of dev.4, because a TMC transfer waits for the running sweep.
+      - CPU: AIN 11.7 % (dev.4 7.5 %, dev.3 10.2 %), TMC 5.7 %. The TMC task still has 36 words of stack free, as on dev.4.
+      - The host model's 1750 sweeps per second do not hold on the board. Its rates did not match for dev.4 either; it checks the invariants.
+      - Tim asked whether 394 TMC reads per second are enough. Yes: stall detection uses the DIAG pin, DRV_STATUS is accumulated until the driver poll, and each of the 7 registers comes round every 18 ms instead of 14 ms. Upstream's Duet 3 Mini 5+ reads each of up to 7 TMC2209 at most about 120 to 170 times per second. Tim: "ok - sounds good".
+    - **Fixed:** Meltingplot/CoreN2G#11 (merge 6d97165dc) and Meltingplot/Duet3Expansion#38 (merge 058e7687a), merged by Tim on 2026-11-27. First release: Duet3Expansion `3.7.1-rc.1+mp.1`. The held `3.7.0+1.mp.6` is not released (Tim, 2026-11-27: release 3.7.1-rc.1 for all components).
 
 ## Found in the upstream sync of 2026-11-27
 
