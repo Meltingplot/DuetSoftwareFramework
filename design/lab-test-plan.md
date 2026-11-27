@@ -43,7 +43,7 @@ Gelesen am 2026-11-06 gegen 18:50 UTC, nur lesend.
 | 1 | Lesen: Status, Journal, `M122`, `M409` und andere nur lesende Codes. Dazu `M291`/`M292`, Testmakros in `0:/macros/lab-tests`, Globals `labTest...` | Tim wird vor dem Lauf informiert | `src/LabPrinterTests/README.md:22` |
 | 2 | Ohne Aufsicht erlaubt: `M122 P1001`, DCS-Neustart mit `M999`, Testtrigger 30, Side-Load, Fehlerinjektion | Tim gibt den Lauf frei | README `:23-25`, `SpiFaultInjection.cs:21` |
 | 3 | Alles außerhalb dieser Liste: `M112`, `M111`, `M929`, `M606`, Testdateien in `0:/gcodes` | Tim pro Punkt | nicht von README `:22-26` abgedeckt |
-| 4 | Druckjob, Bewegung, Heizen, Panel, ESD | Nur mit Tim vor Ort | README `:27` |
+| 4 | Druckjob, Bewegung, Heizen, Panel, ESD. Automatisiert davon nur RG-20 bis RG-22: Fahrten von X und Y und ein Job mit `M32`, ohne Heizen | Nur mit Tim vor Ort | README, Kategorie `Motion` |
 
 Regeln für jeden Lauf:
 - Die Suite läuft immer gegen die aktuelle Firmware des Prüflings, weil sie ein Ende-zu-Ende-Test ist (Tim, 2026-11-06). Für einen Test wird keine andere RRF-Version geflasht. Side-Loads betreffen nur DSF-Builds.
@@ -58,7 +58,7 @@ Regeln für jeden Lauf:
 | Anlass | Umfang |
 |---|---|
 | PR im Link-, Code- oder Trigger-Pfad | Block 0, E, RG mit `--side-load`, dazu die betroffenen A- und F-Prüfungen |
-| Neues DSF-Release oder Image | Block 0, E, RG ohne Side-Load, F-1, F-2 |
+| Neues DSF-Release oder Image | Block 0, E, RG ohne Side-Load, F-1, F-2, mit Tim vor Ort RG-20 bis RG-22 |
 | Neues RRF-Release | Wie neues Release, dazu `PortMatchesRealFirmware` durch die RRF-Sitzung (`LinkRecovery.cs:838`) |
 | Änderung am Warten auf TfrRdy in DSF (`Link/Adapter/SPI.cs`), Feldbericht eines Verbindungsverlusts im Leerlauf | RG-17 |
 | Änderung an `Heap`, String- oder Array-Handles oder am Schließen von Makros, Feldbericht eines Resets in `Heap::DeleteSlot` | RG-18 |
@@ -76,7 +76,7 @@ RG-17 und RG-18 laufen nur auf Abruf und gehören nicht zum Release-Umfang (Tim,
 | 3 | F-1, F-2 | 2 | keine | 45 min |
 | 4 | A-1 bis A-7, A-10 | 1 und 2 | Tests aus `feature/lab-tests-for-changes` | Suite 11,2 min, A-1 und A-2 etwa 5 min |
 | 5 | A-8, A-9, A-11 bis A-13 | 3 | Tests aus `feature/lab-tests-for-changes`, Einzelfreigabe | offen |
-| 6 | M-1 bis M-4 | 4 | Termin mit Tim | M-1 75 min (Testdruck am 2026-11-23), M-2 bis M-4 offen |
+| 6 | RG-20 bis RG-22, M-1 bis M-4 | 4 | Termin mit Tim, Achsen referenziert | RG-20 bis RG-22 noch nicht gemessen, dazu `G28` (2:34 min am 2026-11-23). M-1 75 min (Testdruck am 2026-11-23), M-2 bis M-4 offen |
 
 Gemessen am 2026-11-06: Suite in Block 1 8,3 min, Block 3 44 min einschließlich Side-Load (F-1 3 min, F-2 41 min).
 
@@ -140,6 +140,7 @@ src/LabPrinterTests/run-lab-tests.sh                                          # 
 src/LabPrinterTests/run-lab-tests.sh --side-load                              # dasselbe mit dem Stand dieses Baums
 src/LabPrinterTests/run-lab-tests.sh --filter "FullyQualifiedName~LinkSoak"   # RG-17
 src/LabPrinterTests/run-lab-tests.sh --filter "FullyQualifiedName~MacroCloseStress"   # RG-18, Dauer mit LAB_MACRO_CLOSE_MINUTES
+src/LabPrinterTests/run-lab-tests.sh --filter "TestCategory=Motion"   # RG-20 bis RG-22, Stufe 4, Tim vor Ort
 ```
 
 | ID | Test | Altes Fehlerbild | Soll |
@@ -159,6 +160,11 @@ src/LabPrinterTests/run-lab-tests.sh --filter "FullyQualifiedName~MacroCloseStre
 | RG-17 | `LinkSoak.NoLostConnectionWhileIdle` | TfrRdy-Timeouts alle 15 bis 30 min | 30 min ohne `Lost connection to Duet`, kein RRF-Neustart |
 | RG-18 | `MacroCloseStress.NoResetWhileMacrosCloseOnTheTriggerChannel` | RRF-Reset im Leerlauf, `MemoryProtectionFault` in `Heap::DeleteSlot` kurz nach dem Schließen eines Trigger-Makros, etwa einmal je 40.000 Schließvorgänge (RRF mp.9, Upstream-Code) | 60 min mit mindestens 10 Schließvorgängen je Sekunde: `state.upTime` fällt nie, `Last software reset` in `M122` unverändert, `Heap OK`, keine Neustartzeile aus `PER_REBOOT` im Journal |
 | RG-19 | `TriggerActions` (4 Tests, noch nicht am Drucker gelaufen) | `M581 K` von Upstream (RRF 3.7.1) zusammen mit der Aktionszeile `U` der Fork, Fix dd2aab996 im RRF-Sync vom 2026-11-27 | Bericht mit `(K2, run macro)`, `U` bei K3 abgelehnt, `U"M112"` als `(K0, emergency stop)` berichtet, K3 löscht die Aktionszeile, `P-1` setzt K zurück. Nichts feuert, Trigger 30 ist danach `is not configured`. Ohne K (RRF bis 3.7.0) werden die Tests übersprungen |
+| RG-20 | `Motion.JogsLikeTheDashboard` (Stufe 4, noch nicht am Drucker gelaufen) | Kein Fehler bekannt, schützt Fahrten über HTTP | Anfahrt und vier Jogs, gesendet wie von DWC und vom CHX-Panel (`M120`, `G90` oder `G91`, `G1`, `M121`): nach jedem `M400` steht X oder Y 40 mm weiter, der HTTP-Kanal ist danach wieder absolut |
+| RG-21 | `Motion.QueuedCodesRunInAMacro` (Stufe 4, noch nicht am Drucker gelaufen) | Codes, die RRF hinter Fahrten einreiht (etwa `M117`, `M106`, `M42`), schlugen im SBC-Modus mit "GCode command too long" fehl. Seit dem RRF-Sync #117 (Upstream e520116e9) in `3.7-dev`, in keinem Release. Behoben durch Upstream 187840328 (RRF #123) | Makro mit den vier Seiten eines Quadrats von 40 mm und je einem `M117` dahinter: die Displaymeldung ist die des letzten `M117`, kein "GCode command too long" im Journal, X und Y wieder am Start |
+| RG-22 | `Motion.QueuedCodesRunInAJob` (Stufe 4, noch nicht am Drucker gelaufen) | Wie RG-21 | Dieselben Codes als Job mit `M32`, mit `start.g` und `stop.g` des CHX: Job nicht abgebrochen, sonst wie RG-21. Übersprungen, solange der Wochentest fällig ist. Danach ist die Maschine im Standardmodus, bis beide Türen einmal geöffnet und geschlossen wurden |
+
+Vor RG-20 bis RG-22: X, Y, Z und U referenziert (`G28`), Automatikmodus, beide Türen zu, Z mindestens 20 mm, U an seinem Maximum. Sonst werden die Tests übersprungen, mit `LAB_AUTOMATIC_MODE_WAIT` warten sie. Nach einem Side-Load sind die Achsen nicht mehr referenziert, weil der Runner `M999` sendet. Nur X und Y fahren, auf einem Quadrat neben X max/2, Y max/2 − 40 in Maschinenkoordinaten. Keine Extrusion, keine Heizung, als einziger anderer Code `M117`. RG-22 läuft als letzter: `stop.g` hebt Z an sein Maximum, parkt das Portal und löscht die Türprüfung (`Motion.cs`, Klassenkommentar).
 
 Zusatzauswertung für RG-6, weil der Test selbst erst nach 90 s fehlschlägt:
 - **Erholzeit je Reboot:** Referenz 11,8 bis 12,2 s (RRF #36, 15 Reboots; Abnahme vom 2026-11-03: 11,8 bis 12,2 s). Mehr als das ist eine Abweichung und wird analysiert, auch wenn der Test besteht. Der Wert wird auf dem Client über den Tunnel gestoppt.
@@ -424,7 +430,7 @@ Rückbau geprüft:
   - RRF #79 (Binärcode über 256 Bytes nach einem Text-Code): Text-Codes kommen im SBC-Modus nur von USB, Aux und von RRF selbst, am CHX nur aus Trigger-Aktionen (`M581.1 … U`, RRF `GCodes.cpp:1044-1054`). Der CHX hat keine, seine Trigger starten Makrodateien. Geprüft durch `Tools/sbc-code-length-test` in RepRapFirmware.
   - RRF #58 (fehlgeschlagenes Makro, auf das kein Kanal wartet): Nur der Daemon-Kanal wartet nicht auf ein angefordertes Makro (RRF `GCodeBuffer.cpp:1334`), und DSF meldet einen Makrofehler nur für eine fehlende Datei (`Processor.cs:1730`). Der CHX hat eine `daemon.g`. Ein Test müsste sie entfernen, das wäre Stufe 3 und träfe den Fehler bei einem Versuch alle 10 s nur statistisch.
   - Races mit `malloc` und dem Objektmodell (RRF #70, #72 bis #77, RRFLibraries #2, Duet3Expansion #20): Nur durch Host-Tests und alloc-check deterministisch geprüft, am DUT nur als "kein Reset".
-  - Bewegung, Feed Hold, Endstops, Z-Sonde und Emergency Pause (RRF #56, #63, #66, #83, #84, Duet3Expansion #24) brauchen Stufe 4. Am 2026-11-23 liefen davon #66 (als Regressionsprüfung) und #83 (Abschnitt 14). #84 braucht Power-Fail oder Stall-Pause, #56 eine Antastfahrt ohne Auslösung mit `M558 P` und einer Änderung eines CAN-Eingangs, #63 `M672`, das der CHX nicht nutzt.
+  - Fahrten aus HTTP, Makro und Job mit eingereihten Codes prüfen RG-20 bis RG-22 (Stufe 4). Feed Hold, Endstops, Z-Sonde und Emergency Pause (RRF #56, #63, #66, #83, #84, Duet3Expansion #24) brauchen weiter eine Prüfung von Hand in Stufe 4. Am 2026-11-23 liefen davon #66 (als Regressionsprüfung) und #83 (Abschnitt 14). #84 braucht Power-Fail oder Stall-Pause, #56 eine Antastfahrt ohne Auslösung mit `M558 P` und einer Änderung eines CAN-Eingangs, #63 `M672`, das der CHX nicht nutzt.
 - **Andere Repos:** Inhalt des Self-Tests (chx350-config) und USB-Guard, OTA sowie Panel-Fehlerbilder (rpi-image-gen) brauchen eigene Prüfpläne. Hier wird nur die Schnittstelle geprüft.
 
 ## 13. Offene Entscheidungen
@@ -434,6 +440,8 @@ Rückbau geprüft:
 | 1 | Wann ist der Termin für die Stufe-4-Prüfungen? | Nach Block 1 bis 3 |
 
 Entschieden (Tim, 2026-11-06): Alle Stufe-3-Tests werden gebaut (A-8, A-9, A-11, A-12, A-13).
+
+Entschieden (Tim, 2026-11-27): Ein Lab-Test fährt Achsen, mit normalen G-Codes und aus einer Jobdatei. Anlass: Upstream 187840328 behebt eingereihte Codes im SBC-Modus, die seit dem RRF-Sync #117 fehlschlugen. Der Lauf vom 2026-11-26 konnte das nicht zeigen, weil kein Test fuhr. Umgesetzt als RG-20 bis RG-22 (Stufe 4) und für DSF- und RRF-Releases in den Umfang aufgenommen.
 
 ## 14. Durchgeführte Läufe
 
