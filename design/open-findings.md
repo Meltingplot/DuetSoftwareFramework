@@ -1162,3 +1162,23 @@ Line numbers refer to DSF `v3.7-dev` at a7211cf33 and to the RRF fork `3.7-dev` 
   - Seen in the lab test `ExpressionEvaluation.DateBeyondYear9999IsAnError`, whose expression DSF evaluated itself; the test now puts `state.upTime` before the `+ 1`.
   - Fix options: (a) the parser forwards an operation whose result DateTime cannot hold, so the code gets the answer of the forwarded path, as #238 forwards datetime() strings DSF cannot read exactly; (b) the parser throws a CodeParserException with the text of LT1. (a) follows the rule of aligning with RRF (Tim, 2026-11-24). Not decided.
   - Upstream code (`MetaExpressionParser` came with upstream e3a136b27). Upstream report candidate.
+
+## Found in the upstream sync of 2026-11-27
+
+The sync takes Duet3D 3.7.1-rc.1 into DSF (#upstream-sync PR), RRF, Duet3Expansion, CoreN2G and DWC. Line numbers refer to DSF `v3.7-dev` 41187e19a and to the RRF branch `chore/sync-upstream-2026-11-27` 3a45478e5. DSF paths are relative to `src/DuetControlServer/`.
+
+- **FL1 (high). The MB6HC image no longer fits in the flash after the upstream merge, and the linker did not report it.**
+  - With the merge and the trigger fix, the image is 1,048,872 B. The CRC brings it to 1,048,876 B, against 1,048,576 B of flash (`RRF/Hardware/SAME70/same70q20b_flash.ld:54`): 300 B too large. Fork `3.7-dev` 5c2ddc01f is 1,047,948 B, which leaves 624 B.
+  - `.relocate : AT (_etext)` has no memory region for its load address, so `ld` checks the code but not the initialised data and the CRC behind it. The merge image linked with `.relocate` loaded at 0x004ffeb8 to 0x00500090, past the end of the flash. Only the SAM4E script has upstream's check (e983896d5).
+  - Fix of the check: Meltingplot/RepRapFirmware#120 copies it to the SAM4S, SAME5x, SAME70 and PIC32CZ scripts, with `Tools/flash-overflow-test` (36/36, 16 fail without it). With #120 the sync tree stops at the link.
+  - Open: winning back at least 300 B, more for the next merges. The options are measured separately; Tim decides. MB6XD (970,972 B) and Mini5plus (988,692 + 328 B) fit.
+- **T14 (medium, upstream code). DSF does not support M581 K for triggers it evaluates itself.**
+  - DSF takes over every M581.1 whose expression has an `sbc.*` field (`Model/SbcTriggerService.cs:127-131`). It sends `M581 T<n> P-1` to RRF (`:144`), which resets the trigger's K action in RRF (`RRF/GCodes/TriggerItem.cpp:20-34`), and it does not keep K itself.
+  - When the trigger fires, DSF stops the machine for trigger 0 and sends `M582 T<n> S1` for all others (`:306-322`). RRF then does the default action of the number (`TriggerItem.cpp:47-54`). So `K3` on such a trigger runs `trigger<n>.g` instead of a feed hold, and trigger 0 with `K2` stops the machine instead of running `trigger0.g`.
+  - `M581 T<n> K<k>` without other parameters deletes DSF's trigger, because only T, R and S count as a report or a change of the enable condition (`:121`, `:129`).
+  - DSF's report has no `(K<n>, <action>)` part (`:198-205`), unlike RRF's (`TriggerItem.cpp:392-394`).
+  - The service came with upstream 4229f5527 and K with upstream RRF 5f54bb621, so upstream has the same gap. Upstream report candidate. Not fixed in the fork yet.
+- **T15 (low, fork code, there before K). A trigger with an action line that an expression error has disabled stays disabled until a restart.**
+  - `Check` disables a trigger whose expression cannot be evaluated, unless it is an emergency stop (`TriggerItem.cpp:171-185`). A trigger with an action line is locked (`:56-60`), and the lock refuses `R0` as well (`:199-211`). The trigger can be enabled again only by a restart.
+  - That matters for a safety trigger that is not an emergency stop, such as a door check with an action line: one failed evaluation switches it off for good.
+  - Found by the host test of the trigger fix (`Tools/trigger-action-test`, probe). Same on the merge commit, so not caused by K. Not decided: fire as well (like an emergency stop), or let `R` through the lock.
