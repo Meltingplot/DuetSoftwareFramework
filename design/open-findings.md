@@ -1229,3 +1229,15 @@ Line numbers refer to the CoreN2G fork at 821c4ea12 and to the Duet3Expansion fo
     - CPU: AIN 7.5 %, TMC 5.2 %.
     - Stack: the TMC task (100 words) had at least 36 words free, against 46 on dev.3, and that value stayed the same over the hour.
     - The fix is lab-checked.
+  - **Tim, 2026-11-27: drop the pacing when the mutex is used.** The sweeps run back to back and wait only for the mutex ("Remove the delay from coren2g when the mutex is used, so that they can run back to back without delay and just wait for the mutex ... As this already reduces the pace").
+    - Meltingplot/CoreN2G#11 d74fd89: no `delay(1)` any more. The AIN task yields after each sweep, and a pass without channels waits 2 ticks, as before the fix. `DmacManager.h` states the rule for every holder of the mutex.
+    - Why the yield: on the TOOL1LC the AIN and TMC tasks both have priority 2 (Duet3Expansion `src/Platform/TaskPriorities.h:19-20`). Releasing a FreeRTOS mutex switches to a waiting task only if it has a higher priority (FreeRTOS d3ce7a3 `tasks.c:5460`, `queue.c:1014-1020`). Without the yield the AIN task takes the mutex again before the TMC task runs; in the host model the TMC task then makes no transfer at all.
+    - Meltingplot/Duet3Expansion#38 71a7bf48, found on the way and not part of Tim's request: `DoTransaction` also yields after a timed-out transfer. That path has no `delay(2)`, and the `ready` state calls it again at once (`src/Movement/StepperDrivers/TMC22xx.cpp:2124-2127`, `:2333-2335`). While the driver did not answer, the AIN task would hardly have got the mutex. Not seen on the board, because the lab runs had no TMC timeouts. It can be dropped on its own.
+    - Host tests (Duet3Expansion 09593ef72): the model now releases the mutex as FreeRTOS does.
+      - `adc-take-turns-test` 6/6 with the new scenario `idle`. Without the yield it is 2/6, the TMC task starved; without the wait of a pass without channels 5/6; the first version 33f1329 still passes 6/6.
+      - `tmc-dma-lock-test` 4/4, and 3/4 on cb86a7039.
+      - Model rate: about 1750 sweeps per second, against 1000 with `delay(1)`.
+    - Gates: TOOL1LC, EXP1HCL and SZP build without warnings; pointer check 51/0 new, alloc check 88/0 new, unmask check 6/0 new, selftest passed; all 7 `Tools/*-test` pass.
+    - Open: a lab check of this version, with the counters, sweep rate and CPU of section 14 of `design/lab-test-plan.md`, and a soak. It needs Tim's go for the side-load, and the Duet3Expansion release (#35) waits for it.
+      - On the board the rate will be above dev.4's 500 per second. dev.3, back to back without the mutex, made about 1480 per second with AIN at 10.2 % CPU, against 7.5 % on dev.4.
+      - The 2026-11-26 runs do not cover this version. The A/B check showed no timeouts with the pacing alone; with the mutex alone and no pacing nothing has been measured yet.
