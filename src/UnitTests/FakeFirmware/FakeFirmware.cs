@@ -567,7 +567,8 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <summary>
-    /// Whether a reset has happened that LinkService has not seen yet via <see cref="HadReset"/>
+    /// Whether a reset has happened that LinkService has not handled yet. It reads the reset via <see cref="HadReset"/> after a transfer and handles it
+    /// before the next one (LinkService.Execute: Invalidate cancels every code that DSF holds), so a code started before that transfer may be cancelled
     /// </summary>
     public bool IsResetPending
     {
@@ -575,7 +576,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
         {
             lock (_lock)
             {
-                return _hadReset;
+                return _hadReset || _handlingReset;
             }
         }
     }
@@ -857,6 +858,11 @@ public sealed partial class FakeFirmware : ILinkAdapter
     private readonly Dictionary<CodeChannel, int> _failedBufferLocks = [];
     private bool _hadReset;
 
+    /// <summary>
+    /// Whether LinkService has read a reset via <see cref="HadReset"/> and has not started the next transfer yet, i.e. it is still handling the reset
+    /// </summary>
+    private bool _handlingReset;
+
     // SBC interface state
     private readonly List<FakeCode> _codeBuffer = [];
     private int _codeBufferUsed;
@@ -912,6 +918,9 @@ public sealed partial class FakeFirmware : ILinkAdapter
         bool busy;
         lock (_lock)
         {
+            // LinkService has finished the iteration of its loop that handled a reset
+            _handlingReset = false;
+
             // Wait while a test holds the transfers
             while (_transfersAllowed == 0 && !cancellationToken.IsCancellationRequested)
             {
@@ -987,6 +996,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
         lock (_lock)
         {
             bool result = _hadReset;
+            _handlingReset |= result;
             _hadReset = false;
             return result;
         }

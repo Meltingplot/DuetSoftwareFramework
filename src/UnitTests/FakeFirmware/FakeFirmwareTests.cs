@@ -315,6 +315,21 @@ public class FakeFirmwareTests
     }
 
     [Test]
+    public async Task ResetIsPendingUntilDsfHasHandledIt()
+    {
+        // LinkService reads the reset after a transfer (LinkService.cs:380) and handles it before the next one: Invalidate (:382) cancels every code
+        // that DSF holds, so a code started before that transfer may be cancelled. Holding the object model keeps LinkService in Invalidate, which
+        // waits for it in ObjectModel.ConnectionLost
+        using (await _host.Model.AccessReadOnlyAsync())
+        {
+            _host.Firmware.SimulateReset();
+            await Task.Delay(HoldTime);
+            Assert.That(_host.Firmware.IsResetPending, Is.True, "The reset is no longer pending while DSF still handles it");
+        }
+        Assert.That(_host.Firmware.WaitUntil(firmware => !firmware.IsResetPending, FakeFirmwareHost.DefaultTimeout), Is.True, "DSF did not handle the reset");
+    }
+
+    [Test]
     public async Task SeededObjectModel()
     {
         _host.Firmware.ObjectModel.Set("state.atxPower", true);
