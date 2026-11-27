@@ -543,6 +543,51 @@ public sealed partial class FakeFirmware : ILinkAdapter
     }
 
     /// <summary>
+    /// Keep the replies to object model queries of the given key back until <see cref="ReleaseObjectModelReplies"/> is called, as if RRF took that
+    /// long to answer them. LinkService sends only the query at the head of its queue and dequeues it when the reply arrives (LinkService.cs:496-506,
+    /// :819-840), so this holds the update cycle of UpdateService that asked for the key, after it has read the live fields
+    /// </summary>
+    /// <param name="key">Key of the queries to hold, e.g. "global"</param>
+    public void HoldObjectModelReplies(string key)
+    {
+        lock (_lock)
+        {
+            _holdModelKey = key;
+        }
+    }
+
+    /// <summary>
+    /// Number of object model queries whose replies are held
+    /// </summary>
+    public int HeldObjectModelRequests
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _heldModelRequests.Count;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Stop holding object model replies and answer the held queries from the current model in the next transfer
+    /// </summary>
+    public void ReleaseObjectModelReplies()
+    {
+        lock (_lock)
+        {
+            _holdModelKey = null;
+            foreach (FakeSbcRequest request in _heldModelRequests)
+            {
+                AnswerObjectModelQuery(request);
+            }
+            _heldModelRequests.Clear();
+            Monitor.PulseAll(_lock);
+        }
+    }
+
+    /// <summary>
     /// Get the requests DSF wrote for the next transfer
     /// </summary>
     /// <returns>Requests in order</returns>
@@ -848,6 +893,8 @@ public sealed partial class FakeFirmware : ILinkAdapter
     private List<FakeSbcRequest> _incoming = [];
     private List<FakePacket> _txPackets = [];
     private List<FakePacket> _rxPackets = [];
+    private string? _holdModelKey;
+    private readonly List<FakeSbcRequest> _heldModelRequests = [];
     private int _rxIndex;
     private FakePacket? _currentPacket;
     private readonly HashSet<SbcRequest> _requestsBeingResent = [];
@@ -896,6 +943,7 @@ public sealed partial class FakeFirmware : ILinkAdapter
         _codeBufferUsed = 0;
         _gcodeReply.Clear();
         _txPackets.Clear();
+        _heldModelRequests.Clear();
         _sendBufferUpdate = true;
         _repRapStopped = false;
         _sbcPacketRead = false;
@@ -1066,9 +1114,14 @@ public sealed partial class FakeFirmware : ILinkAdapter
                     break;
 
                 case SbcRequest.GetObjectModel:
-                    // state.status is a live function in RRF (RepRap::GetStatusIndex), e.g. an emergency stop in the same transfer reports halted
-                    UpdateStatus();
-                    WritePacket(new FakePacket { Request = FirmwareRequest.ObjectModel, Text = ObjectModel.GetModelResponse(request.Text, request.Argument) });
+                    if (_holdModelKey is not null && request.Text == _holdModelKey)
+                    {
+                        _heldModelRequests.Add(request);
+                    }
+                    else
+                    {
+                        AnswerObjectModelQuery(request);
+                    }
                     break;
 
                 case SbcRequest.SetPrintFileInfo:
@@ -1876,6 +1929,17 @@ public sealed partial class FakeFirmware : ILinkAdapter
         uint bits = (uint)type & FakeTag.TypeEpochBits;
         ushort tag = ((bits & FakeTag.TypeEpochValid) != 0) ? FakeTag.Of((int)(bits >> FakeTag.TypeEpochShift)) : (ushort)0;
         WritePacket(new FakePacket { Request = FirmwareRequest.Message, MessageType = (MessageTypeFlags)((uint)type & ~FakeTag.TypeEpochBits), Text = text, RelatedCode = code, Channel = channel, Tag = tag });
+    }
+
+    /// <summary>
+    /// Answer an object model query from the current model
+    /// </summary>
+    /// <param name="request">Query</param>
+    private void AnswerObjectModelQuery(FakeSbcRequest request)
+    {
+        // state.status is a live function in RRF (RepRap::GetStatusIndex), e.g. an emergency stop in the same transfer reports halted
+        UpdateStatus();
+        WritePacket(new FakePacket { Request = FirmwareRequest.ObjectModel, Text = ObjectModel.GetModelResponse(request.Text, request.Argument) });
     }
 
     /// <summary>

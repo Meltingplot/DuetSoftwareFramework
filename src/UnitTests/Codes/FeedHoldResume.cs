@@ -136,4 +136,53 @@ public class FeedHoldResume
         await WaitForAsync(() => !Jobs.IsFileSelected);
         Assert.That(JobCodes(), Is.EqualTo(new[] { "G1 X1", "G4 P1", "G1 X2", "G1 X3", "M400" }));
     }
+
+    /// <summary>
+    /// M24 that resumes the print while an update cycle is in progress that read state.status before the M24 (upstream 54373de5d, "Fixed full model
+    /// update waits returning stale data")
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An update cycle reads the live fields, state.status among them, before the changed keys (UpdateService.cs:283, :296-331) and notifies the
+    /// waiters at its end (:334). Before 54373de5d, WaitForFullUpdateAsync returned at the end of the cycle in progress, so CodeExecutedAsync of the M24
+    /// read the status "paused" from before the M24 and kept the job paused. Now it waits for a cycle that started after the call (ObjectModel.cs:627-637,
+    /// UpdateService.cs:229).
+    /// </para>
+    /// <para>
+    /// The test holds a cycle at its query of the changed key global, after it has read "paused". The fake firmware resumes the print when it executes
+    /// the M24, and the test releases the cycle while the M24 waits for the update. If DSF had not started to wait yet at the release, the old code
+    /// would pass too: the timing can only hide the bug, it cannot fail the fixed code.
+    /// </para>
+    /// </remarks>
+    [Test]
+    public async Task M24ResumeWaitsForAnUpdateStartedAfterIt()
+    {
+        await StartPausedJobAsync();
+        ReportStatus("paused");
+        await Host.Model.WaitForFullUpdateAsync();
+
+        // Hold the next update cycle after it has read the live status "paused"
+        Host.Firmware.HoldObjectModelReplies("global");
+        Host.Firmware.ObjectModel.IncrementSeq("global");
+        Assert.That(Host.Firmware.WaitUntil(firmware => firmware.HeldObjectModelRequests > 0, FakeFirmwareHost.DefaultTimeout), Is.True, "The update cycle did not ask for global");
+
+        // RRF resumes the print when it executes the M24 and replies once the print is running again (RRF src/GCodes/GCodes4.cpp:750-751, :2018-2027)
+        Host.Firmware.OnCode("M24", _ =>
+        {
+            Host.Firmware.ObjectModel.Set("state.status", "processing");
+            return FakeReply.Ok();
+        });
+        Task<string> m24 = Host.StartCode("M24");
+        Assert.That(Host.Firmware.WaitUntil(firmware => firmware.GetExecutedCodes(CodeChannel.HTTP).Any(code => code.Text == "M24"), FakeFirmwareHost.DefaultTimeout), Is.True, "M24 did not reach the firmware");
+        await Task.Delay(500);
+        Assert.That(m24.IsCompleted, Is.False, "M24 completed while the update cycle was held, so it did not wait for an update");
+
+        // The held cycle completes with the status it read before the M24
+        Host.Firmware.ReleaseObjectModelReplies();
+        Assert.That(await m24.WaitAsync(FakeFirmwareHost.DefaultTimeout), Is.EqualTo("\n"));
+        Assert.That(Jobs.IsPaused, Is.False, "DSF kept the job paused with the status of an update that read it before the M24");
+
+        await WaitForAsync(() => !Jobs.IsFileSelected);
+        Assert.That(JobCodes(), Is.EqualTo(new[] { "G1 X1", "G4 P1", "G1 X2", "G1 X3", "M400" }));
+    }
 }
