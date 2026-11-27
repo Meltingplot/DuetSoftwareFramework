@@ -13,6 +13,7 @@ are kept in src/LabPrinterTests/TestResults/<time> (or LAB_RESULTS_DIR). Colors 
 
 import base64
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -36,6 +37,14 @@ SIDE_LOAD_DIR = '/var/tmp/lab-tests'
 SIDE_LOAD_DLLS = ['DuetAPI.dll', 'DuetControlServer.dll', 'DuetSharedLibrary.dll']
 # The web server of the image must match DCS: since upstream 61df011ec it, not DCS, refuses to delete a volume root
 SIDE_LOAD_WEB_DLLS = ['DuetAPIClient.dll', 'DuetWebServer.dll']
+# Dependencies are side-loaded as well when the build's copy differs from the image's, e.g. after a NuGet update: DCS of 3.7.1-rc.1 did not start
+# on the 3.7.0+mp.15 image with only the DLLs above ("Could not load file or assembly 'System.CommandLine, Version=2.0.15.0'", 2026-11-27).
+# Not the .deps.json and .runtimeconfig.json files: the image's DCS and DWS are self-contained (includedFrameworks in their runtimeconfig.json),
+# the build here is framework-dependent, and its files would make the host look for a shared runtime that the image does not have
+SIDE_LOAD_DEPENDENCY_SUFFIXES = ('.dll', '.so')
+BIN_DIR = '/opt/dsf/bin'
+# Every bind mount below BIN_DIR, so that removal and the restore check also find a side-load whose file set changed
+UNMOUNT_SIDE_LOAD = (f"findmnt -rn -o TARGET | grep '^{BIN_DIR}/' | while read -r target; do sudo -n umount -l \"$target\"; done\n")
 # Read by the fault injection build when DCS starts, see SPI.PlainLinkFile
 PLAIN_LINK_FILE = f'{SIDE_LOAD_DIR}/spi-plain-link'
 # Root writes into the side-load directory below the world-writable /var/tmp, so it must be a directory of root and no symbolic link. The sticky
@@ -88,6 +97,31 @@ def sbc_ok(script: str, timeout: float = 600) -> bool:
     return result.returncode == 0
 
 
+def side_load_files(out: Path) -> dict[str, Path]:
+    """Files to side-load from the DCS build in out and the DWS build in out/web: the DSF DLLs, and every dependency whose copy differs from the
+    image's in BIN_DIR. A bind mount cannot add a file to the read-only root, so a dependency the image does not have stops the side-load"""
+    result = sbc(f'cd {BIN_DIR} && find . -maxdepth 1 -type f -exec sha256sum {{}} +\n', 120)
+    if result.returncode != 0:
+        raise RuntimeError(f'Cannot read the files in {BIN_DIR}: {result.stderr.strip()}')
+    image = {}
+    for line in result.stdout.splitlines():
+        digest, _, name = line.partition('  ')
+        image[name.removeprefix('./')] = digest
+    files = {name: out / name for name in SIDE_LOAD_DLLS} | {name: out / 'web' / name for name in SIDE_LOAD_WEB_DLLS}
+    missing = []
+    for folder in (out, out / 'web'):
+        for path in sorted(folder.iterdir()):
+            if not path.is_file() or path.name in files or not path.name.endswith(SIDE_LOAD_DEPENDENCY_SUFFIXES):
+                continue
+            if path.name not in image:
+                missing.append(path.name)
+            elif image[path.name] != hashlib.sha256(path.read_bytes()).hexdigest():
+                files[path.name] = path
+    if missing:
+        raise RuntimeError(f'The build needs files that the image does not have in {BIN_DIR}, which a side-load cannot add: {" ".join(missing)}')
+    return files
+
+
 # After a DCS restart, send M999 if RRF is halted and wait until the printer is idle
 RESET_FIRMWARE = r'''
 status() { curl -s -m 2 localhost/machine/status | python3 -c 'import json, sys; print(json.load(sys.stdin)["state"]["status"])' 2>/dev/null || echo down; }
@@ -135,7 +169,7 @@ try:
     result["job"] = ((status.get("job") or {}).get("file") or {}).get("fileName")
 except Exception as e:
     result["error"] = str(e)
-result["sideLoad"] = run("findmnt", "-n", "-o", "SOURCE", "/opt/dsf/bin/DuetControlServer.dll").strip() or None
+result["sideLoad"] = " ".join(line for line in run("findmnt", "-rn", "-o", "TARGET").splitlines() if line.startswith("/opt/dsf/bin/")) or None
 result["sideLoadDir"] = os.path.exists("/var/tmp/lab-tests")
 result["ota"] = run("systemctl", "is-active", "mp-ota-gate.timer").strip()
 result["timesyncd"] = run("systemctl", "is-active", "systemd-timesyncd").strip()
@@ -460,21 +494,22 @@ def main() -> int:
                 say(f'Publishing DWS from {ROOT}')
                 subprocess.run(['dotnet', 'publish', str(ROOT / 'src/DuetWebServer/DuetWebServer.csproj'), '-c', 'Release', '-r', 'linux-arm64',
                                 '--self-contained', 'false', '-o', f'{out}/web', '--nologo', '-v', 'quiet'], check=True, env=env)
-                for dll in SIDE_LOAD_DLLS + SIDE_LOAD_WEB_DLLS:
-                    say(f'Uploading {dll}')
-                    data = base64.b64encode((Path(out) / ('web' if dll in SIDE_LOAD_WEB_DLLS else '') / dll).read_bytes()).decode()
-                    if not sbc_ok(f"{CREATE_SIDE_LOAD_DIR}\nbase64 -d <<'DLL' | sudo -n tee {SIDE_LOAD_DIR}/{dll} > /dev/null\n{data}\nDLL\n"):
-                        raise RuntimeError(f'Uploading {dll} failed')
+                files = side_load_files(Path(out))
+                for name, path in files.items():
+                    say(f'Uploading {name}')
+                    data = base64.b64encode(path.read_bytes()).decode()
+                    if not sbc_ok(f"{CREATE_SIDE_LOAD_DIR}\nbase64 -d <<'DLL' | sudo -n tee {SIDE_LOAD_DIR}/{name} > /dev/null\n{data}\nDLL\n"):
+                        raise RuntimeError(f'Uploading {name} failed')
             # The flag must be there before DCS starts, and a run without it must not find one that an interrupted run left behind
-            sbc_ok(''.join(f'sudo -n mount --bind {SIDE_LOAD_DIR}/{dll} /opt/dsf/bin/{dll}\n' for dll in SIDE_LOAD_DLLS + SIDE_LOAD_WEB_DLLS) +
+            side_loaded = True
+            sbc_ok(''.join(f'sudo -n mount --bind {SIDE_LOAD_DIR}/{name} {BIN_DIR}/{name}\n' for name in files) +
                    (f'sudo -n touch {PLAIN_LINK_FILE}\n' if plain else f'sudo -n rm -f {PLAIN_LINK_FILE}\n') +
                    'sudo -n systemctl restart duetcontrolserver || true\nsudo -n systemctl restart duetwebserver || true\n')
-            side_loaded = True
             if not sbc_ok(RESET_FIRMWARE):
                 raise RuntimeError('The printer did not become idle after the side-load')
             revision = subprocess.run(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True).stdout.strip()
             dirty = subprocess.run(['git', '-C', str(ROOT), 'diff', '--quiet', 'HEAD', '--', 'src']).returncode != 0
-            say(f'Side-loaded {" ".join(SIDE_LOAD_DLLS + SIDE_LOAD_WEB_DLLS)} from {revision}{" with uncommitted changes" if dirty else ""}{", fault injection build" if fault else ""}'
+            say(f'Side-loaded {" ".join(files)} from {revision}{" with uncommitted changes" if dirty else ""}{", fault injection build" if fault else ""}'
                 f'{" on the plain link" if plain else ""}')
 
         tunnel = subprocess.Popen([sys.executable, '-I', str(HERE / 'tunnel.py'), PLINK, JUMP_HOST, f'{SBC}:80', str(TUNNEL_PORT)])
@@ -504,7 +539,7 @@ def main() -> int:
             say('Removing the side-loaded DLLs')
             # A plain umount reports the DLLs as busy. The first new instance may fail to connect, e.g. while RRF still waits for the
             # old one, and systemd starts it again
-            sbc_ok(''.join(f'findmnt -n /opt/dsf/bin/{dll} > /dev/null && sudo -n umount -l /opt/dsf/bin/{dll}\n' for dll in SIDE_LOAD_DLLS + SIDE_LOAD_WEB_DLLS) +
+            sbc_ok(UNMOUNT_SIDE_LOAD +
                    f'sudo -n rm -rf {SIDE_LOAD_DIR}\nsudo -n systemctl restart duetcontrolserver || true\nsudo -n systemctl restart duetwebserver || true\n')
             if not sbc_ok(RESET_FIRMWARE):
                 rc = rc or 1
