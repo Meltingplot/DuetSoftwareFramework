@@ -92,10 +92,15 @@ public class Motion : LabTest
     private static readonly TimeSpan EnvelopeWait =
         TimeSpan.FromSeconds(int.TryParse(Environment.GetEnvironmentVariable("LAB_AUTOMATIC_MODE_WAIT"), out int seconds) && seconds > 0 ? seconds : 0);
 
+    /// <summary>
+    /// The printer is busy while Tim homes the axes during that wait (G28 takes 2:34 min, sys/homeall.g), so the idle wait of <see cref="LabTest"/> is as long
+    /// </summary>
+    protected override TimeSpan IdleWait => EnvelopeWait > base.IdleWait ? EnvelopeWait : base.IdleWait;
+
     [SetUp]
     public async Task RequireEnvelopeAsync()
     {
-        string? problem = await CheckEnvelopeAsync();
+        string? problem = CheckEnvelope();
         if (problem is not null && EnvelopeWait > TimeSpan.Zero)
         {
             TestContext.Progress.WriteLine($"{problem}. Waiting up to {EnvelopeWait.TotalSeconds:0} s");
@@ -103,7 +108,7 @@ public class Motion : LabTest
             while (problem is not null && waited.Elapsed < EnvelopeWait)
             {
                 await Task.Delay(TimeSpan.FromSeconds(2));
-                problem = await CheckEnvelopeAsync();
+                problem = CheckEnvelope();
             }
         }
         if (problem is not null)
@@ -113,21 +118,20 @@ public class Motion : LabTest
     }
 
     /// <summary>
-    /// Check the envelope of the class remarks and keep the square and the display message to restore
+    /// Check the envelope of the class remarks and keep the square and the display message to restore. It reads only the model of the session and sends no
+    /// code: while Tim homes from DWC, a code on the HTTP channel waits until G28 has ended and its request times out
     /// </summary>
     /// <returns>Why the tests may not move now, or null</returns>
-    private async Task<string?> CheckEnvelopeAsync()
+    private string? CheckEnvelope()
     {
-        JsonElement mode = await QueryAsync("global.machine_mode");
-        if (mode.ValueKind != JsonValueKind.String || mode.GetString() != "automatic")
-        {
-            return $"global.machine_mode is {mode}, not \"automatic\": default mode blocks every move with a keep-out zone (operating-mode/default.g:1). " +
-                   "Open both doors once and close them";
-        }
-
         (Square? square, string? problem, string? displayMessage) = Lab.Read(Session, model =>
         {
-            (Square? square, string? problem) = Lab.IsIdle(model) ? GetSquare(model) : (null, $"The printer is {model.State.Status}, not idle");
+            string? mode = model.Global.TryGetValue("machine_mode", out JsonElement? value) && value?.ValueKind == JsonValueKind.String ? value.Value.GetString() : null;
+            (Square? square, string? problem) =
+                mode != "automatic" ? (null, $"global.machine_mode is {mode ?? "not set"}, not \"automatic\": default mode blocks every move with a keep-out zone " +
+                                             "(operating-mode/default.g:1). Open both doors once and close them") :
+                !Lab.IsIdle(model) ? (null, $"The printer is {model.State.Status}, not idle") :
+                GetSquare(model);
             return (square, problem, model.State.DisplayMessage);
         });
         _square = square;
