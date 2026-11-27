@@ -1165,13 +1165,21 @@ Line numbers refer to DSF `v3.7-dev` at a7211cf33 and to the RRF fork `3.7-dev` 
 
 ## Found in the upstream sync of 2026-11-27
 
-The sync takes Duet3D 3.7.1-rc.1 into DSF (#upstream-sync PR), RRF, Duet3Expansion, CoreN2G and DWC. Line numbers refer to DSF `v3.7-dev` 41187e19a and to the RRF branch `chore/sync-upstream-2026-11-27` 3a45478e5. DSF paths are relative to `src/DuetControlServer/`.
+The sync takes Duet3D 3.7.1-rc.1 into DSF (#261), RRF, Duet3Expansion (Meltingplot/Duet3Expansion#39), CoreN2G (Meltingplot/CoreN2G#12) and DWC (Meltingplot/DuetWebControl#30). Line numbers refer to DSF `v3.7-dev` 41187e19a and to the RRF branch `chore/sync-upstream-2026-11-27` 3a45478e5. DSF paths are relative to `src/DuetControlServer/`.
 
 - **FL1 (high). The MB6HC image no longer fits in the flash after the upstream merge, and the linker did not report it.**
   - With the merge and the trigger fix, the image is 1,048,872 B. The CRC brings it to 1,048,876 B, against 1,048,576 B of flash (`RRF/Hardware/SAME70/same70q20b_flash.ld:54`): 300 B too large. Fork `3.7-dev` 5c2ddc01f is 1,047,948 B, which leaves 624 B.
   - `.relocate : AT (_etext)` has no memory region for its load address, so `ld` checks the code but not the initialised data and the CRC behind it. The merge image linked with `.relocate` loaded at 0x004ffeb8 to 0x00500090, past the end of the flash. Only the SAM4E script has upstream's check (e983896d5).
   - Fix of the check: Meltingplot/RepRapFirmware#120 copies it to the SAM4S, SAME5x, SAME70 and PIC32CZ scripts, with `Tools/flash-overflow-test` (36/36, 16 fail without it). With #120 the sync tree stops at the link.
-  - Open: winning back at least 300 B, more for the next merges. The options are measured separately; Tim decides. MB6XD (970,972 B) and Mini5plus (988,692 + 328 B) fit.
+  - MB6XD (970,972 B) and Mini5plus (988,692 + 328 B) fit.
+  - The same tree with upstream's `src` and the fork libraries builds to 1,038,964 B: the fork's code is 9,908 B more than upstream's. The largest parts are `SbcInterface.o` +2,192, `DataTransfer.o` +1,464 and `TriggerItem.o` +1,364.
+  - Options, each measured by a full build against 1,048,872 B (placement padding varies by about ±40 B). Neither of the first two changes what the firmware does:
+    - (a) `noinline` on `DataTransfer::CanWritePacket` and `WritePacketHeader` (`RRF/SBC/DataTransfer.h:208-210`, inline body `:250-253`; 27 and 28 call sites): −2,368 B. One more call per packet in the SBC task. Upstream has the same helpers.
+    - (b) `-Os` for `FileInfoParser.cpp` and `PrintMonitor.cpp`: −2,472 B. File-info parsing and print estimates get slower; in SBC mode DSF parses file info itself. (a) and (b) together: −4,776 B.
+    - (c) `-Os` for parts of LibMbedTls (TLS, X.509, ASN.1 parsing; the crypto stays at -O2): −7,936 B. This affects only standalone HTTPS. Chris chose O2 for it (LibMbedTls 947bb9bce).
+    - Further `-Os` candidates are measured but closer to motion, probing or the link: GCodes2 −7,916 B, lwIP −8,616 B, Fatfs −5,256 B, DataTransfer and SbcInterface −5,788 B.
+    - Removing fork code is worth little: the M122 "Channel epochs" lines −296 B, upstream's text for the "output buffers full" message −180 B. Replacing the M112 action line with K0 saves only −128 B and would change the safety behaviour.
+  - Open: Tim decides which savings to take. Until then the RRF sync PR stays a draft.
 - **T14 (medium, upstream code). DSF does not support M581 K for triggers it evaluates itself.**
   - DSF takes over every M581.1 whose expression has an `sbc.*` field (`Model/SbcTriggerService.cs:127-131`). It sends `M581 T<n> P-1` to RRF (`:144`), which resets the trigger's K action in RRF (`RRF/GCodes/TriggerItem.cpp:20-34`), and it does not keep K itself.
   - When the trigger fires, DSF stops the machine for trigger 0 and sends `M582 T<n> S1` for all others (`:306-322`). RRF then does the default action of the number (`TriggerItem.cpp:47-54`). So `K3` on such a trigger runs `trigger<n>.g` instead of a feed hold, and trigger 0 with `K2` stops the machine instead of running `trigger0.g`.
