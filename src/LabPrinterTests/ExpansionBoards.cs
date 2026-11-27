@@ -19,7 +19,7 @@ namespace LabPrinterTests;
 /// <remarks>
 /// The lab printer has a TOOL1LC (CAN address 20) and an SZP (60), both SAMC21, and four EXP1HCL (50 to 53), SAME5x (chx350-config config.g:24-28 waits for
 /// the seven boards). Every test reads boards[].firmwareVersion and is ignored, naming the first fork release of the fix, when a board runs a build without it
-/// (<see cref="G7Helpers.WhyNotFixed"/>). D3E #30, D3E #32 and RRF #112 are in no release yet (D3E 3.7.0+1.mp.6, RRF 3.7.0+1.mp.12 will be the first):
+/// (<see cref="G7Helpers.WhyNotFixed"/>). D3E #30, D3E #32 and RRF #112 are first released in D3E and RRF 3.7.1-rc.1+mp.1:
 /// for a test build LAB_ASSUME_FIXES names them, e.g. LAB_ASSUME_FIXES="RRF#112 D3E#30 D3E#32"
 /// </remarks>
 [TestFixture]
