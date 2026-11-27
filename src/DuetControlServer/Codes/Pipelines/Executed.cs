@@ -77,8 +77,11 @@ public sealed class Executed : PipelineBase
     {
         if (code.Result is not null)
         {
-            // Update the file position
-            code.UpdateNextFilePosition();
+            // Update the file position. A code that aborts its own file like M99 gets here with a cancelled token
+            if (!code.CancellationToken.IsCancellationRequested)
+            {
+                code.UpdateNextFilePosition();
+            }
 
             // Notify code handlers
             switch (code.Type)
