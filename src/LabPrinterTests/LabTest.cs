@@ -57,12 +57,17 @@ public abstract class LabTest
     /// </summary>
     protected DuetHttpSession Session => _session!;
 
+    /// <summary>
+    /// How long a test waits for the printer to become idle before it is skipped
+    /// </summary>
+    protected virtual TimeSpan IdleWait => TimeSpan.FromSeconds(30);
+
     [SetUp]
     public async Task ConnectAsync()
     {
         Lab.RequirePrinter();
         _session = await Lab.ConnectAsync();
-        if (!await Lab.TryWaitForModelAsync(Session, Lab.IsIdle, TimeSpan.FromSeconds(30)))
+        if (!await Lab.TryWaitForModelAsync(Session, Lab.IsIdle, IdleWait))
         {
             Assert.Ignore($"The printer is not idle (status {Lab.Read(Session, model => model.State.Status)}), so the test does not touch it");
         }
