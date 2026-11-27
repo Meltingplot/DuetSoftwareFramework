@@ -17,7 +17,9 @@ namespace LabPrinterTests;
 /// Version of a fork build of RRF or Duet3Expansion as boards[].firmwareVersion reports it
 /// </summary>
 /// <remarks>
-/// - Fork tags: 3.7.0-rc.2+1-mp.2, 3.7.0-mp.1, 3.7.0+1.mp.5 (D3E), 3.7.0+1.mp.11 (RRF). A test build adds -dev.N to the number of the coming release,
+/// - Fork tags: 3.7.0-rc.2+1-mp.2, 3.7.0-mp.1, 3.7.0+1.mp.5 (D3E), 3.7.0+1.mp.11 (RRF), and from 3.7.1-rc.1 on 3.7.1-rc.1+mp.1, the form of DSF and DWC.
+///   The release workflows of both forks start on "*+mp.*" or "*.mp.*" tags (.github/workflows/mp-release.yml), and DWC's version check takes "-mp.N"
+///   for a part of the pre-release (DuetWebControl src/utils/version.ts). A test build adds -dev.N to the number of the coming release,
 ///   e.g. 3.7.0+1.mp.12-dev.1 (README.md, OutputBufferPressure row).
 /// - The main board reports VERSION (RRF Version.h, Platform.cpp:223), an expansion board the version of its announcement (ExpansionManager.cpp:61).
 /// - The order is that of the releases: a pre-release before the release, then the upstream build +N (none counts as 0), then mp.N, and a dev build
@@ -58,7 +60,7 @@ public readonly partial record struct ForkVersion(int Major, int Minor, int Patc
         return 0;
     }
 
-    [GeneratedRegex(@"^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:-(?<pre>alpha|beta|rc)\.(?<preNumber>\d+))?(?:\+(?<build>\d+))?[-.]mp\.(?<mp>\d+)(?:-dev\.(?<dev>\d+))?$")]
+    [GeneratedRegex(@"^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:-(?<pre>alpha|beta|rc)\.(?<preNumber>\d+))?(?:\+(?<build>\d+)[-.]|[-+.])mp\.(?<mp>\d+)(?:-dev\.(?<dev>\d+))?$")]
     private static partial Regex VersionRegex();
 }
 
@@ -83,29 +85,29 @@ public static partial class G7Helpers
     public static readonly FirmwareFix CoreN2G2 = new("CoreN2G #2", "3.7.0-rc.2+1-mp.2");
 
     /// <summary>
-    /// SAMC21 reset data written to the end, D3E PR #30 (merged 2026-11-24 after tag 3.7.0+1.mp.5, in no release yet)
+    /// SAMC21 reset data written to the end, D3E PR #30 (merged 2026-11-24 after tag 3.7.0+1.mp.5; 3.7.0+1.mp.6 was never released)
     /// </summary>
-    public static readonly FirmwareFix D3E30 = new("D3E #30", "3.7.0+1.mp.6");
+    public static readonly FirmwareFix D3E30 = new("D3E #30", "3.7.1-rc.1+mp.1");
 
     /// <summary>
-    /// M915 refuses a driver the board does not have, D3E PR #32 (merged 2026-11-24 after tag 3.7.0+1.mp.5, in no release yet)
+    /// M915 refuses a driver the board does not have, D3E PR #32 (merged 2026-11-24 after tag 3.7.0+1.mp.5; 3.7.0+1.mp.6 was never released)
     /// </summary>
-    public static readonly FirmwareFix D3E32 = new("D3E #32", "3.7.0+1.mp.6");
+    public static readonly FirmwareFix D3E32 = new("D3E #32", "3.7.1-rc.1+mp.1");
 
     /// <summary>
     /// No SBC file operation under boardsLock when a board restarts during a collection, RRF PR #112 C1 (merged 2026-11-24 as 766cab582 after tag
-    /// 3.7.0+1.mp.11, in no release yet)
+    /// 3.7.0+1.mp.11; 3.7.0+1.mp.12 was never released)
     /// </summary>
-    public static readonly FirmwareFix Rrf112 = new("RRF #112", "3.7.0+1.mp.12");
+    public static readonly FirmwareFix Rrf112 = new("RRF #112", "3.7.1-rc.1+mp.1");
 
     /// <summary>
-    /// RRF fork fixes of the expression and object model tests and of the trigger action check, merged after tag 3.7.0+1.mp.11 (merge commits
+    /// RRF fork fixes of the expression and object model tests and of the trigger action check, merged after tag 3.7.0+1.mp.11 and first released in 3.7.1-rc.1+mp.1 (merge commits
     /// 6ba549213, 01f00c726, 5d7ed6e93, b840d4f24, f71ed72bd, 4c9c352f3, 2575c498f, 551ecab92, a1bdcb538, 0d4295065; none is an ancestor of the tag)
     /// </summary>
-    public static readonly FirmwareFix Rrf102 = new("RRF #102", "3.7.0+1.mp.12"), Rrf104 = new("RRF #104", "3.7.0+1.mp.12"),
-        Rrf105 = new("RRF #105", "3.7.0+1.mp.12"), Rrf106 = new("RRF #106", "3.7.0+1.mp.12"), Rrf108 = new("RRF #108", "3.7.0+1.mp.12"),
-        Rrf109 = new("RRF #109", "3.7.0+1.mp.12"), Rrf110 = new("RRF #110", "3.7.0+1.mp.12"), Rrf113 = new("RRF #113", "3.7.0+1.mp.12"),
-        Rrf114 = new("RRF #114", "3.7.0+1.mp.12"), Rrf115 = new("RRF #115", "3.7.0+1.mp.12");
+    public static readonly FirmwareFix Rrf102 = new("RRF #102", "3.7.1-rc.1+mp.1"), Rrf104 = new("RRF #104", "3.7.1-rc.1+mp.1"),
+        Rrf105 = new("RRF #105", "3.7.1-rc.1+mp.1"), Rrf106 = new("RRF #106", "3.7.1-rc.1+mp.1"), Rrf108 = new("RRF #108", "3.7.1-rc.1+mp.1"),
+        Rrf109 = new("RRF #109", "3.7.1-rc.1+mp.1"), Rrf110 = new("RRF #110", "3.7.1-rc.1+mp.1"), Rrf113 = new("RRF #113", "3.7.1-rc.1+mp.1"),
+        Rrf114 = new("RRF #114", "3.7.1-rc.1+mp.1"), Rrf115 = new("RRF #115", "3.7.1-rc.1+mp.1");
 
     /// <summary>
     /// Skip a test unless the main board runs a firmware with all of the given fixes, so that a test whose bug resets RRF or hangs a channel costs

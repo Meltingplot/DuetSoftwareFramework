@@ -139,3 +139,44 @@ holds: the door reaction and the stop of the emergency stop input run through th
 - **Documentation.** `U`, `D`, the fail-safe of trigger 0 and the lock deviate from the Duet3D
   documentation and have to be documented for our machines. Whether they are proposed upstream is
   not decided.
+
+## M581 K (upstream RRF 3.7.1, sync of 2026-11-27)
+
+Line numbers in this section: RRF branch `chore/sync-upstream-2026-11-27` 3a45478e5, Duet3D wiki 26e95ee
+(`User_manual/Reference/Gcodes.md`, M581).
+
+Upstream 5f54bb621 adds `M581 K<n>`: K0 emergency stop, K1 pause, K2 run `sys/trigger#.g`, K3 feed hold,
+K4 feed hold and abort. Without K, trigger 0 is K0, trigger 1 is K1 and all others are K2. `CheckTriggers`
+acts on K0, K4 and K3 in the pass that detects them, in that order and without the trigger channel
+(`RRF/GCodes/GCodes.cpp:1033-1063`). K1 and K2 wait for the trigger channel. While the input of a K3 trigger
+is active, M24 does not release the feed hold. For TA2 and TA4 this means a door trigger can now hold or stop
+the motion in RRF itself, without an action line and without waiting for the trigger channel.
+
+The merge 7f67edf6b kept the fork's code. Because it went by the trigger number, it no longer fit K, and the
+fork commit dd2aab996 aligns it:
+- **`U"M112"`:** a trigger whose K action is K2 and whose action line is just M112 is an emergency stop
+  (`TriggerItem::GetAction`, `RRF/GCodes/TriggerItem.cpp:41-45`). Upstream's loop then stops at once. The
+  pending bit of trigger 0 is no longer used for it (`GCodes.cpp:1024`, M582 `GCodes3.cpp:428`). With K, that
+  bit would have run whatever K action trigger 0 has.
+- **Lock, fail-safe and keeping a trigger after an error** go by the action, not by the number. A used trigger
+  is locked if it is an emergency stop or has an action line (`IsLocked`, `TriggerItem.cpp:56-60`). The lock
+  follows the state, so a K given alone, or a command that fails after K, locks as well, and the lock refuses K
+  too (`:199-211`). The fail-safe and keeping the trigger after an error at M581.1 apply to emergency stop
+  triggers (`:175`, `:382`).
+- **Action line and K:** only a trigger that runs its macro file (K2) can have an action line. U is refused
+  otherwise (`:249-253`), and a K other than K2 deletes the action line (`:236-240`), as M581 on inputs already
+  does. Triggers 0 and 1 with K2 may now have an action line.
+- **Behaviour changes:**
+  - Trigger 0 with K1 to K4 is not locked, and it is disabled instead of fired when its expression fails.
+  - The report of a trigger with an M112 action line says K0.
+- **K is read before the rest of the command,** as upstream does (`:231-235`). A command that fails later
+  still changes K.
+- **Tests:**
+  - RRF `Tools/trigger-action-test`: 33/33 checks; the merge commit fails 22 of them.
+  - Lab test `TriggerActions`: report-only checks on trigger 30, which never fires or locks.
+
+Open:
+- Moving the door function of the CHX 350 to K3 or K4 triggers. This is configuration of the machine (see
+  "The CHX 350 today").
+- K for triggers that DSF evaluates (T14 in [open-findings.md](open-findings.md)).
+- A trigger with an action line that an expression error has disabled stays disabled until a restart (T15).
