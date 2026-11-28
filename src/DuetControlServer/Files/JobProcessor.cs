@@ -707,6 +707,10 @@ public class JobProcessor : BackgroundService, IAsyncDiagnostics
                             _resumePending2 = false;
                         }
 
+                        // The codes from here on are read after the rewind. A pause reported while this task waited has cancelled the token it took
+                        // when it saw the first pause, so take the current one
+                        cancellationToken = _cancellationTokenSource.Token;
+
                         // Reassign the file being printed unless the print is aborted
                         if (!IsAborted && !IsCancelled)
                         {
