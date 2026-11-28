@@ -1465,6 +1465,11 @@ public class MCodeHandler(
         {
             // Resume print
             case 24:
+                // RRF has executed the M24, so the job must follow it even if the macro that called it is aborted right after it, e.g. by M99.
+                // Reassign the code's cancellation token, which is that of its macro file
+                code.ResetCancellationToken();
+                cancellationToken = code.CancellationToken;
+
                 bool jobPaused;
                 using (await jobProcessor.LockAsync(cancellationToken))
                 {
